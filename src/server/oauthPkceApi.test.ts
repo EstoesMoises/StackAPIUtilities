@@ -157,4 +157,42 @@ describe("oauthPkceApi", () => {
     expect(html).not.toContain("verifier-secret");
     expect(html).not.toContain("oauth-token");
   });
+
+  it("redacts token values from JSON callback errors", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
+      encodePendingOAuthCookie({
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
+        redirectUri: `${origin}/api/oauth/pkce/callback`,
+        scopes: ["write_access"],
+        state: "state-123",
+        codeVerifier: "verifier-secret",
+        expiresAt: "2026-07-04T12:10:00.000Z",
+      }),
+      {
+        fetchFn: vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              error: "invalid_grant",
+              access_token: "access-secret-123",
+              nested: {
+                refresh_token: "refresh-secret-456",
+                verifier_hint: "verifier-secret",
+              },
+            }),
+            { status: 400 },
+          ),
+        ),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("[redacted]");
+    expect(html).not.toContain("code-secret");
+    expect(html).not.toContain("verifier-secret");
+    expect(html).not.toContain("access-secret-123");
+    expect(html).not.toContain("refresh-secret-456");
+  });
 });

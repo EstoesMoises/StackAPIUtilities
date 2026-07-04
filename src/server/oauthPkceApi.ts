@@ -281,13 +281,65 @@ function redactOAuthExchangeError(
   code: string,
 ): string {
   const sensitiveValues = [code, pending.codeVerifier].filter(isNonBlankString);
-  let redacted = message;
+  let redacted = redactStructuredOAuthErrorBody(message);
 
   for (const sensitiveValue of sensitiveValues) {
     redacted = redacted.replace(new RegExp(escapeRegExp(sensitiveValue), "g"), "[redacted]");
   }
 
-  return redacted.replace(/\b(?!token\b)[A-Za-z0-9_-]*token[A-Za-z0-9_-]*\b/gi, "[redacted]");
+  return redactTokenTextPatterns(redacted).replace(
+    /\b(?!token\b)[A-Za-z0-9_-]*token[A-Za-z0-9_-]*\b/gi,
+    "[redacted]",
+  );
+}
+
+function redactStructuredOAuthErrorBody(message: string): string {
+  const tokenExchangeErrorMatch = /^(OAuth token exchange failed \(\d+\): )([\s\S]*)$/.exec(message);
+
+  if (!tokenExchangeErrorMatch) {
+    return message;
+  }
+
+  const [, prefix, responseBody] = tokenExchangeErrorMatch;
+  return `${prefix}${redactOAuthErrorBody(responseBody)}`;
+}
+
+function redactOAuthErrorBody(responseBody: string): string {
+  try {
+    const parsed: unknown = JSON.parse(responseBody);
+    return JSON.stringify(redactSensitiveJsonFields(parsed));
+  } catch {
+    return redactTokenTextPatterns(responseBody);
+  }
+}
+
+function redactSensitiveJsonFields(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitiveJsonFields(item));
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nestedValue]) => [
+      key,
+      isSensitiveOAuthKey(key) ? "[redacted]" : redactSensitiveJsonFields(nestedValue),
+    ]),
+  );
+}
+
+function isSensitiveOAuthKey(key: string): boolean {
+  const lowerKey = key.toLowerCase();
+  return lowerKey.includes("token") || lowerKey.includes("code") || lowerKey.includes("verifier");
+}
+
+function redactTokenTextPatterns(message: string): string {
+  return message.replace(
+    /\b((?:access|refresh)_token)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+    "$1$2[redacted]",
+  );
 }
 
 function escapeRegExp(value: string): string {
