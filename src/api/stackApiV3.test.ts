@@ -99,6 +99,11 @@ describe("StackApiV3Client", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe(
       "https://demo.stackenterprise.co/api/v3/users/by-email/ada%2Bvrm%40example.com",
     );
+    expect(fetchMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+      }),
+    );
   });
 
   it("returns null when user lookup by email is not found", async () => {
@@ -110,6 +115,46 @@ describe("StackApiV3Client", () => {
     });
 
     await expect(client.getUserByEmail("missing@example.com")).resolves.toBeNull();
+  });
+
+  it("retrieves user groups with page size, pagination, and bearer auth", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [{ id: 7, name: "Ada Lovelace VRM", users: [] }], totalPages: 2 }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [{ id: 8, name: "Alan Turing VRM", users: [] }], totalPages: 2 }), {
+          status: 200,
+        }),
+      );
+    const client = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "token",
+      fetchFn: fetchMock,
+    });
+
+    await expect(client.getUserGroups()).resolves.toEqual([
+      { id: 7, name: "Ada Lovelace VRM", users: [] },
+      { id: 8, name: "Alan Turing VRM", users: [] },
+    ]);
+    expect(fetchMock.mock.calls[0][0].toString()).toBe(
+      "https://demo.stackenterprise.co/api/v3/user-groups?pageSize=100&page=1",
+    );
+    expect(fetchMock.mock.calls[1][0].toString()).toBe(
+      "https://demo.stackenterprise.co/api/v3/user-groups?pageSize=100&page=2",
+    );
+    expect(fetchMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+      }),
+    );
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+      }),
+    );
   });
 
   it("creates user groups and adds members with write access bearer auth", async () => {
@@ -164,6 +209,11 @@ describe("StackApiV3Client", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe(
       "https://demo.stackenterprise.co/api/v3/user-groups/7/members/3",
     );
-    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ method: "DELETE" }));
+    expect(fetchMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        method: "DELETE",
+        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+      }),
+    );
   });
 });
