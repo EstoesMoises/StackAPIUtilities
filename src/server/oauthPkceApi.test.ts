@@ -279,6 +279,23 @@ describe("oauthPkceApi", () => {
     }
   });
 
+  it("rejects expired OAuth denial callbacks without reflecting descriptions", async () => {
+    const fetchFn = vi.fn();
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(
+        `${origin}/api/oauth/pkce/callback?error=access_denied&state=state-123&error_description=sensitive-provider-detail`,
+      ),
+      encodePendingOAuthCookie(validPending({ expiresAt: "2026-07-04T11:59:59.000Z" })),
+      { fetchFn, now: () => now },
+    );
+    const html = await result.response.text();
+
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(result.clearCookie).toBe(true);
+    expect(html).toContain("OAuth authorization request expired. Start the connection again.");
+    expect(html).not.toContain("sensitive-provider-detail");
+  });
+
   it("redacts sensitive OAuth denial key-value descriptions", async () => {
     const result = await handleOAuthPkceCallbackRequest(
       new URL(

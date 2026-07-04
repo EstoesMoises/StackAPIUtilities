@@ -158,6 +158,10 @@ export async function handleOAuthPkceCallbackRequest(
       return callbackError("OAuth authorization response could not be verified.");
     }
 
+    if (isExpiredPendingOAuthTransaction(pending, now)) {
+      return callbackError("OAuth authorization request expired. Start the connection again.");
+    }
+
     return callbackError(
       redactOAuthCallbackError(
         errorDescription ?? `OAuth authorization failed: ${error}`,
@@ -179,7 +183,7 @@ export async function handleOAuthPkceCallbackRequest(
     return callbackError("OAuth authorization request is invalid.");
   }
 
-  if (new Date(pending.expiresAt).getTime() <= now.getTime()) {
+  if (isExpiredPendingOAuthTransaction(pending, now)) {
     return callbackError("OAuth authorization request expired. Start the connection again.");
   }
 
@@ -402,6 +406,10 @@ function escapeRegExp(value: string): string {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isExpiredPendingOAuthTransaction(pending: PendingOAuthTransaction, now: Date): boolean {
+  return new Date(pending.expiresAt).getTime() <= now.getTime();
 }
 
 function isSupportedRequestedScopeList(scopes: string[]): boolean {
