@@ -26,7 +26,7 @@ export class StackApiV2Client {
     this.apiV2Url = options.apiV2Url.replace(/\/+$/, "");
     this.teamSlug = options.teamSlug;
     this.headers = options.headers ?? {};
-    this.fetchFn = options.fetchFn ?? fetch;
+    this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.onThrottle = options.onThrottle;
   }
 

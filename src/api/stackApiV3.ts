@@ -23,7 +23,7 @@ export class StackApiV3Client {
   constructor(options: StackApiV3ClientOptions) {
     this.apiV3Url = options.apiV3Url.replace(/\/+$/, "");
     this.token = options.token;
-    this.fetchFn = options.fetchFn ?? fetch;
+    this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.onThrottle = options.onThrottle;
   }
 

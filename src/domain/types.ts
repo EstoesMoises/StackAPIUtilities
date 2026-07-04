@@ -67,13 +67,13 @@ export interface SessionDataset {
   source: "live-api" | "upload";
 }
 
-export interface ImportedReportOutput {
+export interface ReportOutput {
   reportId: ReportId;
   datasetName: DatasetName;
   fileName: string;
   records: Record<string, unknown>[];
   loadedAt: string;
-  source: "upload";
+  source: "live-api" | "upload";
 }
 
 export interface RunQueueItem {
@@ -88,7 +88,7 @@ export interface SessionState {
   selectedReportId: ReportId;
   selectedReportIds: readonly ReportId[];
   datasets: Partial<Record<DatasetName, SessionDataset>>;
-  reportOutputs: Partial<Record<ReportId, ImportedReportOutput>>;
+  reportOutputs: Partial<Record<ReportId, ReportOutput>>;
   warnings: ReportWarning[];
   runQueue: RunQueueItem[];
 }

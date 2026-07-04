@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StackApiV3Client } from "./stackApiV3";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("StackApiV3Client", () => {
   it("fetches totalPages pagination", async () => {
@@ -38,5 +42,27 @@ describe("StackApiV3Client", () => {
 
     await client.getPagedItems("/users");
     expect(wait).toHaveBeenCalledWith({ kind: "token-bucket", seconds: 60, remaining: 25 });
+  });
+
+  it("calls the default browser fetch with the global receiver", async () => {
+    const fetchMock = vi.fn(function (this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation");
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({ items: [{ id: "community" }], totalPages: 1 }), {
+          status: 200,
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+    });
+
+    await expect(client.getPagedItems("/communities")).resolves.toEqual([{ id: "community" }]);
   });
 });

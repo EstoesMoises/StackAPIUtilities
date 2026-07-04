@@ -14,14 +14,32 @@ import { InteractionMatrix } from "./charts/InteractionMatrix";
 interface ReportDashboardProps {
   reportId: ReportId;
   records: Record<string, unknown>[];
+  outputSource?: "live-api" | "upload";
 }
 
-export function ReportDashboard({ reportId, records }: ReportDashboardProps) {
+export function ReportDashboard({ reportId, records, outputSource }: ReportDashboardProps) {
   if (records.length === 0) {
     return (
       <div className="dashboard-summary">
         <DashboardCards cards={[]} />
       </div>
+    );
+  }
+
+  if (outputSource === "live-api") {
+    const datasetCounts = countBy(records, (record) => String(record.datasetName ?? "unknown"));
+
+    return (
+      <DashboardLayout
+        cards={[
+          { label: "Live Records", value: records.length },
+          { label: "Live Datasets", value: Object.keys(datasetCounts).length },
+        ]}
+      >
+        <DashboardSection title="Live datasets">
+          <BarList rows={toBarRows(datasetCounts)} />
+        </DashboardSection>
+      </DashboardLayout>
     );
   }
 
@@ -174,6 +192,14 @@ function toBarRows(counts: Record<string, number>) {
   return Object.entries(counts)
     .map(([label, value]) => ({ label, value: finiteNumber(value) }))
     .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
+}
+
+function countBy<T>(rows: T[], getKey: (row: T) => string): Record<string, number> {
+  return rows.reduce<Record<string, number>>((counts, row) => {
+    const key = getKey(row);
+    counts[key] = (counts[key] ?? 0) + 1;
+    return counts;
+  }, {});
 }
 
 function toSectionId(title: string) {

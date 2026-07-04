@@ -15,7 +15,9 @@ describe("ReportWorkspace", () => {
 
     expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
     expect(
-      screen.getByText("Ready for session credentials. Uploads work now; live API runs come next."),
+      screen.getByText(
+        "Ready for session credentials. Live API runs collect mapped datasets; uploads render full script outputs.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run Tag Report" })).toBeInTheDocument();
     expect(screen.getByText("Page Views")).toBeInTheDocument();
@@ -27,5 +29,20 @@ describe("ReportWorkspace", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Raw Table" }));
 
     expect(screen.getByText("python")).toBeInTheDocument();
+  });
+
+  it("summarizes live API output as raw collected datasets", () => {
+    render(
+      <ReportWorkspace
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1, display_name: "Ada" }]}
+        outputSource="live-api"
+        onRun={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("Live Records")).toBeInTheDocument();
+    expect(screen.getByText("Live datasets")).toBeInTheDocument();
+    expect(screen.getByLabelText("users: 1")).toBeInTheDocument();
   });
 });

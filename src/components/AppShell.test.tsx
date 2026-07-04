@@ -1,8 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("AppShell", () => {
   it("renders report catalog and all MVP reports", () => {
@@ -76,6 +80,77 @@ describe("AppShell", () => {
       screen.getByText("Add session credentials before running Tag Report."),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Session Credentials" })).toBeInTheDocument();
+  });
+
+  it("runs a server-backed live API report and stores live datasets in session", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        ok: true,
+        result: {
+          reportId: "inactive-users",
+          reportTitle: "Inactive Users",
+          datasets: [
+            {
+              datasetName: "users",
+              records: [{ user_id: 1, display_name: "Ada" }],
+            },
+          ],
+          messages: ["Collected users (1 record) for Inactive Users."],
+        },
+      }), {
+        status: 200,
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
+    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run Inactive Users" }));
+
+    expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
+    expect(screen.getByText("1 dataset")).toBeInTheDocument();
+    expect(screen.getAllByText("users").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Live Records")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Raw Table" }));
+
+    expect(screen.getByText("Ada")).toBeInTheDocument();
+  });
+
+  it("does not call live APIs when a report still needs unsupported live datasets", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        ok: false,
+        error:
+          "Tag Report needs live datasets that are not mapped for live API collection yet: tagSmes. Use Uploads for this report until those collectors are added.",
+      }), {
+        status: 500,
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
+    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run Tag Report" }));
+
+    expect(
+      await screen.findByText(
+        "Tag Report needs live datasets that are not mapped for live API collection yet: tagSmes. Use Uploads for this report until those collectors are added.",
+      ),
+    ).toBeInTheDocument();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
   });
 
   it("saves credentials for the current browser session", async () => {

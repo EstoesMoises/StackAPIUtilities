@@ -111,6 +111,27 @@ describe("sessionStore", () => {
     expect(state.reportOutputs["tag-report"]?.records).toEqual([{ tagName: "python" }]);
   });
 
+  it("stores live API datasets and exposes raw live report records", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+      ],
+    });
+
+    expect(state.selectedReportId).toBe("inactive-users");
+    expect(state.datasets.users?.source).toBe("live-api");
+    expect(state.datasets.users?.records).toEqual([{ user_id: 1, display_name: "Ada" }]);
+    expect(state.reportOutputs["inactive-users"]?.source).toBe("live-api");
+    expect(state.reportOutputs["inactive-users"]?.records).toEqual([
+      { datasetName: "users", user_id: 1, display_name: "Ada" },
+    ]);
+  });
+
   it("clears credentials and datasets on reset", () => {
     const withData = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",

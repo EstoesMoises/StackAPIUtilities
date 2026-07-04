@@ -1,10 +1,16 @@
-import type { DatasetName, ReportId, SessionCredentials, SessionState } from "./types";
+import type { DatasetName, ReportId, SessionCredentials, SessionDataset, SessionState } from "./types";
+
+interface LiveDatasetPayload {
+  datasetName: DatasetName;
+  records: Record<string, unknown>[];
+}
 
 type SessionAction =
   | { type: "credentials/set"; credentials: SessionCredentials }
   | { type: "report/select"; reportId: ReportId }
   | { type: "reports/selectMany"; reportIds: ReportId[] }
   | { type: "dataset/set"; datasetName: DatasetName; records: unknown[] }
+  | { type: "live/loaded"; reportId: ReportId; datasets: LiveDatasetPayload[] }
   | {
       type: "import/loaded";
       datasetName: DatasetName;
@@ -80,6 +86,47 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
             records: action.records,
             loadedAt,
             source: "upload",
+          },
+        },
+      };
+    }
+    case "live/loaded": {
+      if (action.datasets.length === 0) {
+        return state;
+      }
+
+      const loadedAt = new Date().toISOString();
+      const liveDatasets: Partial<Record<DatasetName, SessionDataset>> = {};
+      const reportRecords = action.datasets.flatMap(({ datasetName, records }) =>
+        records.map((record) => ({ datasetName, ...record })),
+      );
+
+      for (const dataset of action.datasets) {
+        liveDatasets[dataset.datasetName] = {
+          name: dataset.datasetName,
+          records: dataset.records,
+          loadedAt,
+          source: "live-api",
+        };
+      }
+
+      return {
+        ...state,
+        selectedReportId: action.reportId,
+        selectedReportIds: [action.reportId],
+        datasets: {
+          ...state.datasets,
+          ...liveDatasets,
+        },
+        reportOutputs: {
+          ...state.reportOutputs,
+          [action.reportId]: {
+            reportId: action.reportId,
+            datasetName: action.datasets[0].datasetName,
+            fileName: "Live API run",
+            records: reportRecords,
+            loadedAt,
+            source: "live-api",
           },
         },
       };

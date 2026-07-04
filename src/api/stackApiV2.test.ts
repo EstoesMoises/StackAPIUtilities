@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StackApiV2Client } from "./stackApiV2";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("StackApiV2Client", () => {
   it("fetches all pages and appends the team slug for Basic/Business", async () => {
@@ -40,5 +44,25 @@ describe("StackApiV2Client", () => {
     });
 
     await expect(client.getPagedItems("/tags")).rejects.toThrow("Stack API v2.3 returned invalid JSON");
+  });
+
+  it("calls the default browser fetch with the global receiver", async () => {
+    const fetchMock = vi.fn(function (this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation");
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({ items: [{ id: 1 }], has_more: false }), { status: 200 }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new StackApiV2Client({
+      apiV2Url: "https://api.stackoverflowteams.com/2.3",
+      teamSlug: "example-team",
+    });
+
+    await expect(client.getPagedItems("/users")).resolves.toEqual([{ id: 1 }]);
   });
 });

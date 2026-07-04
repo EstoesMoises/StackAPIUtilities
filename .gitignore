@@ -1,6 +1,8 @@
 .superpowers/
 node_modules/
 dist/
+.next/
+.pnpm-store/
 test-results/
 playwright-report/
 *.tsbuildinfo

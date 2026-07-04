@@ -1,3 +1,5 @@
+"use client";
+
 import { useReducer, useState } from "react";
 import { AppShell, type AppPanel } from "./components/AppShell";
 import { CredentialsPanel } from "./components/CredentialsPanel";
@@ -10,6 +12,7 @@ import { validateCredentialsForReport } from "./credentials/credentialRules";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
 import type { ReportId, RunQueueItem } from "./domain/types";
+import type { ReportRunResponseBody } from "./server/reportRunApi";
 
 export function App() {
   const [state, dispatch] = useReducer(sessionReducer, undefined, createInitialSessionState);
@@ -21,7 +24,7 @@ export function App() {
     setActivePanel("report");
   }
 
-  function queueSelectedReportRun() {
+  async function queueSelectedReportRun() {
     const report = reportRegistry.find((candidate) => candidate.id === state.selectedReportId)!;
     if (!state.credentials) {
       setRunQueue([
@@ -52,12 +55,57 @@ export function App() {
 
     setRunQueue([
       {
-        id: `${state.selectedReportId}-preview-run`,
+        id: `${state.selectedReportId}-live-running`,
         reportId: state.selectedReportId,
-        status: "queued",
-        message: `${report.title} has valid session credentials. Live API execution is not connected yet; use Uploads for existing CSV or JSON outputs.`,
+        status: "running",
+        message: `Running ${report.title} live API collection...`,
       },
     ]);
+
+    try {
+      const response = await fetch("/api/reports/run", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          reportId: state.selectedReportId,
+          credentials: state.credentials,
+        }),
+      });
+      const body = (await response.json()) as ReportRunResponseBody;
+
+      if (!body.ok) {
+        throw new Error(body.error);
+      }
+
+      const result = body.result;
+      dispatch({ type: "live/loaded", reportId: result.reportId, datasets: result.datasets });
+      setRunQueue([
+        ...result.messages.map((message, index) => ({
+          id: `${state.selectedReportId}-live-dataset-${index}`,
+          reportId: state.selectedReportId,
+          status: "succeeded" as const,
+          message,
+        })),
+        {
+          id: `${state.selectedReportId}-live-complete`,
+          reportId: state.selectedReportId,
+          status: "succeeded",
+          message: `Live API run completed for ${report.title}.`,
+        },
+      ]);
+      setActivePanel("report");
+    } catch (error) {
+      setRunQueue([
+        {
+          id: `${state.selectedReportId}-live-failed`,
+          reportId: state.selectedReportId,
+          status: "failed",
+          message: getLiveRunErrorMessage(error, report.title),
+        },
+      ]);
+    }
   }
 
   function importUploadedReport(result: ImportedUploadResult) {
@@ -81,7 +129,8 @@ export function App() {
     setActivePanel("report");
   }
 
-  const selectedReportRecords = state.reportOutputs[state.selectedReportId]?.records ?? [];
+  const selectedReportOutput = state.reportOutputs[state.selectedReportId];
+  const selectedReportRecords = selectedReportOutput?.records ?? [];
   const datasetCount = Object.values(state.datasets).filter((dataset) => dataset !== undefined).length;
 
   return (
@@ -107,9 +156,18 @@ export function App() {
         <ReportWorkspace
           reportId={state.selectedReportId}
           records={selectedReportRecords}
+          outputSource={selectedReportOutput?.source}
           onRun={queueSelectedReportRun}
         />
       )}
     </AppShell>
   );
+}
+
+function getLiveRunErrorMessage(error: unknown, _reportTitle: string): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Live API run failed.";
 }

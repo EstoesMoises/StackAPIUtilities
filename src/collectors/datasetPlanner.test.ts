@@ -42,7 +42,7 @@ describe("collectDataset", () => {
   it("throws an explicit error for unsupported live datasets", async () => {
     await expect(collectDataset("tagSmes", createMockClients())).rejects.toThrow(UnsupportedLiveDatasetError);
     await expect(collectDataset("tagSmes", createMockClients())).rejects.toThrow(
-      "Dataset tagSmes is not available through live browser API collection yet.",
+      "Dataset tagSmes is not mapped for live API collection yet.",
     );
   });
 });

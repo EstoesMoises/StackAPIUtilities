@@ -8,10 +8,11 @@ import { RunControls } from "./RunControls";
 interface ReportWorkspaceProps {
   reportId: ReportId;
   records: Record<string, unknown>[];
+  outputSource?: "live-api" | "upload";
   onRun: () => void;
 }
 
-export function ReportWorkspace({ reportId, records, onRun }: ReportWorkspaceProps) {
+export function ReportWorkspace({ reportId, records, outputSource, onRun }: ReportWorkspaceProps) {
   const [tab, setTab] = useState<"dashboard" | "table">("dashboard");
   const report = reportRegistry.find((candidate) => candidate.id === reportId)!;
 
@@ -33,7 +34,10 @@ export function ReportWorkspace({ reportId, records, onRun }: ReportWorkspacePro
       <p className="workspace-copy">{report.description}</p>
       <div className="workspace-readiness" role="note">
         <span className="readiness-dot" aria-hidden="true" />
-        <p className="m0">Ready for session credentials. Uploads work now; live API runs come next.</p>
+        <p className="m0">
+          Ready for session credentials. Live API runs collect mapped datasets; uploads
+          render full script outputs.
+        </p>
       </div>
       <RunControls reportId={reportId} onRun={onRun} />
       <div className="s-navigation s-navigation__muted report-tabs" role="tablist">
@@ -57,7 +61,7 @@ export function ReportWorkspace({ reportId, records, onRun }: ReportWorkspacePro
         </button>
       </div>
       {tab === "dashboard" ? (
-        <ReportDashboard reportId={reportId} records={records} />
+        <ReportDashboard reportId={reportId} records={records} outputSource={outputSource} />
       ) : (
         <div className="raw-table-panel">
           <DataTable records={records} />
