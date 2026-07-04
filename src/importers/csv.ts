@@ -20,5 +20,5 @@ export function toNumber(value: unknown): number {
 }
 
 export function toBoolean(value: unknown): boolean {
-  return String(value).toLowerCase() === "true";
+  return String(value).trim().toLowerCase() === "true";
 }

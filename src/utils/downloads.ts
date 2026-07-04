@@ -5,7 +5,7 @@ export function recordsToJson(records: unknown[]): string {
 export function recordsToCsv(records: Record<string, unknown>[]): string {
   if (records.length === 0) return "";
 
-  const headers = Object.keys(records[0]);
+  const headers = [...new Set(records.flatMap((record) => Object.keys(record)))];
   const lines = [
     headers.join(","),
     ...records.map((record) => headers.map((header) => escapeCsvValue(record[header])).join(",")),
@@ -29,6 +29,10 @@ export function downloadTextFile(fileName: string, contents: string, mimeType: s
 
   link.href = url;
   link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
+
+  try {
+    link.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }

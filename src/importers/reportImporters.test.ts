@@ -37,12 +37,21 @@ describe("importReportFile", () => {
   it("imports interaction matrix CSV", async () => {
     const result = await importReportFile("interaction_matrix.csv", interactionMatrixCsv);
     expect(result.reportId).toBe("interactions");
-    expect(result.records).toHaveLength(2);
+    expect(result.records).toEqual([
+      { source: "Engineering", target: "Product", weight: 4 },
+      { source: "Product", target: "Engineering", weight: 2 },
+    ]);
   });
 
   it("imports data export JSON", async () => {
     const result = await importReportFile("users.json", dataExportUsersJson);
     expect(result.reportId).toBe("data-export");
     expect(result.records).toHaveLength(2);
+  });
+
+  it("does not misroute ambiguous filenames", async () => {
+    await expect(importReportFile("community_members_inactive.csv", communityMembersCsv)).rejects.toThrow(
+      "Unsupported report output file",
+    );
   });
 });

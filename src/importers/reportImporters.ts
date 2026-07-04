@@ -9,16 +9,19 @@ interface ImportedReportFile {
 
 export async function importReportFile(fileName: string, text: string): Promise<ImportedReportFile> {
   const lower = fileName.toLowerCase();
+  const stem = lower.replace(/\.[^.]+$/, "");
 
   if (lower.endsWith(".json")) {
     return { reportId: "data-export", records: parseJsonRecords(text) as Record<string, unknown>[] };
   }
 
-  if (lower.includes("tag_metrics")) return { reportId: "tag-report", records: importTagMetrics(text) };
-  if (lower.includes("user_metrics")) return { reportId: "api-user-report", records: importUserMetrics(text) };
-  if (lower.includes("inactive")) return { reportId: "inactive-users", records: importInactiveUsers(text) };
-  if (lower.includes("community_members")) return { reportId: "community-members", records: importCommunityMembers(text) };
-  if (lower.includes("interaction_matrix")) return { reportId: "interactions", records: importInteractionMatrix(text) };
+  if (stem === "tag_metrics") return { reportId: "tag-report", records: importTagMetrics(text) };
+  if (stem === "user_metrics") return { reportId: "api-user-report", records: importUserMetrics(text) };
+  if (stem === "inactive_users") return { reportId: "inactive-users", records: importInactiveUsers(text) };
+  if (/^\d{4}-\d{2}-\d{2}_community_members(?:_.+)?$/.test(stem)) {
+    return { reportId: "community-members", records: importCommunityMembers(text) };
+  }
+  if (stem === "interaction_matrix") return { reportId: "interactions", records: importInteractionMatrix(text) };
 
   throw new Error(`Unsupported report output file: ${fileName}`);
 }
