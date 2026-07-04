@@ -164,7 +164,7 @@ export async function handleOAuthPkceCallbackRequest(
     return callbackError("OAuth authorization request expired or was not found.");
   }
 
-  if (!isValidPendingOAuthExchangeTarget(pending)) {
+  if (!isValidPendingOAuthExchangeTarget(pending, callbackUrl)) {
     return callbackError("OAuth authorization request is invalid.");
   }
 
@@ -378,7 +378,7 @@ function redactOAuthSensitiveText(
 
 function redactTokenTextPatterns(message: string): string {
   return message.replace(
-    /\b((?:access|refresh)_token)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+    /\b((?:code|code_verifier|[A-Za-z0-9_-]*(?:token|verifier)[A-Za-z0-9_-]*))\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
     "$1$2[redacted]",
   );
 }
@@ -391,13 +391,21 @@ function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isValidPendingOAuthExchangeTarget(pending: PendingOAuthTransaction): boolean {
+function isValidPendingOAuthExchangeTarget(
+  pending: PendingOAuthTransaction,
+  callbackUrl: URL,
+): boolean {
   if (!isSupportedEnterpriseOAuthTarget(pending.baseUrl)) {
     return false;
   }
 
   try {
-    return new URL(pending.redirectUri).pathname === OAUTH_PKCE_CALLBACK_PATH;
+    const redirectUri = new URL(pending.redirectUri);
+    return (
+      (redirectUri.protocol === "http:" || redirectUri.protocol === "https:") &&
+      redirectUri.origin === callbackUrl.origin &&
+      redirectUri.pathname === OAUTH_PKCE_CALLBACK_PATH
+    );
   } catch {
     return false;
   }

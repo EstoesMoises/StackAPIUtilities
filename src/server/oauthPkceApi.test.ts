@@ -158,6 +158,8 @@ describe("oauthPkceApi", () => {
       validPending({ baseUrl: "http://127.0.0.1:1234" }),
       validPending({ baseUrl: "https://example.com" }),
       validPending({ redirectUri: "https://demo.stackenterprise.co/not-callback" }),
+      validPending({ redirectUri: "https://evil.example/api/oauth/pkce/callback" }),
+      validPending({ redirectUri: "ftp://evil.example/api/oauth/pkce/callback" }),
       validPending({ redirectUri: "not a url" }),
     ];
 
@@ -175,6 +177,7 @@ describe("oauthPkceApi", () => {
       expect(html).toContain("OAuth authorization request is invalid.");
       expect(html).not.toContain("127.0.0.1");
       expect(html).not.toContain("example.com");
+      expect(html).not.toContain("evil.example");
       expect(html).not.toContain("not-callback");
     }
   });
@@ -224,6 +227,22 @@ describe("oauthPkceApi", () => {
     expect(html).not.toContain("token-secret");
     expect(html).not.toContain("code-secret");
     expect(html).not.toContain("verifier-secret");
+  });
+
+  it("redacts sensitive OAuth denial key-value descriptions", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(
+        `${origin}/api/oauth/pkce/callback?error=access_denied&error_description=denied%20code%3Draw-code%20code_verifier%3Draw-verifier%20access_token%3Draw-token`,
+      ),
+      encodePendingOAuthCookie(validPending()),
+      { fetchFn: vi.fn(), now: () => now },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("[redacted]");
+    expect(html).not.toContain("raw-code");
+    expect(html).not.toContain("raw-verifier");
+    expect(html).not.toContain("raw-token");
   });
 
   it("redacts sensitive token exchange values from callback errors", async () => {
