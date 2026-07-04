@@ -43,7 +43,7 @@ export function normalizeOAuthScopes(scopes: readonly string[], includeNoExpiry:
 }
 
 export function buildEnterpriseAuthorizationUrl(input: EnterpriseAuthorizationUrlInput): URL {
-  const url = new URL("/oauth", normalizeBaseUrl(input.baseUrl));
+  const url = new URL("/oauth", normalizeOAuthBaseUrl(input.baseUrl));
   url.searchParams.set("client_id", input.clientId);
   url.searchParams.set("redirect_uri", input.redirectUri);
   url.searchParams.set("scope", input.scopes.join(","));
@@ -54,7 +54,7 @@ export function buildEnterpriseAuthorizationUrl(input: EnterpriseAuthorizationUr
 }
 
 export function buildEnterpriseTokenEndpointUrl(baseUrl: string): URL {
-  return new URL("/oauth/access_token/json", normalizeBaseUrl(baseUrl));
+  return new URL("/oauth/access_token/json", normalizeOAuthBaseUrl(baseUrl));
 }
 
 export function isSupportedEnterpriseOAuthTarget(baseUrl: string): boolean {
@@ -71,7 +71,7 @@ export function isSupportedEnterpriseOAuthTarget(baseUrl: string): boolean {
   }
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
+export function normalizeOAuthBaseUrl(baseUrl: string): string {
   const url = new URL(baseUrl);
   return `${url.protocol}//${url.host}`;
 }
