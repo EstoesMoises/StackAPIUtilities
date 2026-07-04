@@ -8,6 +8,7 @@ import {
   isSupportedEnterpriseOAuthTarget,
   normalizeOAuthBaseUrl,
   normalizeOAuthScopes,
+  OAUTH_SCOPE_WRITE_ACCESS,
 } from "../auth/oauthPkce";
 import type { SessionCredentials } from "../domain/types";
 
@@ -19,6 +20,7 @@ const OAUTH_PKCE_CALLBACK_PATH = "/api/oauth/pkce/callback";
 const OAUTH_RESULT_MESSAGE_TYPE = "stack-api-oauth-pkce-result";
 const START_REQUEST_ERROR =
   "Enterprise OAuth requires a Stack Enterprise HTTPS instance URL and OAuth client ID.";
+const SUPPORTED_REQUESTED_SCOPES = new Set<string>([OAUTH_SCOPE_WRITE_ACCESS]);
 
 export interface PendingOAuthTransaction {
   baseUrl: string;
@@ -84,6 +86,7 @@ export async function handleOAuthPkceStartRequest(
     !isNonBlankString(startPayload.baseUrl) ||
     !isNonBlankString(startPayload.clientId) ||
     !isStringArray(startPayload.scopes) ||
+    !isSupportedRequestedScopeList(startPayload.scopes) ||
     !isSupportedEnterpriseOAuthTarget(startPayload.baseUrl)
   ) {
     return { response: jsonResponse({ ok: false, error: START_REQUEST_ERROR }, 400) };
@@ -147,6 +150,14 @@ export async function handleOAuthPkceCallbackRequest(
   const pending = pendingCookieValue ? decodePendingOAuthCookie(pendingCookieValue) : null;
 
   if (error !== null) {
+    if (pending === null || !isValidPendingOAuthExchangeTarget(pending, callbackUrl)) {
+      return callbackError("OAuth authorization response could not be verified.");
+    }
+
+    if (state !== pending.state) {
+      return callbackError("OAuth authorization response could not be verified.");
+    }
+
     return callbackError(
       redactOAuthCallbackError(
         errorDescription ?? `OAuth authorization failed: ${error}`,
@@ -283,6 +294,8 @@ function callbackHtml(message: unknown): Response {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, private",
+        "Content-Security-Policy":
+          "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
         Pragma: "no-cache",
         "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff",
@@ -391,6 +404,10 @@ function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isSupportedRequestedScopeList(scopes: string[]): boolean {
+  return scopes.length > 0 && scopes.every((scope) => SUPPORTED_REQUESTED_SCOPES.has(scope));
+}
+
 function isValidPendingOAuthExchangeTarget(
   pending: PendingOAuthTransaction,
   callbackUrl: URL,
@@ -400,11 +417,18 @@ function isValidPendingOAuthExchangeTarget(
   }
 
   try {
+    if (pending.baseUrl !== normalizeOAuthBaseUrl(pending.baseUrl)) {
+      return false;
+    }
+
     const redirectUri = new URL(pending.redirectUri);
+    const expectedRedirectUri = `${callbackUrl.origin}${OAUTH_PKCE_CALLBACK_PATH}`;
+
     return (
       (redirectUri.protocol === "http:" || redirectUri.protocol === "https:") &&
       redirectUri.origin === callbackUrl.origin &&
-      redirectUri.pathname === OAUTH_PKCE_CALLBACK_PATH
+      redirectUri.pathname === OAUTH_PKCE_CALLBACK_PATH &&
+      redirectUri.href === expectedRedirectUri
     );
   } catch {
     return false;

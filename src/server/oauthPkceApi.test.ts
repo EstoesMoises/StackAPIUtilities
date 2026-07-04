@@ -82,7 +82,23 @@ describe("oauthPkceApi", () => {
       {
         baseUrl: "https://demo.stackenterprise.co",
         clientId: "client-123",
+        scopes: ["write_access,no_expiry"],
+      },
+      {
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
         scopes: ["write_access", 123],
+      },
+      {
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
+        scopes: ["write_access", " "],
+      },
+      {
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
+        scopes: ["write_access", "no_expiry"],
+        includeNoExpiry: false,
       },
     ];
 
@@ -115,6 +131,9 @@ describe("oauthPkceApi", () => {
 
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("Cache-Control")).toBe("no-store, private");
+    expect(result.response.headers.get("Content-Security-Policy")).toBe(
+      "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    );
     expect(result.response.headers.get("Pragma")).toBe("no-cache");
     expect(result.response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(result.response.headers.get("X-Content-Type-Options")).toBe("nosniff");
@@ -157,9 +176,12 @@ describe("oauthPkceApi", () => {
     const forgedPendings = [
       validPending({ baseUrl: "http://127.0.0.1:1234" }),
       validPending({ baseUrl: "https://example.com" }),
+      validPending({ baseUrl: "https://demo.stackenterprise.co/some/path?x=1" }),
       validPending({ redirectUri: "https://demo.stackenterprise.co/not-callback" }),
       validPending({ redirectUri: "https://evil.example/api/oauth/pkce/callback" }),
       validPending({ redirectUri: "ftp://evil.example/api/oauth/pkce/callback" }),
+      validPending({ redirectUri: `${origin}/api/oauth/pkce/callback?x=1` }),
+      validPending({ redirectUri: `${origin}/api/oauth/pkce/callback#fragment` }),
       validPending({ redirectUri: "not a url" }),
     ];
 
@@ -177,8 +199,10 @@ describe("oauthPkceApi", () => {
       expect(html).toContain("OAuth authorization request is invalid.");
       expect(html).not.toContain("127.0.0.1");
       expect(html).not.toContain("example.com");
+      expect(html).not.toContain("some/path");
       expect(html).not.toContain("evil.example");
       expect(html).not.toContain("not-callback");
+      expect(html).not.toContain("fragment");
     }
   });
 
@@ -216,7 +240,7 @@ describe("oauthPkceApi", () => {
   it("redacts sensitive OAuth denial descriptions", async () => {
     const result = await handleOAuthPkceCallbackRequest(
       new URL(
-        `${origin}/api/oauth/pkce/callback?error=access_denied&error_description=denied%20token-secret%20code-secret`,
+        `${origin}/api/oauth/pkce/callback?error=access_denied&state=state-123&error_description=denied%20token-secret%20code-secret`,
       ),
       encodePendingOAuthCookie(validPending({ codeVerifier: "verifier-secret" })),
       { fetchFn: vi.fn(), now: () => now },
@@ -229,10 +253,36 @@ describe("oauthPkceApi", () => {
     expect(html).not.toContain("verifier-secret");
   });
 
+  it("rejects unverifiable OAuth denial callbacks without reflecting descriptions", async () => {
+    const callbackUrls = [
+      new URL(
+        `${origin}/api/oauth/pkce/callback?error=access_denied&state=wrong-state&error_description=attacker-controlled-secret`,
+      ),
+      new URL(
+        `${origin}/api/oauth/pkce/callback?error=access_denied&error_description=attacker-controlled-secret`,
+      ),
+    ];
+
+    for (const callbackUrl of callbackUrls) {
+      const fetchFn = vi.fn();
+      const result = await handleOAuthPkceCallbackRequest(
+        callbackUrl,
+        encodePendingOAuthCookie(validPending()),
+        { fetchFn, now: () => now },
+      );
+      const html = await result.response.text();
+
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(result.clearCookie).toBe(true);
+      expect(html).toContain("OAuth authorization response could not be verified.");
+      expect(html).not.toContain("attacker-controlled-secret");
+    }
+  });
+
   it("redacts sensitive OAuth denial key-value descriptions", async () => {
     const result = await handleOAuthPkceCallbackRequest(
       new URL(
-        `${origin}/api/oauth/pkce/callback?error=access_denied&error_description=denied%20code%3Draw-code%20code_verifier%3Draw-verifier%20access_token%3Draw-token`,
+        `${origin}/api/oauth/pkce/callback?error=access_denied&state=state-123&error_description=denied%20code%3Draw-code%20code_verifier%3Draw-verifier%20access_token%3Draw-token`,
       ),
       encodePendingOAuthCookie(validPending()),
       { fetchFn: vi.fn(), now: () => now },
