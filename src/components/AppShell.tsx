@@ -2,11 +2,17 @@ import type { ReactNode } from "react";
 
 export type AppPanel = "report" | "credentials" | "uploads";
 
+interface AppShellSummary {
+  credentialsSaved: boolean;
+  datasetCount: number;
+}
+
 interface AppShellProps {
   activePanel: AppPanel;
   onPanelChange: (panel: AppPanel) => void;
   sidebar: ReactNode;
   children: ReactNode;
+  summary?: AppShellSummary;
 }
 
 const panelLabels: Record<AppPanel, string> = {
@@ -15,18 +21,29 @@ const panelLabels: Record<AppPanel, string> = {
   uploads: "Uploads",
 };
 
-export function AppShell({ activePanel, onPanelChange, sidebar, children }: AppShellProps) {
+export function AppShell({ activePanel, onPanelChange, sidebar, children, summary }: AppShellProps) {
+  const credentialsLabel = summary?.credentialsSaved ? "Credentials saved" : "No credentials";
+  const datasetCount = summary?.datasetCount ?? 0;
+  const datasetLabel = `${datasetCount} ${datasetCount === 1 ? "dataset" : "datasets"}`;
+
   return (
     <div className="app-shell">
       <header className="app-topbar">
-        <div className="app-title">
-          <p className="fs-caption fc-light mb2">Stack Overflow for Teams</p>
-          <h1 className="fs-headline1 m0">Stack API Utilities</h1>
+        <div className="app-brand-block">
+          <div className="app-brand-mark" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div className="app-title">
+            <p className="app-kicker">SO4T reports</p>
+            <h1 className="app-heading">Stack API Utilities</h1>
+          </div>
         </div>
         <nav className="app-nav" aria-label="Application panels">
           {(Object.keys(panelLabels) as AppPanel[]).map((panel) => (
             <button
-              className={`s-btn s-btn__muted app-nav-button${activePanel === panel ? " is-selected" : ""}`}
+              className={`app-nav-button${activePanel === panel ? " is-selected" : ""}`}
               type="button"
               aria-pressed={activePanel === panel}
               onClick={() => onPanelChange(panel)}
@@ -36,6 +53,10 @@ export function AppShell({ activePanel, onPanelChange, sidebar, children }: AppS
             </button>
           ))}
         </nav>
+        <div className="app-session-pills" aria-label="Session status">
+          <span className="session-pill">{credentialsLabel}</span>
+          <span className="session-pill">{datasetLabel}</span>
+        </div>
       </header>
       <div className="app-body">
         <aside className="app-sidebar">{sidebar}</aside>

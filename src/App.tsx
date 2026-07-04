@@ -82,11 +82,13 @@ export function App() {
   }
 
   const selectedReportRecords = state.reportOutputs[state.selectedReportId]?.records ?? [];
+  const datasetCount = Object.values(state.datasets).filter((dataset) => dataset !== undefined).length;
 
   return (
     <AppShell
       activePanel={activePanel}
       onPanelChange={setActivePanel}
+      summary={{ credentialsSaved: state.credentials !== null, datasetCount }}
       sidebar={
         <ReportCatalog selectedReportId={state.selectedReportId} onSelect={selectReport} />
       }
