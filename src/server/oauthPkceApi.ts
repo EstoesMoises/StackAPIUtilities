@@ -18,10 +18,17 @@ export const OAUTH_PKCE_COOKIE_PATH = "/api/oauth/pkce";
 export const OAUTH_PKCE_COOKIE_MAX_AGE_SECONDS = 600;
 
 const OAUTH_PKCE_CALLBACK_PATH = "/api/oauth/pkce/callback";
+const OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS = 15_000;
 const OAUTH_RESULT_MESSAGE_TYPE = "stack-api-oauth-pkce-result";
 const START_REQUEST_ERROR =
   "Enterprise OAuth requires a Stack Enterprise HTTPS instance URL and OAuth client ID.";
+const TOKEN_EXCHANGE_NETWORK_ERROR =
+  "OAuth token exchange failed. Check the Enterprise instance and try again.";
 const SUPPORTED_REQUESTED_SCOPES = new Set<string>([OAUTH_SCOPE_WRITE_ACCESS]);
+const SENSITIVE_OAUTH_KEY_FRAGMENT_PATTERN =
+  /token|code|verifier|client[_-]?secret|api[_-]?key|authorization|password|credential/i;
+const SENSITIVE_OAUTH_TEXT_KEY_PATTERN =
+  "(?:code|code_verifier|client[_-]?secret|api[_-]?key|authorization|password|credential|[A-Za-z0-9_-]*(?:token|verifier)[A-Za-z0-9_-]*)";
 const OAUTH_JSON_SECURITY_HEADERS = {
   "Content-Type": "application/json",
   "Cache-Control": "no-store, private",
@@ -71,6 +78,7 @@ interface OAuthPkceDependencies {
   origin?: string;
   now?: () => Date;
   fetchFn?: typeof fetch;
+  createAbortSignal?: (milliseconds: number) => AbortSignal;
 }
 
 interface OAuthTokenResponseBody {
@@ -252,16 +260,23 @@ async function exchangeAuthorizationCodeForToken(
   dependencies: OAuthPkceDependencies,
 ): Promise<OAuthTokenResponseBody> {
   const fetchFn = dependencies.fetchFn ?? fetch;
-  const response = await fetchFn(buildEnterpriseTokenEndpointUrl(pending.baseUrl).toString(), {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: pending.clientId,
-      code,
-      redirect_uri: pending.redirectUri,
-      code_verifier: pending.codeVerifier,
-    }),
-  });
+  let response: Response;
+
+  try {
+    response = await fetchFn(buildEnterpriseTokenEndpointUrl(pending.baseUrl).toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: pending.clientId,
+        code,
+        redirect_uri: pending.redirectUri,
+        code_verifier: pending.codeVerifier,
+      }),
+      signal: createTokenExchangeAbortSignal(dependencies),
+    });
+  } catch {
+    throw new Error(TOKEN_EXCHANGE_NETWORK_ERROR);
+  }
 
   if (!response.ok) {
     throw new Error(`OAuth token exchange failed (${response.status}): ${await response.text()}`);
@@ -380,8 +395,7 @@ function redactSensitiveJsonFields(value: unknown): unknown {
 }
 
 function isSensitiveOAuthKey(key: string): boolean {
-  const lowerKey = key.toLowerCase();
-  return lowerKey.includes("token") || lowerKey.includes("code") || lowerKey.includes("verifier");
+  return SENSITIVE_OAUTH_KEY_FRAGMENT_PATTERN.test(key);
 }
 
 function redactOAuthSensitiveText(
@@ -395,13 +409,19 @@ function redactOAuthSensitiveText(
   }
 
   return redactTokenTextPatterns(redacted)
-    .replace(/\b(?:token|code|verifier)[_-][A-Za-z0-9_-]+\b/gi, "[redacted]")
+    .replace(
+      /\b(?:token|code|verifier|client[_-]?secret|api[_-]?key|authorization|password|credential)[_-][A-Za-z0-9_-]+\b/gi,
+      "[redacted]",
+    )
     .replace(/\b(?!token\b)[A-Za-z0-9_-]*token[A-Za-z0-9_-]*\b/gi, "[redacted]");
 }
 
 function redactTokenTextPatterns(message: string): string {
   return message.replace(
-    /(["']?)\b((?:code|code_verifier|[A-Za-z0-9_-]*(?:token|verifier)[A-Za-z0-9_-]*))\b\1(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+    new RegExp(
+      `(["']?)\\b(${SENSITIVE_OAUTH_TEXT_KEY_PATTERN})\\b\\1(\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^,;&}\\r\\n]+)`,
+      "gi",
+    ),
     "$1$2$1$3[redacted]",
   );
 }
@@ -412,6 +432,26 @@ function escapeRegExp(value: string): string {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function createTokenExchangeAbortSignal(dependencies: OAuthPkceDependencies): AbortSignal {
+  if (dependencies.createAbortSignal) {
+    return dependencies.createAbortSignal(OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS);
+  }
+
+  const abortSignal = AbortSignal as typeof AbortSignal & {
+    timeout?: (milliseconds: number) => AbortSignal;
+  };
+
+  if (typeof abortSignal.timeout === "function") {
+    return abortSignal.timeout(OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS);
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS);
+  const maybeNodeTimeout = timeoutId as unknown as { unref?: () => void };
+  maybeNodeTimeout.unref?.();
+  return controller.signal;
 }
 
 function isExpiredPendingOAuthTransaction(pending: PendingOAuthTransaction, now: Date): boolean {

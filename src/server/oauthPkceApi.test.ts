@@ -68,6 +68,25 @@ describe("oauthPkceApi", () => {
     );
   });
 
+  it("starts OAuth with no_expiry only when explicitly requested", async () => {
+    const result = await handleOAuthPkceStartRequest(
+      {
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
+        scopes: ["write_access"],
+        includeNoExpiry: true,
+      },
+      { origin, now: () => now },
+    );
+    const body = await result.response.json();
+    const authorizationUrl = new URL(body.authorizationUrl);
+    const pending = decodePendingOAuthCookie(result.cookie?.value ?? "");
+
+    expect(result.response.status).toBe(200);
+    expect(authorizationUrl.searchParams.get("scope")).toBe("write_access,no_expiry");
+    expect(pending?.scopes).toEqual(["write_access", "no_expiry"]);
+  });
+
   it("preserves start response security headers in the Next route", async () => {
     const response = await handleOAuthPkceStartRoutePost(
       new Request(`${origin}/api/oauth/pkce/start`, {
@@ -141,6 +160,8 @@ describe("oauthPkceApi", () => {
 
   it("exchanges callback codes and returns postMessage callback HTML", async () => {
     const pending = validPending();
+    const signal = new AbortController().signal;
+    const createAbortSignal = vi.fn(() => signal);
     const fetchFn = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ access_token: "oauth-token", expires: 86400 }), {
         status: 200,
@@ -150,7 +171,7 @@ describe("oauthPkceApi", () => {
     const result = await handleOAuthPkceCallbackRequest(
       new URL(`${origin}/api/oauth/pkce/callback?code=code-123&state=state-123`),
       encodePendingOAuthCookie(pending),
-      { fetchFn, now: () => now },
+      { createAbortSignal, fetchFn, now: () => now },
     );
     const html = await result.response.text();
 
@@ -169,8 +190,10 @@ describe("oauthPkceApi", () => {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: expect.any(URLSearchParams),
+        signal,
       }),
     );
+    expect(createAbortSignal).toHaveBeenCalledWith(15000);
     const [, init] = fetchFn.mock.calls[0];
     expect(Object.fromEntries((init.body as URLSearchParams).entries())).toEqual({
       client_id: "client-123",
@@ -181,6 +204,27 @@ describe("oauthPkceApi", () => {
     expect(html).toContain("stack-api-oauth-pkce-result");
     expect(html).toContain("oauth-token");
     expect(html).toContain("2026-07-05T12:00:00.000Z");
+  });
+
+  it("returns a safe retryable callback error when token exchange fails before a response", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
+      encodePendingOAuthCookie(validPending({ codeVerifier: "verifier-secret" })),
+      {
+        fetchFn: vi
+          .fn()
+          .mockRejectedValue(
+            new Error("network failed code-secret verifier-secret client_secret=network-secret"),
+          ),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("OAuth token exchange failed. Check the Enterprise instance and try again.");
+    expect(html).not.toContain("code-secret");
+    expect(html).not.toContain("verifier-secret");
+    expect(html).not.toContain("network-secret");
   });
 
   it("rejects callback state mismatches without exchanging tokens", async () => {
@@ -370,7 +414,12 @@ describe("oauthPkceApi", () => {
             JSON.stringify({
               error: "invalid_grant",
               access_token: "access-secret-123",
+              api_key: "api-key-secret",
+              client_secret: "client-secret-value",
               nested: {
+                authorization: "Bearer authorization-secret",
+                credential: "credential-secret",
+                password: "password-secret",
                 refresh_token: "refresh-secret-456",
                 verifier_hint: "verifier-secret",
               },
@@ -387,6 +436,11 @@ describe("oauthPkceApi", () => {
     expect(html).not.toContain("code-secret");
     expect(html).not.toContain("verifier-secret");
     expect(html).not.toContain("access-secret-123");
+    expect(html).not.toContain("api-key-secret");
+    expect(html).not.toContain("authorization-secret");
+    expect(html).not.toContain("client-secret-value");
+    expect(html).not.toContain("credential-secret");
+    expect(html).not.toContain("password-secret");
     expect(html).not.toContain("refresh-secret-456");
   });
 
@@ -405,5 +459,27 @@ describe("oauthPkceApi", () => {
 
     expect(html).toContain("[redacted]");
     expect(html).not.toContain("leaky-secret");
+  });
+
+  it("redacts broader sensitive values from malformed callback errors", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
+      encodePendingOAuthCookie(validPending()),
+      {
+        fetchFn: vi.fn().mockResolvedValue(
+          new Response(
+            'client_secret=plain-secret Authorization: Bearer authorization-secret {"api_key":"api-secret"',
+            { status: 400 },
+          ),
+        ),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("[redacted]");
+    expect(html).not.toContain("plain-secret");
+    expect(html).not.toContain("authorization-secret");
+    expect(html).not.toContain("api-secret");
   });
 });
