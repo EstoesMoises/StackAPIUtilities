@@ -63,10 +63,11 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
           Session Credentials
         </h2>
       </div>
-      <p className="fs-body2 workspace-copy">
+      <p className="workspace-copy credential-session-copy">
         Credentials are kept in memory for this browser session only.
       </p>
       <div className="credential-notes" role="note">
+        <p className="scope-label">Scope notes for selected report</p>
         <h3 className="fs-body2 mb8">{report.title} credential notes</h3>
         <ul className="m0">
           <li>Basic/Business: provide your team URL and either an access token or PAT.</li>

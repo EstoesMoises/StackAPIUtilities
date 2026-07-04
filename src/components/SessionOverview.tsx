@@ -14,7 +14,7 @@ export function SessionOverview({ state }: SessionOverviewProps) {
   return (
     <section className="session-overview" aria-labelledby="session-overview-heading">
       <h2 className="fs-title mb12" id="session-overview-heading">
-        Loaded Datasets
+        Session Data
       </h2>
       <div className="session-overview-grid">
         {datasets.map((dataset) => (

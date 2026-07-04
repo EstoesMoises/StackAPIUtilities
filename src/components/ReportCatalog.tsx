@@ -20,6 +20,7 @@ export function ReportCatalog({ selectedReportId, onSelect }: ReportCatalogProps
             className={`report-list-button${selectedReportId === report.id ? " is-selected" : ""}`}
             type="button"
             aria-pressed={selectedReportId === report.id}
+            aria-label={report.title}
             onClick={() => onSelect(report.id)}
             key={report.id}
           >

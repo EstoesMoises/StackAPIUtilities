@@ -52,13 +52,15 @@ export function UploadsPanel({ onImported }: UploadsPanelProps) {
         Upload existing CSV or JSON outputs from current SO4T scripts. Files are parsed locally in
         this browser session only.
       </p>
-      <label className="d-block upload-input-label">
-        <span className="d-block fs-caption tt-uppercase fc-light mb4">Upload report outputs</span>
+      <label className="upload-dropzone">
+        <span className="upload-dropzone-title">Upload report outputs</span>
+        <span className="upload-dropzone-copy">CSV or JSON files from existing SO4T scripts</span>
         <input
           className="s-input"
           type="file"
           multiple
           accept=".csv,.json"
+          aria-label="Upload report outputs"
           onChange={(event) => void handleFiles(event.currentTarget.files)}
         />
       </label>
