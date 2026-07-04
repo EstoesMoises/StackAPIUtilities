@@ -10,3 +10,5 @@ playwright-report/
 /vite.config.d.ts
 /playwright.config.js
 /playwright.config.d.ts
+.claude/settings.local.json
+.impeccable/config.local.json
