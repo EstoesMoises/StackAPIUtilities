@@ -4,6 +4,14 @@
 
 **Goal:** Add report scope controls, current/comparison scoped live runs, manageable session datasets, and generic dashboard comparison cards.
 
+**Progress:**
+- [x] Task 1: Scope Types And Validation
+- [x] Task 2: Scoped API Runner Contract
+- [x] Task 3: Report Scope Controls
+- [x] Task 4: Session Snapshots And Dataset Management
+- [x] Task 5: Generic Comparison Dashboard Cards
+- [ ] Task 6: Final Verification And E2E
+
 **Architecture:** Scope is modeled in `src/domain/types.ts` and validated in a small domain helper. The client sends one scoped period run per request to `/api/reports/run`; the server runner applies pagination/date limits and returns snapshot metadata. Session state stores current and comparison snapshots, while the report workspace and Datasets panel render those snapshots.
 
 **Tech Stack:** Next.js App Router, React 18, TypeScript, Vitest, Testing Library, Playwright.

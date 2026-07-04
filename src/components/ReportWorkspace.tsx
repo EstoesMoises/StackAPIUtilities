@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { reportRegistry } from "../domain/reportRegistry";
-import type { ReportId, ReportRunScope, RunPeriodRole } from "../domain/types";
+import type { PeriodScope, ReportId, ReportRunScope, RunPeriodRole } from "../domain/types";
 import { DataTable } from "./DataTable";
 import { ReportDashboard } from "./ReportDashboard";
 import { ReportScopePanel } from "./ReportScopePanel";
@@ -8,6 +8,9 @@ import { ReportScopePanel } from "./ReportScopePanel";
 export interface ReportWorkspaceProps {
   reportId: ReportId;
   records: Record<string, unknown>[];
+  comparisonRecords?: Record<string, unknown>[];
+  currentScope?: PeriodScope;
+  comparisonScope?: PeriodScope;
   outputSource?: "live-api" | "upload";
   scope: ReportRunScope;
   onScopeChange: (scope: ReportRunScope) => void;
@@ -18,6 +21,9 @@ export interface ReportWorkspaceProps {
 export function ReportWorkspace({
   reportId,
   records,
+  comparisonRecords,
+  currentScope,
+  comparisonScope,
   outputSource,
   scope,
   onScopeChange,
@@ -100,7 +106,14 @@ export function ReportWorkspace({
         </button>
       </div>
       {tab === "dashboard" ? (
-        <ReportDashboard reportId={reportId} records={records} outputSource={outputSource} />
+        <ReportDashboard
+          reportId={reportId}
+          records={records}
+          comparisonRecords={comparisonRecords}
+          currentScope={currentScope}
+          comparisonScope={comparisonScope}
+          outputSource={outputSource}
+        />
       ) : (
         <div className="raw-table-panel">
           <DataTable records={records} />

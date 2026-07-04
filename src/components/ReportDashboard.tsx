@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import type { ReportId } from "../domain/types";
+import { formatPeriodLabel } from "../domain/reportScope";
+import type { PeriodScope, ReportId } from "../domain/types";
 import { summarizeCommunityMembers, type CommunityMemberRow } from "../reports/communityMembers";
 import { summarizeDataExport } from "../reports/dataExport";
 import { buildInteractionSummary, type InteractionEdge } from "../reports/interactions";
@@ -14,11 +15,31 @@ import { InteractionMatrix } from "./charts/InteractionMatrix";
 interface ReportDashboardProps {
   reportId: ReportId;
   records: Record<string, unknown>[];
+  comparisonRecords?: Record<string, unknown>[];
+  currentScope?: PeriodScope;
+  comparisonScope?: PeriodScope;
   outputSource?: "live-api" | "upload";
 }
 
-export function ReportDashboard({ reportId, records, outputSource }: ReportDashboardProps) {
-  if (records.length === 0) {
+export function ReportDashboard({
+  reportId,
+  records,
+  comparisonRecords,
+  currentScope,
+  comparisonScope,
+  outputSource,
+}: ReportDashboardProps) {
+  const comparisonSection =
+    comparisonRecords === undefined
+      ? undefined
+      : renderComparisonDashboard({
+          currentRecords: records,
+          comparisonRecords,
+          currentScope,
+          comparisonScope,
+        });
+
+  if (records.length === 0 && comparisonRecords === undefined) {
     return (
       <div className="dashboard-summary">
         <DashboardCards cards={[]} />
@@ -30,7 +51,7 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
     const liveInteractions = records.filter((record) => record.datasetName === "interactions");
 
     if (liveInteractions.length > 0) {
-      return renderInteractionsDashboard(liveInteractions as unknown as InteractionEdge[]);
+      return renderInteractionsDashboard(liveInteractions as unknown as InteractionEdge[], comparisonSection);
     }
   }
 
@@ -43,6 +64,7 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
           { label: "Live Records", value: records.length },
           { label: "Live Datasets", value: Object.keys(datasetCounts).length },
         ]}
+        comparisonSection={comparisonSection}
       >
         <DashboardSection title="Live datasets">
           <BarList rows={toBarRows(datasetCounts)} />
@@ -55,7 +77,7 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
     const summary = summarizeTags(records as unknown as TagMetricRow[]);
 
     return (
-      <DashboardLayout cards={summary.metricCards}>
+      <DashboardLayout cards={summary.metricCards} comparisonSection={comparisonSection}>
         <DashboardSection title="Top tags by page views">
           <BarList
             rows={summary.topTagsByViews.map((row) => ({
@@ -78,6 +100,7 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
           { label: "Account Statuses", value: Object.keys(summary.accountStatusCounts).length },
           { label: "Departments", value: Object.keys(summary.departmentCounts).length },
         ]}
+        comparisonSection={comparisonSection}
       >
         <DashboardSection title="Account status distribution">
           <BarList rows={toBarRows(summary.accountStatusCounts)} />
@@ -105,6 +128,7 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
           { label: "With Contributions", value: summary.contributingInactiveUsers },
           { label: "High Reputation", value: summary.highReputationInactiveUsers },
         ]}
+        comparisonSection={comparisonSection}
       >
         <DashboardSection title="Inactive user risk">
           <BarList
@@ -120,7 +144,7 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
   }
 
   if (reportId === "interactions") {
-    return renderInteractionsDashboard(records as unknown as InteractionEdge[]);
+    return renderInteractionsDashboard(records as unknown as InteractionEdge[], comparisonSection);
   }
 
   if (reportId === "community-members") {
@@ -133,6 +157,7 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
           { label: "SMEs", value: summary.smeMembers },
           { label: "Departments", value: Object.keys(summary.departmentCounts).length },
         ]}
+        comparisonSection={comparisonSection}
       >
         <DashboardSection title="Department distribution">
           <BarList rows={toBarRows(summary.departmentCounts)} />
@@ -145,7 +170,10 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
     const summary = summarizeDataExport({ "Imported records": records });
 
     return (
-      <DashboardLayout cards={[{ label: "Imported Records", value: records.length }]}>
+      <DashboardLayout
+        cards={[{ label: "Imported Records", value: records.length }]}
+        comparisonSection={comparisonSection}
+      >
         <DashboardSection title="Dataset records">
           <BarList rows={toBarRows(summary.datasetCounts)} />
         </DashboardSection>
@@ -153,10 +181,15 @@ export function ReportDashboard({ reportId, records, outputSource }: ReportDashb
     );
   }
 
-  return <DashboardLayout cards={[{ label: "Records", value: records.length }]} />;
+  return (
+    <DashboardLayout
+      cards={[{ label: "Records", value: records.length }]}
+      comparisonSection={comparisonSection}
+    />
+  );
 }
 
-function renderInteractionsDashboard(records: InteractionEdge[]) {
+function renderInteractionsDashboard(records: InteractionEdge[], comparisonSection?: ReactNode) {
   const summary = buildInteractionSummary(records);
 
   return (
@@ -166,6 +199,7 @@ function renderInteractionsDashboard(records: InteractionEdge[]) {
         { label: "Interaction Weight", value: summary.totalInteractions },
         { label: "Edges", value: summary.edges.length },
       ]}
+      comparisonSection={comparisonSection}
     >
       <DashboardSection title="Top interactions">
         <InteractionMatrix edges={summary.topEdges} />
@@ -176,14 +210,17 @@ function renderInteractionsDashboard(records: InteractionEdge[]) {
 
 function DashboardLayout({
   cards,
+  comparisonSection,
   children,
 }: {
   cards: MetricCard[];
+  comparisonSection?: ReactNode;
   children?: ReactNode;
 }) {
   return (
     <div className="dashboard-summary">
       <DashboardCards cards={cards} />
+      {comparisonSection}
       {children}
     </div>
   );
@@ -212,6 +249,98 @@ function countBy<T>(rows: T[], getKey: (row: T) => string): Record<string, numbe
     counts[key] = (counts[key] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+interface ComparisonDashboardInput {
+  currentRecords: Record<string, unknown>[];
+  comparisonRecords: Record<string, unknown>[];
+  currentScope?: PeriodScope;
+  comparisonScope?: PeriodScope;
+}
+
+function renderComparisonDashboard({
+  currentRecords,
+  comparisonRecords,
+  currentScope,
+  comparisonScope,
+}: ComparisonDashboardInput) {
+  const rows = buildComparisonRows(currentRecords, comparisonRecords);
+
+  return (
+    <DashboardSection title="Period comparison">
+      <DashboardCards
+        cards={[
+          { label: "Current Records", value: currentRecords.length },
+          { label: "Comparison Records", value: comparisonRecords.length },
+          { label: "Change", value: formatDelta(currentRecords.length - comparisonRecords.length) },
+        ]}
+      />
+      <div className="comparison-scope-grid">
+        <div className="comparison-scope-item">
+          <span>Current period</span>
+          <strong>{formatPeriodLabel(currentScope ?? {})}</strong>
+        </div>
+        <div className="comparison-scope-item">
+          <span>Comparison period</span>
+          <strong>{formatPeriodLabel(comparisonScope ?? {})}</strong>
+        </div>
+      </div>
+      <div className="comparison-table-wrap">
+        <table className="comparison-table">
+          <thead>
+            <tr>
+              <th scope="col">Dataset</th>
+              <th scope="col">Current</th>
+              <th scope="col">Comparison</th>
+              <th scope="col">Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.label}>
+                <td>{row.label}</td>
+                <td>{row.current}</td>
+                <td>{row.comparison}</td>
+                <td>{formatDelta(row.delta)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </DashboardSection>
+  );
+}
+
+function buildComparisonRows(
+  currentRecords: Record<string, unknown>[],
+  comparisonRecords: Record<string, unknown>[],
+) {
+  const currentCounts = countBy(currentRecords, getComparisonGroup);
+  const comparisonCounts = countBy(comparisonRecords, getComparisonGroup);
+  const labels = new Set([...Object.keys(currentCounts), ...Object.keys(comparisonCounts)]);
+
+  return [...labels]
+    .map((label) => {
+      const current = currentCounts[label] ?? 0;
+      const comparison = comparisonCounts[label] ?? 0;
+
+      return {
+        label,
+        current,
+        comparison,
+        delta: current - comparison,
+      };
+    })
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || b.current - a.current || a.label.localeCompare(b.label));
+}
+
+function getComparisonGroup(record: Record<string, unknown>): string {
+  return String(record.datasetName ?? "Records");
+}
+
+function formatDelta(delta: number): string {
+  if (delta > 0) return `+${delta.toLocaleString("en-US")}`;
+  return delta.toLocaleString("en-US");
 }
 
 function toSectionId(title: string) {

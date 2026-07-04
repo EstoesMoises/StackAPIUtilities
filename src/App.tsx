@@ -187,6 +187,9 @@ export function App() {
         <ReportWorkspace
           reportId={state.selectedReportId}
           records={selectedReportRecords}
+          comparisonRecords={selectedReportOutput?.comparisonRecords}
+          currentScope={selectedReportOutput?.currentScope}
+          comparisonScope={selectedReportOutput?.comparisonScope}
           outputSource={selectedReportOutput?.source}
           scope={reportScope}
           onScopeChange={setReportScope}

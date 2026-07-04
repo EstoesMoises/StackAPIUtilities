@@ -191,6 +191,61 @@ describe("AppShell", () => {
     expect(screen.getAllByText("tagSmes").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("runs current and comparison periods and renders comparison metrics", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body));
+      const periodRole = payload.periodRole;
+
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          reportId: "inactive-users",
+          reportTitle: "Inactive Users",
+          periodRole,
+          scope: payload.scope,
+          pageSize: payload.pageSize,
+          maxPagesPerDataset: payload.maxPagesPerDataset,
+          warnings: [],
+          datasets: [
+            {
+              datasetName: "users",
+              records:
+                periodRole === "comparison"
+                  ? [{ user_id: 3, display_name: "Grace" }]
+                  : [
+                      { user_id: 1, display_name: "Ada" },
+                      { user_id: 2, display_name: "Linus" },
+                    ],
+            },
+          ],
+          messages: [`Collected users for ${periodRole}.`],
+        },
+      }), {
+        status: 200,
+      });
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
+    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByLabelText("Enable comparison period"));
+    await user.click(screen.getByRole("button", { name: "Run both periods" }));
+
+    expect(await screen.findByText("Period comparison")).toBeInTheDocument();
+    expect(screen.getByText("Current Records")).toBeInTheDocument();
+    expect(screen.getByText("Comparison Records")).toBeInTheDocument();
+    expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).periodRole).toBe("current");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).periodRole).toBe("comparison");
+  });
+
   it("saves credentials for the current browser session", async () => {
     const user = userEvent.setup();
 
