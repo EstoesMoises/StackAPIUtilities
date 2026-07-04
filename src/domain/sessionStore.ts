@@ -5,6 +5,13 @@ type SessionAction =
   | { type: "report/select"; reportId: ReportId }
   | { type: "reports/selectMany"; reportIds: ReportId[] }
   | { type: "dataset/set"; datasetName: DatasetName; records: unknown[] }
+  | {
+      type: "import/loaded";
+      datasetName: DatasetName;
+      fileName: string;
+      records: Record<string, unknown>[];
+      reportId: ReportId;
+    }
   | { type: "session/reset" };
 
 export function createInitialSessionState(): SessionState {
@@ -13,6 +20,7 @@ export function createInitialSessionState(): SessionState {
     selectedReportId: "tag-report",
     selectedReportIds: ["tag-report"],
     datasets: {},
+    reportOutputs: {},
     warnings: [],
     runQueue: [],
   };
@@ -47,6 +55,35 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           },
         },
       };
+    case "import/loaded": {
+      const loadedAt = new Date().toISOString();
+
+      return {
+        ...state,
+        selectedReportId: action.reportId,
+        selectedReportIds: [action.reportId],
+        datasets: {
+          ...state.datasets,
+          [action.datasetName]: {
+            name: action.datasetName,
+            records: action.records,
+            loadedAt,
+            source: "upload",
+          },
+        },
+        reportOutputs: {
+          ...state.reportOutputs,
+          [action.reportId]: {
+            reportId: action.reportId,
+            datasetName: action.datasetName,
+            fileName: action.fileName,
+            records: action.records,
+            loadedAt,
+            source: "upload",
+          },
+        },
+      };
+    }
     case "session/reset":
       return createInitialSessionState();
     default:

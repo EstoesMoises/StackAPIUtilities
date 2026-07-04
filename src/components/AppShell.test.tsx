@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { App } from "../App";
+import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
 
 describe("AppShell", () => {
   it("renders report catalog and all MVP reports", () => {
@@ -42,6 +43,24 @@ describe("AppShell", () => {
 
     expect(screen.getByRole("heading", { name: "Uploads" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Tag Report" })).not.toBeInTheDocument();
+  });
+
+  it("loads an uploaded report output into the selected dashboard", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
+    expect(screen.getByText("Page Views")).toBeInTheDocument();
+    expect(screen.getByText("889,996")).toBeInTheDocument();
+    expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
   });
 
   it("shows a run status when the selected report run is requested", async () => {

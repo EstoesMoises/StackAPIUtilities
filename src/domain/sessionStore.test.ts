@@ -37,6 +37,7 @@ describe("sessionStore", () => {
       selectedReportId: "tag-report",
       selectedReportIds: ["tag-report"],
       datasets: {},
+      reportOutputs: {},
       warnings: [],
       runQueue: [],
     });
@@ -95,6 +96,21 @@ describe("sessionStore", () => {
     expect(state.datasets.users?.loadedAt).toEqual(expect.any(String));
   });
 
+  it("stores imported report outputs by report", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "import/loaded",
+      datasetName: "tags",
+      fileName: "tag_metrics.csv",
+      records: [{ tagName: "python" }],
+      reportId: "tag-report",
+    });
+
+    expect(state.selectedReportId).toBe("tag-report");
+    expect(state.datasets.tags?.records).toEqual([{ tagName: "python" }]);
+    expect(state.reportOutputs["tag-report"]?.fileName).toBe("tag_metrics.csv");
+    expect(state.reportOutputs["tag-report"]?.records).toEqual([{ tagName: "python" }]);
+  });
+
   it("clears credentials and datasets on reset", () => {
     const withData = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",
@@ -105,5 +121,6 @@ describe("sessionStore", () => {
 
     expect(reset.credentials).toBeNull();
     expect(reset.datasets).toEqual({});
+    expect(reset.reportOutputs).toEqual({});
   });
 });

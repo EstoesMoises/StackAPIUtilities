@@ -5,7 +5,7 @@ import { ReportCatalog } from "./components/ReportCatalog";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { RunStatus } from "./components/RunStatus";
 import { SessionOverview } from "./components/SessionOverview";
-import { UploadsPanel } from "./components/UploadsPanel";
+import { UploadsPanel, type ImportedUploadResult } from "./components/UploadsPanel";
 import { validateCredentialsForReport } from "./credentials/credentialRules";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
@@ -60,6 +60,29 @@ export function App() {
     ]);
   }
 
+  function importUploadedReport(result: ImportedUploadResult) {
+    const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
+
+    dispatch({
+      type: "import/loaded",
+      datasetName: result.datasetName,
+      fileName: result.fileName,
+      records: result.records,
+      reportId: result.reportId,
+    });
+    setRunQueue([
+      {
+        id: `${result.reportId}-${result.fileName}-imported`,
+        reportId: result.reportId,
+        status: "succeeded",
+        message: `Imported ${result.fileName} for ${report.title}.`,
+      },
+    ]);
+    setActivePanel("report");
+  }
+
+  const selectedReportRecords = state.reportOutputs[state.selectedReportId]?.records ?? [];
+
   return (
     <AppShell
       activePanel={activePanel}
@@ -77,11 +100,11 @@ export function App() {
           onSave={(credentials) => dispatch({ type: "credentials/set", credentials })}
         />
       )}
-      {activePanel === "uploads" && <UploadsPanel />}
+      {activePanel === "uploads" && <UploadsPanel onImported={importUploadedReport} />}
       {activePanel === "report" && (
         <ReportWorkspace
           reportId={state.selectedReportId}
-          records={[]}
+          records={selectedReportRecords}
           onRun={queueSelectedReportRun}
         />
       )}
