@@ -15,6 +15,7 @@ export const OAUTH_PKCE_COOKIE_NAME = "stack_api_oauth_pkce";
 export const OAUTH_PKCE_COOKIE_PATH = "/api/oauth/pkce";
 export const OAUTH_PKCE_COOKIE_MAX_AGE_SECONDS = 600;
 
+const OAUTH_PKCE_CALLBACK_PATH = "/api/oauth/pkce/callback";
 const OAUTH_RESULT_MESSAGE_TYPE = "stack-api-oauth-pkce-result";
 const START_REQUEST_ERROR =
   "Enterprise OAuth requires a Stack Enterprise HTTPS instance URL and OAuth client ID.";
@@ -82,20 +83,25 @@ export async function handleOAuthPkceStartRequest(
     startPayload === null ||
     !isNonBlankString(startPayload.baseUrl) ||
     !isNonBlankString(startPayload.clientId) ||
-    !Array.isArray(startPayload.scopes) ||
+    !isStringArray(startPayload.scopes) ||
     !isSupportedEnterpriseOAuthTarget(startPayload.baseUrl)
   ) {
     return { response: jsonResponse({ ok: false, error: START_REQUEST_ERROR }, 400) };
   }
 
-  const now = dependencies.now?.() ?? new Date();
   const scopes = normalizeOAuthScopes(
-    startPayload.scopes.filter((scope): scope is string => typeof scope === "string"),
+    startPayload.scopes,
     startPayload.includeNoExpiry === true,
   );
+
+  if (scopes.length === 0) {
+    return { response: jsonResponse({ ok: false, error: START_REQUEST_ERROR }, 400) };
+  }
+
+  const now = dependencies.now?.() ?? new Date();
   const codeVerifier = createCodeVerifier();
   const state = createOAuthState();
-  const redirectUri = `${origin}/api/oauth/pkce/callback`;
+  const redirectUri = `${origin}${OAUTH_PKCE_CALLBACK_PATH}`;
   const pending: PendingOAuthTransaction = {
     baseUrl: normalizeOAuthBaseUrl(startPayload.baseUrl),
     clientId: startPayload.clientId.trim(),
@@ -141,7 +147,13 @@ export async function handleOAuthPkceCallbackRequest(
   const pending = pendingCookieValue ? decodePendingOAuthCookie(pendingCookieValue) : null;
 
   if (error !== null) {
-    return callbackError(errorDescription ?? `OAuth authorization failed: ${error}`);
+    return callbackError(
+      redactOAuthCallbackError(
+        errorDescription ?? `OAuth authorization failed: ${error}`,
+        pending,
+        code,
+      ),
+    );
   }
 
   if (!isNonBlankString(code)) {
@@ -150,6 +162,10 @@ export async function handleOAuthPkceCallbackRequest(
 
   if (pending === null) {
     return callbackError("OAuth authorization request expired or was not found.");
+  }
+
+  if (!isValidPendingOAuthExchangeTarget(pending)) {
+    return callbackError("OAuth authorization request is invalid.");
   }
 
   if (new Date(pending.expiresAt).getTime() <= now.getTime()) {
@@ -262,7 +278,16 @@ function callbackHtml(message: unknown): Response {
   }
 })();
 </script></body></html>`,
-    { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } },
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, private",
+        Pragma: "no-cache",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
   );
 }
 
@@ -280,17 +305,18 @@ function redactOAuthExchangeError(
   pending: PendingOAuthTransaction,
   code: string,
 ): string {
-  const sensitiveValues = [code, pending.codeVerifier].filter(isNonBlankString);
-  let redacted = redactStructuredOAuthErrorBody(message);
+  return redactOAuthSensitiveText(redactStructuredOAuthErrorBody(message), [
+    code,
+    pending.codeVerifier,
+  ]);
+}
 
-  for (const sensitiveValue of sensitiveValues) {
-    redacted = redacted.replace(new RegExp(escapeRegExp(sensitiveValue), "g"), "[redacted]");
-  }
-
-  return redactTokenTextPatterns(redacted).replace(
-    /\b(?!token\b)[A-Za-z0-9_-]*token[A-Za-z0-9_-]*\b/gi,
-    "[redacted]",
-  );
+function redactOAuthCallbackError(
+  message: string,
+  pending: PendingOAuthTransaction | null,
+  code: string | null,
+): string {
+  return redactOAuthSensitiveText(message, [code, pending?.codeVerifier]);
 }
 
 function redactStructuredOAuthErrorBody(message: string): string {
@@ -335,6 +361,21 @@ function isSensitiveOAuthKey(key: string): boolean {
   return lowerKey.includes("token") || lowerKey.includes("code") || lowerKey.includes("verifier");
 }
 
+function redactOAuthSensitiveText(
+  message: string,
+  sensitiveValues: Array<string | null | undefined>,
+): string {
+  let redacted = message;
+
+  for (const sensitiveValue of sensitiveValues.filter(isNonBlankString)) {
+    redacted = redacted.replace(new RegExp(escapeRegExp(sensitiveValue), "g"), "[redacted]");
+  }
+
+  return redactTokenTextPatterns(redacted)
+    .replace(/\b(?:token|code|verifier)[_-][A-Za-z0-9_-]+\b/gi, "[redacted]")
+    .replace(/\b(?!token\b)[A-Za-z0-9_-]*token[A-Za-z0-9_-]*\b/gi, "[redacted]");
+}
+
 function redactTokenTextPatterns(message: string): string {
   return message.replace(
     /\b((?:access|refresh)_token)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
@@ -348,6 +389,18 @@ function escapeRegExp(value: string): string {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isValidPendingOAuthExchangeTarget(pending: PendingOAuthTransaction): boolean {
+  if (!isSupportedEnterpriseOAuthTarget(pending.baseUrl)) {
+    return false;
+  }
+
+  try {
+    return new URL(pending.redirectUri).pathname === OAUTH_PKCE_CALLBACK_PATH;
+  } catch {
+    return false;
+  }
 }
 
 function isStartPayload(value: unknown): value is OAuthPkceStartPayload {

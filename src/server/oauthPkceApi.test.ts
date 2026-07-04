@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   OAUTH_PKCE_COOKIE_NAME,
+  type PendingOAuthTransaction,
   decodePendingOAuthCookie,
   encodePendingOAuthCookie,
   handleOAuthPkceCallbackRequest,
@@ -9,6 +10,19 @@ import {
 
 const origin = "http://127.0.0.1:3000";
 const now = new Date("2026-07-04T12:00:00.000Z");
+
+function validPending(overrides: Partial<PendingOAuthTransaction> = {}): PendingOAuthTransaction {
+  return {
+    baseUrl: "https://demo.stackenterprise.co",
+    clientId: "client-123",
+    redirectUri: `${origin}/api/oauth/pkce/callback`,
+    scopes: ["write_access"],
+    state: "state-123",
+    codeVerifier: "verifier-123",
+    expiresAt: "2026-07-04T12:10:00.000Z",
+    ...overrides,
+  };
+}
 
 describe("oauthPkceApi", () => {
   it("starts OAuth and creates a pending transaction cookie", async () => {
@@ -62,16 +76,30 @@ describe("oauthPkceApi", () => {
     expect(result.cookie).toBeUndefined();
   });
 
+  it("rejects empty or non-string OAuth scopes before creating a cookie", async () => {
+    const invalidPayloads = [
+      { baseUrl: "https://demo.stackenterprise.co", clientId: "client-123", scopes: [] },
+      {
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
+        scopes: ["write_access", 123],
+      },
+    ];
+
+    for (const payload of invalidPayloads) {
+      const result = await handleOAuthPkceStartRequest(payload, { origin, now: () => now });
+
+      expect(result.response.status).toBe(400);
+      await expect(result.response.json()).resolves.toEqual({
+        ok: false,
+        error: "Enterprise OAuth requires a Stack Enterprise HTTPS instance URL and OAuth client ID.",
+      });
+      expect(result.cookie).toBeUndefined();
+    }
+  });
+
   it("exchanges callback codes and returns postMessage callback HTML", async () => {
-    const pending = {
-      baseUrl: "https://demo.stackenterprise.co",
-      clientId: "client-123",
-      redirectUri: `${origin}/api/oauth/pkce/callback`,
-      scopes: ["write_access"],
-      state: "state-123",
-      codeVerifier: "verifier-123",
-      expiresAt: "2026-07-04T12:10:00.000Z",
-    };
+    const pending = validPending();
     const fetchFn = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ access_token: "oauth-token", expires: 86400 }), {
         status: 200,
@@ -86,6 +114,10 @@ describe("oauthPkceApi", () => {
     const html = await result.response.text();
 
     expect(result.response.status).toBe(200);
+    expect(result.response.headers.get("Cache-Control")).toBe("no-store, private");
+    expect(result.response.headers.get("Pragma")).toBe("no-cache");
+    expect(result.response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(result.response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(result.clearCookie).toBe(true);
     expect(fetchFn).toHaveBeenCalledWith(
       "https://demo.stackenterprise.co/oauth/access_token/json",
@@ -111,15 +143,7 @@ describe("oauthPkceApi", () => {
     const fetchFn = vi.fn();
     const result = await handleOAuthPkceCallbackRequest(
       new URL(`${origin}/api/oauth/pkce/callback?code=code-123&state=wrong-state`),
-      encodePendingOAuthCookie({
-        baseUrl: "https://demo.stackenterprise.co",
-        clientId: "client-123",
-        redirectUri: `${origin}/api/oauth/pkce/callback`,
-        scopes: ["write_access"],
-        state: "state-123",
-        codeVerifier: "verifier-123",
-        expiresAt: "2026-07-04T12:10:00.000Z",
-      }),
+      encodePendingOAuthCookie(validPending()),
       { fetchFn, now: () => now },
     );
     const html = await result.response.text();
@@ -129,18 +153,83 @@ describe("oauthPkceApi", () => {
     expect(html).toContain("OAuth state did not match the pending authorization request.");
   });
 
+  it("rejects forged callback cookies before exchanging tokens", async () => {
+    const forgedPendings = [
+      validPending({ baseUrl: "http://127.0.0.1:1234" }),
+      validPending({ baseUrl: "https://example.com" }),
+      validPending({ redirectUri: "https://demo.stackenterprise.co/not-callback" }),
+      validPending({ redirectUri: "not a url" }),
+    ];
+
+    for (const pending of forgedPendings) {
+      const fetchFn = vi.fn();
+      const result = await handleOAuthPkceCallbackRequest(
+        new URL(`${origin}/api/oauth/pkce/callback?code=code-123&state=state-123`),
+        encodePendingOAuthCookie(pending),
+        { fetchFn, now: () => now },
+      );
+      const html = await result.response.text();
+
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(result.clearCookie).toBe(true);
+      expect(html).toContain("OAuth authorization request is invalid.");
+      expect(html).not.toContain("127.0.0.1");
+      expect(html).not.toContain("example.com");
+      expect(html).not.toContain("not-callback");
+    }
+  });
+
+  it("rejects expired, missing, and malformed pending cookies without exchanging tokens", async () => {
+    const cases = [
+      {
+        cookie: encodePendingOAuthCookie(validPending({ expiresAt: "2026-07-04T11:59:59.000Z" })),
+        expectedError: "OAuth authorization request expired. Start the connection again.",
+      },
+      {
+        cookie: undefined,
+        expectedError: "OAuth authorization request expired or was not found.",
+      },
+      {
+        cookie: "not-valid-base64-json",
+        expectedError: "OAuth authorization request expired or was not found.",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const fetchFn = vi.fn();
+      const result = await handleOAuthPkceCallbackRequest(
+        new URL(`${origin}/api/oauth/pkce/callback?code=code-123&state=state-123`),
+        testCase.cookie,
+        { fetchFn, now: () => now },
+      );
+      const html = await result.response.text();
+
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(result.clearCookie).toBe(true);
+      expect(html).toContain(testCase.expectedError);
+    }
+  });
+
+  it("redacts sensitive OAuth denial descriptions", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(
+        `${origin}/api/oauth/pkce/callback?error=access_denied&error_description=denied%20token-secret%20code-secret`,
+      ),
+      encodePendingOAuthCookie(validPending({ codeVerifier: "verifier-secret" })),
+      { fetchFn: vi.fn(), now: () => now },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("[redacted]");
+    expect(html).not.toContain("token-secret");
+    expect(html).not.toContain("code-secret");
+    expect(html).not.toContain("verifier-secret");
+  });
+
   it("redacts sensitive token exchange values from callback errors", async () => {
     const result = await handleOAuthPkceCallbackRequest(
       new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
-      encodePendingOAuthCookie({
-        baseUrl: "https://demo.stackenterprise.co",
-        clientId: "client-123",
-        redirectUri: `${origin}/api/oauth/pkce/callback`,
-        scopes: ["write_access"],
-        state: "state-123",
-        codeVerifier: "verifier-secret",
-        expiresAt: "2026-07-04T12:10:00.000Z",
-      }),
+      encodePendingOAuthCookie(validPending({ codeVerifier: "verifier-secret" })),
       {
         fetchFn: vi
           .fn()
@@ -161,15 +250,7 @@ describe("oauthPkceApi", () => {
   it("redacts token values from JSON callback errors", async () => {
     const result = await handleOAuthPkceCallbackRequest(
       new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
-      encodePendingOAuthCookie({
-        baseUrl: "https://demo.stackenterprise.co",
-        clientId: "client-123",
-        redirectUri: `${origin}/api/oauth/pkce/callback`,
-        scopes: ["write_access"],
-        state: "state-123",
-        codeVerifier: "verifier-secret",
-        expiresAt: "2026-07-04T12:10:00.000Z",
-      }),
+      encodePendingOAuthCookie(validPending({ codeVerifier: "verifier-secret" })),
       {
         fetchFn: vi.fn().mockResolvedValue(
           new Response(
