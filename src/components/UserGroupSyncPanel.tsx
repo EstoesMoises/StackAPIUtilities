@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { SessionCredentials } from "../domain/types";
 import type { UserGroupSyncMode, UserGroupSyncPlan } from "../writeTools/userGroupSync";
 import type { UserGroupSyncApplyResult } from "../writeTools/userGroupSyncRunner";
@@ -21,13 +21,17 @@ export function UserGroupSyncPanel({ credentials }: UserGroupSyncPanelProps) {
   const [syncMode, setSyncMode] = useState<UserGroupSyncMode>("add-only");
   const [preview, setPreview] = useState<UserGroupSyncPlan | null>(null);
   const [applyResult, setApplyResult] = useState<UserGroupSyncApplyResult | null>(null);
+  const [pendingAction, setPendingAction] = useState<"preview" | "apply" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const requestInFlightRef = useRef(false);
 
   const exactSync = syncMode === "exact-sync";
   const hasCsv = csvText.trim() !== "";
-  const canPreview = hasCsv;
+  const requestPending = pendingAction !== null;
+  const canPreview = hasCsv && !requestPending;
   const canApply =
+    !requestPending &&
     preview !== null &&
     preview.blockingErrors.length === 0 &&
     credentials !== null &&
@@ -36,6 +40,13 @@ export function UserGroupSyncPanel({ credentials }: UserGroupSyncPanelProps) {
   async function handleFile(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
+
+    setCsvText("");
+    setFileName(null);
+    setPreview(null);
+    setApplyResult(null);
+    setError(null);
+    setMessage(null);
 
     try {
       const text = await readFileText(file);
@@ -52,6 +63,10 @@ export function UserGroupSyncPanel({ credentials }: UserGroupSyncPanelProps) {
   }
 
   async function runAction(action: "preview" | "apply") {
+    if (requestInFlightRef.current) {
+      return;
+    }
+
     if (!credentials) {
       setError(MISSING_CREDENTIALS_MESSAGE);
       setMessage(null);
@@ -65,6 +80,9 @@ export function UserGroupSyncPanel({ credentials }: UserGroupSyncPanelProps) {
     ) {
       return;
     }
+
+    requestInFlightRef.current = true;
+    setPendingAction(action);
 
     try {
       setError(null);
@@ -102,6 +120,9 @@ export function UserGroupSyncPanel({ credentials }: UserGroupSyncPanelProps) {
     } catch (caughtError) {
       setMessage(null);
       setError(caughtError instanceof Error ? caughtError.message : "Unable to run user group sync.");
+    } finally {
+      requestInFlightRef.current = false;
+      setPendingAction(null);
     }
   }
 
