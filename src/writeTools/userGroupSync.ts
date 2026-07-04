@@ -148,7 +148,6 @@ export function planUserGroupSync(input: PlanUserGroupSyncInput): UserGroupSyncP
 
     const emailKey = normalizeKey(email);
     const isDuplicateEmail = seenEmails.has(emailKey);
-    seenEmails.add(emailKey);
 
     if (!seniorManager) {
       skippedRows.push(toSkippedRow(row, "Missing Senior Manager", email, seniorManager));
@@ -159,6 +158,8 @@ export function planUserGroupSync(input: PlanUserGroupSyncInput): UserGroupSyncP
       skippedRows.push(toSkippedRow(row, "Duplicate Email", email, seniorManager));
       continue;
     }
+
+    seenEmails.add(emailKey);
 
     const resolvedUser = resolvedUsersByEmail.get(emailKey);
     if (!resolvedUser) {
@@ -265,5 +266,24 @@ function sortNumbers(values: number[]): number[] {
 }
 
 function compareStrings(left: string, right: string): number {
-  return left.localeCompare(right);
+  const normalizedLeft = normalizeKey(left);
+  const normalizedRight = normalizeKey(right);
+
+  if (normalizedLeft < normalizedRight) {
+    return -1;
+  }
+
+  if (normalizedLeft > normalizedRight) {
+    return 1;
+  }
+
+  if (left < right) {
+    return -1;
+  }
+
+  if (left > right) {
+    return 1;
+  }
+
+  return 0;
 }
