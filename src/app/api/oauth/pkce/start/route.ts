@@ -16,7 +16,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     origin: new URL(request.url).origin,
   });
   const responseBody = await result.response.json();
-  const response = NextResponse.json(responseBody, { status: result.response.status });
+  const response = NextResponse.json(responseBody, {
+    status: result.response.status,
+    headers: result.response.headers,
+  });
 
   if (result.cookie) {
     response.cookies.set(result.cookie.name, result.cookie.value, result.cookie);

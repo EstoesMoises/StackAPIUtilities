@@ -1,4 +1,6 @@
+import type { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
+import { POST as handleOAuthPkceStartRoutePost } from "../app/api/oauth/pkce/start/route";
 import {
   OAUTH_PKCE_COOKIE_NAME,
   type PendingOAuthTransaction,
@@ -42,6 +44,10 @@ describe("oauthPkceApi", () => {
       ok: true,
       authorizationUrl: expect.stringContaining("https://demo.stackenterprise.co/oauth"),
     });
+    expect(result.response.headers.get("Cache-Control")).toBe("no-store, private");
+    expect(result.response.headers.get("Pragma")).toBe("no-cache");
+    expect(result.response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(result.response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(result.cookie).toEqual(
       expect.objectContaining({
         name: OAUTH_PKCE_COOKIE_NAME,
@@ -60,6 +66,25 @@ describe("oauthPkceApi", () => {
         scopes: ["write_access"],
       }),
     );
+  });
+
+  it("preserves start response security headers in the Next route", async () => {
+    const response = await handleOAuthPkceStartRoutePost(
+      new Request(`${origin}/api/oauth/pkce/start`, {
+        method: "POST",
+        body: JSON.stringify({
+          baseUrl: "https://demo.stackenterprise.co",
+          clientId: "client-123",
+          scopes: ["write_access"],
+          includeNoExpiry: false,
+        }),
+      }) as NextRequest,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, private");
+    expect(response.headers.get("Pragma")).toBe("no-cache");
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 
   it("rejects malformed start requests before creating a cookie", async () => {
@@ -182,6 +207,8 @@ describe("oauthPkceApi", () => {
       validPending({ redirectUri: "ftp://evil.example/api/oauth/pkce/callback" }),
       validPending({ redirectUri: `${origin}/api/oauth/pkce/callback?x=1` }),
       validPending({ redirectUri: `${origin}/api/oauth/pkce/callback#fragment` }),
+      validPending({ scopes: ["write_access", "admin_scope"] }),
+      validPending({ scopes: ["write_access,no_expiry"] }),
       validPending({ redirectUri: "not a url" }),
     ];
 
@@ -361,5 +388,22 @@ describe("oauthPkceApi", () => {
     expect(html).not.toContain("verifier-secret");
     expect(html).not.toContain("access-secret-123");
     expect(html).not.toContain("refresh-secret-456");
+  });
+
+  it("redacts token values from malformed JSON callback errors", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
+      encodePendingOAuthCookie(validPending()),
+      {
+        fetchFn: vi
+          .fn()
+          .mockResolvedValue(new Response('{"access_token":"leaky-secret"', { status: 400 })),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("[redacted]");
+    expect(html).not.toContain("leaky-secret");
   });
 });

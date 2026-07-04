@@ -8,6 +8,7 @@ import {
   isSupportedEnterpriseOAuthTarget,
   normalizeOAuthBaseUrl,
   normalizeOAuthScopes,
+  OAUTH_SCOPE_NO_EXPIRY,
   OAUTH_SCOPE_WRITE_ACCESS,
 } from "../auth/oauthPkce";
 import type { SessionCredentials } from "../domain/types";
@@ -21,6 +22,13 @@ const OAUTH_RESULT_MESSAGE_TYPE = "stack-api-oauth-pkce-result";
 const START_REQUEST_ERROR =
   "Enterprise OAuth requires a Stack Enterprise HTTPS instance URL and OAuth client ID.";
 const SUPPORTED_REQUESTED_SCOPES = new Set<string>([OAUTH_SCOPE_WRITE_ACCESS]);
+const OAUTH_JSON_SECURITY_HEADERS = {
+  "Content-Type": "application/json",
+  "Cache-Control": "no-store, private",
+  Pragma: "no-cache",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+} as const;
 
 export interface PendingOAuthTransaction {
   baseUrl: string;
@@ -311,9 +319,7 @@ function callbackHtml(message: unknown): Response {
 function jsonResponse(body: OAuthPkceStartResponseBody, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: OAUTH_JSON_SECURITY_HEADERS,
   });
 }
 
@@ -395,8 +401,8 @@ function redactOAuthSensitiveText(
 
 function redactTokenTextPatterns(message: string): string {
   return message.replace(
-    /\b((?:code|code_verifier|[A-Za-z0-9_-]*(?:token|verifier)[A-Za-z0-9_-]*))\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
-    "$1$2[redacted]",
+    /(["']?)\b((?:code|code_verifier|[A-Za-z0-9_-]*(?:token|verifier)[A-Za-z0-9_-]*))\b\1(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+    "$1$2$1$3[redacted]",
   );
 }
 
@@ -416,11 +422,24 @@ function isSupportedRequestedScopeList(scopes: string[]): boolean {
   return scopes.length > 0 && scopes.every((scope) => SUPPORTED_REQUESTED_SCOPES.has(scope));
 }
 
+function isValidPendingOAuthScopes(scopes: string[]): boolean {
+  return (
+    (scopes.length === 1 && scopes[0] === OAUTH_SCOPE_WRITE_ACCESS) ||
+    (scopes.length === 2 &&
+      scopes[0] === OAUTH_SCOPE_WRITE_ACCESS &&
+      scopes[1] === OAUTH_SCOPE_NO_EXPIRY)
+  );
+}
+
 function isValidPendingOAuthExchangeTarget(
   pending: PendingOAuthTransaction,
   callbackUrl: URL,
 ): boolean {
   if (!isSupportedEnterpriseOAuthTarget(pending.baseUrl)) {
+    return false;
+  }
+
+  if (!isValidPendingOAuthScopes(pending.scopes)) {
     return false;
   }
 
