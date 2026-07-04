@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import "../styles/tailwind.css";
 import "@stackoverflow/stacks/dist/css/stacks.css";
 import "../styles/app.css";
 
