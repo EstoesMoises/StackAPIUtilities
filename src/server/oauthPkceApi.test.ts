@@ -482,4 +482,57 @@ describe("oauthPkceApi", () => {
     expect(html).not.toContain("authorization-secret");
     expect(html).not.toContain("api-secret");
   });
+
+  it("returns a safe retryable callback error when a non-OK token response body read fails", async () => {
+    const response = new Response(null, { status: 400 });
+    vi.spyOn(response, "text").mockRejectedValue(
+      new DOMException("body read failed text-read-secret", "AbortError"),
+    );
+
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
+      encodePendingOAuthCookie(validPending()),
+      {
+        fetchFn: vi.fn().mockResolvedValue(response),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("OAuth token exchange failed. Check the Enterprise instance and try again.");
+    expect(html).not.toContain("text-read-secret");
+  });
+
+  it("returns a safe retryable callback error when a successful token response JSON read fails", async () => {
+    const response = new Response(null, { status: 200 });
+    vi.spyOn(response, "json").mockRejectedValue(new TypeError("network json-read-secret"));
+
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
+      encodePendingOAuthCookie(validPending()),
+      {
+        fetchFn: vi.fn().mockResolvedValue(response),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("OAuth token exchange failed. Check the Enterprise instance and try again.");
+    expect(html).not.toContain("json-read-secret");
+  });
+
+  it("reports invalid JSON token responses without treating syntax errors as network failures", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
+      encodePendingOAuthCookie(validPending()),
+      {
+        fetchFn: vi.fn().mockResolvedValue(new Response("not json", { status: 200 })),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("OAuth token response was not valid JSON.");
+    expect(html).not.toContain("OAuth token exchange failed. Check the Enterprise instance and try again.");
+  });
 });

@@ -279,14 +279,28 @@ async function exchangeAuthorizationCodeForToken(
   }
 
   if (!response.ok) {
-    throw new Error(`OAuth token exchange failed (${response.status}): ${await response.text()}`);
+    throw new Error(
+      `OAuth token exchange failed (${response.status}): ${await readTokenExchangeErrorBody(response)}`,
+    );
   }
 
   try {
     const tokenBody: unknown = await response.json();
     return isRecord(tokenBody) ? tokenBody : {};
-  } catch {
+  } catch (error) {
+    if (!isJsonSyntaxError(error)) {
+      throw new Error(TOKEN_EXCHANGE_NETWORK_ERROR);
+    }
+
     throw new Error("OAuth token response was not valid JSON.");
+  }
+}
+
+async function readTokenExchangeErrorBody(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    throw new Error(TOKEN_EXCHANGE_NETWORK_ERROR);
   }
 }
 
@@ -432,6 +446,10 @@ function escapeRegExp(value: string): string {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isJsonSyntaxError(error: unknown): boolean {
+  return error instanceof SyntaxError;
 }
 
 function createTokenExchangeAbortSignal(dependencies: OAuthPkceDependencies): AbortSignal {
