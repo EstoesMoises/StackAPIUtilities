@@ -8,7 +8,7 @@ const credentials: SessionCredentials = {
   baseUrl: "https://demo.stackenterprise.co",
   accessToken: "oauth-token",
   authSource: "oauth-pkce",
-  oauthScopes: ["write_access"],
+  oauthScopes: ["write_access", "no_expiry"],
 };
 
 const csvText = [
@@ -639,7 +639,7 @@ describe("handleUserGroupSyncRequest", () => {
         action: "preview",
         credentials: {
           ...credentials,
-          oauthScopes: [],
+          oauthScopes: ["no_expiry"],
         },
         csvText,
         groupNameTemplate: "{Senior Manager} VRM",

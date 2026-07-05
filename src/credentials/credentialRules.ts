@@ -1,3 +1,5 @@
+import { getLiveDatasetClient, type LiveCollectorClients } from "../collectors/liveCollectors";
+import { planDatasetsForReports } from "../collectors/datasetPlanner";
 import { reportRegistry } from "../domain/reportRegistry";
 import type { InstanceType, ReportId, SessionCredentials } from "../domain/types";
 
@@ -65,6 +67,8 @@ export function validateEnterpriseV3OAuthCredentials(
     };
   }
 
+  const scopes = new Set(Array.isArray(credentials.oauthScopes) ? credentials.oauthScopes : []);
+
   if (credentials.accessTokenExpiresAt !== undefined) {
     const expiresAt = new Date(credentials.accessTokenExpiresAt);
     const now = options.now ?? new Date();
@@ -72,9 +76,9 @@ export function validateEnterpriseV3OAuthCredentials(
     if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= now.getTime()) {
       messages.push("Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.");
     }
+  } else if (!scopes.has("no_expiry")) {
+    messages.push("Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.");
   }
-
-  const scopes = new Set(credentials.oauthScopes ?? []);
 
   for (const requiredScope of options.requiredScopes ?? []) {
     if (!scopes.has(requiredScope)) {
@@ -108,13 +112,41 @@ export function validateCredentialsForReport(
   }
 
   if (credentials.instanceType === "enterprise") {
-    if (report.credentialRequirements.includes("api-key") && !credentials.apiKey?.trim()) {
+    const credentialPlan = planEnterpriseCredentialRequirements(reportId, report.credentialRequirements);
+
+    if (credentialPlan.requiresApiKey && !credentials.apiKey?.trim()) {
       messages.push("API key is required for Stack API v2.3 Enterprise calls.");
     }
-    if (report.credentialRequirements.includes("access-token")) {
+    if (credentialPlan.requiresOAuth) {
       messages.push(...validateEnterpriseV3OAuthCredentials(credentials, { now }).messages);
     }
   }
 
   return { valid: messages.length === 0, messages };
+}
+
+function planEnterpriseCredentialRequirements(
+  reportId: ReportId,
+  credentialRequirements: readonly string[],
+): { requiresApiKey: boolean; requiresOAuth: boolean } {
+  const liveDatasetClients = new Set<keyof LiveCollectorClients>();
+
+  for (const dataset of planDatasetsForReports([reportId])) {
+    const client = getLiveDatasetClient(dataset);
+    if (client) {
+      liveDatasetClients.add(client);
+    }
+  }
+
+  if (liveDatasetClients.size > 0) {
+    return {
+      requiresApiKey: liveDatasetClients.has("v2"),
+      requiresOAuth: liveDatasetClients.has("v3"),
+    };
+  }
+
+  return {
+    requiresApiKey: credentialRequirements.includes("api-key"),
+    requiresOAuth: credentialRequirements.includes("access-token"),
+  };
 }

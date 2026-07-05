@@ -5,10 +5,62 @@ import { runLiveReport } from "./liveReportRunner";
 const basicCredentials: SessionCredentials = {
   instanceType: "basic-business",
   baseUrl: "https://stackoverflowteams.com/c/example-team",
-  accessToken: "token",
+  pat: "pat",
+  authSource: "manual-pat",
 };
+const CONNECTION_REQUIRED_MESSAGE = "Enterprise OAuth connection is required for Stack API v3 calls.";
 
 describe("runLiveReport", () => {
+  it("rejects Enterprise mixed v2 and v3 reports without OAuth before collecting datasets", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ items: [], has_more: false, totalPages: 1 }), {
+        status: 200,
+      })),
+    );
+
+    await expect(
+      runLiveReport(
+        "api-user-report",
+        {
+          instanceType: "enterprise",
+          baseUrl: "https://demo.stackenterprise.co",
+          apiKey: "key",
+        },
+        { fetchFn: fetchMock },
+      ),
+    ).rejects.toThrow(CONNECTION_REQUIRED_MESSAGE);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("runs Enterprise v2-only reports with API key credentials", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [{ user_id: 1, display_name: "Ada" }], has_more: false }), {
+        status: 200,
+      }),
+    );
+
+    const result = await runLiveReport(
+      "inactive-users",
+      {
+        instanceType: "enterprise",
+        baseUrl: "https://demo.stackenterprise.co",
+        apiKey: "key",
+      },
+      { fetchFn: fetchMock },
+    );
+
+    expect(result.datasets).toEqual([
+      {
+        datasetName: "users",
+        records: [{ user_id: 1, display_name: "Ada" }],
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0].toString()).toContain(
+      "https://demo.stackenterprise.co/api/2.3/users",
+    );
+  });
+
   it("collects mapped live datasets for a selected report", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ items: [{ user_id: 1, display_name: "Ada" }], has_more: false }), {

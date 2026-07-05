@@ -47,11 +47,24 @@ export class UnsupportedLiveDatasetError extends Error {
 }
 
 export function isLiveDatasetCollectable(dataset: DatasetName): boolean {
-  return dataset in liveDatasetEndpoints || dependentLiveDatasets.has(dataset);
+  return getLiveDatasetClient(dataset) !== null;
 }
 
 export function getUnsupportedLiveDatasets(datasets: readonly DatasetName[]): DatasetName[] {
   return datasets.filter((dataset) => !isLiveDatasetCollectable(dataset));
+}
+
+export function getLiveDatasetClient(dataset: DatasetName): keyof LiveCollectorClients | null {
+  const endpoint = liveDatasetEndpoints[dataset];
+  if (endpoint) {
+    return endpoint.client;
+  }
+
+  if (dependentLiveDatasets.has(dataset)) {
+    return "v2";
+  }
+
+  return null;
 }
 
 export async function collectDataset(

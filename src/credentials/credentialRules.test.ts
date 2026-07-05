@@ -131,6 +131,16 @@ describe("validateCredentialsForReport", () => {
     expect(result.messages).toContain(CONNECTION_REQUIRED_MESSAGE);
   });
 
+  it("accepts Enterprise API key credentials for reports that only use Stack API v2.3 datasets", () => {
+    const result = validateCredentialsForReport("inactive-users", {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      apiKey: "key",
+    }, NOW);
+
+    expect(result).toEqual({ valid: true, messages: [] });
+  });
+
   it("accepts API key and active OAuth PKCE credentials for Enterprise reports that use v2 and v3", () => {
     const result = validateCredentialsForReport("api-user-report", {
       instanceType: "enterprise",
@@ -185,13 +195,26 @@ describe("validateEnterpriseV3OAuthCredentials", () => {
     expect(result.messages).toContain(EXPIRY_MESSAGE);
   });
 
-  it("accepts OAuth tokens without an expiry when no scopes are missing", () => {
+  it("rejects OAuth tokens without an expiry unless no_expiry was requested", () => {
     const result = validateEnterpriseV3OAuthCredentials({
       instanceType: "enterprise",
       baseUrl: "https://demo.stackenterprise.co",
       accessToken: "token",
       authSource: "oauth-pkce",
       oauthScopes: ["read_access"],
+    }, { now: NOW });
+
+    expect(result.valid).toBe(false);
+    expect(result.messages).toContain(EXPIRY_MESSAGE);
+  });
+
+  it("accepts OAuth tokens without an expiry when the no_expiry scope was requested", () => {
+    const result = validateEnterpriseV3OAuthCredentials({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: "token",
+      authSource: "oauth-pkce",
+      oauthScopes: ["read_access", "no_expiry"],
     }, { now: NOW });
 
     expect(result).toEqual({ valid: true, messages: [] });
