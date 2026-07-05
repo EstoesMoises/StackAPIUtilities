@@ -14,6 +14,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const result = await handleOAuthPkceStartRequest(payload, {
     origin: new URL(request.url).origin,
+    publicOrigin:
+      process.env.STACK_API_UTILITIES_PUBLIC_ORIGIN ??
+      process.env.NEXT_PUBLIC_STACK_API_UTILITIES_PUBLIC_ORIGIN,
   });
   const responseBody = await result.response.json();
   const response = NextResponse.json(responseBody, {

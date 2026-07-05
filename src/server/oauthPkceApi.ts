@@ -76,6 +76,7 @@ interface OAuthPkceStartPayload {
 
 interface OAuthPkceDependencies {
   origin?: string;
+  publicOrigin?: string;
   now?: () => Date;
   fetchFn?: typeof fetch;
   createAbortSignal?: (milliseconds: number) => AbortSignal;
@@ -95,10 +96,14 @@ export async function handleOAuthPkceStartRequest(
   dependencies: OAuthPkceDependencies,
 ): Promise<OAuthPkceRouteResult> {
   const startPayload = isStartPayload(payload) ? payload : null;
-  const origin = dependencies.origin ?? "http://127.0.0.1:3000";
+  const redirectOrigin = resolveOAuthRedirectOrigin(
+    dependencies.publicOrigin,
+    dependencies.origin ?? "http://127.0.0.1:3000",
+  );
 
   if (
     startPayload === null ||
+    redirectOrigin === null ||
     !isNonBlankString(startPayload.baseUrl) ||
     !isNonBlankString(startPayload.clientId) ||
     !isStringArray(startPayload.scopes) ||
@@ -120,7 +125,7 @@ export async function handleOAuthPkceStartRequest(
   const now = dependencies.now?.() ?? new Date();
   const codeVerifier = createCodeVerifier();
   const state = createOAuthState();
-  const redirectUri = `${origin}${OAUTH_PKCE_CALLBACK_PATH}`;
+  const redirectUri = `${redirectOrigin}${OAUTH_PKCE_CALLBACK_PATH}`;
   const pending: PendingOAuthTransaction = {
     baseUrl: normalizeOAuthBaseUrl(startPayload.baseUrl),
     clientId: startPayload.clientId.trim(),
@@ -146,7 +151,7 @@ export async function handleOAuthPkceStartRequest(
       value: encodePendingOAuthCookie(pending),
       httpOnly: true,
       sameSite: "lax",
-      secure: origin.startsWith("https://"),
+      secure: redirectOrigin.startsWith("https://"),
       path: OAUTH_PKCE_COOKIE_PATH,
       maxAge: OAUTH_PKCE_COOKIE_MAX_AGE_SECONDS,
     },
@@ -466,7 +471,60 @@ function createAccessTokenExpiresAt(
     return undefined;
   }
 
-  return new Date(now.getTime() + expires * 1000).toISOString();
+  const expiresAt = new Date(now.getTime() + expires * 1000);
+
+  if (!Number.isFinite(expiresAt.getTime())) {
+    return undefined;
+  }
+
+  return expiresAt.toISOString();
+}
+
+function resolveOAuthRedirectOrigin(
+  publicOrigin: string | undefined,
+  requestOrigin: string,
+): string | null {
+  if (publicOrigin !== undefined) {
+    return parsePublicOAuthOrigin(publicOrigin)?.origin ?? null;
+  }
+
+  const parsedRequestOrigin = parsePublicOAuthOrigin(requestOrigin);
+
+  if (parsedRequestOrigin === null || !isLocalDevelopmentOrigin(parsedRequestOrigin)) {
+    return null;
+  }
+
+  return parsedRequestOrigin.origin;
+}
+
+function parsePublicOAuthOrigin(origin: string): URL | null {
+  try {
+    const parsedOrigin = new URL(origin);
+
+    if (
+      (parsedOrigin.protocol !== "http:" && parsedOrigin.protocol !== "https:") ||
+      parsedOrigin.username !== "" ||
+      parsedOrigin.password !== "" ||
+      parsedOrigin.pathname !== "/" ||
+      parsedOrigin.search !== "" ||
+      parsedOrigin.hash !== ""
+    ) {
+      return null;
+    }
+
+    return parsedOrigin;
+  } catch {
+    return null;
+  }
+}
+
+function isLocalDevelopmentOrigin(origin: URL): boolean {
+  return (
+    origin.hostname === "localhost" ||
+    origin.hostname === "127.0.0.1" ||
+    origin.hostname === "[::1]" ||
+    origin.hostname === "::1"
+  );
 }
 
 function createTokenExchangeAbortSignal(dependencies: OAuthPkceDependencies): AbortSignal {
