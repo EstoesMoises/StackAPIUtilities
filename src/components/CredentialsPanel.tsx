@@ -251,6 +251,12 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
     }
   }
 
+  function handleOAuthCancel() {
+    pendingOAuthFlowRef.current?.popup.close();
+    clearPendingOAuthFlow();
+    setOauthError(null);
+  }
+
   const isEnterprise = draft.instanceType === "enterprise";
 
   return (
@@ -345,6 +351,11 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
               >
                 Connect with Enterprise OAuth
               </button>
+              {oauthPending && (
+                <button className="s-btn" type="button" onClick={handleOAuthCancel}>
+                  Cancel Enterprise OAuth
+                </button>
+              )}
               <p className="oauth-status">
                 Enterprise OAuth credentials are saved after the authorization callback completes.
               </p>

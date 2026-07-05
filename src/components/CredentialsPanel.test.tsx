@@ -460,6 +460,79 @@ describe("CredentialsPanel", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(connectButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel Enterprise OAuth" })).toBeInTheDocument();
+  });
+
+  it("cancels a pending OAuth flow and allows a retry", async () => {
+    const user = userEvent.setup();
+    const firstPopup = createPopup();
+    const secondPopup = createPopup();
+    vi.spyOn(window, "open")
+      .mockReturnValueOnce(firstPopup as unknown as Window)
+      .mockReturnValueOnce(secondPopup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=abc" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=def" }),
+      );
+
+    renderCredentialsPanel();
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    const connectButton = screen.getByRole("button", { name: "Connect with Enterprise OAuth" });
+    await user.click(connectButton);
+
+    expect(connectButton).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Cancel Enterprise OAuth" }));
+
+    expect(firstPopup.close).toHaveBeenCalled();
+    expect(connectButton).toBeEnabled();
+
+    await user.click(connectButton);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeDisabled();
+    });
+  });
+
+  it("ignores old popup callbacks after OAuth cancellation", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=abc" }),
+    );
+
+    renderCredentialsPanel({ onSave });
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+    await user.click(screen.getByRole("button", { name: "Cancel Enterprise OAuth" }));
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          origin: window.location.origin,
+          source: popup as unknown as MessageEventSource,
+          data: {
+            type: "stack-api-oauth-pkce-result",
+            ok: true,
+            credential: enterpriseOAuthCredentials(),
+          },
+        }),
+      );
+    });
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeEnabled();
   });
 
   it("initializes no-expiry opt in from existing OAuth scopes", () => {
