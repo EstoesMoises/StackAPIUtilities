@@ -128,7 +128,7 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
     await user.click(screen.getByRole("button", { name: "Credentials" }));
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
-    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Reports" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
@@ -140,7 +140,7 @@ describe("AppShell", () => {
       credentials: {
         instanceType: "basic-business",
         baseUrl: "https://stackoverflowteams.com/c/example-team",
-        accessToken: "token",
+        pat: "pat-token",
       },
       periodRole: "current",
       scope: {},
@@ -201,7 +201,7 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "Credentials" }));
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
-    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Reports" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
@@ -252,7 +252,7 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
     await user.click(screen.getByRole("button", { name: "Credentials" }));
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
-    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Reports" }));
     await user.click(screen.getByLabelText("Enable comparison period"));
@@ -274,7 +274,7 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "Credentials" }));
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/demo");
-    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
 
     expect(screen.getByText("Credentials saved for this browser session.")).toBeInTheDocument();
