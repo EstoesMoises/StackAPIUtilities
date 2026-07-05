@@ -507,11 +507,15 @@ function resolveOAuthRedirectOrigin(
 
   const parsedRequestOrigin = parsePublicOAuthOrigin(requestOrigin);
 
-  if (parsedRequestOrigin === null || !isLocalDevelopmentOrigin(parsedRequestOrigin)) {
+  if (parsedRequestOrigin === null) {
     return null;
   }
 
-  return parsedRequestOrigin.origin;
+  if (parsedRequestOrigin.protocol === "https:" || isLocalDevelopmentOrigin(parsedRequestOrigin)) {
+    return parsedRequestOrigin.origin;
+  }
+
+  return null;
 }
 
 function parsePublicOAuthOrigin(origin: string): URL | null {

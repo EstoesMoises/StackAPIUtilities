@@ -29,6 +29,11 @@ The shared credentials screen supports three authentication lanes:
 
 Enterprise OAuth requests the minimum workflow scope by default. User Group Sync requests `write_access`. `no_expiry` is off by default and is included only when explicitly selected.
 
+In production, Enterprise OAuth uses the app's HTTPS request origin as the callback origin by default. If the app is behind a proxy or needs a fixed callback URL, set one of these server environment variables:
+
+- `STACK_API_UTILITIES_PUBLIC_ORIGIN=https://your-app.example.com`
+- `STACK_API_UTILITIES_OAUTH_REDIRECT_URI=https://your-app.example.com/api/oauth/pkce/callback`
+
 ### Local Enterprise OAuth Test
 
 For Enterprise OAuth clients that require a non-localhost redirect URI, run the app through `redirectmeto` while keeping the local PKCE callback:

@@ -368,10 +368,34 @@ describe("oauthPkceApi", () => {
     });
   });
 
-  it("rejects production request origins without a configured public origin", async () => {
+  it("uses HTTPS production request origins without a configured public origin", async () => {
     await withPublicOriginEnv(undefined, async () => {
       const response = await handleOAuthPkceStartRoutePost(
-        new Request("https://utilities.example.com/api/oauth/pkce/start", {
+        new Request("https://stack-api-utilities.vercel.app/api/oauth/pkce/start", {
+          method: "POST",
+          body: JSON.stringify({
+            baseUrl: "https://demo.stackenterprise.co",
+            clientId: "365",
+            scopes: ["write_access"],
+          }),
+        }) as NextRequest,
+      );
+      const body = await response.json();
+      const authorizationUrl = new URL(body.authorizationUrl);
+
+      expect(response.status).toBe(200);
+      expect(authorizationUrl.searchParams.get("client_id")).toBe("365");
+      expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
+        "https://stack-api-utilities.vercel.app/api/oauth/pkce/callback",
+      );
+      expect(response.headers.get("set-cookie")).toContain(`${OAUTH_PKCE_COOKIE_NAME}=`);
+    });
+  });
+
+  it("rejects non-local HTTP request origins without a configured public origin", async () => {
+    await withPublicOriginEnv(undefined, async () => {
+      const response = await handleOAuthPkceStartRoutePost(
+        new Request("http://utilities.example.com/api/oauth/pkce/start", {
           method: "POST",
           body: JSON.stringify({
             baseUrl: "https://demo.stackenterprise.co",
