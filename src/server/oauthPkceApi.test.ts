@@ -551,6 +551,32 @@ describe("oauthPkceApi", () => {
     expect(html).toContain("oauth-token");
   });
 
+  it("accepts redirectmeto pending redirects when the callback route only has the pending cookie", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ access_token: "oauth-token", expires: 86400 }), {
+        status: 200,
+      }),
+    );
+
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${redirectmetoOrigin}/api/oauth/pkce/callback?code=code-123&state=state-123`),
+      encodePendingOAuthCookie(
+        validPending({
+          redirectUri: redirectmetoCallbackUri,
+        }),
+      ),
+      {
+        fetchFn,
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(fetchFn).toHaveBeenCalled();
+    expect(html).toContain("stack-api-oauth-pkce-result");
+    expect(html).toContain("oauth-token");
+  });
+
   it("rejects public-origin callbacks that do not hit the callback path", async () => {
     const fetchFn = vi.fn();
     const result = await handleOAuthPkceCallbackRequest(
@@ -637,6 +663,41 @@ describe("oauthPkceApi", () => {
         expect(response.headers.get("Pragma")).toBe("no-cache");
         expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
         expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
+  it("callback Next route accepts redirectmeto pending redirects", async () => {
+    await withRedirectUriEnv(redirectmetoCallbackUri, async () => {
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ access_token: "oauth-token", expires: 86400 }), {
+          status: 200,
+        }),
+      );
+      vi.stubGlobal("fetch", fetchFn);
+
+      try {
+        const response = await handleOAuthPkceCallbackRouteGet(
+          new NextRequest(
+            `${redirectmetoOrigin}/api/oauth/pkce/callback?code=code-123&state=state-123`,
+            {
+              headers: {
+                cookie: `${OAUTH_PKCE_COOKIE_NAME}=${encodePendingOAuthCookie(
+                  validPending({
+                    redirectUri: redirectmetoCallbackUri,
+                    expiresAt: "2999-01-01T00:00:00.000Z",
+                  }),
+                )}`,
+              },
+            },
+          ),
+        );
+        const html = await response.text();
+
+        expect(html).toContain("oauth-token");
+        expect(fetchFn).toHaveBeenCalled();
       } finally {
         vi.unstubAllGlobals();
       }

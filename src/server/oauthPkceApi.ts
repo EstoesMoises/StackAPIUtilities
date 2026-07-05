@@ -719,15 +719,55 @@ function isValidPendingOAuthExchangeTarget(
       dependencies.publicOrigin,
       callbackUrl.origin,
     );
+    const pendingRedirectmetoTarget = resolvePendingRedirectmetoTarget(pending.redirectUri);
 
-    return (
-      expectedRedirectTarget !== null &&
-      pending.redirectUri === expectedRedirectTarget.redirectUri &&
-      (!expectedRedirectTarget.requireCallbackOriginMatch ||
-        callbackUrl.origin === expectedRedirectTarget.callbackUrl.origin)
+    return [expectedRedirectTarget, pendingRedirectmetoTarget].some((target) =>
+      isMatchingOAuthRedirectTarget(pending, callbackUrl, target),
     );
   } catch {
     return false;
+  }
+}
+
+function isMatchingOAuthRedirectTarget(
+  pending: PendingOAuthTransaction,
+  callbackUrl: URL,
+  target: OAuthRedirectTarget | null,
+): boolean {
+  return (
+    target !== null &&
+    pending.redirectUri === target.redirectUri &&
+    (!target.requireCallbackOriginMatch || callbackUrl.origin === target.callbackUrl.origin ||
+      areEquivalentLocalCallbackOrigins(callbackUrl, target.callbackUrl))
+  );
+}
+
+function areEquivalentLocalCallbackOrigins(left: URL, right: URL): boolean {
+  return (
+    isLocalDevelopmentOrigin(left) &&
+    isLocalDevelopmentOrigin(right) &&
+    left.protocol === right.protocol &&
+    left.port === right.port
+  );
+}
+
+function resolvePendingRedirectmetoTarget(redirectUri: string): OAuthRedirectTarget | null {
+  try {
+    const parsedRedirectUri = new URL(redirectUri);
+    const redirectmetoTarget = parseRedirectmetoCallbackTarget(parsedRedirectUri);
+
+    if (redirectmetoTarget === null) {
+      return null;
+    }
+
+    return {
+      redirectUri,
+      callbackUrl: redirectmetoTarget,
+      cookieSecure: redirectmetoTarget.protocol === "https:",
+      requireCallbackOriginMatch: true,
+    };
+  } catch {
+    return null;
   }
 }
 
