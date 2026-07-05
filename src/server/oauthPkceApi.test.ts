@@ -87,6 +87,22 @@ describe("oauthPkceApi", () => {
     expect(pending?.scopes).toEqual(["write_access", "no_expiry"]);
   });
 
+  it("normalizes whitespace around supported OAuth scopes before starting", async () => {
+    const result = await handleOAuthPkceStartRequest(
+      {
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
+        scopes: [" write_access "],
+        includeNoExpiry: false,
+      },
+      { origin, now: () => now },
+    );
+    const pending = decodePendingOAuthCookie(result.cookie?.value ?? "");
+
+    expect(result.response.status).toBe(200);
+    expect(pending?.scopes).toEqual(["write_access"]);
+  });
+
   it("preserves start response security headers in the Next route", async () => {
     const response = await handleOAuthPkceStartRoutePost(
       new Request(`${origin}/api/oauth/pkce/start`, {
@@ -185,25 +201,72 @@ describe("oauthPkceApi", () => {
     expect(result.response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(result.clearCookie).toBe(true);
     expect(fetchFn).toHaveBeenCalledWith(
-      "https://demo.stackenterprise.co/oauth/access_token/json",
+      expect.stringContaining("https://demo.stackenterprise.co/oauth/access_token/json?"),
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: expect.any(URLSearchParams),
         signal,
       }),
     );
     expect(createAbortSignal).toHaveBeenCalledWith(15000);
-    const [, init] = fetchFn.mock.calls[0];
-    expect(Object.fromEntries((init.body as URLSearchParams).entries())).toEqual({
-      client_id: "client-123",
-      code: "code-123",
-      redirect_uri: `${origin}/api/oauth/pkce/callback`,
-      code_verifier: "verifier-123",
-    });
+    const [tokenExchangeUrl, init] = fetchFn.mock.calls[0];
+    const tokenUrl = new URL(tokenExchangeUrl as string);
+    expect(tokenUrl.searchParams.get("client_id")).toBe("client-123");
+    expect(tokenUrl.searchParams.get("code")).toBe("code-123");
+    expect(tokenUrl.searchParams.get("redirect_uri")).toBe(`${origin}/api/oauth/pkce/callback`);
+    expect(tokenUrl.searchParams.get("code_verifier")).toBe("verifier-123");
+    expect(init.body).toBeUndefined();
     expect(html).toContain("stack-api-oauth-pkce-result");
     expect(html).toContain("oauth-token");
     expect(html).toContain("2026-07-05T12:00:00.000Z");
+  });
+
+  it("rejects expiring token responses without a positive numeric expires value", async () => {
+    const invalidTokenBodies = [
+      { access_token: "oauth-token" },
+      { access_token: "oauth-token", expires: "86400" },
+      { access_token: "oauth-token", expires: 0 },
+      { access_token: "oauth-token", expires: -1 },
+    ];
+
+    for (const tokenBody of invalidTokenBodies) {
+      const result = await handleOAuthPkceCallbackRequest(
+        new URL(`${origin}/api/oauth/pkce/callback?code=code-123&state=state-123`),
+        encodePendingOAuthCookie(validPending()),
+        {
+          fetchFn: vi.fn().mockResolvedValue(
+            new Response(JSON.stringify(tokenBody), {
+              status: 200,
+            }),
+          ),
+          now: () => now,
+        },
+      );
+      const html = await result.response.text();
+
+      expect(html).toContain("OAuth token response did not include a valid expiration.");
+      expect(html).not.toContain("oauth-token");
+    }
+  });
+
+  it("allows no_expiry token responses without an expires value", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-123&state=state-123`),
+      encodePendingOAuthCookie(validPending({ scopes: ["write_access", "no_expiry"] })),
+      {
+        fetchFn: vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ access_token: "oauth-token" }), {
+            status: 200,
+          }),
+        ),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("stack-api-oauth-pkce-result");
+    expect(html).toContain("oauth-token");
+    expect(html).not.toContain("accessTokenExpiresAt");
   });
 
   it("returns a safe retryable callback error when token exchange fails before a response", async () => {

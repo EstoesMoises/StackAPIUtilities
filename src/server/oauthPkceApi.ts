@@ -102,7 +102,7 @@ export async function handleOAuthPkceStartRequest(
     !isNonBlankString(startPayload.baseUrl) ||
     !isNonBlankString(startPayload.clientId) ||
     !isStringArray(startPayload.scopes) ||
-    !isSupportedRequestedScopeList(startPayload.scopes) ||
+    !isSupportedRequestedScopeList(startPayload.scopes.map((scope) => scope.trim())) ||
     !isSupportedEnterpriseOAuthTarget(startPayload.baseUrl)
   ) {
     return { response: jsonResponse({ ok: false, error: START_REQUEST_ERROR }, 400) };
@@ -214,10 +214,12 @@ export async function handleOAuthPkceCallbackRequest(
       return callbackError("OAuth token response did not include an access token.");
     }
 
-    const accessTokenExpiresAt =
-      typeof tokenBody.expires === "number" && Number.isFinite(tokenBody.expires)
-        ? new Date(now.getTime() + tokenBody.expires * 1000).toISOString()
-        : undefined;
+    const accessTokenExpiresAt = createAccessTokenExpiresAt(tokenBody.expires, pending, now);
+
+    if (!pending.scopes.includes(OAUTH_SCOPE_NO_EXPIRY) && accessTokenExpiresAt === undefined) {
+      return callbackError("OAuth token response did not include a valid expiration.");
+    }
+
     const credential = {
       instanceType: "enterprise",
       baseUrl: pending.baseUrl,
@@ -261,17 +263,16 @@ async function exchangeAuthorizationCodeForToken(
 ): Promise<OAuthTokenResponseBody> {
   const fetchFn = dependencies.fetchFn ?? fetch;
   let response: Response;
+  const tokenEndpointUrl = buildEnterpriseTokenEndpointUrl(pending.baseUrl);
+  tokenEndpointUrl.searchParams.set("client_id", pending.clientId);
+  tokenEndpointUrl.searchParams.set("code", code);
+  tokenEndpointUrl.searchParams.set("redirect_uri", pending.redirectUri);
+  tokenEndpointUrl.searchParams.set("code_verifier", pending.codeVerifier);
 
   try {
-    response = await fetchFn(buildEnterpriseTokenEndpointUrl(pending.baseUrl).toString(), {
+    response = await fetchFn(tokenEndpointUrl.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: pending.clientId,
-        code,
-        redirect_uri: pending.redirectUri,
-        code_verifier: pending.codeVerifier,
-      }),
       signal: createTokenExchangeAbortSignal(dependencies),
     });
   } catch {
@@ -450,6 +451,22 @@ function toErrorMessage(error: unknown): string {
 
 function isJsonSyntaxError(error: unknown): boolean {
   return error instanceof SyntaxError;
+}
+
+function createAccessTokenExpiresAt(
+  expires: unknown,
+  pending: PendingOAuthTransaction,
+  now: Date,
+): string | undefined {
+  if (pending.scopes.includes(OAUTH_SCOPE_NO_EXPIRY)) {
+    return undefined;
+  }
+
+  if (typeof expires !== "number" || !Number.isFinite(expires) || expires <= 0) {
+    return undefined;
+  }
+
+  return new Date(now.getTime() + expires * 1000).toISOString();
 }
 
 function createTokenExchangeAbortSignal(dependencies: OAuthPkceDependencies): AbortSignal {
