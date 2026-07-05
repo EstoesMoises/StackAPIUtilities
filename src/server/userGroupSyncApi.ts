@@ -1,5 +1,9 @@
 import { StackApiV3Client } from "../api/stackApiV3";
-import { normalizeInstanceUrl, type NormalizedInstance } from "../credentials/credentialRules";
+import {
+  normalizeInstanceUrl,
+  validateEnterpriseV3OAuthCredentials,
+  type NormalizedInstance,
+} from "../credentials/credentialRules";
 import type { SessionCredentials } from "../domain/types";
 import {
   applyUserGroupSyncPlan,
@@ -91,11 +95,11 @@ export async function handleUserGroupSyncRequest(
     );
   }
 
-  if (!normalizedCredentials.accessToken && !normalizedCredentials.pat) {
-    return browserJsonResponse(
-      { ok: false, error: "Enterprise user group sync requires an access token with write_access." },
-      400,
-    );
+  const oauthValidation = validateEnterpriseV3OAuthCredentials(normalizedCredentials, {
+    requiredScopes: ["write_access"],
+  });
+  if (!oauthValidation.valid) {
+    return browserJsonResponse({ ok: false, error: oauthValidation.messages.join(" ") }, 400);
   }
 
   const expectedPreview =
@@ -191,7 +195,7 @@ function createStackApiV3Client(
 ): StackApiV3Client {
   return new StackApiV3Client({
     apiV3Url: normalizedInstance.apiV3Url,
-    token: credentials.accessToken ?? credentials.pat ?? "",
+    token: credentials.accessToken ?? "",
   });
 }
 
@@ -229,8 +233,20 @@ function isUserGroupSyncRequestPayload(value: unknown): value is UserGroupSyncRe
     typeof value.credentials.instanceType === "string" &&
     typeof value.credentials.baseUrl === "string" &&
     (value.credentials.accessToken === undefined || typeof value.credentials.accessToken === "string") &&
-    (value.credentials.pat === undefined || typeof value.credentials.pat === "string")
+    (value.credentials.pat === undefined || typeof value.credentials.pat === "string") &&
+    isOptionalAuthSource(value.credentials.authSource) &&
+    isOptionalString(value.credentials.oauthClientId) &&
+    (value.credentials.oauthScopes === undefined || isStringArray(value.credentials.oauthScopes)) &&
+    isOptionalString(value.credentials.accessTokenExpiresAt)
   );
+}
+
+function isOptionalAuthSource(value: unknown): value is SessionCredentials["authSource"] | undefined {
+  return value === undefined || value === "manual-pat" || value === "oauth-pkce";
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
 }
 
 function isUserGroupSyncMode(value: unknown): value is UserGroupSyncMode {

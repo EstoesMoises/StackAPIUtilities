@@ -1,7 +1,7 @@
 import { StackApiV2Client } from "../api/stackApiV2";
 import { StackApiV3Client } from "../api/stackApiV3";
 import type { FetchLike, ThrottleNotice } from "../api/httpClient";
-import { normalizeInstanceUrl } from "../credentials/credentialRules";
+import { normalizeInstanceUrl, validateCredentialsForReport } from "../credentials/credentialRules";
 import { DEFAULT_REPORT_RUN_SCOPE } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
 import type {
@@ -65,6 +65,11 @@ export async function runLiveReport(
 
   if (!report) {
     throw new Error(`Unknown report: ${reportId}`);
+  }
+
+  const credentialValidation = validateCredentialsForReport(reportId, credentials);
+  if (!credentialValidation.valid) {
+    throw new Error(credentialValidation.messages.join(" "));
   }
 
   const plannedDatasets = planDatasetsForReports([reportId]);
@@ -149,7 +154,7 @@ function createLiveCollectorClients(
   options: LiveReportRunOptions,
 ): LiveCollectorClients {
   const instance = normalizeInstanceUrl(credentials.baseUrl);
-  const token = credentials.accessToken ?? credentials.pat ?? "";
+  const token = credentials.instanceType === "basic-business" ? credentials.pat ?? "" : credentials.accessToken ?? "";
 
   return {
     v2: new StackApiV2Client({

@@ -55,6 +55,10 @@ export interface SessionCredentials {
   apiKey?: string;
   accessToken?: string;
   pat?: string;
+  authSource?: "manual-pat" | "oauth-pkce";
+  oauthClientId?: string;
+  oauthScopes?: string[];
+  accessTokenExpiresAt?: string;
 }
 
 export interface ReportMetadata {

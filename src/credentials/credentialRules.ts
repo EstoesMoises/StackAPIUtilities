@@ -1,3 +1,5 @@
+import { getLiveDatasetClient, type LiveCollectorClients } from "../collectors/liveCollectors";
+import { planDatasetsForReports } from "../collectors/datasetPlanner";
 import { reportRegistry } from "../domain/reportRegistry";
 import type { InstanceType, ReportId, SessionCredentials } from "../domain/types";
 
@@ -12,6 +14,11 @@ export interface NormalizedInstance {
 export interface ValidationResult {
   valid: boolean;
   messages: string[];
+}
+
+export interface EnterpriseOAuthValidationOptions {
+  requiredScopes?: string[];
+  now?: Date;
 }
 
 export function normalizeInstanceUrl(input: string): NormalizedInstance {
@@ -42,7 +49,51 @@ export function normalizeInstanceUrl(input: string): NormalizedInstance {
   };
 }
 
-export function validateCredentialsForReport(reportId: ReportId, credentials: SessionCredentials): ValidationResult {
+export function validateEnterpriseV3OAuthCredentials(
+  credentials: SessionCredentials | null,
+  options: EnterpriseOAuthValidationOptions = {},
+): ValidationResult {
+  const messages: string[] = [];
+
+  if (
+    !credentials ||
+    credentials.instanceType !== "enterprise" ||
+    credentials.authSource !== "oauth-pkce" ||
+    !credentials.accessToken?.trim()
+  ) {
+    return {
+      valid: false,
+      messages: ["Enterprise OAuth connection is required for Stack API v3 calls."],
+    };
+  }
+
+  const scopes = new Set(Array.isArray(credentials.oauthScopes) ? credentials.oauthScopes : []);
+
+  if (credentials.accessTokenExpiresAt !== undefined) {
+    const expiresAt = new Date(credentials.accessTokenExpiresAt);
+    const now = options.now ?? new Date();
+
+    if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= now.getTime()) {
+      messages.push("Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.");
+    }
+  } else if (!scopes.has("no_expiry")) {
+    messages.push("Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.");
+  }
+
+  for (const requiredScope of options.requiredScopes ?? []) {
+    if (!scopes.has(requiredScope)) {
+      messages.push(`Enterprise OAuth token is missing required scope: ${requiredScope}.`);
+    }
+  }
+
+  return { valid: messages.length === 0, messages };
+}
+
+export function validateCredentialsForReport(
+  reportId: ReportId,
+  credentials: SessionCredentials,
+  now: Date = new Date(),
+): ValidationResult {
   const report = reportRegistry.find((candidate) => candidate.id === reportId);
   const messages: string[] = [];
 
@@ -55,19 +106,47 @@ export function validateCredentialsForReport(reportId: ReportId, credentials: Se
   }
 
   if (credentials.instanceType === "basic-business") {
-    if (!credentials.accessToken && !credentials.pat) {
-      messages.push("Access token or PAT is required for Basic/Business API calls.");
+    if (report.credentialRequirements.includes("access-token") && !credentials.pat?.trim()) {
+      messages.push("Personal access token is required for Basic/Business API calls.");
     }
   }
 
   if (credentials.instanceType === "enterprise") {
-    if (report.credentialRequirements.includes("api-key") && !credentials.apiKey) {
+    const credentialPlan = planEnterpriseCredentialRequirements(reportId, report.credentialRequirements);
+
+    if (credentialPlan.requiresApiKey && !credentials.apiKey?.trim()) {
       messages.push("API key is required for Stack API v2.3 Enterprise calls.");
     }
-    if (report.credentialRequirements.includes("access-token") && !credentials.accessToken) {
-      messages.push("Access token is required for Stack API v3 calls.");
+    if (credentialPlan.requiresOAuth) {
+      messages.push(...validateEnterpriseV3OAuthCredentials(credentials, { now }).messages);
     }
   }
 
   return { valid: messages.length === 0, messages };
+}
+
+function planEnterpriseCredentialRequirements(
+  reportId: ReportId,
+  credentialRequirements: readonly string[],
+): { requiresApiKey: boolean; requiresOAuth: boolean } {
+  const liveDatasetClients = new Set<keyof LiveCollectorClients>();
+
+  for (const dataset of planDatasetsForReports([reportId])) {
+    const client = getLiveDatasetClient(dataset);
+    if (client) {
+      liveDatasetClients.add(client);
+    }
+  }
+
+  if (liveDatasetClients.size > 0) {
+    return {
+      requiresApiKey: liveDatasetClients.has("v2"),
+      requiresOAuth: liveDatasetClients.has("v3"),
+    };
+  }
+
+  return {
+    requiresApiKey: credentialRequirements.includes("api-key"),
+    requiresOAuth: credentialRequirements.includes("access-token"),
+  };
 }

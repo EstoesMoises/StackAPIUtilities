@@ -10,7 +10,10 @@ afterEach(() => {
 const credentials = {
   instanceType: "enterprise" as const,
   baseUrl: "https://demo.stackenterprise.co",
-  accessToken: "token",
+  accessToken: "oauth-token",
+  authSource: "oauth-pkce" as const,
+  oauthScopes: ["write_access"],
+  accessTokenExpiresAt: "2026-07-05T12:00:00.000Z",
 };
 
 const csv = [
@@ -61,6 +64,13 @@ const exactSyncPreviewBody = {
 };
 
 describe("UserGroupSyncPanel", () => {
+  it("prompts for Enterprise OAuth credentials when missing", () => {
+    render(<UserGroupSyncPanel credentials={null} />);
+
+    expect(screen.getByText("Connect with Enterprise OAuth before using User Group Sync.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+  });
+
   it("uploads a CSV and previews add-only changes", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(addOnlyPreviewBody));
@@ -551,7 +561,7 @@ describe("UserGroupSyncPanel", () => {
     render(<UserGroupSyncPanel credentials={null} />);
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Save Enterprise session credentials before using write tools.",
+      "Connect with Enterprise OAuth before using User Group Sync.",
     );
 
     await user.upload(

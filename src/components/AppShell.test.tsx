@@ -1,8 +1,15 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
+
+const basicBusinessPatCredentials = {
+  instanceType: "basic-business",
+  baseUrl: "https://stackoverflowteams.com/c/example-team",
+  pat: "pat-token",
+  authSource: "manual-pat",
+} as const;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -31,8 +38,8 @@ describe("AppShell", () => {
       screen.getByText("Credentials are kept in memory for this browser session only."),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Instance URL")).toBeInTheDocument();
-    expect(screen.getByLabelText("API key")).toBeInTheDocument();
-    expect(screen.getByLabelText("Access token")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Personal access token")).toBeInTheDocument();
     expect(screen.getByText("Tag Report credential notes")).toBeInTheDocument();
   });
@@ -128,7 +135,7 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
     await user.click(screen.getByRole("button", { name: "Credentials" }));
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
-    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Reports" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
@@ -137,11 +144,7 @@ describe("AppShell", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       reportId: "inactive-users",
-      credentials: {
-        instanceType: "basic-business",
-        baseUrl: "https://stackoverflowteams.com/c/example-team",
-        accessToken: "token",
-      },
+      credentials: basicBusinessPatCredentials,
       periodRole: "current",
       scope: {},
       pageSize: 100,
@@ -201,13 +204,16 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "Credentials" }));
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
-    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Reports" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
     expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      credentials: basicBusinessPatCredentials,
+    });
     expect(screen.getByText("5 datasets")).toBeInTheDocument();
     expect(screen.getAllByText("tagSmes").length).toBeGreaterThanOrEqual(1);
   });
@@ -252,7 +258,7 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
     await user.click(screen.getByRole("button", { name: "Credentials" }));
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
-    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Reports" }));
     await user.click(screen.getByLabelText("Enable comparison period"));
@@ -263,8 +269,16 @@ describe("AppShell", () => {
     expect(screen.getByText("Comparison Records")).toBeInTheDocument();
     expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).periodRole).toBe("current");
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).periodRole).toBe("comparison");
+    const currentRunBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const comparisonRunBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(currentRunBody).toMatchObject({
+      credentials: basicBusinessPatCredentials,
+      periodRole: "current",
+    });
+    expect(comparisonRunBody).toMatchObject({
+      credentials: basicBusinessPatCredentials,
+      periodRole: "comparison",
+    });
   });
 
   it("saves credentials for the current browser session", async () => {
@@ -274,9 +288,69 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "Credentials" }));
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/demo");
-    await user.type(screen.getByLabelText("Access token"), "token");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
 
     expect(screen.getByText("Credentials saved for this browser session.")).toBeInTheDocument();
   });
+
+  it("saves Enterprise OAuth credentials through the App reducer", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=abc" }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    await waitFor(() => {
+      expect(popup.location.href).toBe("https://demo.stackenterprise.co/oauth?state=abc");
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/oauth/pkce/start");
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          origin: window.location.origin,
+          source: popup as unknown as MessageEventSource,
+          data: {
+            type: "stack-api-oauth-pkce-result",
+            ok: true,
+            credential: {
+              instanceType: "enterprise",
+              baseUrl: "https://demo.stackenterprise.co",
+              accessToken: "oauth-token",
+              authSource: "oauth-pkce",
+              oauthClientId: "client-123",
+              oauthScopes: ["write_access"],
+            },
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Credentials saved for this browser session.")).toBeInTheDocument();
+    expect(screen.getByText("Credentials saved")).toBeInTheDocument();
+  });
 });
+
+function createPopup() {
+  return {
+    location: { href: "" },
+    close: vi.fn(),
+  };
+}
+
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}

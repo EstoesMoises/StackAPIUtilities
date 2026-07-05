@@ -19,14 +19,29 @@ Live API execution runs through the same-origin Next.js route at `/api/reports/r
 
 ## Credentials
 
-The shared credentials screen captures:
+Credentials and generated report data are session-only; the app does not persist them in browser storage.
 
-- Instance URL
-- API key
-- Access token
-- Personal access token
+The shared credentials screen supports three authentication lanes:
 
-Credential guidance placeholder: add customer-facing instructions for obtaining each credential here.
+- Stack Overflow Basic/Business: instance URL plus personal access token.
+- Stack Overflow Enterprise API v3: OAuth Authorization Code with PKCE, using the Enterprise instance URL and OAuth Client ID.
+- Stack Overflow Enterprise API v2.3: API key remains available for workflows that still call v2.3 endpoints.
+
+Enterprise OAuth requests the minimum workflow scope by default. User Group Sync requests `write_access`. `no_expiry` is off by default and is included only when explicitly selected.
+
+### Local Enterprise OAuth Test
+
+For Enterprise OAuth clients that require a non-localhost redirect URI, run the app through `redirectmeto` while keeping the local PKCE callback:
+
+```bash
+STACK_API_UTILITIES_OAUTH_REDIRECT_URI=http://redirectmeto.com/http://127.0.0.1:3002/api/oauth/pkce/callback pnpm exec next dev -H 127.0.0.1 -p 3002
+```
+
+Register this exact redirect URI with the Enterprise OAuth client:
+
+```text
+http://redirectmeto.com/http://127.0.0.1:3002/api/oauth/pkce/callback
+```
 
 ## Development
 
