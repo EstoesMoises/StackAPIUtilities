@@ -469,7 +469,7 @@ describe("oauthPkceApi", () => {
     expect(result.response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(result.clearCookie).toBe(true);
     expect(fetchFn).toHaveBeenCalledWith(
-      expect.stringContaining("https://demo.stackenterprise.co/oauth/access_token/json?"),
+      "https://demo.stackenterprise.co/oauth/access_token/json",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -479,11 +479,13 @@ describe("oauthPkceApi", () => {
     expect(createAbortSignal).toHaveBeenCalledWith(15000);
     const [tokenExchangeUrl, init] = fetchFn.mock.calls[0];
     const tokenUrl = new URL(tokenExchangeUrl as string);
-    expect(tokenUrl.searchParams.get("client_id")).toBe("client-123");
-    expect(tokenUrl.searchParams.get("code")).toBe("code-123");
-    expect(tokenUrl.searchParams.get("redirect_uri")).toBe(`${origin}/api/oauth/pkce/callback`);
-    expect(tokenUrl.searchParams.get("code_verifier")).toBe("verifier-123");
-    expect(init.body).toBeUndefined();
+    expect(tokenUrl.search).toBe("");
+    expect(init.body).toBeInstanceOf(URLSearchParams);
+    const body = init.body as URLSearchParams;
+    expect(body.get("client_id")).toBe("client-123");
+    expect(body.get("code")).toBe("code-123");
+    expect(body.get("redirect_uri")).toBe(`${origin}/api/oauth/pkce/callback`);
+    expect(body.get("code_verifier")).toBe("verifier-123");
     expect(html).toContain("stack-api-oauth-pkce-result");
     expect(html).toContain("oauth-token");
     expect(html).toContain("2026-07-05T12:00:00.000Z");
@@ -512,9 +514,11 @@ describe("oauthPkceApi", () => {
     const html = await result.response.text();
 
     expect(fetchFn).toHaveBeenCalled();
-    const [tokenExchangeUrl] = fetchFn.mock.calls[0];
+    const [tokenExchangeUrl, init] = fetchFn.mock.calls[0];
     const tokenUrl = new URL(tokenExchangeUrl as string);
-    expect(tokenUrl.searchParams.get("redirect_uri")).toBe(
+    expect(tokenUrl.search).toBe("");
+    expect(init.body).toBeInstanceOf(URLSearchParams);
+    expect((init.body as URLSearchParams).get("redirect_uri")).toBe(
       "https://public.example.com/api/oauth/pkce/callback",
     );
     expect(html).toContain("stack-api-oauth-pkce-result");
@@ -544,9 +548,11 @@ describe("oauthPkceApi", () => {
     const html = await result.response.text();
 
     expect(fetchFn).toHaveBeenCalled();
-    const [tokenExchangeUrl] = fetchFn.mock.calls[0];
+    const [tokenExchangeUrl, init] = fetchFn.mock.calls[0];
     const tokenUrl = new URL(tokenExchangeUrl as string);
-    expect(tokenUrl.searchParams.get("redirect_uri")).toBe(redirectmetoCallbackUri);
+    expect(tokenUrl.search).toBe("");
+    expect(init.body).toBeInstanceOf(URLSearchParams);
+    expect((init.body as URLSearchParams).get("redirect_uri")).toBe(redirectmetoCallbackUri);
     expect(html).toContain("stack-api-oauth-pkce-result");
     expect(html).toContain("oauth-token");
   });
@@ -754,6 +760,26 @@ describe("oauthPkceApi", () => {
     expect(html).not.toContain("accessTokenExpiresAt");
   });
 
+  it("allows supported pending OAuth scopes regardless of order", async () => {
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${origin}/api/oauth/pkce/callback?code=code-123&state=state-123`),
+      encodePendingOAuthCookie(validPending({ scopes: ["no_expiry", "write_access"] })),
+      {
+        fetchFn: vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ access_token: "oauth-token" }), {
+            status: 200,
+          }),
+        ),
+        now: () => now,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(html).toContain("stack-api-oauth-pkce-result");
+    expect(html).toContain("oauth-token");
+    expect(html).not.toContain("OAuth authorization request is invalid.");
+  });
+
   it("returns a safe retryable callback error when token exchange fails before a response", async () => {
     const result = await handleOAuthPkceCallbackRequest(
       new URL(`${origin}/api/oauth/pkce/callback?code=code-secret&state=state-123`),
@@ -801,6 +827,8 @@ describe("oauthPkceApi", () => {
       validPending({ redirectUri: `${origin}/api/oauth/pkce/callback#fragment` }),
       validPending({ scopes: ["write_access", "admin_scope"] }),
       validPending({ scopes: ["write_access,no_expiry"] }),
+      validPending({ scopes: ["write_access", "write_access"] }),
+      validPending({ scopes: ["write_access", "no_expiry", "admin_scope"] }),
       validPending({ redirectUri: "not a url" }),
     ];
 

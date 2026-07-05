@@ -277,15 +277,18 @@ async function exchangeAuthorizationCodeForToken(
   const fetchFn = dependencies.fetchFn ?? fetch;
   let response: Response;
   const tokenEndpointUrl = buildEnterpriseTokenEndpointUrl(pending.baseUrl);
-  tokenEndpointUrl.searchParams.set("client_id", pending.clientId);
-  tokenEndpointUrl.searchParams.set("code", code);
-  tokenEndpointUrl.searchParams.set("redirect_uri", pending.redirectUri);
-  tokenEndpointUrl.searchParams.set("code_verifier", pending.codeVerifier);
+  const body = new URLSearchParams({
+    client_id: pending.clientId,
+    code,
+    redirect_uri: pending.redirectUri,
+    code_verifier: pending.codeVerifier,
+  });
 
   try {
     response = await fetchFn(tokenEndpointUrl.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
       signal: createTokenExchangeAbortSignal(dependencies),
     });
   } catch {
@@ -678,11 +681,17 @@ function isSupportedRequestedScopeList(scopes: string[]): boolean {
 }
 
 function isValidPendingOAuthScopes(scopes: string[]): boolean {
+  if (scopes.length === 0 || scopes.length > 2) {
+    return false;
+  }
+
+  const scopeSet = new Set(scopes);
   return (
-    (scopes.length === 1 && scopes[0] === OAUTH_SCOPE_WRITE_ACCESS) ||
-    (scopes.length === 2 &&
-      scopes[0] === OAUTH_SCOPE_WRITE_ACCESS &&
-      scopes[1] === OAUTH_SCOPE_NO_EXPIRY)
+    scopeSet.size === scopes.length &&
+    scopeSet.has(OAUTH_SCOPE_WRITE_ACCESS) &&
+    [...scopeSet].every(
+      (scope) => scope === OAUTH_SCOPE_WRITE_ACCESS || scope === OAUTH_SCOPE_NO_EXPIRY,
+    )
   );
 }
 
