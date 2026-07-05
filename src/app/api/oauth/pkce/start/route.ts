@@ -17,6 +17,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     publicOrigin:
       process.env.STACK_API_UTILITIES_PUBLIC_ORIGIN ??
       process.env.NEXT_PUBLIC_STACK_API_UTILITIES_PUBLIC_ORIGIN,
+    redirectUri: process.env.STACK_API_UTILITIES_OAUTH_REDIRECT_URI,
   });
   const responseBody = await result.response.json();
   const response = NextResponse.json(responseBody, {

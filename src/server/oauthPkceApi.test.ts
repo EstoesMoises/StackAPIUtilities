@@ -12,9 +12,13 @@ import {
 } from "./oauthPkceApi";
 
 const origin = "http://127.0.0.1:3000";
+const redirectmetoOrigin = "http://127.0.0.1:3002";
+const redirectmetoCallbackUri =
+  "http://redirectmeto.com/http://127.0.0.1:3002/api/oauth/pkce/callback";
 const now = new Date("2026-07-04T12:00:00.000Z");
 const publicOriginEnvKey = "STACK_API_UTILITIES_PUBLIC_ORIGIN";
 const nextPublicOriginEnvKey = "NEXT_PUBLIC_STACK_API_UTILITIES_PUBLIC_ORIGIN";
+const redirectUriEnvKey = "STACK_API_UTILITIES_OAUTH_REDIRECT_URI";
 
 function validPending(overrides: Partial<PendingOAuthTransaction> = {}): PendingOAuthTransaction {
   return {
@@ -35,6 +39,7 @@ async function withPublicOriginEnv<T>(
 ): Promise<T> {
   const previousPublicOrigin = process.env[publicOriginEnvKey];
   const previousNextPublicOrigin = process.env[nextPublicOriginEnvKey];
+  const previousRedirectUri = process.env[redirectUriEnvKey];
 
   if (publicOrigin === undefined) {
     delete process.env[publicOriginEnvKey];
@@ -42,6 +47,7 @@ async function withPublicOriginEnv<T>(
     process.env[publicOriginEnvKey] = publicOrigin;
   }
   delete process.env[nextPublicOriginEnvKey];
+  delete process.env[redirectUriEnvKey];
 
   try {
     return await callback();
@@ -56,6 +62,35 @@ async function withPublicOriginEnv<T>(
       delete process.env[nextPublicOriginEnvKey];
     } else {
       process.env[nextPublicOriginEnvKey] = previousNextPublicOrigin;
+    }
+
+    if (previousRedirectUri === undefined) {
+      delete process.env[redirectUriEnvKey];
+    } else {
+      process.env[redirectUriEnvKey] = previousRedirectUri;
+    }
+  }
+}
+
+async function withRedirectUriEnv<T>(
+  redirectUri: string | undefined,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const previousRedirectUri = process.env[redirectUriEnvKey];
+
+  if (redirectUri === undefined) {
+    delete process.env[redirectUriEnvKey];
+  } else {
+    process.env[redirectUriEnvKey] = redirectUri;
+  }
+
+  try {
+    return await callback();
+  } finally {
+    if (previousRedirectUri === undefined) {
+      delete process.env[redirectUriEnvKey];
+    } else {
+      process.env[redirectUriEnvKey] = previousRedirectUri;
     }
   }
 }
@@ -177,6 +212,72 @@ describe("oauthPkceApi", () => {
         "https://utilities.example.com/api/oauth/pkce/callback",
       );
     });
+  });
+
+  it("starts OAuth with a redirectmeto-wrapped callback redirect URI", async () => {
+    const result = await handleOAuthPkceStartRequest(
+      {
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
+        scopes: ["write_access"],
+        includeNoExpiry: false,
+      },
+      {
+        origin: redirectmetoOrigin,
+        redirectUri: redirectmetoCallbackUri,
+        now: () => now,
+      },
+    );
+    const body = await result.response.json();
+    const authorizationUrl = new URL(body.authorizationUrl);
+    const pending = decodePendingOAuthCookie(result.cookie?.value ?? "");
+
+    expect(result.response.status).toBe(200);
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(redirectmetoCallbackUri);
+    expect(pending?.redirectUri).toBe(redirectmetoCallbackUri);
+  });
+
+  it("uses configured redirect URI env for OAuth redirect binding in the Next route", async () => {
+    await withRedirectUriEnv(redirectmetoCallbackUri, async () => {
+      const response = await handleOAuthPkceStartRoutePost(
+        new Request(`${redirectmetoOrigin}/api/oauth/pkce/start`, {
+          method: "POST",
+          body: JSON.stringify({
+            baseUrl: "https://demo.stackenterprise.co",
+            clientId: "client-123",
+            scopes: ["write_access"],
+            includeNoExpiry: false,
+          }),
+        }) as NextRequest,
+      );
+      const body = await response.json();
+      const authorizationUrl = new URL(body.authorizationUrl);
+
+      expect(response.status).toBe(200);
+      expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(redirectmetoCallbackUri);
+    });
+  });
+
+  it("rejects redirect URI overrides that do not unwrap to a local callback", async () => {
+    const result = await handleOAuthPkceStartRequest(
+      {
+        baseUrl: "https://demo.stackenterprise.co",
+        clientId: "client-123",
+        scopes: ["write_access"],
+      },
+      {
+        origin: redirectmetoOrigin,
+        redirectUri: "http://redirectmeto.com/https://evil.example/api/oauth/pkce/callback",
+        now: () => now,
+      },
+    );
+
+    expect(result.response.status).toBe(400);
+    await expect(result.response.json()).resolves.toEqual({
+      ok: false,
+      error: "Enterprise OAuth requires a Stack Enterprise HTTPS instance URL and OAuth client ID.",
+    });
+    expect(result.cookie).toBeUndefined();
   });
 
   it("rejects non-local HTTP configured public origins in the Next route", async () => {
@@ -416,6 +517,36 @@ describe("oauthPkceApi", () => {
     expect(tokenUrl.searchParams.get("redirect_uri")).toBe(
       "https://public.example.com/api/oauth/pkce/callback",
     );
+    expect(html).toContain("stack-api-oauth-pkce-result");
+    expect(html).toContain("oauth-token");
+  });
+
+  it("accepts redirectmeto pending redirects for local callback requests", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ access_token: "oauth-token", expires: 86400 }), {
+        status: 200,
+      }),
+    );
+
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL(`${redirectmetoOrigin}/api/oauth/pkce/callback?code=code-123&state=state-123`),
+      encodePendingOAuthCookie(
+        validPending({
+          redirectUri: redirectmetoCallbackUri,
+        }),
+      ),
+      {
+        fetchFn,
+        now: () => now,
+        redirectUri: redirectmetoCallbackUri,
+      },
+    );
+    const html = await result.response.text();
+
+    expect(fetchFn).toHaveBeenCalled();
+    const [tokenExchangeUrl] = fetchFn.mock.calls[0];
+    const tokenUrl = new URL(tokenExchangeUrl as string);
+    expect(tokenUrl.searchParams.get("redirect_uri")).toBe(redirectmetoCallbackUri);
     expect(html).toContain("stack-api-oauth-pkce-result");
     expect(html).toContain("oauth-token");
   });

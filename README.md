@@ -29,6 +29,20 @@ The shared credentials screen supports three authentication lanes:
 
 Enterprise OAuth requests the minimum workflow scope by default. User Group Sync requests `write_access`. `no_expiry` is off by default and is included only when explicitly selected.
 
+### Local Enterprise OAuth Test
+
+For Enterprise OAuth clients that require a non-localhost redirect URI, run the app through `redirectmeto` while keeping the local PKCE callback:
+
+```bash
+STACK_API_UTILITIES_OAUTH_REDIRECT_URI=http://redirectmeto.com/http://127.0.0.1:3002/api/oauth/pkce/callback pnpm exec next dev -H 127.0.0.1 -p 3002
+```
+
+Register this exact redirect URI with the Enterprise OAuth client:
+
+```text
+http://redirectmeto.com/http://127.0.0.1:3002/api/oauth/pkce/callback
+```
+
 ## Development
 
 Install dependencies:

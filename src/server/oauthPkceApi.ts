@@ -77,6 +77,7 @@ interface OAuthPkceStartPayload {
 interface OAuthPkceDependencies {
   origin?: string;
   publicOrigin?: string;
+  redirectUri?: string;
   now?: () => Date;
   fetchFn?: typeof fetch;
   createAbortSignal?: (milliseconds: number) => AbortSignal;
@@ -91,19 +92,27 @@ type OAuthCallbackMessage =
   | { type: typeof OAUTH_RESULT_MESSAGE_TYPE; ok: true; credential: SessionCredentials }
   | { type: typeof OAUTH_RESULT_MESSAGE_TYPE; ok: false; error: string };
 
+interface OAuthRedirectTarget {
+  redirectUri: string;
+  callbackUrl: URL;
+  cookieSecure: boolean;
+  requireCallbackOriginMatch: boolean;
+}
+
 export async function handleOAuthPkceStartRequest(
   payload: unknown,
   dependencies: OAuthPkceDependencies,
 ): Promise<OAuthPkceRouteResult> {
   const startPayload = isStartPayload(payload) ? payload : null;
-  const redirectOrigin = resolveOAuthRedirectOrigin(
+  const redirectTarget = resolveOAuthRedirectTarget(
+    dependencies.redirectUri,
     dependencies.publicOrigin,
     dependencies.origin ?? "http://127.0.0.1:3000",
   );
 
   if (
     startPayload === null ||
-    redirectOrigin === null ||
+    redirectTarget === null ||
     !isNonBlankString(startPayload.baseUrl) ||
     !isNonBlankString(startPayload.clientId) ||
     !isStringArray(startPayload.scopes) ||
@@ -125,11 +134,10 @@ export async function handleOAuthPkceStartRequest(
   const now = dependencies.now?.() ?? new Date();
   const codeVerifier = createCodeVerifier();
   const state = createOAuthState();
-  const redirectUri = `${redirectOrigin}${OAUTH_PKCE_CALLBACK_PATH}`;
   const pending: PendingOAuthTransaction = {
     baseUrl: normalizeOAuthBaseUrl(startPayload.baseUrl),
     clientId: startPayload.clientId.trim(),
-    redirectUri,
+    redirectUri: redirectTarget.redirectUri,
     scopes,
     state,
     codeVerifier,
@@ -138,7 +146,7 @@ export async function handleOAuthPkceStartRequest(
   const authorizationUrl = buildEnterpriseAuthorizationUrl({
     baseUrl: pending.baseUrl,
     clientId: pending.clientId,
-    redirectUri,
+    redirectUri: pending.redirectUri,
     scopes,
     state,
     codeChallenge: createCodeChallenge(codeVerifier),
@@ -151,7 +159,7 @@ export async function handleOAuthPkceStartRequest(
       value: encodePendingOAuthCookie(pending),
       httpOnly: true,
       sameSite: "lax",
-      secure: redirectOrigin.startsWith("https://"),
+      secure: redirectTarget.cookieSecure,
       path: OAUTH_PKCE_COOKIE_PATH,
       maxAge: OAUTH_PKCE_COOKIE_MAX_AGE_SECONDS,
     },
@@ -537,6 +545,110 @@ function isAllowedConfiguredPublicOrigin(origin: URL): boolean {
   return origin.protocol === "https:" || isLocalDevelopmentOrigin(origin);
 }
 
+function resolveOAuthRedirectTarget(
+  redirectUri: string | undefined,
+  publicOrigin: string | undefined,
+  requestOrigin: string,
+): OAuthRedirectTarget | null {
+  if (redirectUri !== undefined) {
+    return parseConfiguredOAuthRedirectUri(redirectUri);
+  }
+
+  const redirectOrigin = resolveOAuthRedirectOrigin(publicOrigin, requestOrigin);
+
+  if (redirectOrigin === null) {
+    return null;
+  }
+
+  const callbackUrl = new URL(`${redirectOrigin}${OAUTH_PKCE_CALLBACK_PATH}`);
+  return {
+    redirectUri: callbackUrl.href,
+    callbackUrl,
+    cookieSecure: callbackUrl.protocol === "https:",
+    requireCallbackOriginMatch: false,
+  };
+}
+
+function parseConfiguredOAuthRedirectUri(redirectUri: string): OAuthRedirectTarget | null {
+  const trimmedRedirectUri = redirectUri.trim();
+
+  try {
+    const parsedRedirectUri = new URL(trimmedRedirectUri);
+
+    if (
+      (parsedRedirectUri.protocol !== "http:" && parsedRedirectUri.protocol !== "https:") ||
+      parsedRedirectUri.username !== "" ||
+      parsedRedirectUri.password !== "" ||
+      parsedRedirectUri.search !== "" ||
+      parsedRedirectUri.hash !== ""
+    ) {
+      return null;
+    }
+
+    const redirectmetoTarget = parseRedirectmetoCallbackTarget(parsedRedirectUri);
+    if (redirectmetoTarget !== null) {
+      return {
+        redirectUri: trimmedRedirectUri,
+        callbackUrl: redirectmetoTarget,
+        cookieSecure: redirectmetoTarget.protocol === "https:",
+        requireCallbackOriginMatch: true,
+      };
+    }
+
+    if (!isAllowedCallbackUrl(parsedRedirectUri, isAllowedConfiguredPublicOrigin)) {
+      return null;
+    }
+
+    return {
+      redirectUri: trimmedRedirectUri,
+      callbackUrl: parsedRedirectUri,
+      cookieSecure: parsedRedirectUri.protocol === "https:",
+      requireCallbackOriginMatch: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseRedirectmetoCallbackTarget(redirectUri: URL): URL | null {
+  if (redirectUri.hostname.toLowerCase() !== "redirectmeto.com") {
+    return null;
+  }
+
+  const rawTarget = redirectUri.pathname.replace(/^\/+/, "");
+
+  if (!rawTarget) {
+    return null;
+  }
+
+  try {
+    const targetUrl = new URL(decodeURIComponent(rawTarget));
+
+    if (!isAllowedCallbackUrl(targetUrl, isLocalDevelopmentOrigin)) {
+      return null;
+    }
+
+    return targetUrl;
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedCallbackUrl(
+  callbackUrl: URL,
+  isAllowedOrigin: (origin: URL) => boolean,
+): boolean {
+  return (
+    (callbackUrl.protocol === "http:" || callbackUrl.protocol === "https:") &&
+    callbackUrl.username === "" &&
+    callbackUrl.password === "" &&
+    callbackUrl.pathname === OAUTH_PKCE_CALLBACK_PATH &&
+    callbackUrl.search === "" &&
+    callbackUrl.hash === "" &&
+    isAllowedOrigin(callbackUrl)
+  );
+}
+
 function createTokenExchangeAbortSignal(dependencies: OAuthPkceDependencies): AbortSignal {
   if (dependencies.createAbortSignal) {
     return dependencies.createAbortSignal(OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS);
@@ -602,14 +714,17 @@ function isValidPendingOAuthExchangeTarget(
       return false;
     }
 
-    const redirectUri = new URL(pending.redirectUri);
-    const expectedRedirectUri = `${redirectOrigin}${OAUTH_PKCE_CALLBACK_PATH}`;
+    const expectedRedirectTarget = resolveOAuthRedirectTarget(
+      dependencies.redirectUri,
+      dependencies.publicOrigin,
+      callbackUrl.origin,
+    );
 
     return (
-      (redirectUri.protocol === "http:" || redirectUri.protocol === "https:") &&
-      redirectUri.origin === redirectOrigin &&
-      redirectUri.pathname === OAUTH_PKCE_CALLBACK_PATH &&
-      redirectUri.href === expectedRedirectUri
+      expectedRedirectTarget !== null &&
+      pending.redirectUri === expectedRedirectTarget.redirectUri &&
+      (!expectedRedirectTarget.requireCallbackOriginMatch ||
+        callbackUrl.origin === expectedRedirectTarget.callbackUrl.origin)
     );
   } catch {
     return false;

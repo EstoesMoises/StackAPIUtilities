@@ -15,6 +15,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       publicOrigin:
         process.env.STACK_API_UTILITIES_PUBLIC_ORIGIN ??
         process.env.NEXT_PUBLIC_STACK_API_UTILITIES_PUBLIC_ORIGIN,
+      redirectUri: process.env.STACK_API_UTILITIES_OAUTH_REDIRECT_URI,
     },
   );
   const html = await result.response.text();
