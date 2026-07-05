@@ -233,8 +233,20 @@ function isUserGroupSyncRequestPayload(value: unknown): value is UserGroupSyncRe
     typeof value.credentials.instanceType === "string" &&
     typeof value.credentials.baseUrl === "string" &&
     (value.credentials.accessToken === undefined || typeof value.credentials.accessToken === "string") &&
-    (value.credentials.pat === undefined || typeof value.credentials.pat === "string")
+    (value.credentials.pat === undefined || typeof value.credentials.pat === "string") &&
+    isOptionalAuthSource(value.credentials.authSource) &&
+    isOptionalString(value.credentials.oauthClientId) &&
+    (value.credentials.oauthScopes === undefined || isStringArray(value.credentials.oauthScopes)) &&
+    isOptionalString(value.credentials.accessTokenExpiresAt)
   );
+}
+
+function isOptionalAuthSource(value: unknown): value is SessionCredentials["authSource"] | undefined {
+  return value === undefined || value === "manual-pat" || value === "oauth-pkce";
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
 }
 
 function isUserGroupSyncMode(value: unknown): value is UserGroupSyncMode {

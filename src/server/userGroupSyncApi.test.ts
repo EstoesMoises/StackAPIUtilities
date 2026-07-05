@@ -9,7 +9,6 @@ const credentials: SessionCredentials = {
   accessToken: "oauth-token",
   authSource: "oauth-pkce",
   oauthScopes: ["write_access"],
-  accessTokenExpiresAt: "2026-07-05T12:00:00.000Z",
 };
 
 const csvText = [
@@ -466,6 +465,37 @@ describe("handleUserGroupSyncRequest", () => {
     });
   });
 
+  it.each([
+    ["invalid authSource", { authSource: "manual-access-token" }],
+    ["non-string oauthClientId", { oauthClientId: 123 }],
+    ["non-array oauthScopes", { oauthScopes: {} }],
+    ["non-string oauthScopes entry", { oauthScopes: ["write_access", 123] }],
+    ["non-string accessTokenExpiresAt", { accessTokenExpiresAt: {} }],
+  ])("returns a 400 response for malformed OAuth metadata: %s", async (_caseName, credentialOverrides) => {
+    const createClient = vi.fn();
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: {
+          ...credentials,
+          ...credentialOverrides,
+        },
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "User group sync request is invalid.",
+    });
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
   it("returns a 400 response for invalid user export CSV", async () => {
     const client = createClient({
       getUserByEmail: vi.fn(),
@@ -682,6 +712,49 @@ describe("handleUserGroupSyncRequest", () => {
       accessToken: "oauth-token",
     });
     expect(normalizedCredentials).not.toHaveProperty("pat");
+  });
+
+  it("uses the OAuth token for the default Stack API v3 client when PAT is also submitted", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 1, email: "grace@example.com", name: "Grace Hopper" }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [], totalPages: 1 }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const response = await handleUserGroupSyncRequest({
+        action: "preview",
+        credentials: {
+          ...credentials,
+          accessToken: "oauth-token",
+          pat: "pat-token",
+        },
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      });
+
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      for (const [, init] of fetchMock.mock.calls) {
+        expect(init?.headers).toEqual(
+          expect.objectContaining({
+            Authorization: "Bearer oauth-token",
+          }),
+        );
+        expect(init?.headers).not.toEqual(
+          expect.objectContaining({
+            Authorization: "Bearer pat-token",
+          }),
+        );
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("returns client failures that look like parser errors as 500 responses", async () => {
