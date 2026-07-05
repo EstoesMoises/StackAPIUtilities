@@ -31,8 +31,8 @@ describe("AppShell", () => {
       screen.getByText("Credentials are kept in memory for this browser session only."),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Instance URL")).toBeInTheDocument();
-    expect(screen.getByLabelText("API key")).toBeInTheDocument();
-    expect(screen.getByLabelText("Access token")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Personal access token")).toBeInTheDocument();
     expect(screen.getByText("Tag Report credential notes")).toBeInTheDocument();
   });
@@ -141,6 +141,7 @@ describe("AppShell", () => {
         instanceType: "basic-business",
         baseUrl: "https://stackoverflowteams.com/c/example-team",
         pat: "pat-token",
+        authSource: "manual-pat",
       },
       periodRole: "current",
       scope: {},
