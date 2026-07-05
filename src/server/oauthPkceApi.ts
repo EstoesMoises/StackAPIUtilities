@@ -171,7 +171,7 @@ export async function handleOAuthPkceCallbackRequest(
   const pending = pendingCookieValue ? decodePendingOAuthCookie(pendingCookieValue) : null;
 
   if (error !== null) {
-    if (pending === null || !isValidPendingOAuthExchangeTarget(pending, callbackUrl)) {
+    if (pending === null || !isValidPendingOAuthExchangeTarget(pending, callbackUrl, dependencies)) {
       return callbackError("OAuth authorization response could not be verified.");
     }
 
@@ -200,7 +200,7 @@ export async function handleOAuthPkceCallbackRequest(
     return callbackError("OAuth authorization request expired or was not found.");
   }
 
-  if (!isValidPendingOAuthExchangeTarget(pending, callbackUrl)) {
+  if (!isValidPendingOAuthExchangeTarget(pending, callbackUrl, dependencies)) {
     return callbackError("OAuth authorization request is invalid.");
   }
 
@@ -567,6 +567,7 @@ function isValidPendingOAuthScopes(scopes: string[]): boolean {
 function isValidPendingOAuthExchangeTarget(
   pending: PendingOAuthTransaction,
   callbackUrl: URL,
+  dependencies: OAuthPkceDependencies,
 ): boolean {
   if (!isSupportedEnterpriseOAuthTarget(pending.baseUrl)) {
     return false;
@@ -576,17 +577,27 @@ function isValidPendingOAuthExchangeTarget(
     return false;
   }
 
+  if (callbackUrl.pathname !== OAUTH_PKCE_CALLBACK_PATH) {
+    return false;
+  }
+
+  const redirectOrigin = resolveOAuthRedirectOrigin(dependencies.publicOrigin, callbackUrl.origin);
+
+  if (redirectOrigin === null) {
+    return false;
+  }
+
   try {
     if (pending.baseUrl !== normalizeOAuthBaseUrl(pending.baseUrl)) {
       return false;
     }
 
     const redirectUri = new URL(pending.redirectUri);
-    const expectedRedirectUri = `${callbackUrl.origin}${OAUTH_PKCE_CALLBACK_PATH}`;
+    const expectedRedirectUri = `${redirectOrigin}${OAUTH_PKCE_CALLBACK_PATH}`;
 
     return (
       (redirectUri.protocol === "http:" || redirectUri.protocol === "https:") &&
-      redirectUri.origin === callbackUrl.origin &&
+      redirectUri.origin === redirectOrigin &&
       redirectUri.pathname === OAUTH_PKCE_CALLBACK_PATH &&
       redirectUri.href === expectedRedirectUri
     );

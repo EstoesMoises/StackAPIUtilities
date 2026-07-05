@@ -11,6 +11,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const result = await handleOAuthPkceCallbackRequest(
     new URL(request.url),
     request.cookies.get(OAUTH_PKCE_COOKIE_NAME)?.value,
+    {
+      publicOrigin:
+        process.env.STACK_API_UTILITIES_PUBLIC_ORIGIN ??
+        process.env.NEXT_PUBLIC_STACK_API_UTILITIES_PUBLIC_ORIGIN,
+    },
   );
   const html = await result.response.text();
   const response = new NextResponse(html, {

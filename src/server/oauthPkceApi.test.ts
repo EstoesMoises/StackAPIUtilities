@@ -1,5 +1,6 @@
-import type { NextRequest } from "next/server";
+import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
+import { GET as handleOAuthPkceCallbackRouteGet } from "../app/api/oauth/pkce/callback/route";
 import { POST as handleOAuthPkceStartRoutePost } from "../app/api/oauth/pkce/start/route";
 import {
   OAUTH_PKCE_COOKIE_NAME,
@@ -341,6 +342,105 @@ describe("oauthPkceApi", () => {
     expect(html).toContain("stack-api-oauth-pkce-result");
     expect(html).toContain("oauth-token");
     expect(html).toContain("2026-07-05T12:00:00.000Z");
+  });
+
+  it("accepts public-origin pending redirects for internal callback requests", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ access_token: "oauth-token", expires: 86400 }), {
+        status: 200,
+      }),
+    );
+
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL("http://internal.local/api/oauth/pkce/callback?code=code-123&state=state-123"),
+      encodePendingOAuthCookie(
+        validPending({
+          redirectUri: "https://public.example.com/api/oauth/pkce/callback",
+        }),
+      ),
+      {
+        fetchFn,
+        now: () => now,
+        publicOrigin: "https://public.example.com",
+      },
+    );
+    const html = await result.response.text();
+
+    expect(fetchFn).toHaveBeenCalled();
+    const [tokenExchangeUrl] = fetchFn.mock.calls[0];
+    const tokenUrl = new URL(tokenExchangeUrl as string);
+    expect(tokenUrl.searchParams.get("redirect_uri")).toBe(
+      "https://public.example.com/api/oauth/pkce/callback",
+    );
+    expect(html).toContain("stack-api-oauth-pkce-result");
+    expect(html).toContain("oauth-token");
+  });
+
+  it("rejects public-origin callbacks that do not hit the callback path", async () => {
+    const fetchFn = vi.fn();
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL("http://internal.local/not-callback?code=code-123&state=state-123"),
+      encodePendingOAuthCookie(
+        validPending({
+          redirectUri: "https://public.example.com/api/oauth/pkce/callback",
+        }),
+      ),
+      {
+        fetchFn,
+        now: () => now,
+        publicOrigin: "https://public.example.com",
+      },
+    );
+    const html = await result.response.text();
+
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(result.clearCookie).toBe(true);
+    expect(html).toContain("OAuth authorization request is invalid.");
+  });
+
+  it("callback Next route reads and clears the pending OAuth cookie with security headers", async () => {
+    await withPublicOriginEnv("https://public.example.com", async () => {
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ access_token: "oauth-token", expires: 86400 }), {
+          status: 200,
+        }),
+      );
+      vi.stubGlobal("fetch", fetchFn);
+
+      try {
+        const response = await handleOAuthPkceCallbackRouteGet(
+          new NextRequest(
+            "http://internal.local/api/oauth/pkce/callback?code=code-123&state=state-123",
+            {
+              headers: {
+                cookie: `${OAUTH_PKCE_COOKIE_NAME}=${encodePendingOAuthCookie(
+                  validPending({
+                    redirectUri: "https://public.example.com/api/oauth/pkce/callback",
+                    expiresAt: "2999-01-01T00:00:00.000Z",
+                  }),
+                )}`,
+              },
+            },
+          ),
+        );
+        const html = await response.text();
+        const setCookie = response.headers.get("set-cookie") ?? "";
+
+        expect(html).toContain("oauth-token");
+        expect(fetchFn).toHaveBeenCalled();
+        expect(setCookie).toContain(`${OAUTH_PKCE_COOKIE_NAME}=;`);
+        expect(setCookie).toContain("Path=/api/oauth/pkce");
+        expect(setCookie).toContain("Max-Age=0");
+        expect(setCookie).toContain("HttpOnly");
+        expect(setCookie).toMatch(/SameSite=Lax/i);
+        expect(response.headers.get("Cache-Control")).toBe("no-store, private");
+        expect(response.headers.get("Pragma")).toBe("no-cache");
+        expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+        expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
   });
 
   it("rejects expiring token responses without a positive numeric expires value", async () => {
