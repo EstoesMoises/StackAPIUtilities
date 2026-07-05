@@ -178,6 +178,50 @@ describe("CredentialsPanel", () => {
     });
   });
 
+  it("accepts OAuth callback credentials when the pending Enterprise URL normalizes to the returned origin", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const popup = createPopup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=abc" }),
+    );
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+
+    renderCredentialsPanel({ onSave });
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co/");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(expect.objectContaining({
+      baseUrl: "https://demo.stackenterprise.co/",
+    }));
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          origin: window.location.origin,
+          source: popup as unknown as MessageEventSource,
+          data: {
+            type: "stack-api-oauth-pkce-result",
+            ok: true,
+            credential: enterpriseOAuthCredentials(),
+          },
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+        baseUrl: "https://demo.stackenterprise.co",
+        oauthClientId: "client-123",
+        accessToken: "oauth-token",
+        authSource: "oauth-pkce",
+      }));
+    });
+  });
+
   it("clears preserved OAuth credentials when the Enterprise URL changes before save", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
@@ -225,6 +269,28 @@ describe("CredentialsPanel", () => {
     expect(onSave).toHaveBeenCalledWith({
       instanceType: "enterprise",
       baseUrl: "https://demo.stackenterprise.co",
+      apiKey: undefined,
+      oauthClientId: "client-123",
+      accessToken: "oauth-token",
+      authSource: "oauth-pkce",
+      oauthScopes: ["write_access"],
+      accessTokenExpiresAt: "2026-07-05T12:00:00.000Z",
+    });
+  });
+
+  it("preserves OAuth credentials when the Enterprise URL changes only by trailing slash", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+
+    renderCredentialsPanel({ credentials: enterpriseOAuthCredentials(), onSave });
+
+    await user.clear(screen.getByLabelText("Instance URL"));
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co/");
+    await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co/",
       apiKey: undefined,
       oauthClientId: "client-123",
       accessToken: "oauth-token",

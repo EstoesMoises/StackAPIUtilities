@@ -159,7 +159,8 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
     const trimmedOAuthClientId = draft.oauthClientId.trim();
     const existingOAuthCredentials =
       credentials?.authSource === "oauth-pkce" &&
-      credentials.baseUrl === trimmedBaseUrl &&
+      canonicalizeEnterpriseBaseUrl(credentials.baseUrl) ===
+        canonicalizeEnterpriseBaseUrl(trimmedBaseUrl) &&
       (credentials.oauthClientId ?? "") === trimmedOAuthClientId
         ? credentials
         : null;
@@ -197,10 +198,11 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
 
     const pendingFlow: PendingOAuthFlow = {
       id: nextOAuthFlowIdRef.current + 1,
-      baseUrl: draft.baseUrl.trim(),
+      baseUrl: canonicalizeEnterpriseBaseUrl(draft.baseUrl.trim()),
       oauthClientId: draft.oauthClientId.trim(),
       popup,
     };
+    const startBaseUrl = draft.baseUrl.trim();
     nextOAuthFlowIdRef.current = pendingFlow.id;
     pendingOAuthFlowRef.current = pendingFlow;
     oauthPendingRef.current = true;
@@ -211,7 +213,7 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          baseUrl: pendingFlow.baseUrl,
+          baseUrl: startBaseUrl,
           clientId: pendingFlow.oauthClientId,
           scopes: OAUTH_SCOPES,
           includeNoExpiry: draft.includeNoExpiry,
@@ -434,7 +436,7 @@ function isOAuthCredentialForPendingFlow(
     credential.instanceType === "enterprise" &&
     credential.authSource === "oauth-pkce" &&
     isNonBlankString(credential.baseUrl) &&
-    credential.baseUrl.trim() === pendingFlow.baseUrl &&
+    canonicalizeEnterpriseBaseUrl(credential.baseUrl) === pendingFlow.baseUrl &&
     isNonBlankString(credential.accessToken) &&
     (returnedOAuthClientId === undefined || returnedOAuthClientId === pendingFlow.oauthClientId) &&
     (credential.oauthScopes === undefined || isStringArray(credential.oauthScopes)) &&
@@ -449,4 +451,14 @@ function isNonBlankString(value: unknown): value is string {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function canonicalizeEnterpriseBaseUrl(value: string): string {
+  const trimmedValue = value.trim();
+
+  try {
+    return new URL(trimmedValue).origin;
+  } catch {
+    return trimmedValue;
+  }
 }
