@@ -4,6 +4,8 @@ import { normalizeInstanceUrl, validateCredentialsForReport, validateEnterpriseV
 
 const NOW = new Date("2026-07-04T12:00:00.000Z");
 const FUTURE_EXPIRY = "2026-07-05T00:00:00.000Z";
+const CONNECTION_REQUIRED_MESSAGE = "Enterprise OAuth connection is required for Stack API v3 calls.";
+const EXPIRY_MESSAGE = "Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.";
 
 describe("normalizeInstanceUrl", () => {
   it("normalizes Basic/Business team URLs into API roots and team slugs", () => {
@@ -105,6 +107,19 @@ describe("validateCredentialsForReport", () => {
     expect(result.messages).toContain("API key is required for Stack API v2.3 Enterprise calls.");
   });
 
+  it("rejects whitespace-only API keys for Enterprise reports that use Stack API v2.3", () => {
+    const result = validateCredentialsForReport("api-user-report", {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      apiKey: "   ",
+      accessToken: "token",
+      authSource: "oauth-pkce",
+    }, NOW);
+
+    expect(result.valid).toBe(false);
+    expect(result.messages).toContain("API key is required for Stack API v2.3 Enterprise calls.");
+  });
+
   it("requires Enterprise OAuth PKCE credentials for Enterprise reports that use Stack API v3", () => {
     const result = validateCredentialsForReport("api-user-report", {
       instanceType: "enterprise",
@@ -113,7 +128,7 @@ describe("validateCredentialsForReport", () => {
     }, NOW);
 
     expect(result.valid).toBe(false);
-    expect(result.messages).toContain("Enterprise OAuth connection is required for Stack API v3 calls.");
+    expect(result.messages).toContain(CONNECTION_REQUIRED_MESSAGE);
   });
 
   it("accepts API key and active OAuth PKCE credentials for Enterprise reports that use v2 and v3", () => {
@@ -147,7 +162,39 @@ describe("validateEnterpriseV3OAuthCredentials", () => {
     }, { now: NOW });
 
     expect(result.valid).toBe(false);
-    expect(result.messages).toContain("Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.");
+    expect(result.messages).toContain(EXPIRY_MESSAGE);
+  });
+
+  it("rejects blank OAuth token expiry values", () => {
+    const result = validateEnterpriseV3OAuthCredentials({
+      ...activeOAuthCredentials,
+      accessTokenExpiresAt: "",
+    }, { now: NOW });
+
+    expect(result.valid).toBe(false);
+    expect(result.messages).toContain(EXPIRY_MESSAGE);
+  });
+
+  it("rejects unparseable OAuth token expiry values", () => {
+    const result = validateEnterpriseV3OAuthCredentials({
+      ...activeOAuthCredentials,
+      accessTokenExpiresAt: "not-a-date",
+    }, { now: NOW });
+
+    expect(result.valid).toBe(false);
+    expect(result.messages).toContain(EXPIRY_MESSAGE);
+  });
+
+  it("accepts OAuth tokens without an expiry when no scopes are missing", () => {
+    const result = validateEnterpriseV3OAuthCredentials({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: "token",
+      authSource: "oauth-pkce",
+      oauthScopes: ["read_access"],
+    }, { now: NOW });
+
+    expect(result).toEqual({ valid: true, messages: [] });
   });
 
   it("rejects OAuth tokens missing required scopes", () => {
@@ -160,14 +207,45 @@ describe("validateEnterpriseV3OAuthCredentials", () => {
     expect(result.messages).toContain("Enterprise OAuth token is missing required scope: write_access.");
   });
 
-  it("rejects manual Enterprise access tokens", () => {
-    const result = validateEnterpriseV3OAuthCredentials({
-      instanceType: "enterprise",
-      baseUrl: "https://demo.stackenterprise.co",
-      accessToken: "manual-token",
-    }, { now: NOW });
+  it.each([
+    ["null credentials", null],
+    [
+      "Basic/Business PAT credentials",
+      {
+        instanceType: "basic-business",
+        baseUrl: "https://stackoverflowteams.com/c/example-team",
+        pat: "pat",
+      },
+    ],
+    [
+      "Enterprise OAuth credentials missing an access token",
+      {
+        instanceType: "enterprise",
+        baseUrl: "https://demo.stackenterprise.co",
+        authSource: "oauth-pkce",
+      },
+    ],
+    [
+      "Enterprise OAuth credentials with a blank access token",
+      {
+        instanceType: "enterprise",
+        baseUrl: "https://demo.stackenterprise.co",
+        accessToken: "   ",
+        authSource: "oauth-pkce",
+      },
+    ],
+    [
+      "Enterprise credentials with a manual access token",
+      {
+        instanceType: "enterprise",
+        baseUrl: "https://demo.stackenterprise.co",
+        accessToken: "manual-token",
+      },
+    ],
+  ] satisfies [string, SessionCredentials | null][])("rejects %s", (_label, credentials) => {
+    const result = validateEnterpriseV3OAuthCredentials(credentials, { now: NOW });
 
     expect(result.valid).toBe(false);
-    expect(result.messages).toContain("Enterprise OAuth connection is required for Stack API v3 calls.");
+    expect(result.messages).toContain(CONNECTION_REQUIRED_MESSAGE);
   });
 });

@@ -65,7 +65,7 @@ export function validateEnterpriseV3OAuthCredentials(
     };
   }
 
-  if (credentials.accessTokenExpiresAt) {
+  if (credentials.accessTokenExpiresAt !== undefined) {
     const expiresAt = new Date(credentials.accessTokenExpiresAt);
     const now = options.now ?? new Date();
 
@@ -108,7 +108,7 @@ export function validateCredentialsForReport(
   }
 
   if (credentials.instanceType === "enterprise") {
-    if (report.credentialRequirements.includes("api-key") && !credentials.apiKey) {
+    if (report.credentialRequirements.includes("api-key") && !credentials.apiKey?.trim()) {
       messages.push("API key is required for Stack API v2.3 Enterprise calls.");
     }
     if (report.credentialRequirements.includes("access-token")) {
