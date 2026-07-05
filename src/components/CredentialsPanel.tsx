@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { reportRegistry } from "../domain/reportRegistry";
 import type { InstanceType, ReportId, SessionCredentials } from "../domain/types";
 
@@ -25,7 +25,23 @@ type OAuthStartResponse =
   | { ok: true; authorizationUrl: string }
   | { ok: false; error: string };
 
+type ValidOAuthCredential = SessionCredentials & {
+  instanceType: "enterprise";
+  baseUrl: string;
+  accessToken: string;
+  authSource: "oauth-pkce";
+};
+
+interface PendingOAuthFlow {
+  id: number;
+  baseUrl: string;
+  oauthClientId: string;
+  popup: Window;
+}
+
 const OAUTH_SCOPES = ["write_access"];
+const OAUTH_CREDENTIAL_ERROR = "Unable to save Enterprise OAuth credentials. Try again.";
+const OAUTH_START_ERROR = "Unable to start Enterprise OAuth. Try again.";
 
 const credentialLabels: Record<string, string> = {
   "api-key": "API key",
@@ -42,11 +58,15 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
     baseUrl: credentials?.baseUrl ?? "",
     apiKey: credentials?.apiKey ?? "",
     oauthClientId: credentials?.oauthClientId ?? "",
-    includeNoExpiry: false,
+    includeNoExpiry: credentials?.oauthScopes?.includes("no_expiry") ?? false,
     pat: credentials?.pat ?? "",
   });
   const [saved, setSaved] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
+  const [oauthPending, setOauthPending] = useState(false);
+  const pendingOAuthFlowRef = useRef<PendingOAuthFlow | null>(null);
+  const oauthPendingRef = useRef(false);
+  const nextOAuthFlowIdRef = useRef(0);
 
   useEffect(() => {
     function handleOAuthMessage(event: MessageEvent) {
@@ -54,21 +74,42 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
         return;
       }
 
+      const pendingFlow = pendingOAuthFlowRef.current;
+      if (pendingFlow === null) {
+        return;
+      }
+
+      if (event.source !== null && event.source !== pendingFlow.popup) {
+        return;
+      }
+
       if (!event.data.ok) {
+        clearPendingOAuthFlow(pendingFlow.id);
         setSaved(false);
         setOauthError(event.data.error);
         return;
       }
 
+      if (!isOAuthCredentialForPendingFlow(event.data.credential, pendingFlow)) {
+        clearPendingOAuthFlow(pendingFlow.id);
+        setSaved(false);
+        setOauthError(OAUTH_CREDENTIAL_ERROR);
+        return;
+      }
+
       const trimmedApiKey = draft.apiKey.trim();
-      const trimmedOAuthClientId = draft.oauthClientId.trim();
 
       onSave({
-        ...event.data.credential,
-        baseUrl: draft.baseUrl.trim(),
+        instanceType: "enterprise",
+        baseUrl: event.data.credential.baseUrl.trim(),
         apiKey: trimmedApiKey || undefined,
-        oauthClientId: trimmedOAuthClientId || event.data.credential.oauthClientId,
+        accessToken: event.data.credential.accessToken,
+        authSource: event.data.credential.authSource,
+        oauthClientId: pendingFlow.oauthClientId,
+        oauthScopes: event.data.credential.oauthScopes,
+        accessTokenExpiresAt: event.data.credential.accessTokenExpiresAt,
       });
+      clearPendingOAuthFlow(pendingFlow.id);
       setOauthError(null);
       setSaved(true);
     }
@@ -79,6 +120,16 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
       window.removeEventListener("message", handleOAuthMessage);
     };
   }, [draft, onSave]);
+
+  function clearPendingOAuthFlow(flowId?: number) {
+    if (flowId !== undefined && pendingOAuthFlowRef.current?.id !== flowId) {
+      return;
+    }
+
+    pendingOAuthFlowRef.current = null;
+    oauthPendingRef.current = false;
+    setOauthPending(false);
+  }
 
   function updateDraft<Field extends keyof CredentialsDraft>(
     field: Field,
@@ -105,61 +156,96 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
       return;
     }
 
-    const existingOAuthCredentials = credentials?.authSource === "oauth-pkce" ? credentials : null;
-
-    onSave({
+    const trimmedOAuthClientId = draft.oauthClientId.trim();
+    const existingOAuthCredentials =
+      credentials?.authSource === "oauth-pkce" &&
+      credentials.baseUrl === trimmedBaseUrl &&
+      (credentials.oauthClientId ?? "") === trimmedOAuthClientId
+        ? credentials
+        : null;
+    const savedCredentials: SessionCredentials = {
       instanceType: "enterprise",
       baseUrl: trimmedBaseUrl,
       apiKey: draft.apiKey.trim() || undefined,
-      oauthClientId: draft.oauthClientId.trim() || undefined,
-      accessToken: existingOAuthCredentials?.accessToken,
-      authSource: existingOAuthCredentials?.authSource,
-      oauthScopes: existingOAuthCredentials?.oauthScopes,
-      accessTokenExpiresAt: existingOAuthCredentials?.accessTokenExpiresAt,
-    });
+      oauthClientId: trimmedOAuthClientId || undefined,
+    };
+
+    if (existingOAuthCredentials !== null) {
+      savedCredentials.accessToken = existingOAuthCredentials.accessToken;
+      savedCredentials.authSource = existingOAuthCredentials.authSource;
+      savedCredentials.oauthScopes = existingOAuthCredentials.oauthScopes;
+      savedCredentials.accessTokenExpiresAt = existingOAuthCredentials.accessTokenExpiresAt;
+    }
+
+    onSave(savedCredentials);
     setSaved(true);
   }
 
   async function handleOAuthConnect() {
+    if (oauthPendingRef.current) {
+      return;
+    }
+
     setSaved(false);
     setOauthError(null);
 
     const popup = window.open("", "stack-api-enterprise-oauth", "popup,width=720,height=800");
+    if (popup === null) {
+      setOauthError("Enable pop-ups to connect with Enterprise OAuth.");
+      return;
+    }
+
+    const pendingFlow: PendingOAuthFlow = {
+      id: nextOAuthFlowIdRef.current + 1,
+      baseUrl: draft.baseUrl.trim(),
+      oauthClientId: draft.oauthClientId.trim(),
+      popup,
+    };
+    nextOAuthFlowIdRef.current = pendingFlow.id;
+    pendingOAuthFlowRef.current = pendingFlow;
+    oauthPendingRef.current = true;
+    setOauthPending(true);
 
     try {
       const response = await fetch("/api/oauth/pkce/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          baseUrl: draft.baseUrl.trim(),
-          clientId: draft.oauthClientId.trim(),
+          baseUrl: pendingFlow.baseUrl,
+          clientId: pendingFlow.oauthClientId,
           scopes: OAUTH_SCOPES,
           includeNoExpiry: draft.includeNoExpiry,
         }),
       });
       const body: unknown = await response.json();
 
+      if (pendingOAuthFlowRef.current?.id !== pendingFlow.id) {
+        return;
+      }
+
       if (!isOAuthStartResponse(body)) {
-        popup?.close();
-        setOauthError("Unable to start Enterprise OAuth. Try again.");
+        popup.close();
+        clearPendingOAuthFlow(pendingFlow.id);
+        setOauthError(OAUTH_START_ERROR);
         return;
       }
 
       if (!body.ok) {
-        popup?.close();
+        popup.close();
+        clearPendingOAuthFlow(pendingFlow.id);
         setOauthError(body.error);
-        return;
-      }
-
-      if (popup === null) {
-        setOauthError("Enable pop-ups to connect with Enterprise OAuth.");
         return;
       }
 
       popup.location.href = body.authorizationUrl;
     } catch {
-      popup?.close();
-      setOauthError("Unable to start Enterprise OAuth. Try again.");
+      if (pendingOAuthFlowRef.current?.id !== pendingFlow.id) {
+        return;
+      }
+
+      popup.close();
+      clearPendingOAuthFlow(pendingFlow.id);
+      setOauthError(OAUTH_START_ERROR);
     }
   }
 
@@ -249,7 +335,12 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
                 />
                 <span>Request non-expiring token</span>
               </label>
-              <button className="s-btn" type="button" onClick={handleOAuthConnect}>
+              <button
+                className="s-btn"
+                type="button"
+                onClick={handleOAuthConnect}
+                disabled={oauthPending}
+              >
                 Connect with Enterprise OAuth
               </button>
               <p className="oauth-status">
@@ -331,4 +422,31 @@ function isOAuthStartResponse(value: unknown): value is OAuthStartResponse {
   }
 
   return false;
+}
+
+function isOAuthCredentialForPendingFlow(
+  credential: SessionCredentials,
+  pendingFlow: PendingOAuthFlow,
+): credential is ValidOAuthCredential {
+  const returnedOAuthClientId = credential.oauthClientId;
+
+  return (
+    credential.instanceType === "enterprise" &&
+    credential.authSource === "oauth-pkce" &&
+    isNonBlankString(credential.baseUrl) &&
+    credential.baseUrl.trim() === pendingFlow.baseUrl &&
+    isNonBlankString(credential.accessToken) &&
+    (returnedOAuthClientId === undefined || returnedOAuthClientId === pendingFlow.oauthClientId) &&
+    (credential.oauthScopes === undefined || isStringArray(credential.oauthScopes)) &&
+    (credential.accessTokenExpiresAt === undefined ||
+      typeof credential.accessTokenExpiresAt === "string")
+  );
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
