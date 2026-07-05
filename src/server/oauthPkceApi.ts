@@ -485,7 +485,13 @@ function resolveOAuthRedirectOrigin(
   requestOrigin: string,
 ): string | null {
   if (publicOrigin !== undefined) {
-    return parsePublicOAuthOrigin(publicOrigin)?.origin ?? null;
+    const parsedPublicOrigin = parsePublicOAuthOrigin(publicOrigin);
+
+    if (parsedPublicOrigin === null || !isAllowedConfiguredPublicOrigin(parsedPublicOrigin)) {
+      return null;
+    }
+
+    return parsedPublicOrigin.origin;
   }
 
   const parsedRequestOrigin = parsePublicOAuthOrigin(requestOrigin);
@@ -525,6 +531,10 @@ function isLocalDevelopmentOrigin(origin: URL): boolean {
     origin.hostname === "[::1]" ||
     origin.hostname === "::1"
   );
+}
+
+function isAllowedConfiguredPublicOrigin(origin: URL): boolean {
+  return origin.protocol === "https:" || isLocalDevelopmentOrigin(origin);
 }
 
 function createTokenExchangeAbortSignal(dependencies: OAuthPkceDependencies): AbortSignal {

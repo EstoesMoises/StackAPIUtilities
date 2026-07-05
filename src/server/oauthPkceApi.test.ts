@@ -179,6 +179,50 @@ describe("oauthPkceApi", () => {
     });
   });
 
+  it("rejects non-local HTTP configured public origins in the Next route", async () => {
+    await withPublicOriginEnv("http://utilities.example.com", async () => {
+      const response = await handleOAuthPkceStartRoutePost(
+        new Request(`${origin}/api/oauth/pkce/start`, {
+          method: "POST",
+          body: JSON.stringify({
+            baseUrl: "https://demo.stackenterprise.co",
+            clientId: "client-123",
+            scopes: ["write_access"],
+          }),
+        }) as NextRequest,
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        ok: false,
+        error: "Enterprise OAuth requires a Stack Enterprise HTTPS instance URL and OAuth client ID.",
+      });
+      expect(response.headers.get("set-cookie")).toBeNull();
+    });
+  });
+
+  it("allows local HTTP configured public origins in the Next route", async () => {
+    await withPublicOriginEnv("http://localhost:3000", async () => {
+      const response = await handleOAuthPkceStartRoutePost(
+        new Request("https://internal.example.net/api/oauth/pkce/start", {
+          method: "POST",
+          body: JSON.stringify({
+            baseUrl: "https://demo.stackenterprise.co",
+            clientId: "client-123",
+            scopes: ["write_access"],
+          }),
+        }) as NextRequest,
+      );
+      const body = await response.json();
+      const authorizationUrl = new URL(body.authorizationUrl);
+
+      expect(response.status).toBe(200);
+      expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
+        "http://localhost:3000/api/oauth/pkce/callback",
+      );
+    });
+  });
+
   it("rejects malformed configured public origins in the Next route", async () => {
     await withPublicOriginEnv("https://utilities.example.com/path", async () => {
       const response = await handleOAuthPkceStartRoutePost(
@@ -398,6 +442,28 @@ describe("oauthPkceApi", () => {
     expect(html).toContain("OAuth authorization request is invalid.");
   });
 
+  it("rejects non-local HTTP public-origin callback redirects", async () => {
+    const fetchFn = vi.fn();
+    const result = await handleOAuthPkceCallbackRequest(
+      new URL("http://internal.local/api/oauth/pkce/callback?code=code-123&state=state-123"),
+      encodePendingOAuthCookie(
+        validPending({
+          redirectUri: "http://utilities.example.com/api/oauth/pkce/callback",
+        }),
+      ),
+      {
+        fetchFn,
+        now: () => now,
+        publicOrigin: "http://utilities.example.com",
+      },
+    );
+    const html = await result.response.text();
+
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(result.clearCookie).toBe(true);
+    expect(html).toContain("OAuth authorization request is invalid.");
+  });
+
   it("callback Next route reads and clears the pending OAuth cookie with security headers", async () => {
     await withPublicOriginEnv("https://public.example.com", async () => {
       const fetchFn = vi.fn().mockResolvedValue(
@@ -434,6 +500,9 @@ describe("oauthPkceApi", () => {
         expect(setCookie).toContain("HttpOnly");
         expect(setCookie).toMatch(/SameSite=Lax/i);
         expect(response.headers.get("Cache-Control")).toBe("no-store, private");
+        expect(response.headers.get("Content-Security-Policy")).toBe(
+          "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        );
         expect(response.headers.get("Pragma")).toBe("no-cache");
         expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
         expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
