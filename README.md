@@ -19,14 +19,15 @@ Live API execution runs through the same-origin Next.js route at `/api/reports/r
 
 ## Credentials
 
-The shared credentials screen captures:
+Credentials and generated report data are session-only; the app does not persist them in browser storage.
 
-- Instance URL
-- API key
-- Access token
-- Personal access token
+The shared credentials screen supports three authentication lanes:
 
-Credential guidance placeholder: add customer-facing instructions for obtaining each credential here.
+- Stack Overflow Basic/Business: instance URL plus personal access token.
+- Stack Overflow Enterprise API v3: OAuth Authorization Code with PKCE, using the Enterprise instance URL and OAuth Client ID.
+- Stack Overflow Enterprise API v2.3: API key remains available for workflows that still call v2.3 endpoints.
+
+Enterprise OAuth requests the minimum workflow scope by default. User Group Sync requests `write_access`. `no_expiry` is off by default and is included only when explicitly selected.
 
 ## Development
 
