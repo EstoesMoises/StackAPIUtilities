@@ -12,7 +12,7 @@ type UserGroupSyncResponseBody =
   | { ok: false; error: string };
 
 const DEFAULT_TEMPLATE = "{Senior Manager} VRM";
-const MISSING_CREDENTIALS_MESSAGE = "Save Enterprise session credentials before using write tools.";
+const MISSING_CREDENTIALS_MESSAGE = "Connect with Enterprise OAuth before using User Group Sync.";
 
 export function UserGroupSyncPanel({ credentials }: UserGroupSyncPanelProps) {
   const [csvText, setCsvText] = useState("");

@@ -6,7 +6,10 @@ import { handleUserGroupSyncRequest } from "./userGroupSyncApi";
 const credentials: SessionCredentials = {
   instanceType: "enterprise",
   baseUrl: "https://demo.stackenterprise.co",
-  accessToken: "token",
+  accessToken: "oauth-token",
+  authSource: "oauth-pkce",
+  oauthScopes: ["write_access"],
+  accessTokenExpiresAt: "2026-07-05T12:00:00.000Z",
 };
 
 const csvText = [
@@ -519,23 +522,32 @@ describe("handleUserGroupSyncRequest", () => {
     });
   });
 
-  it("requires an Enterprise access token or PAT", async () => {
-    const response = await handleUserGroupSyncRequest({
-      action: "preview",
-      credentials: { instanceType: "enterprise", baseUrl: "https://demo.stackenterprise.co" },
-      csvText,
-      groupNameTemplate: "{Senior Manager} VRM",
-      syncMode: "add-only",
-    });
+  it("rejects Enterprise credentials without an OAuth access token", async () => {
+    const createClient = vi.fn();
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: {
+          ...credentials,
+          accessToken: undefined,
+        },
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient },
+    );
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       ok: false,
-      error: "Enterprise user group sync requires an access token with write_access.",
+      error: "Enterprise OAuth connection is required for Stack API v3 calls.",
     });
+    expect(createClient).not.toHaveBeenCalled();
   });
 
-  it("treats whitespace-only access tokens as missing", async () => {
+  it("rejects blank OAuth access tokens before creating an API client", async () => {
     const createClient = vi.fn();
 
     const response = await handleUserGroupSyncRequest(
@@ -552,12 +564,94 @@ describe("handleUserGroupSyncRequest", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       ok: false,
-      error: "Enterprise user group sync requires an access token with write_access.",
+      error: "Enterprise OAuth connection is required for Stack API v3 calls.",
     });
     expect(createClient).not.toHaveBeenCalled();
   });
 
-  it("falls back to a PAT when access token is blank", async () => {
+  it("rejects Enterprise PAT credentials for OAuth-only user group sync", async () => {
+    const client = createClient({
+      getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
+      getUserGroups: vi.fn().mockResolvedValue([]),
+    });
+    const createClientDependency = vi.fn(() => client);
+    const requestCredentials: SessionCredentials = {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      pat: "pat-token",
+      authSource: "manual-pat",
+    };
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: requestCredentials,
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient: createClientDependency },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Enterprise OAuth connection is required for Stack API v3 calls.",
+    });
+    expect(createClientDependency).not.toHaveBeenCalled();
+  });
+
+  it("rejects OAuth tokens that do not include write_access", async () => {
+    const createClientDependency = vi.fn();
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: {
+          ...credentials,
+          oauthScopes: [],
+        },
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient: createClientDependency },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Enterprise OAuth token is missing required scope: write_access.",
+    });
+    expect(createClientDependency).not.toHaveBeenCalled();
+  });
+
+  it("rejects expired OAuth tokens before creating an API client", async () => {
+    const createClientDependency = vi.fn();
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: {
+          ...credentials,
+          accessTokenExpiresAt: "2000-01-01T00:00:00.000Z",
+        },
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient: createClientDependency },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.",
+    });
+    expect(createClientDependency).not.toHaveBeenCalled();
+  });
+
+  it("trims OAuth access tokens before creating the client without a PAT fallback", async () => {
     const client = createClient({
       getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
       getUserGroups: vi.fn().mockResolvedValue([]),
@@ -565,8 +659,8 @@ describe("handleUserGroupSyncRequest", () => {
     const createClientDependency = vi.fn((_credentials: SessionCredentials) => client);
     const requestCredentials: SessionCredentials = {
       ...credentials,
-      accessToken: "",
-      pat: "pat-token",
+      accessToken: "  oauth-token  ",
+      pat: "   ",
     };
 
     const response = await handleUserGroupSyncRequest(
@@ -582,37 +676,12 @@ describe("handleUserGroupSyncRequest", () => {
 
     expect(response.status).toBe(200);
     const [normalizedCredentials] = createClientDependency.mock.calls[0];
-    expect(normalizedCredentials).toEqual(expect.objectContaining({ pat: "pat-token" }));
-    expect(normalizedCredentials.accessToken).toBeUndefined();
-  });
-
-  it("trims access tokens before creating the client", async () => {
-    const client = createClient({
-      getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
-      getUserGroups: vi.fn().mockResolvedValue([]),
+    const { pat: _pat, ...expectedCredentials } = requestCredentials;
+    expect(normalizedCredentials).toEqual({
+      ...expectedCredentials,
+      accessToken: "oauth-token",
     });
-    const createClientDependency = vi.fn((_credentials: SessionCredentials) => client);
-    const requestCredentials: SessionCredentials = {
-      ...credentials,
-      accessToken: "  token  ",
-    };
-
-    const response = await handleUserGroupSyncRequest(
-      {
-        action: "preview",
-        credentials: requestCredentials,
-        csvText,
-        groupNameTemplate: "{Senior Manager} VRM",
-        syncMode: "add-only",
-      },
-      { createClient: createClientDependency },
-    );
-
-    expect(response.status).toBe(200);
-    expect(createClientDependency).toHaveBeenCalledWith({
-      ...requestCredentials,
-      accessToken: "token",
-    });
+    expect(normalizedCredentials).not.toHaveProperty("pat");
   });
 
   it("returns client failures that look like parser errors as 500 responses", async () => {
