@@ -319,6 +319,40 @@ describe("CredentialsPanel", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it("ignores same-origin OAuth success messages without the active popup source", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=abc" }),
+    );
+
+    renderCredentialsPanel({ onSave });
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    const connectButton = screen.getByRole("button", { name: "Connect with Enterprise OAuth" });
+    await user.click(connectButton);
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          origin: window.location.origin,
+          data: {
+            type: "stack-api-oauth-pkce-result",
+            ok: true,
+            credential: enterpriseOAuthCredentials(),
+          },
+        }),
+      );
+    });
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(connectButton).toBeDisabled();
+  });
+
   it("rejects malformed same-origin OAuth credentials after OAuth start", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();

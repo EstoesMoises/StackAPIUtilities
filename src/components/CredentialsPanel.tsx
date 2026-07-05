@@ -79,7 +79,7 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
         return;
       }
 
-      if (event.source !== null && event.source !== pendingFlow.popup) {
+      if (event.source !== pendingFlow.popup) {
         return;
       }
 
