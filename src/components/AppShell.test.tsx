@@ -20,6 +20,8 @@ describe("AppShell", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Stack API Utilities" })).toBeInTheDocument();
+    expect(screen.getByText(/mostly untested and is not ready for production instances/i)).toBeInTheDocument();
+    expect(screen.getByText(/reach out to Moises on Slack/i)).toBeInTheDocument();
     expect(screen.getByText("No credentials")).toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tag Report" })).toBeInTheDocument();

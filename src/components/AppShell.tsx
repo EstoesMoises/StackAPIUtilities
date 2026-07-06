@@ -57,6 +57,13 @@ export function AppShell({ activePanel, onPanelChange, sidebar, children, summar
           <span className="session-pill">{datasetLabel}</span>
         </div>
       </header>
+      <section className="app-readiness-warning" role="note" aria-label="Production readiness warning">
+        <strong>Pre-production warning:</strong>
+        <p>
+          This app is mostly untested and is not ready for production instances. Reach out to Moises on
+          Slack with the reports you're using the most, what would be most useful, and let's connect on that.
+        </p>
+      </section>
       <div className="app-body">
         <aside className="app-sidebar">{sidebar}</aside>
         <main className="app-main" aria-label="Workspace">
