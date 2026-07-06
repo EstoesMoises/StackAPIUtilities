@@ -55,7 +55,7 @@ export interface SessionCredentials {
   apiKey?: string;
   accessToken?: string;
   pat?: string;
-  authSource?: "manual-pat" | "oauth-pkce";
+  authSource?: "manual-pat" | "manual-enterprise-token" | "oauth-pkce";
   oauthClientId?: string;
   oauthScopes?: string[];
   accessTokenExpiresAt?: string;

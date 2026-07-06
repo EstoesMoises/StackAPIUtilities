@@ -4,7 +4,7 @@ import { normalizeInstanceUrl, validateCredentialsForReport, validateEnterpriseV
 
 const NOW = new Date("2026-07-04T12:00:00.000Z");
 const FUTURE_EXPIRY = "2026-07-05T00:00:00.000Z";
-const CONNECTION_REQUIRED_MESSAGE = "Enterprise OAuth connection is required for Stack API v3 calls.";
+const CONNECTION_REQUIRED_MESSAGE = "Enterprise access token is required for Stack API v3 calls.";
 const EXPIRY_MESSAGE = "Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.";
 
 describe("normalizeInstanceUrl", () => {
@@ -120,7 +120,7 @@ describe("validateCredentialsForReport", () => {
     expect(result.messages).toContain("API key is required for Stack API v2.3 Enterprise calls.");
   });
 
-  it("requires Enterprise OAuth PKCE credentials for Enterprise reports that use Stack API v3", () => {
+  it("requires an Enterprise access token for Enterprise reports that use Stack API v3", () => {
     const result = validateCredentialsForReport("api-user-report", {
       instanceType: "enterprise",
       baseUrl: "https://demo.stackenterprise.co",
@@ -149,6 +149,18 @@ describe("validateCredentialsForReport", () => {
       accessToken: "token",
       authSource: "oauth-pkce",
       accessTokenExpiresAt: FUTURE_EXPIRY,
+    }, NOW);
+
+    expect(result).toEqual({ valid: true, messages: [] });
+  });
+
+  it("accepts API key and manual Enterprise access token credentials for Enterprise reports that use v2 and v3", () => {
+    const result = validateCredentialsForReport("api-user-report", {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      apiKey: "key",
+      accessToken: "manual-token",
+      authSource: "manual-enterprise-token",
     }, NOW);
 
     expect(result).toEqual({ valid: true, messages: [] });
@@ -230,6 +242,17 @@ describe("validateEnterpriseV3OAuthCredentials", () => {
     expect(result.messages).toContain("Enterprise OAuth token is missing required scope: write_access.");
   });
 
+  it("accepts manual Enterprise access tokens without expiry metadata", () => {
+    const result = validateEnterpriseV3OAuthCredentials({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: "manual-token",
+      authSource: "manual-enterprise-token",
+    }, { now: NOW });
+
+    expect(result).toEqual({ valid: true, messages: [] });
+  });
+
   it.each([
     ["null credentials", null],
     [
@@ -258,7 +281,7 @@ describe("validateEnterpriseV3OAuthCredentials", () => {
       },
     ],
     [
-      "Enterprise credentials with a manual access token",
+      "Enterprise credentials with a manual access token but no manual auth source",
       {
         instanceType: "enterprise",
         baseUrl: "https://demo.stackenterprise.co",

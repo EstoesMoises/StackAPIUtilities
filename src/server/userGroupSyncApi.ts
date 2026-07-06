@@ -242,7 +242,12 @@ function isUserGroupSyncRequestPayload(value: unknown): value is UserGroupSyncRe
 }
 
 function isOptionalAuthSource(value: unknown): value is SessionCredentials["authSource"] | undefined {
-  return value === undefined || value === "manual-pat" || value === "oauth-pkce";
+  return (
+    value === undefined ||
+    value === "manual-pat" ||
+    value === "manual-enterprise-token" ||
+    value === "oauth-pkce"
+  );
 }
 
 function isOptionalString(value: unknown): value is string | undefined {
