@@ -288,6 +288,66 @@ describe("sessionStore", () => {
     ]);
   });
 
+  it("preserves visible current and comparison warnings while replacing rerun period warnings", () => {
+    const currentWarning = {
+      reportId: "tag-report" as const,
+      code: "dataset-page-cap",
+      message: "Current questions reached the configured page cap.",
+    };
+    const comparisonWarning = {
+      reportId: "tag-report" as const,
+      code: "dataset-page-cap",
+      message: "Comparison questions reached the configured page cap.",
+    };
+    const currentWithWarning = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [currentWarning],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 100 }] }],
+    });
+    const comparisonWithoutWarning = sessionReducer(currentWithWarning, {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 90 }] }],
+    });
+    const comparisonWithWarning = sessionReducer(comparisonWithoutWarning, {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "comparison",
+      scope: { startDate: "2026-04-01", endDate: "2026-04-30" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [comparisonWarning, comparisonWarning],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 80 }] }],
+    });
+    const currentRerunWithoutWarning = sessionReducer(comparisonWithWarning, {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: { startDate: "2026-07-01", endDate: "2026-07-31" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 120 }] }],
+    });
+
+    expect(comparisonWithoutWarning.reportOutputs["tag-report"]?.warnings).toEqual([currentWarning]);
+    expect(comparisonWithWarning.reportOutputs["tag-report"]?.warnings).toEqual([
+      currentWarning,
+      comparisonWarning,
+    ]);
+    expect(currentRerunWithoutWarning.reportOutputs["tag-report"]?.warnings).toEqual([comparisonWarning]);
+  });
+
   it("removes a managed dataset from the active session", () => {
     const withDataset = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",

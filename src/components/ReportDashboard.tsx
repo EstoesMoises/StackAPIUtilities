@@ -37,7 +37,7 @@ export function ReportDashboard({
   warnings = [],
 }: ReportDashboardProps) {
   const comparisonSection =
-    comparisonRecords === undefined
+    reportId === "tag-report" || comparisonRecords === undefined
       ? undefined
       : renderComparisonDashboard({
           currentRecords: records,
@@ -61,10 +61,24 @@ export function ReportDashboard({
   }
 
   if (reportId === "tag-report") {
-    const summary = summarizeTagHealthRows(normalizeTagHealthRows(records, outputSource));
+    const tagHealthRows = normalizeTagHealthRows(records, outputSource);
+    const tagHealthComparisonRows =
+      comparisonRecords === undefined ? undefined : normalizeTagHealthRows(comparisonRecords, outputSource);
+    const tagHealthComparisonSection =
+      tagHealthComparisonRows === undefined
+        ? undefined
+        : renderComparisonDashboard({
+            currentRecords: tagHealthRows as unknown as Record<string, unknown>[],
+            comparisonRecords: tagHealthComparisonRows as unknown as Record<string, unknown>[],
+            currentScope,
+            comparisonScope,
+            groupColumnLabel: "Health status",
+            getGroup: getTagHealthComparisonGroup,
+          });
+    const summary = summarizeTagHealthRows(tagHealthRows);
 
     return (
-      <DashboardLayout cards={summary.metricCards} comparisonSection={comparisonSection} warnings={warnings}>
+      <DashboardLayout cards={summary.metricCards} comparisonSection={tagHealthComparisonSection} warnings={warnings}>
         <DashboardSection title="Top tags by page views">
           <BarList
             rows={summary.topTagsByViews.map((row) => ({
@@ -340,6 +354,8 @@ interface ComparisonDashboardInput {
   comparisonRecords: Record<string, unknown>[];
   currentScope?: PeriodScope;
   comparisonScope?: PeriodScope;
+  groupColumnLabel?: string;
+  getGroup?: (record: Record<string, unknown>) => string;
 }
 
 function renderComparisonDashboard({
@@ -347,8 +363,10 @@ function renderComparisonDashboard({
   comparisonRecords,
   currentScope,
   comparisonScope,
+  groupColumnLabel = "Dataset",
+  getGroup = getComparisonGroup,
 }: ComparisonDashboardInput) {
-  const rows = buildComparisonRows(currentRecords, comparisonRecords);
+  const rows = buildComparisonRows(currentRecords, comparisonRecords, getGroup);
 
   return (
     <DashboardSection title="Period comparison">
@@ -373,7 +391,7 @@ function renderComparisonDashboard({
         <table className="comparison-table">
           <thead>
             <tr>
-              <th scope="col">Dataset</th>
+              <th scope="col">{groupColumnLabel}</th>
               <th scope="col">Current</th>
               <th scope="col">Comparison</th>
               <th scope="col">Change</th>
@@ -398,9 +416,10 @@ function renderComparisonDashboard({
 function buildComparisonRows(
   currentRecords: Record<string, unknown>[],
   comparisonRecords: Record<string, unknown>[],
+  getGroup: (record: Record<string, unknown>) => string,
 ) {
-  const currentCounts = countBy(currentRecords, getComparisonGroup);
-  const comparisonCounts = countBy(comparisonRecords, getComparisonGroup);
+  const currentCounts = countBy(currentRecords, getGroup);
+  const comparisonCounts = countBy(comparisonRecords, getGroup);
   const labels = new Set([...Object.keys(currentCounts), ...Object.keys(comparisonCounts)]);
 
   return [...labels]
@@ -420,6 +439,10 @@ function buildComparisonRows(
 
 function getComparisonGroup(record: Record<string, unknown>): string {
   return String(record.datasetName ?? "Records");
+}
+
+function getTagHealthComparisonGroup(record: Record<string, unknown>): string {
+  return String(record.health_status ?? "Unknown status");
 }
 
 function formatDelta(delta: number): string {

@@ -116,6 +116,32 @@ describe("ReportDashboard", () => {
     expect(screen.getByLabelText("java: 3")).toBeInTheDocument();
   });
 
+  it("compares curated Tag Health rows by health status", () => {
+    render(
+      <ReportDashboard
+        reportId="tag-report"
+        records={[
+          tagHealthRecord("python", "Healthy"),
+          tagHealthRecord("react", "Needs SME coverage"),
+          tagHealthRecord("typescript", "Needs SME coverage"),
+        ]}
+        comparisonRecords={[
+          tagHealthRecord("python", "Healthy"),
+          tagHealthRecord("javascript", "Healthy"),
+          tagHealthRecord("java", "Needs response attention"),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Period comparison")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Health status" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Dataset" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("row", { name: /Records/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /Needs SME coverage 2 0 \+2/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /Needs response attention 0 1 -1/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /Healthy 1 2 -1/ })).toBeInTheDocument();
+  });
+
   it("normalizes imported Tag Metric rows into Tag Health dashboard rows", () => {
     render(
       <ReportDashboard
@@ -140,3 +166,18 @@ describe("ReportDashboard", () => {
     expect(screen.getByLabelText("typescript: 8")).toBeInTheDocument();
   });
 });
+
+function tagHealthRecord(tagName: string, healthStatus: string) {
+  return {
+    tag_name: tagName,
+    health_status: healthStatus,
+    page_views: 100,
+    question_count: 1,
+    answer_count: 1,
+    sme_count: healthStatus === "Needs SME coverage" ? 0 : 1,
+    watcher_count: 1,
+    unanswered_questions: healthStatus === "Needs response attention" ? 1 : 0,
+    median_first_answer_hours: 2,
+    recommended_action: "Maintain current coverage and response habits.",
+  };
+}
