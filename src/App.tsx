@@ -204,6 +204,7 @@ export function App() {
           reportId={state.selectedReportId}
           records={selectedReportRecords}
           comparisonRecords={selectedReportOutput?.comparisonRecords}
+          loadedAt={selectedReportOutput?.loadedAt}
           currentScope={selectedReportOutput?.currentScope}
           comparisonScope={selectedReportOutput?.comparisonScope}
           outputSource={selectedReportOutput?.source}
