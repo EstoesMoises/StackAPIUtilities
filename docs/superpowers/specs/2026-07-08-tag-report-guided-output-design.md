@@ -50,7 +50,22 @@ The first implementation should define three presets:
 
 These values keep the Stack API page size within the existing validation range and treat completeness as a preset depth decision instead of an exposed pagination decision.
 
-Advanced controls should remain available in a collapsed section labeled `Advanced API volume settings`. The section should explain that these settings affect runtime and completeness, and should show validation messages using the existing scope validation rules.
+Preset controls should disclose their technical API settings at the point of choice. Each preset should have accessible detail text available on hover, focus, and tap/click, not hover alone. The detail should show:
+
+- `pageSize`
+- `maxPagesPerDataset`
+- maximum records requested per dataset, calculated as `pageSize * maxPagesPerDataset`
+- plain-language completeness tradeoff
+
+Example copy:
+
+- Quick sample: `Requests up to 50 records per dataset. Fastest option; use only to preview data shape.`
+- Standard report: `Requests up to 500 records per dataset. Balanced default for normal reports.`
+- Deep audit: `Requests up to 2,000 records per dataset. Slower, but reduces the chance of capped results.`
+
+The UI should make clear that these are collection caps, not invisible cost-saving shortcuts. If the user cares about avoiding omitted data, the interface should point them toward `Deep audit` or advanced volume settings before the run starts.
+
+Advanced controls should remain available in a collapsed section labeled `Advanced API volume settings`. The section should explain that these settings affect runtime and completeness, show the currently resolved preset values, and show validation messages using the existing scope validation rules.
 
 ## Progress Feedback
 
@@ -76,6 +91,8 @@ The progress panel should include:
 Implementation must not fake dataset/page precision. If the app keeps the current single JSON response for the first pass, the progress panel should show a determinate pre-run stage, an indeterminate `Collecting live API datasets` stage, and completion/failure. If the implementation adds dataset/page-level details in this slice, it should do so through real progress events emitted by the runner and delivered through a same-request streaming response or equivalent non-persistent mechanism. This remains separate from a background job system.
 
 If a run reaches the selected preset cap, the app should preserve the warning after the run completes. The dashboard and export controls should make it clear that results may be partial.
+
+Preset-cap warnings should name the affected dataset and selected preset when possible. For example: `Questions reached the Standard report cap of 500 records. Use Deep audit or Advanced API volume settings for a more complete run.`
 
 ## Tag Health CSV
 
@@ -171,6 +188,7 @@ Implementation should use test-first coverage for:
 
 - Preset-to-API-volume mapping.
 - Scope validation with preset and advanced controls.
+- Preset technical detail text for hover/focus/tap disclosure.
 - Progress panel stage rendering.
 - Progress warnings for partial runs.
 - Tag Health row generation from representative Tag Report records.
@@ -182,6 +200,7 @@ Implementation should use test-first coverage for:
 ## Acceptance Criteria
 
 - Nontechnical users can run Tag Report without understanding page size or max pages.
+- Users can inspect each preset's technical API settings before running the report.
 - Technical users can still inspect or adjust advanced API volume settings.
 - While the report runs, users see what stage is active and whether progress is being made.
 - Completed Tag Report runs produce a Tag Health CSV download.
