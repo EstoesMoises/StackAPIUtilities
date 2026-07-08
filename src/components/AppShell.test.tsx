@@ -349,6 +349,35 @@ describe("AppShell", () => {
     expect(screen.queryByText("Collected stale run-both tags for Tag Report.")).not.toBeInTheDocument();
   });
 
+  it("clears stale running queue messages when switching reports during a pending run", async () => {
+    const user = userEvent.setup();
+    const pendingRun = createDeferred<Response>();
+    vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    expect(await screen.findByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+
+    expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
+    expect(screen.queryByText("Running Tag Report current period live API collection...")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Run status" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      pendingRun.resolve(jsonResponse(makeTagReportRunBody("Collected stale tags for Tag Report.")));
+      await pendingRun.promise;
+    });
+
+    expect(screen.queryByText("Running Tag Report current period live API collection...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
+  });
+
   it("ignores an older live run completion after an upload replaces the run status", async () => {
     const user = userEvent.setup();
     const pendingRun = createDeferred<Response>();

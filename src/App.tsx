@@ -199,6 +199,7 @@ export function App() {
   function clearActiveRunProgress() {
     activeRunIdRef.current += 1;
     setRunProgress(undefined);
+    setRunQueue([]);
   }
 
   function isActiveRun(runId: number) {
