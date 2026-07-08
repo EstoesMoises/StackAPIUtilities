@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useState } from "react";
+import { useReducer, useRef, useState } from "react";
 import { AppShell, type AppPanel } from "./components/AppShell";
 import { CredentialsPanel } from "./components/CredentialsPanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
@@ -32,8 +32,10 @@ export function App() {
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
   const [runProgress, setRunProgress] = useState<ReportRunProgress | undefined>();
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
+  const activeRunIdRef = useRef(0);
 
   function selectReport(reportId: ReportId) {
+    clearActiveRunProgress();
     dispatch({ type: "report/select", reportId });
     setActivePanel("report");
   }
@@ -46,7 +48,7 @@ export function App() {
   async function queueSelectedReportRun(periodRole: RunPeriodRole = "current") {
     const report = reportRegistry.find((candidate) => candidate.id === state.selectedReportId)!;
     if (!state.credentials) {
-      setRunProgress(undefined);
+      clearActiveRunProgress();
       setRunQueue([
         {
           id: `${state.selectedReportId}-missing-credentials`,
@@ -56,12 +58,12 @@ export function App() {
         },
       ]);
       setActivePanel("credentials");
-      return;
+      return false;
     }
 
     const validation = validateCredentialsForReport(state.selectedReportId, state.credentials);
     if (!validation.valid) {
-      setRunProgress(undefined);
+      clearActiveRunProgress();
       setRunQueue(
         validation.messages.map((message, index) => ({
           id: `${state.selectedReportId}-credential-error-${index}`,
@@ -71,7 +73,7 @@ export function App() {
         })),
       );
       setActivePanel("credentials");
-      return;
+      return false;
     }
 
     setRunQueue([
@@ -82,6 +84,7 @@ export function App() {
         message: `Running ${report.title} ${periodRole} period live API collection...`,
       },
     ]);
+    const runId = startActiveRun();
     setRunProgress(createRunningProgress(report.title));
 
     try {
@@ -106,6 +109,10 @@ export function App() {
 
       if (!body.ok) {
         throw new Error(body.error);
+      }
+
+      if (!isActiveRun(runId)) {
+        return false;
       }
 
       const result = body.result;
@@ -136,7 +143,12 @@ export function App() {
         },
       ]);
       setActivePanel("report");
+      return true;
     } catch (error) {
+      if (!isActiveRun(runId)) {
+        return false;
+      }
+
       setRunProgress(createFailedProgress(report.title));
       setRunQueue([
         {
@@ -146,12 +158,13 @@ export function App() {
           message: getLiveRunErrorMessage(error, report.title),
         },
       ]);
+      return true;
     }
   }
 
   async function queueBothReportRuns() {
-    await queueSelectedReportRun("current");
-    if (reportScope.comparison) {
+    const currentRunHandled = await queueSelectedReportRun("current");
+    if (currentRunHandled && reportScope.comparison) {
       await queueSelectedReportRun("comparison");
     }
   }
@@ -159,7 +172,7 @@ export function App() {
   function importUploadedReport(result: ImportedUploadResult) {
     const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
 
-    setRunProgress(undefined);
+    clearActiveRunProgress();
     dispatch({
       type: "import/loaded",
       datasetName: result.datasetName,
@@ -176,6 +189,20 @@ export function App() {
       },
     ]);
     setActivePanel("report");
+  }
+
+  function startActiveRun() {
+    activeRunIdRef.current += 1;
+    return activeRunIdRef.current;
+  }
+
+  function clearActiveRunProgress() {
+    activeRunIdRef.current += 1;
+    setRunProgress(undefined);
+  }
+
+  function isActiveRun(runId: number) {
+    return activeRunIdRef.current === runId;
   }
 
   const selectedReportOutput = state.reportOutputs[state.selectedReportId];

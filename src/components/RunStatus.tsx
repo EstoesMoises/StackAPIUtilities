@@ -11,7 +11,7 @@ export function RunStatus({ queue, progress }: RunStatusProps) {
   }
 
   return (
-    <section className="s-notice s-notice__info mt16 run-status" aria-label="Run status">
+    <section className="s-notice s-notice__info mt16 run-status" aria-label="Run status" aria-live="polite">
       {progress && <RunProgress progress={progress} />}
       {queue.length > 0 && (
         <div className="run-status-queue">

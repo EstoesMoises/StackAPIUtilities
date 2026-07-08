@@ -31,6 +31,7 @@ describe("RunStatus", () => {
     );
 
     const status = screen.getByRole("region", { name: "Run status" });
+    expect(status).toHaveAttribute("aria-live", "polite");
     expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
     expect(within(status).getByText("Collecting live API datasets")).toBeInTheDocument();
 

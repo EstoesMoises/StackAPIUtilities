@@ -283,6 +283,103 @@ describe("AppShell", () => {
     expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
   });
 
+  it("ignores an older live run completion after a newer run starts", async () => {
+    const user = userEvent.setup();
+    const firstRun = createDeferred<Response>();
+    const secondRun = createDeferred<Response>();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(firstRun.promise)
+      .mockReturnValueOnce(secondRun.promise);
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      firstRun.resolve(jsonResponse(makeTagReportRunBody("Collected stale tags for Tag Report.")));
+      await firstRun.promise;
+    });
+
+    const status = screen.getByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
+    expect(within(status).getByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
+
+    secondRun.resolve(jsonResponse(makeTagReportRunBody("Collected fresh tags for Tag Report.")));
+    expect(await screen.findByText("Collected fresh tags for Tag Report.")).toBeInTheDocument();
+    expect(screen.getByText("Live API run completed for Tag Report.")).toBeInTheDocument();
+  });
+
+  it("does not continue a stale run-both request after a newer run starts", async () => {
+    const user = userEvent.setup();
+    const runBothCurrent = createDeferred<Response>();
+    const newerCurrentRun = createDeferred<Response>();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(runBothCurrent.promise)
+      .mockReturnValueOnce(newerCurrentRun.promise);
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByLabelText("Enable comparison period"));
+    await user.click(screen.getByRole("button", { name: "Run both periods" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      runBothCurrent.resolve(jsonResponse(makeTagReportRunBody("Collected stale run-both tags for Tag Report.")));
+      await runBothCurrent.promise;
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const status = screen.getByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
+    expect(within(status).getByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+    expect(screen.queryByText("Collected stale run-both tags for Tag Report.")).not.toBeInTheDocument();
+  });
+
+  it("ignores an older live run completion after an upload replaces the run status", async () => {
+    const user = userEvent.setup();
+    const pendingRun = createDeferred<Response>();
+    vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+    expect(await screen.findByRole("progressbar", { name: "Tag Report progress" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar", { name: "Tag Report progress" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      pendingRun.resolve(jsonResponse(makeTagReportRunBody("Collected stale tags for Tag Report.")));
+      await pendingRun.promise;
+    });
+
+    expect(screen.getByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
+  });
+
   it("runs current and comparison periods and renders comparison metrics", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -418,6 +515,32 @@ function jsonResponse(body: unknown) {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+async function saveBasicBusinessCredentials(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Credentials" }));
+  await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
+  await user.type(screen.getByLabelText("Personal access token"), "pat-token");
+  await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+}
+
+function makeTagReportRunBody(message: string) {
+  return {
+    ok: true,
+    result: {
+      reportId: "tag-report",
+      reportTitle: "Tag Report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [],
+      datasets: [
+        { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
+      ],
+      messages: [message],
+    },
+  };
 }
 
 function createDeferred<T>() {
