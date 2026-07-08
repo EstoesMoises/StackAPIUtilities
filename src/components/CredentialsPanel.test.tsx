@@ -27,7 +27,8 @@ describe("CredentialsPanel", () => {
     await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
 
     expect(screen.getByLabelText("API key")).toBeInTheDocument();
-    expect(screen.getByLabelText("Access token")).toBeInTheDocument();
+    expect(screen.getByLabelText("Access token (optional)")).toBeInTheDocument();
+    expect(screen.getByText("Optional if you connect with Enterprise OAuth.")).toBeInTheDocument();
     expect(screen.getByLabelText("OAuth Client ID")).toBeInTheDocument();
     expect(screen.getByLabelText("Request non-expiring token")).not.toBeChecked();
     expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeInTheDocument();
@@ -43,7 +44,7 @@ describe("CredentialsPanel", () => {
     await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
     await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
     await user.type(screen.getByLabelText("API key"), "api-key");
-    await user.type(screen.getByLabelText("Access token"), " manual-token ");
+    await user.type(screen.getByLabelText("Access token (optional)"), " manual-token ");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
 
     expect(onSave).toHaveBeenCalledWith({
@@ -66,7 +67,7 @@ describe("CredentialsPanel", () => {
       },
     });
 
-    expect(screen.getByLabelText("Access token")).toHaveValue("manual-token");
+    expect(screen.getByLabelText("Access token (optional)")).toHaveValue("manual-token");
   });
 
   it("starts Enterprise OAuth with write_access and no no_expiry by default", async () => {

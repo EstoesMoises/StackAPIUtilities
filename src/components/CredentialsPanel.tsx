@@ -286,8 +286,8 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
           <li>Basic/Business: provide your team URL and Personal access token.</li>
           <li>
             Enterprise: provide your site URL
-            {report.credentialRequirements.includes("api-key") ? ", API key," : ""} and connect
-            with Enterprise OAuth or paste an access token.
+            {report.credentialRequirements.includes("api-key") ? ", API key," : ""} and either
+            connect with Enterprise OAuth or paste an optional access token.
           </li>
           <li>
             Required scope notes:{" "}
@@ -334,14 +334,20 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
               />
             </label>
             <label className="d-block">
-              <span className="d-block fs-caption tt-uppercase fc-light mb4">Access token</span>
+              <span className="d-block fs-caption tt-uppercase fc-light mb4">
+                Access token (optional)
+              </span>
               <input
                 className="s-input"
                 type="password"
+                aria-describedby="enterprise-access-token-help"
                 value={draft.accessToken}
                 onChange={(event) => updateDraft("accessToken", event.currentTarget.value)}
               />
             </label>
+            <p className="oauth-status" id="enterprise-access-token-help">
+              Optional if you connect with Enterprise OAuth.
+            </p>
             <label className="d-block">
               <span className="d-block fs-caption tt-uppercase fc-light mb4">OAuth Client ID</span>
               <input
