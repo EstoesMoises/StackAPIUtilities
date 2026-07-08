@@ -1,14 +1,23 @@
+import { useEffect, useState } from "react";
+import {
+  REPORT_RUN_PRESETS,
+  applyReportRunPreset,
+  getReportRunPresetDisclosure,
+} from "../domain/reportRunPresets";
 import { validateReportRunScope } from "../domain/reportScope";
-import type { ReportRunScope } from "../domain/types";
+import type { ReportId, ReportRunPresetId, ReportRunScope } from "../domain/types";
 
 interface ReportScopePanelProps {
+  reportId: ReportId;
   scope: ReportRunScope;
   onChange: (scope: ReportRunScope) => void;
 }
 
-export function ReportScopePanel({ scope, onChange }: ReportScopePanelProps) {
+export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanelProps) {
   const validation = validateReportRunScope(scope);
   const comparisonEnabled = scope.comparison !== undefined;
+  const isTagReport = reportId === "tag-report";
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   function updateCurrent(field: "startDate" | "endDate", value: string) {
     onChange({
@@ -24,6 +33,10 @@ export function ReportScopePanel({ scope, onChange }: ReportScopePanelProps) {
     });
   }
 
+  function updatePreset(presetId: ReportRunPresetId) {
+    onChange(applyReportRunPreset(scope, presetId));
+  }
+
   function updateNumber(field: "pageSize" | "maxPagesPerDataset", value: string) {
     onChange({
       ...scope,
@@ -37,6 +50,26 @@ export function ReportScopePanel({ scope, onChange }: ReportScopePanelProps) {
       comparison: enabled ? scope.comparison ?? {} : undefined,
     });
   }
+
+  const volumeControls = (
+    <>
+      <ScopeNumberField
+        field="pageSize"
+        label="Page size"
+        max={100}
+        min={1}
+        value={scope.pageSize}
+        onChange={updateNumber}
+      />
+      <ScopeNumberField
+        field="maxPagesPerDataset"
+        label="Max pages per dataset"
+        min={1}
+        value={scope.maxPagesPerDataset}
+        onChange={updateNumber}
+      />
+    </>
+  );
 
   return (
     <section className="report-scope-panel" aria-labelledby="report-scope-heading">
@@ -69,30 +102,47 @@ export function ReportScopePanel({ scope, onChange }: ReportScopePanelProps) {
             onChange={(event) => updateCurrent("endDate", event.currentTarget.value)}
           />
         </label>
-        <label className="scope-field">
-          <span>Page size</span>
-          <input
-            className="s-input"
-            type="number"
-            min={1}
-            max={100}
-            aria-label="Page size"
-            value={Number.isNaN(scope.pageSize) ? "" : scope.pageSize}
-            onChange={(event) => updateNumber("pageSize", event.currentTarget.value)}
-          />
-        </label>
-        <label className="scope-field">
-          <span>Max pages per dataset</span>
-          <input
-            className="s-input"
-            type="number"
-            min={1}
-            aria-label="Max pages per dataset"
-            value={Number.isNaN(scope.maxPagesPerDataset) ? "" : scope.maxPagesPerDataset}
-            onChange={(event) => updateNumber("maxPagesPerDataset", event.currentTarget.value)}
-          />
-        </label>
+        {!isTagReport && volumeControls}
       </div>
+      {isTagReport && (
+        <>
+          <fieldset className="preset-group" aria-label="Run depth">
+            <legend>Run depth</legend>
+            <div className="preset-options">
+              {REPORT_RUN_PRESETS.map((preset) => (
+                <label className="preset-option" key={preset.id}>
+                  <input
+                    type="radio"
+                    name="tag-report-run-preset"
+                    checked={scope.runPreset === preset.id}
+                    onChange={() => updatePreset(preset.id)}
+                  />
+                  <span className="preset-option-main">
+                    <span className="preset-option-label">{preset.label}</span>
+                    <span className="preset-option-copy">{preset.shortDescription}</span>
+                    <span className="preset-option-disclosure">
+                      {getReportRunPresetDisclosure(preset.id)}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <details
+            className="scope-advanced"
+            onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+          >
+            <summary aria-expanded={advancedOpen} role="button">
+              Advanced API volume settings
+            </summary>
+            <p className="scope-help">
+              These collection caps affect runtime and completeness. Increase them when avoiding capped results
+              matters more than speed.
+            </p>
+            <div className="scope-grid">{volumeControls}</div>
+          </details>
+        </>
+      )}
       <label className="scope-comparison-toggle">
         <input
           type="checkbox"
@@ -137,4 +187,44 @@ export function ReportScopePanel({ scope, onChange }: ReportScopePanelProps) {
 
 function normalizeOptionalValue(value: string): string | undefined {
   return value.trim() === "" ? undefined : value;
+}
+
+interface ScopeNumberFieldProps {
+  field: "pageSize" | "maxPagesPerDataset";
+  label: string;
+  min: number;
+  max?: number;
+  value: number;
+  onChange: (field: "pageSize" | "maxPagesPerDataset", value: string) => void;
+}
+
+function ScopeNumberField({ field, label, min, max, value, onChange }: ScopeNumberFieldProps) {
+  const [draft, setDraft] = useState(formatNumberInputValue(value));
+
+  useEffect(() => {
+    setDraft(formatNumberInputValue(value));
+  }, [value]);
+
+  return (
+    <label className="scope-field">
+      <span>{label}</span>
+      <input
+        className="s-input"
+        type="number"
+        min={min}
+        max={max}
+        aria-label={label}
+        value={draft}
+        onChange={(event) => {
+          const nextValue = event.currentTarget.value;
+          setDraft(nextValue);
+          onChange(field, nextValue);
+        }}
+      />
+    </label>
+  );
+}
+
+function formatNumberInputValue(value: number): string {
+  return Number.isNaN(value) ? "" : String(value);
 }

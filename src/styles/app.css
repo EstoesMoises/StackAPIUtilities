@@ -483,6 +483,134 @@ select:disabled {
   min-height: 40px;
 }
 
+.preset-group {
+  min-width: 0;
+  margin-top: 16px;
+  padding: 0;
+  border: 0;
+}
+
+.preset-group legend {
+  margin: 0 0 8px;
+  color: var(--so-ink);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.preset-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.preset-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--so-border);
+  border-radius: 8px;
+  color: var(--so-text);
+  background: var(--so-surface);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-base) var(--ease-out-product),
+    border-color var(--motion-base) var(--ease-out-product);
+}
+
+.preset-option:hover {
+  border-color: var(--so-border-strong);
+  background: var(--so-surface-hover);
+}
+
+.preset-option:has(input:checked) {
+  border-color: var(--so-orange-strong);
+  background: var(--so-orange-soft);
+}
+
+.preset-option:has(input:focus-visible) {
+  outline: 3px solid var(--so-focus);
+  outline-offset: 2px;
+}
+
+.preset-option input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--so-orange-strong);
+}
+
+.preset-option-main {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.preset-option-label {
+  color: var(--so-ink);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.preset-option-copy {
+  color: var(--so-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.preset-option-disclosure {
+  color: var(--so-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.scope-advanced {
+  margin-top: 12px;
+  border: 1px solid var(--so-border);
+  border-radius: 8px;
+  background: var(--so-surface);
+}
+
+.scope-advanced summary {
+  padding: 12px 14px;
+  color: var(--so-ink);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.scope-advanced summary:hover {
+  background: var(--so-surface-hover);
+}
+
+.scope-advanced summary:focus-visible {
+  outline: 3px solid var(--so-focus);
+  outline-offset: 2px;
+}
+
+.scope-advanced[open] summary {
+  border-bottom: 1px solid var(--so-border);
+}
+
+.scope-help {
+  max-width: 68ch;
+  margin: 12px 14px 0;
+  color: var(--so-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.scope-advanced .scope-grid {
+  margin: 12px 14px 14px;
+}
+
 .scope-comparison-toggle {
   display: inline-flex;
   align-items: center;
@@ -1281,6 +1409,10 @@ select:disabled {
 
   .scope-grid,
   .comparison-scope-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .preset-options {
     grid-template-columns: 1fr;
   }
 

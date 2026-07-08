@@ -54,7 +54,7 @@ export function ReportWorkspace({
           render full script outputs.
         </p>
       </div>
-      <ReportScopePanel scope={scope} onChange={onScopeChange} />
+      <ReportScopePanel reportId={reportId} scope={scope} onChange={onScopeChange} />
       <div className="run-controls">
         <button
           className="s-btn s-btn__filled report-run-primary"
