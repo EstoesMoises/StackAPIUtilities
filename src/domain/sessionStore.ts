@@ -9,6 +9,7 @@ import type {
   SessionDataset,
   SessionState,
 } from "./types";
+import { buildTagHealthRowsFromLiveRecords } from "../reports/tagReport";
 
 interface LiveDatasetPayload {
   datasetName: DatasetName;
@@ -117,6 +118,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       const reportRecords = action.datasets.flatMap(({ datasetName, records }) =>
         records.map((record) => ({ datasetName, ...record })),
       );
+      const visibleReportRecords =
+        action.reportId === "tag-report" ? buildTagHealthRowsFromLiveRecords(reportRecords) : reportRecords;
 
       action.datasets.forEach((dataset, index) => {
         const datasetId = createDatasetId(snapshotId, dataset.datasetName, String(index));
@@ -149,7 +152,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           ? {
               ...baseOutput,
               records: previousOutput?.records ?? [],
-              comparisonRecords: reportRecords,
+              comparisonRecords: visibleReportRecords,
               currentScope: previousOutput?.currentScope,
               comparisonScope: action.scope,
               currentSnapshotId: previousOutput?.currentSnapshotId,
@@ -157,7 +160,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
             }
           : {
               ...baseOutput,
-              records: reportRecords,
+              records: visibleReportRecords,
               comparisonRecords: previousOutput?.comparisonRecords,
               currentScope: action.scope,
               comparisonScope: previousOutput?.comparisonScope,

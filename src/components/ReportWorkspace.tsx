@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { reportRegistry } from "../domain/reportRegistry";
-import type { PeriodScope, ReportId, ReportRunScope, RunPeriodRole } from "../domain/types";
+import type { PeriodScope, ReportId, ReportRunScope, ReportWarning, RunPeriodRole } from "../domain/types";
 import { DataTable } from "./DataTable";
 import { ReportDashboard } from "./ReportDashboard";
 import { ReportScopePanel } from "./ReportScopePanel";
@@ -15,6 +15,7 @@ export interface ReportWorkspaceProps {
   currentScope?: PeriodScope;
   comparisonScope?: PeriodScope;
   outputSource?: "live-api" | "upload";
+  warnings?: ReportWarning[];
   scope: ReportRunScope;
   onScopeChange: (scope: ReportRunScope) => void;
   onRun: (periodRole: RunPeriodRole) => void;
@@ -29,6 +30,7 @@ export function ReportWorkspace({
   currentScope,
   comparisonScope,
   outputSource,
+  warnings,
   scope,
   onScopeChange,
   onRun,
@@ -134,6 +136,7 @@ export function ReportWorkspace({
           currentScope={currentScope}
           comparisonScope={comparisonScope}
           outputSource={outputSource}
+          warnings={warnings}
         />
       ) : (
         <div className="raw-table-panel">

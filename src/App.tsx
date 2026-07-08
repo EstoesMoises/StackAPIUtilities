@@ -105,7 +105,7 @@ export function App() {
         scope: result.scope,
         pageSize: result.pageSize,
         maxPagesPerDataset: result.maxPagesPerDataset,
-        runPreset,
+        runPreset: result.runPreset,
         warnings: result.warnings,
         datasets: result.datasets,
       });
@@ -208,6 +208,7 @@ export function App() {
           currentScope={selectedReportOutput?.currentScope}
           comparisonScope={selectedReportOutput?.comparisonScope}
           outputSource={selectedReportOutput?.source}
+          warnings={selectedReportOutput?.warnings}
           scope={reportScope}
           onScopeChange={setReportScope}
           onRun={queueSelectedReportRun}

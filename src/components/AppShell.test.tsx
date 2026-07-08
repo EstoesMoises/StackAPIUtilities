@@ -88,9 +88,10 @@ describe("AppShell", () => {
 
     expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
-    expect(screen.getByText("Page Views")).toBeInTheDocument();
-    expect(screen.getByText("889,996")).toBeInTheDocument();
+    expect(screen.getByText("Tags Covered")).toBeInTheDocument();
+    expect(screen.getByText("SME Coverage")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
+    expect(screen.getByLabelText("machine-learning: 551412")).toBeInTheDocument();
   });
 
   it("shows a run status when the selected report run is requested", async () => {
@@ -187,11 +188,17 @@ describe("AppShell", () => {
           scope: {},
           pageSize: 100,
           maxPagesPerDataset: 20,
-          warnings: [],
+          warnings: [
+            {
+              reportId: "tag-report",
+              code: "dataset-page-cap",
+              message: "Questions hit the configured page cap; results may be partial.",
+            },
+          ],
           datasets: [
-            { datasetName: "tags", records: [{ name: "python" }] },
+            { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
             { datasetName: "users", records: [{ user_id: 1 }] },
-            { datasetName: "questions", records: [{ question_id: 10 }] },
+            { datasetName: "questions", records: [{ question_id: 10, tags: ["python"], answer_count: 1 }] },
             { datasetName: "articles", records: [{ article_id: 20 }] },
             { datasetName: "tagSmes", records: [{ tagName: "python", user_id: 1 }] },
           ],
@@ -217,9 +224,16 @@ describe("AppShell", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
       credentials: basicBusinessPatCredentials,
       runPreset: "deep-audit",
+      pageSize: 100,
       maxPagesPerDataset: 20,
     });
     expect(screen.getByText("5 datasets")).toBeInTheDocument();
+    expect(screen.getByText("Questions hit the configured page cap; results may be partial.")).toBeInTheDocument();
+    expect(screen.getByText("Tags Covered")).toBeInTheDocument();
+    expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+
     expect(screen.getAllByText("tagSmes").length).toBeGreaterThanOrEqual(1);
   });
 

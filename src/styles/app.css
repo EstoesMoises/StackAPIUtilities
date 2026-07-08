@@ -867,6 +867,46 @@ select:disabled {
   margin-top: 16px;
 }
 
+.dashboard-warnings {
+  display: grid;
+  gap: 8px;
+  max-width: 960px;
+  padding: 12px 14px;
+  border: 1px solid oklch(0.82 0.08 88);
+  border-radius: 8px;
+  color: oklch(0.31 0.07 72);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dashboard-warnings strong {
+  color: oklch(0.28 0.09 70);
+  font-weight: 850;
+}
+
+.dashboard-warnings ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-warnings li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dashboard-warning-code {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: oklch(0.28 0.09 70);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .dashboard-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
