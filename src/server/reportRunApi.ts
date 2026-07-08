@@ -1,7 +1,13 @@
 import { runLiveReport, type LiveReportRunResult } from "../collectors/liveReportRunner";
 import { validateCredentialsForReport } from "../credentials/credentialRules";
 import { DEFAULT_REPORT_RUN_SCOPE, validateReportRunScope } from "../domain/reportScope";
-import type { PeriodScope, ReportId, RunPeriodRole, SessionCredentials } from "../domain/types";
+import type {
+  PeriodScope,
+  ReportId,
+  ReportRunPresetId,
+  RunPeriodRole,
+  SessionCredentials,
+} from "../domain/types";
 
 interface ReportRunRequestPayload {
   reportId: ReportId;
@@ -10,6 +16,7 @@ interface ReportRunRequestPayload {
   scope?: PeriodScope;
   pageSize?: number;
   maxPagesPerDataset?: number;
+  runPreset?: ReportRunPresetId;
 }
 
 interface ReportRunDependencies {
@@ -90,6 +97,15 @@ function isReportRunRequestPayload(value: unknown): value is ReportRunRequestPay
   }
 
   if (value.scope !== undefined && !isRecord(value.scope)) {
+    return false;
+  }
+
+  if (
+    value.runPreset !== undefined &&
+    value.runPreset !== "quick-sample" &&
+    value.runPreset !== "standard" &&
+    value.runPreset !== "deep-audit"
+  ) {
     return false;
   }
 

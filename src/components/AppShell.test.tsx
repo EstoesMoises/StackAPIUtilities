@@ -186,7 +186,7 @@ describe("AppShell", () => {
           periodRole: "current",
           scope: {},
           pageSize: 100,
-          maxPagesPerDataset: 5,
+          maxPagesPerDataset: 20,
           warnings: [],
           datasets: [
             { datasetName: "tags", records: [{ name: "python" }] },
@@ -209,12 +209,15 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("radio", { name: "Deep audit" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
     expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
       credentials: basicBusinessPatCredentials,
+      runPreset: "deep-audit",
+      maxPagesPerDataset: 20,
     });
     expect(screen.getByText("5 datasets")).toBeInTheDocument();
     expect(screen.getAllByText("tagSmes").length).toBeGreaterThanOrEqual(1);

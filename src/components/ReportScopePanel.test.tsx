@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_REPORT_RUN_SCOPE } from "../domain/reportScope";
+import type { ReportRunScope } from "../domain/types";
 import { ReportScopePanel } from "./ReportScopePanel";
 
 describe("ReportScopePanel", () => {
@@ -9,7 +11,7 @@ describe("ReportScopePanel", () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
 
-    render(<ReportScopePanel reportId="tag-report" scope={DEFAULT_REPORT_RUN_SCOPE} onChange={onChange} />);
+    render(<ReportScopePanel reportId="inactive-users" scope={DEFAULT_REPORT_RUN_SCOPE} onChange={onChange} />);
 
     await user.type(screen.getByLabelText("Current start date"), "2026-01-01");
     await user.clear(screen.getByLabelText("Page size"));
@@ -35,11 +37,11 @@ describe("ReportScopePanel", () => {
     render(<ReportScopePanel reportId="tag-report" scope={DEFAULT_REPORT_RUN_SCOPE} onChange={onChange} />);
 
     expect(screen.getByRole("group", { name: "Run depth" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /Standard report/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Standard report" })).toBeChecked();
     expect(screen.getByText(/Requests up to 500 records per dataset/)).toBeInTheDocument();
     expect(screen.getByText(/pageSize 100 and maxPagesPerDataset 5/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("radio", { name: /Deep audit/ }));
+    await user.click(screen.getByRole("radio", { name: "Deep audit" }));
 
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -67,9 +69,29 @@ describe("ReportScopePanel", () => {
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({
         maxPagesPerDataset: 8,
-        runPreset: "standard",
+        runPreset: undefined,
       }),
     );
+  });
+
+  it("shows custom volume state when Tag Report settings do not match a preset", async () => {
+    const user = userEvent.setup();
+
+    render(<ControlledReportScopePanel />);
+
+    await user.click(screen.getByRole("button", { name: "Advanced API volume settings" }));
+    await user.clear(screen.getByLabelText("Max pages per dataset"));
+    await user.type(screen.getByLabelText("Max pages per dataset"), "8");
+
+    expect(screen.getByRole("radio", { name: "Standard report" })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: "Quick sample" })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: "Deep audit" })).not.toBeChecked();
+    expect(screen.getByText(/Custom API volume/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Standard report" }));
+
+    expect(screen.getByRole("radio", { name: "Standard report" })).toBeChecked();
+    expect(screen.getByLabelText("Max pages per dataset")).toHaveValue(5);
   });
 
   it("uses numeric volume controls for non-Tag reports", async () => {
@@ -85,3 +107,9 @@ describe("ReportScopePanel", () => {
     expect(onChange).toHaveBeenCalled();
   });
 });
+
+function ControlledReportScopePanel({ initialScope = DEFAULT_REPORT_RUN_SCOPE }: { initialScope?: ReportRunScope }) {
+  const [scope, setScope] = useState(initialScope);
+
+  return <ReportScopePanel reportId="tag-report" scope={scope} onChange={setScope} />;
+}

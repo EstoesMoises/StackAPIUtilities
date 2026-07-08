@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   REPORT_RUN_PRESETS,
   applyReportRunPreset,
   getReportRunPresetDisclosure,
+  getReportRunPresetForSettings,
 } from "../domain/reportRunPresets";
 import { validateReportRunScope } from "../domain/reportScope";
 import type { ReportId, ReportRunPresetId, ReportRunScope } from "../domain/types";
@@ -18,6 +19,8 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
   const comparisonEnabled = scope.comparison !== undefined;
   const isTagReport = reportId === "tag-report";
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const presetIdPrefix = useId();
+  const selectedPreset = getReportRunPresetForSettings(scope.pageSize, scope.maxPagesPerDataset);
 
   function updateCurrent(field: "startDate" | "endDate", value: string) {
     onChange({
@@ -38,9 +41,16 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
   }
 
   function updateNumber(field: "pageSize" | "maxPagesPerDataset", value: string) {
-    onChange({
+    const parsedValue = Number.parseInt(value, 10);
+    const nextScope = {
       ...scope,
-      [field]: Number.parseInt(value, 10),
+      [field]: parsedValue,
+    };
+    const matchingPreset = getReportRunPresetForSettings(nextScope.pageSize, nextScope.maxPagesPerDataset);
+
+    onChange({
+      ...nextScope,
+      runPreset: matchingPreset?.id,
     });
   }
 
@@ -109,25 +119,45 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
           <fieldset className="preset-group" aria-label="Run depth">
             <legend>Run depth</legend>
             <div className="preset-options">
-              {REPORT_RUN_PRESETS.map((preset) => (
-                <label className="preset-option" key={preset.id}>
-                  <input
-                    type="radio"
-                    name="tag-report-run-preset"
-                    checked={scope.runPreset === preset.id}
-                    onChange={() => updatePreset(preset.id)}
-                  />
-                  <span className="preset-option-main">
-                    <span className="preset-option-label">{preset.label}</span>
-                    <span className="preset-option-copy">{preset.shortDescription}</span>
-                    <span className="preset-option-disclosure">
-                      {getReportRunPresetDisclosure(preset.id)}
+              {REPORT_RUN_PRESETS.map((preset) => {
+                const labelId = `${presetIdPrefix}-${preset.id}-label`;
+                const copyId = `${presetIdPrefix}-${preset.id}-copy`;
+                const disclosureId = `${presetIdPrefix}-${preset.id}-disclosure`;
+
+                return (
+                  <label className="preset-option" key={preset.id}>
+                    <input
+                      type="radio"
+                      name="tag-report-run-preset"
+                      checked={selectedPreset?.id === preset.id}
+                      aria-labelledby={labelId}
+                      aria-describedby={`${copyId} ${disclosureId}`}
+                      onChange={() => updatePreset(preset.id)}
+                    />
+                    <span className="preset-option-main">
+                      <span className="preset-option-label" id={labelId}>
+                        {preset.label}
+                      </span>
+                      <span className="preset-option-copy" id={copyId}>
+                        {preset.shortDescription}
+                      </span>
+                      <span className="preset-option-disclosure" id={disclosureId}>
+                        {getReportRunPresetDisclosure(preset.id)}
+                      </span>
                     </span>
-                  </span>
-                </label>
-              ))}
+                  </label>
+                );
+              })}
             </div>
           </fieldset>
+          {!selectedPreset && (
+            <p className="preset-custom-note" role="status">
+              Custom API volume: pageSize {Number.isNaN(scope.pageSize) ? "unset" : scope.pageSize} and
+              maxPagesPerDataset{" "}
+              {Number.isNaN(scope.maxPagesPerDataset) ? "unset" : scope.maxPagesPerDataset}. Select a preset
+              above to restore its defaults.
+            </p>
+          )}
           <details
             className="scope-advanced"
             onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}

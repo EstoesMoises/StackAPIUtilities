@@ -75,6 +75,7 @@ export function App() {
 
     try {
       const periodScope = periodRole === "comparison" ? reportScope.comparison ?? {} : reportScope.current;
+      const runPreset = state.selectedReportId === "tag-report" ? reportScope.runPreset : undefined;
       const response = await fetch("/api/reports/run", {
         method: "POST",
         headers: {
@@ -87,6 +88,7 @@ export function App() {
           scope: periodScope,
           pageSize: reportScope.pageSize,
           maxPagesPerDataset: reportScope.maxPagesPerDataset,
+          runPreset,
         }),
       });
       const body = (await response.json()) as ReportRunResponseBody;
@@ -103,6 +105,7 @@ export function App() {
         scope: result.scope,
         pageSize: result.pageSize,
         maxPagesPerDataset: result.maxPagesPerDataset,
+        runPreset,
         warnings: result.warnings,
         datasets: result.datasets,
       });

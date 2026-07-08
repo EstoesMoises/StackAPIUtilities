@@ -570,6 +570,18 @@ select:disabled {
   line-height: 1.35;
 }
 
+.preset-custom-note {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--so-border);
+  border-radius: 8px;
+  color: var(--so-text);
+  background: var(--so-blue-soft);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
 .scope-advanced {
   margin-top: 12px;
   border: 1px solid var(--so-border);

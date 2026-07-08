@@ -42,6 +42,15 @@ export function getReportRunPreset(id: ReportRunPresetId): ReportRunPreset {
   return REPORT_RUN_PRESETS.find((preset) => preset.id === id) ?? REPORT_RUN_PRESETS[1];
 }
 
+export function getReportRunPresetForSettings(
+  pageSize: number,
+  maxPagesPerDataset: number,
+): ReportRunPreset | undefined {
+  return REPORT_RUN_PRESETS.find(
+    (preset) => preset.pageSize === pageSize && preset.maxPagesPerDataset === maxPagesPerDataset,
+  );
+}
+
 export function getReportRunPresetMaxRecords(id: ReportRunPresetId): number {
   const preset = getReportRunPreset(id);
   return preset.pageSize * preset.maxPagesPerDataset;

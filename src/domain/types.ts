@@ -20,7 +20,7 @@ export interface ReportRunScope {
   comparison?: PeriodScope;
   pageSize: number;
   maxPagesPerDataset: number;
-  runPreset: ReportRunPresetId;
+  runPreset?: ReportRunPresetId;
 }
 
 export type DatasetName =

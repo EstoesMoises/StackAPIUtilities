@@ -2,6 +2,7 @@ import type {
   DatasetName,
   PeriodScope,
   ReportId,
+  ReportRunPresetId,
   ReportWarning,
   RunPeriodRole,
   SessionCredentials,
@@ -26,6 +27,7 @@ type SessionAction =
       scope: PeriodScope;
       pageSize: number;
       maxPagesPerDataset: number;
+      runPreset?: ReportRunPresetId;
       warnings: ReportWarning[];
       datasets: LiveDatasetPayload[];
     }
@@ -180,6 +182,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
             scope: action.scope,
             pageSize: action.pageSize,
             maxPagesPerDataset: action.maxPagesPerDataset,
+            runPreset: action.runPreset,
             loadedAt,
             datasetIds,
             warnings: action.warnings,

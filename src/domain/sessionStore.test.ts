@@ -153,6 +153,34 @@ describe("sessionStore", () => {
     ]);
   });
 
+  it("persists the selected run preset on live snapshots", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python" }],
+        },
+      ],
+    });
+
+    expect(state.reportRunSnapshots[0]).toEqual(
+      expect.objectContaining({
+        reportId: "tag-report",
+        pageSize: 100,
+        maxPagesPerDataset: 20,
+        runPreset: "deep-audit",
+      }),
+    );
+  });
+
   it("stores current and comparison live snapshots without overwriting dataset names", () => {
     const current = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",
