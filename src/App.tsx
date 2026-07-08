@@ -15,14 +15,22 @@ import { validateCredentialsForReport } from "./credentials/credentialRules";
 import { DEFAULT_REPORT_RUN_SCOPE } from "./domain/reportScope";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
-import type { ReportId, RunPeriodRole, RunQueueItem, SessionCredentials } from "./domain/types";
+import type { ReportId, ReportRunProgress, RunPeriodRole, RunQueueItem, SessionCredentials } from "./domain/types";
 import type { ReportRunResponseBody } from "./server/reportRunApi";
+
+const REPORT_RUN_STAGES = [
+  "Validate credentials",
+  "Plan required datasets",
+  "Collecting live API datasets",
+  "Build report output",
+] as const;
 
 export function App() {
   const [state, dispatch] = useReducer(sessionReducer, undefined, createInitialSessionState);
   const [activePanel, setActivePanel] = useState<AppPanel>("report");
   const [selectedWriteToolId, setSelectedWriteToolId] = useState<WriteToolId>("user-group-sync");
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
+  const [runProgress, setRunProgress] = useState<ReportRunProgress | undefined>();
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
 
   function selectReport(reportId: ReportId) {
@@ -38,6 +46,7 @@ export function App() {
   async function queueSelectedReportRun(periodRole: RunPeriodRole = "current") {
     const report = reportRegistry.find((candidate) => candidate.id === state.selectedReportId)!;
     if (!state.credentials) {
+      setRunProgress(undefined);
       setRunQueue([
         {
           id: `${state.selectedReportId}-missing-credentials`,
@@ -52,6 +61,7 @@ export function App() {
 
     const validation = validateCredentialsForReport(state.selectedReportId, state.credentials);
     if (!validation.valid) {
+      setRunProgress(undefined);
       setRunQueue(
         validation.messages.map((message, index) => ({
           id: `${state.selectedReportId}-credential-error-${index}`,
@@ -72,6 +82,7 @@ export function App() {
         message: `Running ${report.title} ${periodRole} period live API collection...`,
       },
     ]);
+    setRunProgress(createRunningProgress(report.title));
 
     try {
       const periodScope = periodRole === "comparison" ? reportScope.comparison ?? {} : reportScope.current;
@@ -109,6 +120,7 @@ export function App() {
         warnings: result.warnings,
         datasets: result.datasets,
       });
+      setRunProgress(createSucceededProgress(report.title));
       setRunQueue([
         ...result.messages.map((message, index) => ({
           id: `${state.selectedReportId}-live-dataset-${index}`,
@@ -125,6 +137,7 @@ export function App() {
       ]);
       setActivePanel("report");
     } catch (error) {
+      setRunProgress(createFailedProgress(report.title));
       setRunQueue([
         {
           id: `${state.selectedReportId}-live-failed`,
@@ -146,6 +159,7 @@ export function App() {
   function importUploadedReport(result: ImportedUploadResult) {
     const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
 
+    setRunProgress(undefined);
     dispatch({
       type: "import/loaded",
       datasetName: result.datasetName,
@@ -183,7 +197,7 @@ export function App() {
       sidebar={sidebar}
     >
       <SessionOverview state={state} />
-      <RunStatus queue={runQueue} />
+      <RunStatus queue={runQueue} progress={runProgress} />
       {activePanel === "credentials" && (
         <CredentialsPanel
           selectedReportId={state.selectedReportId}
@@ -217,6 +231,36 @@ export function App() {
       )}
     </AppShell>
   );
+}
+
+function createRunningProgress(reportTitle: string): ReportRunProgress {
+  return {
+    reportTitle,
+    status: "running",
+    currentStage: "Collecting live API datasets",
+    completedStages: [REPORT_RUN_STAGES[0], REPORT_RUN_STAGES[1]],
+    totalStages: REPORT_RUN_STAGES.length,
+  };
+}
+
+function createSucceededProgress(reportTitle: string): ReportRunProgress {
+  return {
+    reportTitle,
+    status: "succeeded",
+    currentStage: "Build report output",
+    completedStages: [...REPORT_RUN_STAGES],
+    totalStages: REPORT_RUN_STAGES.length,
+  };
+}
+
+function createFailedProgress(reportTitle: string): ReportRunProgress {
+  return {
+    reportTitle,
+    status: "failed",
+    currentStage: "Live API run failed",
+    completedStages: [REPORT_RUN_STAGES[0], REPORT_RUN_STAGES[1]],
+    totalStages: REPORT_RUN_STAGES.length,
+  };
 }
 
 function renderWriteToolPanel(toolId: WriteToolId, credentials: SessionCredentials | null) {

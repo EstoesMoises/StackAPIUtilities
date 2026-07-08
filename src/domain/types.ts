@@ -132,6 +132,14 @@ export interface RunQueueItem {
   message: string;
 }
 
+export interface ReportRunProgress {
+  reportTitle: string;
+  status: "idle" | "running" | "succeeded" | "failed";
+  currentStage: string;
+  completedStages: string[];
+  totalStages: number;
+}
+
 export interface SessionState {
   credentials: SessionCredentials | null;
   selectedReportId: ReportId;

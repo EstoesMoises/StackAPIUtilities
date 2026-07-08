@@ -237,6 +237,52 @@ describe("AppShell", () => {
     expect(screen.getAllByText("tagSmes").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("shows Tag Report progress while live collection is pending", async () => {
+    const user = userEvent.setup();
+    const pendingRun = createDeferred<Response>();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
+    await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
+
+    const status = screen.getByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
+    expect(within(status).getByText("Collecting live API datasets")).toBeInTheDocument();
+    expect(within(status).getByRole("progressbar", { name: "Tag Report progress" })).toHaveAttribute(
+      "aria-valuenow",
+      "50",
+    );
+    expect(
+      within(status).getByText("Running Tag Report current period live API collection..."),
+    ).toBeInTheDocument();
+
+    pendingRun.resolve(jsonResponse({
+      ok: true,
+      result: {
+        reportId: "tag-report",
+        reportTitle: "Tag Report",
+        periodRole: "current",
+        scope: {},
+        pageSize: 100,
+        maxPagesPerDataset: 20,
+        warnings: [],
+        datasets: [
+          { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
+        ],
+        messages: ["Collected tags (1 record) for Tag Report."],
+      },
+    }));
+    expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
+  });
+
   it("runs current and comparison periods and renders comparison metrics", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -372,4 +418,15 @@ function jsonResponse(body: unknown) {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return { promise, resolve, reject };
 }
