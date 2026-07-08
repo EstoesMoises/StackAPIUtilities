@@ -110,7 +110,7 @@ describe("runLiveReport", () => {
         reportId: "inactive-users",
         code: "dataset-page-cap",
         message:
-          "Configured API volume cap of 50 records reached for users. More users data is available; use Deep audit or Advanced API volume settings for a more complete run.",
+          "Users hit the custom API volume page cap (requested up to 50 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
       },
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -148,7 +148,41 @@ describe("runLiveReport", () => {
         reportId: "tag-report",
         code: "dataset-page-cap",
         message:
-          "Quick sample cap of 50 records reached for tags. More tags data is available; use Deep audit or Advanced API volume settings for a more complete run.",
+          "Tags hit the Quick sample page cap (requested up to 50 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
+      },
+    ]);
+  });
+
+  it("clears stale preset labels when custom volume settings do not match the requested preset", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString();
+      const isTagsDataset = url.includes("/tags?") && !url.includes("/top-answerers/");
+
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: isTagsDataset ? [{ name: "python" }] : itemsForTagReportUrl(url),
+            has_more: isTagsDataset,
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    const result = await runLiveReport("tag-report", basicCredentials, {
+      fetchFn: fetchMock,
+      pageSize: 75,
+      maxPagesPerDataset: 2,
+      runPreset: "quick-sample",
+    });
+
+    expect(result.runPreset).toBeUndefined();
+    expect(result.warnings).toEqual([
+      {
+        reportId: "tag-report",
+        code: "dataset-page-cap",
+        message:
+          "Tags hit the custom API volume page cap (requested up to 150 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
       },
     ]);
   });

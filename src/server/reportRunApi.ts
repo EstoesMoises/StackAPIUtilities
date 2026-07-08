@@ -1,5 +1,6 @@
 import { runLiveReport, type LiveReportRunResult } from "../collectors/liveReportRunner";
 import { validateCredentialsForReport } from "../credentials/credentialRules";
+import { getReportRunPresetForSettings } from "../domain/reportRunPresets";
 import { DEFAULT_REPORT_RUN_SCOPE, validateReportRunScope } from "../domain/reportScope";
 import type {
   PeriodScope,
@@ -52,6 +53,7 @@ export async function handleReportRunRequest(
   const scope = payload.scope ?? {};
   const pageSize = payload.pageSize ?? DEFAULT_REPORT_RUN_SCOPE.pageSize;
   const maxPagesPerDataset = payload.maxPagesPerDataset ?? DEFAULT_REPORT_RUN_SCOPE.maxPagesPerDataset;
+  const runPreset = normalizeRunPreset(payload.runPreset, pageSize, maxPagesPerDataset);
   const validation = validateReportRunScope({
     current: scope,
     pageSize,
@@ -76,7 +78,7 @@ export async function handleReportRunRequest(
         scope,
         pageSize,
         maxPagesPerDataset,
-        runPreset: payload.runPreset,
+        runPreset,
       },
     );
 
@@ -152,4 +154,16 @@ function isOptionalString(value: unknown): value is string | undefined {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function normalizeRunPreset(
+  requestedPreset: ReportRunPresetId | undefined,
+  pageSize: number,
+  maxPagesPerDataset: number,
+): ReportRunPresetId | undefined {
+  if (!requestedPreset) {
+    return undefined;
+  }
+
+  return getReportRunPresetForSettings(pageSize, maxPagesPerDataset)?.id;
 }

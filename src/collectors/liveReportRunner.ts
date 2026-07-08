@@ -2,7 +2,7 @@ import { StackApiV2Client } from "../api/stackApiV2";
 import { StackApiV3Client } from "../api/stackApiV3";
 import type { FetchLike, ThrottleNotice } from "../api/httpClient";
 import { normalizeInstanceUrl, validateCredentialsForReport } from "../credentials/credentialRules";
-import { getReportRunPreset } from "../domain/reportRunPresets";
+import { getReportRunPreset, getReportRunPresetForSettings } from "../domain/reportRunPresets";
 import { DEFAULT_REPORT_RUN_SCOPE } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
 import type {
@@ -90,7 +90,7 @@ export async function runLiveReport(
   const scope = options.scope ?? DEFAULT_REPORT_RUN_SCOPE.current;
   const pageSize = options.pageSize ?? DEFAULT_REPORT_RUN_SCOPE.pageSize;
   const maxPagesPerDataset = options.maxPagesPerDataset ?? DEFAULT_REPORT_RUN_SCOPE.maxPagesPerDataset;
-  const runPreset = options.runPreset;
+  const runPreset = normalizeRunPreset(options.runPreset, pageSize, maxPagesPerDataset);
   const warnings: ReportWarning[] = [];
 
   for (const datasetName of plannedDatasets) {
@@ -234,17 +234,43 @@ function createDatasetCapWarning(
   runPreset: ReportRunPresetId | undefined,
 ): ReportWarning {
   const capSize = pageSize * maxPagesPerDataset;
+  const datasetLabel = formatDatasetName(datasetName);
   const capLabel = runPreset
-    ? `${getReportRunPreset(runPreset).label} cap`
-    : "Configured API volume cap";
+    ? `${getReportRunPreset(runPreset).label} page cap`
+    : "custom API volume page cap";
 
   return {
     reportId,
     code: "dataset-page-cap",
-    message: `${capLabel} of ${formatNumber(capSize)} records reached for ${datasetName}. More ${datasetName} data is available; use Deep audit or Advanced API volume settings for a more complete run.`,
+    message: `${datasetLabel} hit the ${capLabel} (requested up to ${formatNumber(capSize)} records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.`,
   };
 }
 
 function formatNumber(value: number): string {
   return value.toLocaleString("en-US");
+}
+
+function normalizeRunPreset(
+  requestedPreset: ReportRunPresetId | undefined,
+  pageSize: number,
+  maxPagesPerDataset: number,
+): ReportRunPresetId | undefined {
+  if (!requestedPreset) {
+    return undefined;
+  }
+
+  return getReportRunPresetForSettings(pageSize, maxPagesPerDataset)?.id;
+}
+
+function formatDatasetName(datasetName: DatasetName): string {
+  const explicitLabels: Partial<Record<DatasetName, string>> = {
+    tagSmes: "Tag SMEs",
+    userGroups: "User groups",
+    reputationHistory: "Reputation history",
+    dataExport: "Data export",
+  };
+
+  const label = explicitLabels[datasetName] ?? datasetName.replace(/([a-z])([A-Z])/g, "$1 $2");
+
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
