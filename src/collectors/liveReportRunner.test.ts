@@ -8,10 +8,10 @@ const basicCredentials: SessionCredentials = {
   pat: "pat",
   authSource: "manual-pat",
 };
-const CONNECTION_REQUIRED_MESSAGE = "Enterprise OAuth connection is required for Stack API v3 calls.";
+const CONNECTION_REQUIRED_MESSAGE = "Enterprise access token is required for Stack API v3 calls.";
 
 describe("runLiveReport", () => {
-  it("rejects Enterprise mixed v2 and v3 reports without OAuth before collecting datasets", async () => {
+  it("rejects Enterprise mixed v2 and v3 reports without a v3 access token before collecting datasets", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve(new Response(JSON.stringify({ items: [], has_more: false, totalPages: 1 }), {
         status: 200,

@@ -64,10 +64,10 @@ const exactSyncPreviewBody = {
 };
 
 describe("UserGroupSyncPanel", () => {
-  it("prompts for Enterprise OAuth credentials when missing", () => {
+  it("prompts for Enterprise access token credentials when missing", () => {
     render(<UserGroupSyncPanel credentials={null} />);
 
-    expect(screen.getByText("Connect with Enterprise OAuth before using User Group Sync.")).toBeInTheDocument();
+    expect(screen.getByText("Add an Enterprise access token before using User Group Sync.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
   });
 
@@ -561,7 +561,7 @@ describe("UserGroupSyncPanel", () => {
     render(<UserGroupSyncPanel credentials={null} />);
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Connect with Enterprise OAuth before using User Group Sync.",
+      "Add an Enterprise access token before using User Group Sync.",
     );
 
     await user.upload(

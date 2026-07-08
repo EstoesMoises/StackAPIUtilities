@@ -58,12 +58,22 @@ export function validateEnterpriseV3OAuthCredentials(
   if (
     !credentials ||
     credentials.instanceType !== "enterprise" ||
-    credentials.authSource !== "oauth-pkce" ||
     !credentials.accessToken?.trim()
   ) {
     return {
       valid: false,
-      messages: ["Enterprise OAuth connection is required for Stack API v3 calls."],
+      messages: ["Enterprise access token is required for Stack API v3 calls."],
+    };
+  }
+
+  if (credentials.authSource === "manual-enterprise-token") {
+    return { valid: true, messages };
+  }
+
+  if (credentials.authSource !== "oauth-pkce") {
+    return {
+      valid: false,
+      messages: ["Enterprise access token is required for Stack API v3 calls."],
     };
   }
 

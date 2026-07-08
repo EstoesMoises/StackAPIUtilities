@@ -9,7 +9,7 @@ const credentials: SessionCredentials = {
   apiKey: "key",
   accessToken: "token",
 };
-const CONNECTION_REQUIRED_MESSAGE = "Enterprise OAuth connection is required for Stack API v3 calls.";
+const CONNECTION_REQUIRED_MESSAGE = "Enterprise access token is required for Stack API v3 calls.";
 
 describe("handleReportRunRequest", () => {
   it("runs reports server-side and returns live datasets", async () => {
@@ -74,6 +74,45 @@ describe("handleReportRunRequest", () => {
       error: CONNECTION_REQUIRED_MESSAGE,
     });
     expect(runLiveReport).not.toHaveBeenCalled();
+  });
+
+  it("accepts manual Enterprise access token credentials for v3 reports", async () => {
+    const result: LiveReportRunResult = {
+      reportId: "api-user-report",
+      reportTitle: "API User Report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 5,
+      datasets: [],
+      messages: [],
+      warnings: [],
+    };
+    const manualTokenCredentials: SessionCredentials = {
+      instanceType: "enterprise",
+      baseUrl: "https://soedemo.stackenterprise.co",
+      apiKey: "key",
+      accessToken: "manual-token",
+      authSource: "manual-enterprise-token",
+    };
+    const runLiveReport = vi.fn().mockResolvedValue(result);
+
+    const response = await handleReportRunRequest(
+      {
+        reportId: "api-user-report",
+        credentials: manualTokenCredentials,
+      },
+      { runLiveReport },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, result });
+    expect(runLiveReport).toHaveBeenCalledWith("api-user-report", manualTokenCredentials, {
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 5,
+    });
   });
 
   it("accepts Enterprise API key credentials for v2-only reports before calling the runner", async () => {

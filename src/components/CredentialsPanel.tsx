@@ -12,6 +12,7 @@ interface CredentialsDraft {
   instanceType: InstanceType;
   baseUrl: string;
   apiKey: string;
+  accessToken: string;
   oauthClientId: string;
   includeNoExpiry: boolean;
   pat: string;
@@ -57,6 +58,8 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
     instanceType: credentials?.instanceType ?? "basic-business",
     baseUrl: credentials?.baseUrl ?? "",
     apiKey: credentials?.apiKey ?? "",
+    accessToken:
+      credentials?.authSource === "manual-enterprise-token" ? credentials.accessToken ?? "" : "",
     oauthClientId: credentials?.oauthClientId ?? "",
     includeNoExpiry: credentials?.oauthScopes?.includes("no_expiry") ?? false,
     pat: credentials?.pat ?? "",
@@ -157,6 +160,7 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
     }
 
     const trimmedOAuthClientId = draft.oauthClientId.trim();
+    const trimmedAccessToken = draft.accessToken.trim();
     const existingOAuthCredentials =
       credentials?.authSource === "oauth-pkce" &&
       canonicalizeEnterpriseBaseUrl(credentials.baseUrl) ===
@@ -171,7 +175,10 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
       oauthClientId: trimmedOAuthClientId || undefined,
     };
 
-    if (existingOAuthCredentials !== null) {
+    if (trimmedAccessToken) {
+      savedCredentials.accessToken = trimmedAccessToken;
+      savedCredentials.authSource = "manual-enterprise-token";
+    } else if (existingOAuthCredentials !== null) {
       savedCredentials.accessToken = existingOAuthCredentials.accessToken;
       savedCredentials.authSource = existingOAuthCredentials.authSource;
       savedCredentials.oauthScopes = existingOAuthCredentials.oauthScopes;
@@ -279,8 +286,8 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
           <li>Basic/Business: provide your team URL and Personal access token.</li>
           <li>
             Enterprise: provide your site URL
-            {report.credentialRequirements.includes("api-key") ? ", API key," : ""} and connect
-            with Enterprise OAuth.
+            {report.credentialRequirements.includes("api-key") ? ", API key," : ""} and either
+            connect with Enterprise OAuth or paste an optional access token.
           </li>
           <li>
             Required scope notes:{" "}
@@ -326,6 +333,21 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
                 onChange={(event) => updateDraft("apiKey", event.currentTarget.value)}
               />
             </label>
+            <label className="d-block">
+              <span className="d-block fs-caption tt-uppercase fc-light mb4">
+                Access token (optional)
+              </span>
+              <input
+                className="s-input"
+                type="password"
+                aria-describedby="enterprise-access-token-help"
+                value={draft.accessToken}
+                onChange={(event) => updateDraft("accessToken", event.currentTarget.value)}
+              />
+            </label>
+            <p className="oauth-status" id="enterprise-access-token-help">
+              Optional if you connect with Enterprise OAuth.
+            </p>
             <label className="d-block">
               <span className="d-block fs-caption tt-uppercase fc-light mb4">OAuth Client ID</span>
               <input
