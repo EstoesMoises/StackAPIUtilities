@@ -87,6 +87,45 @@ describe("report transforms", () => {
     });
   });
 
+  it("calls out meaningful tag activity without SMEs even when there are no questions", () => {
+    const [healthRow] = buildTagHealthRows([
+      {
+        tagName: "platform-api",
+        totalPageViews: 250,
+        tagWatchers: 12,
+        totalSmes: 0,
+        questionCount: 0,
+        answerCount: 0,
+      },
+    ]);
+
+    expect(healthRow).toMatchObject({
+      tag_name: "platform-api",
+      health_status: "Needs SME coverage",
+      recommended_action: "Assign or confirm SMEs for this tag.",
+    });
+  });
+
+  it("uses medianTimeToFirstAnswerHours as a slow-response signal", () => {
+    const [healthRow] = buildTagHealthRows([
+      {
+        tagName: "python",
+        totalPageViews: 100,
+        tagWatchers: 8,
+        totalSmes: 1,
+        questionCount: 4,
+        answerCount: 5,
+        medianTimeToFirstAnswerHours: 36,
+      },
+    ]);
+
+    expect(healthRow).toMatchObject({
+      health_status: "Needs response attention",
+      median_first_answer_hours: 36,
+      recommended_action: "Review unanswered questions and response time for this tag.",
+    });
+  });
+
   it("summarizes Tag Health rows for dashboard-ready metrics and slices", () => {
     const summary = summarizeTagHealthRows([
       {
@@ -156,6 +195,22 @@ describe("report transforms", () => {
         recommended_action: "Review unanswered questions and response time for this tag.",
       },
     ]);
+  });
+
+  it("counts live questions with answers but is_answered false as needing response attention", () => {
+    const healthRows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "python" },
+      { datasetName: "questions", question_id: 1, tags: ["python"], answer_count: 2, is_answered: false, view_count: 45 },
+      { datasetName: "tagSmes", tagName: "python", user_id: 96, score: 12 },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({
+      tag_name: "python",
+      health_status: "Needs response attention",
+      answer_count: 2,
+      unanswered_questions: 1,
+      recommended_action: "Review unanswered questions and response time for this tag.",
+    });
   });
 
   it("summarizes user metrics", () => {

@@ -1,5 +1,9 @@
 import type { DatasetName, PeriodScope, ReportId, RunPeriodRole } from "../domain/types";
-import { buildTagHealthRows, buildTagHealthRowsFromLiveRecords } from "../reports/tagReport";
+import {
+  buildTagHealthRows,
+  buildTagHealthRowsFromLiveRecords,
+  TAG_HEALTH_CSV_HEADERS,
+} from "../reports/tagReport";
 import { downloadTextFile, recordsToCsv } from "./downloads";
 
 interface ReportCsvDownload {
@@ -21,14 +25,15 @@ export interface ReportCsvDownloadOutput {
 
 export function buildReportCsvDownload(output: ReportCsvDownloadOutput): ReportCsvDownload {
   const periodRole = output.periodRole ?? "current";
-  const rows =
-    output.reportId === "tag-report" && output.datasetName === "tags"
-      ? buildTagHealthRowsForOutput(output)
-      : output.records;
+  const isTagHealthOutput = output.reportId === "tag-report" && output.datasetName === "tags";
+  const rows = isTagHealthOutput ? buildTagHealthRowsForOutput(output) : output.records;
 
   return {
     fileName: `${buildReportFileStem(output.reportId, output.datasetName, periodRole, output.loadedAt)}.csv`,
-    contents: recordsToCsv(rows.map((row) => ({ ...row }))),
+    contents:
+      isTagHealthOutput && rows.length === 0
+        ? TAG_HEALTH_CSV_HEADERS.join(",")
+        : recordsToCsv(rows.map((row) => ({ ...row }))),
     mimeType: "text/csv;charset=utf-8",
   };
 }

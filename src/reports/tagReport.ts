@@ -30,6 +30,19 @@ export interface TagHealthRow {
   recommended_action: string;
 }
 
+export const TAG_HEALTH_CSV_HEADERS = [
+  "tag_name",
+  "health_status",
+  "page_views",
+  "question_count",
+  "answer_count",
+  "sme_count",
+  "watcher_count",
+  "unanswered_questions",
+  "median_first_answer_hours",
+  "recommended_action",
+] as const satisfies readonly (keyof TagHealthRow)[];
+
 export interface TagHealthSummary {
   metricCards: MetricCard[];
   healthStatusCounts: Record<TagHealthStatus, number>;
@@ -94,6 +107,7 @@ export function buildTagHealthRows(rows: readonly Record<string, unknown>[]): Ta
     const medianFirstAnswerHours = getNumber(
       row,
       "medianFirstAnswerHours",
+      "medianTimeToFirstAnswerHours",
       "median_first_answer_hours",
       "median_time_to_first_answer_hours",
     );
@@ -202,7 +216,7 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
       aggregate.questionCount += 1;
       aggregate.answerCount += answerCount;
       aggregate.pageViews += getNumber(record, "view_count", "viewCount", "page_views", "pageViews", "totalPageViews");
-      if (answerCount === 0) aggregate.unansweredQuestions += 1;
+      if (isQuestionUnanswered(record, answerCount)) aggregate.unansweredQuestions += 1;
 
       const firstAnswerHours = getFirstAnswerHours(record);
       if (firstAnswerHours !== null) aggregate.firstAnswerHours.push(firstAnswerHours);
@@ -249,7 +263,7 @@ function getTagHealthStatus({
     return "Low activity";
   }
 
-  if (smeCount === 0 && questionCount > 0) {
+  if (smeCount === 0 && (questionCount > 0 || pageViews > LOW_ACTIVITY_MAX_PAGE_VIEWS)) {
     return "Needs SME coverage";
   }
 
@@ -312,6 +326,14 @@ function getQuestionTags(record: Record<string, unknown>): string[] {
   return singleTag ? [singleTag] : [];
 }
 
+function isQuestionUnanswered(record: Record<string, unknown>, answerCount: number): boolean {
+  const isAnswered = getBoolean(record, "is_answered", "isAnswered");
+
+  if (isAnswered !== null) return !isAnswered;
+
+  return answerCount === 0;
+}
+
 function getFirstAnswerHours(record: Record<string, unknown>): number | null {
   const creationSeconds = getEpochSeconds(record, "creation_date", "creationDate", "created_at", "createdAt");
   const firstAnswerSeconds = getEpochSeconds(
@@ -368,6 +390,20 @@ function getText(record: Record<string, unknown>, ...fieldNames: string[]): stri
   }
 
   return "";
+}
+
+function getBoolean(record: Record<string, unknown>, ...fieldNames: string[]): boolean | null {
+  for (const fieldName of fieldNames) {
+    const value = record[fieldName];
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true") return true;
+      if (normalized === "false") return false;
+    }
+  }
+
+  return null;
 }
 
 function getNumber(record: Record<string, unknown>, ...fieldNames: string[]): number {

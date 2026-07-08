@@ -56,6 +56,21 @@ describe("reportDownloads", () => {
     expect(download.fileName).toBe("tag-report-tag-health-comparison-2026-07-08.csv");
   });
 
+  it("keeps Tag Health headers for empty CSV downloads", () => {
+    const download = buildReportCsvDownload({
+      reportId: "tag-report",
+      datasetName: "tags",
+      loadedAt: "2026-07-08T14:30:00.000Z",
+      source: "upload",
+      periodRole: "current",
+      records: [],
+    });
+
+    expect(download.contents).toBe(
+      "tag_name,health_status,page_views,question_count,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action",
+    );
+  });
+
   it("downloads report CSVs through the shared text download helper", () => {
     downloadReportCsv({
       reportId: "tag-report",
