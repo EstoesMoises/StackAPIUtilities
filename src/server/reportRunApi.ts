@@ -28,6 +28,7 @@ interface ReportRunDependencies {
       scope: PeriodScope;
       pageSize: number;
       maxPagesPerDataset: number;
+      runPreset?: ReportRunPresetId;
     },
   ) => Promise<LiveReportRunResult>;
 }
@@ -75,6 +76,7 @@ export async function handleReportRunRequest(
         scope,
         pageSize,
         maxPagesPerDataset,
+        runPreset: payload.runPreset,
       },
     );
 
