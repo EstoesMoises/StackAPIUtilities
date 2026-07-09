@@ -411,7 +411,7 @@ describe("AppShell", () => {
     expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
   });
 
-  it("clears stored datasets when row removal empties the session before slow hydration resolves", async () => {
+  it("clears stored datasets when row removal empties browser-local data before slow hydration resolves", async () => {
     const user = userEvent.setup();
     const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
     loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
@@ -786,7 +786,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("heading", { name: "Session Credentials" })).toBeInTheDocument();
   });
 
-  it("runs a server-backed live API report and stores live datasets in session", async () => {
+  it("runs a server-backed live API report and stores live datasets locally", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
