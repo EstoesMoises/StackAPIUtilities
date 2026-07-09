@@ -15,17 +15,30 @@ afterEach(() => {
 
 describe("DatasetsPanel", () => {
   it("shows an empty state before datasets are loaded", () => {
-    render(<DatasetsPanel datasets={[]} onRemoveDataset={() => undefined} />);
+    render(
+      <DatasetsPanel
+        datasets={[]}
+        onRemoveDataset={() => undefined}
+        onFlushDatasets={() => undefined}
+      />,
+    );
 
     expect(screen.getByRole("heading", { name: "Datasets" })).toBeInTheDocument();
-    expect(screen.getByText("No datasets loaded in this browser session.")).toBeInTheDocument();
+    expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Flush stored datasets" })).not.toBeInTheDocument();
   });
 
   it("lists scoped live datasets and removes a dataset by id", async () => {
     const user = userEvent.setup();
     const onRemoveDataset = vi.fn();
 
-    render(<DatasetsPanel datasets={[liveDataset()]} onRemoveDataset={onRemoveDataset} />);
+    render(
+      <DatasetsPanel
+        datasets={[liveDataset()]}
+        onRemoveDataset={onRemoveDataset}
+        onFlushDatasets={() => undefined}
+      />,
+    );
 
     expect(screen.getByText("users")).toBeInTheDocument();
     expect(screen.getByText("Inactive Users")).toBeInTheDocument();
@@ -42,13 +55,36 @@ describe("DatasetsPanel", () => {
     const user = userEvent.setup();
     const dataset = liveDataset();
 
-    render(<DatasetsPanel datasets={[dataset]} onRemoveDataset={() => undefined} />);
+    render(
+      <DatasetsPanel
+        datasets={[dataset]}
+        onRemoveDataset={() => undefined}
+        onFlushDatasets={() => undefined}
+      />,
+    );
 
     await user.click(screen.getByRole("button", { name: "Download users current dataset as CSV" }));
     await user.click(screen.getByRole("button", { name: "Download users current dataset as JSON" }));
 
     expect(downloadSessionDataset).toHaveBeenNthCalledWith(1, dataset, "csv");
     expect(downloadSessionDataset).toHaveBeenNthCalledWith(2, dataset, "json");
+  });
+
+  it("shows a bulk flush action only when datasets exist", async () => {
+    const user = userEvent.setup();
+    const onFlushDatasets = vi.fn();
+
+    render(
+      <DatasetsPanel
+        datasets={[liveDataset()]}
+        onRemoveDataset={() => undefined}
+        onFlushDatasets={onFlushDatasets}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
+
+    expect(onFlushDatasets).toHaveBeenCalledOnce();
   });
 });
 
