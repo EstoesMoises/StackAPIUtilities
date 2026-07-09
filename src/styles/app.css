@@ -584,6 +584,13 @@ select:disabled {
   line-height: 1.3;
 }
 
+.preset-option-records-detail {
+  color: var(--so-text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
 .preset-option-copy {
   color: var(--so-text);
   font-size: 13px;

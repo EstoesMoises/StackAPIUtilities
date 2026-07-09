@@ -3,6 +3,7 @@ import {
   DEFAULT_REPORT_RUN_PRESET_ID,
   REPORT_RUN_PRESETS,
   applyReportRunPreset,
+  getPrimaryGroupRecordDetail,
   getReportRunPreset,
   getReportRunPresetDisclosure,
   getReportRunPresetMaxRecords,
@@ -29,15 +30,10 @@ describe("report run presets", () => {
   });
 
   it("describes primary Tag Report record limits without blending them into one total", () => {
-    expect(getReportRunPresetRecordSummary("quick-sample")).toBe(
-      "Up to 50 users, 50 tags, 50 questions, and 50 articles",
-    );
-    expect(getReportRunPresetRecordSummary("standard")).toBe(
-      "Up to 500 users, 500 tags, 500 questions, and 500 articles",
-    );
-    expect(getReportRunPresetRecordSummary("deep-audit")).toBe(
-      "Up to 2,000 users, 2,000 tags, 2,000 questions, and 2,000 articles",
-    );
+    expect(getReportRunPresetRecordSummary("quick-sample")).toBe("Up to 50 each");
+    expect(getReportRunPresetRecordSummary("standard")).toBe("Up to 500 each");
+    expect(getReportRunPresetRecordSummary("deep-audit")).toBe("Up to 2,000 each");
+    expect(getPrimaryGroupRecordDetail()).toBe("Users, tags, questions, articles");
   });
 
   it("discloses technical settings in user-facing copy", () => {

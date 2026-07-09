@@ -60,6 +60,10 @@ export function getReportRunPresetRecordSummary(id: ReportRunPresetId): string {
   return getPrimaryGroupRecordSummary(getReportRunPresetMaxRecords(id));
 }
 
+export function getPrimaryGroupRecordDetail(): string {
+  return "Users, tags, questions, articles";
+}
+
 export function getReportRunPresetDisclosure(id: ReportRunPresetId): string {
   const preset = getReportRunPreset(id);
   const maxRecords = getReportRunPresetMaxRecords(id);
@@ -87,8 +91,7 @@ export function getMaxRecordsForSettings(pageSize: number, maxPagesPerDataset: n
 }
 
 export function getPrimaryGroupRecordSummary(maxRecords: number): string {
-  const formatted = formatNumber(maxRecords);
-  return `Up to ${formatted} users, ${formatted} tags, ${formatted} questions, and ${formatted} articles`;
+  return `Up to ${formatNumber(maxRecords)} each`;
 }
 
 function formatNumber(value: number): string {

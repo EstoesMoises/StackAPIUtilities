@@ -32,9 +32,14 @@ test("Tag Report exposes guided preset details", async ({ page }) => {
   await expect(recordCoverage).toBeVisible();
   await expect(
     recordCoverage.locator(".preset-option-records").filter({
-      hasText: "Up to 500 users, 500 tags, 500 questions, and 500 articles",
+      hasText: "Up to 500 each",
     }),
   ).toBeVisible();
+  await expect(
+    recordCoverage.locator(".preset-option-records-detail").filter({
+      hasText: "Users, tags, questions, articles",
+    }),
+  ).toHaveCount(3);
   await expect(
     page.getByText("SME detail is separate: up to 500 top-answerer records for each collected tag"),
   ).toBeVisible();
@@ -42,7 +47,7 @@ test("Tag Report exposes guided preset details", async ({ page }) => {
   await page.getByRole("radio", { name: "Deep audit" }).check();
   await expect(
     recordCoverage.locator(".preset-option-records").filter({
-      hasText: "Up to 2,000 users, 2,000 tags, 2,000 questions, and 2,000 articles",
+      hasText: "Up to 2,000 each",
     }),
   ).toBeVisible();
 });

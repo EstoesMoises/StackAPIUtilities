@@ -3,6 +3,7 @@ import {
   REPORT_RUN_PRESETS,
   applyReportRunPreset,
   getMaxRecordsForSettings,
+  getPrimaryGroupRecordDetail,
   getPrimaryGroupRecordSummary,
   getReportRunPresetDisclosure,
   getReportRunPresetForSettings,
@@ -132,6 +133,7 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
               {REPORT_RUN_PRESETS.map((preset) => {
                 const labelId = `${presetIdPrefix}-${preset.id}-label`;
                 const recordsId = `${presetIdPrefix}-${preset.id}-records`;
+                const recordsDetailId = `${presetIdPrefix}-${preset.id}-records-detail`;
                 const copyId = `${presetIdPrefix}-${preset.id}-copy`;
                 const disclosureId = `${presetIdPrefix}-${preset.id}-disclosure`;
 
@@ -142,7 +144,7 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
                       name="tag-report-run-preset"
                       checked={selectedPreset?.id === preset.id}
                       aria-labelledby={labelId}
-                      aria-describedby={`${recordsId} ${copyId} ${disclosureId}`}
+                      aria-describedby={`${recordsId} ${recordsDetailId} ${copyId} ${disclosureId}`}
                       onChange={() => updatePreset(preset.id)}
                     />
                     <span className="preset-option-main">
@@ -151,6 +153,9 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
                       </span>
                       <span className="preset-option-records" id={recordsId}>
                         {getReportRunPresetRecordSummary(preset.id)}
+                      </span>
+                      <span className="preset-option-records-detail" id={recordsDetailId}>
+                        {getPrimaryGroupRecordDetail()}
                       </span>
                       <span className="preset-option-copy" id={copyId}>
                         {preset.shortDescription}
@@ -240,10 +245,11 @@ function getCustomVolumeSummary(scope: ReportRunScope): string {
 
   const recordsPerDataGroup = getMaxRecordsForSettings(scope.pageSize, scope.maxPagesPerDataset);
   const primaryGroupSummary = getPrimaryGroupRecordSummary(recordsPerDataGroup);
+  const primaryGroupDetail = getPrimaryGroupRecordDetail().toLowerCase();
   const smeRecordLimit = recordsPerDataGroup.toLocaleString("en-US");
 
   return [
-    `Custom record coverage: ${primaryGroupSummary}.`,
+    `Custom record coverage: ${primaryGroupSummary} for ${primaryGroupDetail}.`,
     `SME detail is separate and can add up to ${smeRecordLimit} top-answerer records for each collected tag`,
   ].join(" ");
 }
