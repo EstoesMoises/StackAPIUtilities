@@ -13,7 +13,12 @@ describe("importReportFile", () => {
   it("imports tag metrics CSV", async () => {
     const result = await importReportFile("tag_metrics.csv", tagMetricsCsv);
     expect(result.reportId).toBe("tag-report");
-    expect(result.records[0]).toMatchObject({ tagName: "machine-learning", totalPageViews: 551412 });
+    expect(result.records[0]).toMatchObject({
+      tagName: "machine-learning",
+      totalPageViews: 551412,
+      questionsNoAnswers: 222,
+      medianFirstAnswerHours: 7.41,
+    });
   });
 
   it("imports user metrics CSV", async () => {

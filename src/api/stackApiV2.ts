@@ -19,6 +19,13 @@ interface PagingOptions {
   maxPages?: number;
 }
 
+export interface StackApiPagedResult<T> {
+  items: T[];
+  pageCount: number;
+  reachedMaxPages: boolean;
+  hasMore: boolean;
+}
+
 export class StackApiV2Client {
   private readonly apiV2Url: string;
   private readonly teamSlug: string | null;
@@ -39,9 +46,18 @@ export class StackApiV2Client {
     query: Record<string, string> = {},
     options: PagingOptions = {},
   ): Promise<T[]> {
+    return (await this.getPagedResult<T>(path, query, options)).items;
+  }
+
+  async getPagedResult<T = unknown>(
+    path: string,
+    query: Record<string, string> = {},
+    options: PagingOptions = {},
+  ): Promise<StackApiPagedResult<T>> {
     const items: T[] = [];
     let page = 1;
     let hasMore = true;
+    let pageCount = 0;
     const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
 
     while (hasMore && page <= maxPages) {
@@ -53,10 +69,16 @@ export class StackApiV2Client {
       await this.notifyBackoff(body);
 
       hasMore = body.has_more === true;
+      pageCount += 1;
       page += 1;
     }
 
-    return items;
+    return {
+      items,
+      pageCount,
+      reachedMaxPages: hasMore && page > maxPages,
+      hasMore,
+    };
   }
 
   private buildUrl(path: string, query: Record<string, string>): URL {

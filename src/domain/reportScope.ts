@@ -1,9 +1,13 @@
+import { DEFAULT_REPORT_RUN_PRESET_ID, getReportRunPreset } from "./reportRunPresets";
 import type { PeriodScope, ReportRunScope } from "./types";
+
+const defaultPreset = getReportRunPreset(DEFAULT_REPORT_RUN_PRESET_ID);
 
 export const DEFAULT_REPORT_RUN_SCOPE: ReportRunScope = {
   current: {},
-  pageSize: 100,
-  maxPagesPerDataset: 5,
+  pageSize: defaultPreset.pageSize,
+  maxPagesPerDataset: defaultPreset.maxPagesPerDataset,
+  runPreset: defaultPreset.id,
 };
 
 interface ValidationResult {
@@ -11,7 +15,9 @@ interface ValidationResult {
   messages: string[];
 }
 
-export function validateReportRunScope(scope: ReportRunScope): ValidationResult {
+type ValidatableReportRunScope = Omit<ReportRunScope, "runPreset"> & Partial<Pick<ReportRunScope, "runPreset">>;
+
+export function validateReportRunScope(scope: ValidatableReportRunScope): ValidationResult {
   const messages: string[] = [];
 
   if (!Number.isInteger(scope.pageSize) || scope.pageSize < 1 || scope.pageSize > 100) {

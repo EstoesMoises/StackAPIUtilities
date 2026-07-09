@@ -1,7 +1,14 @@
 import { runLiveReport, type LiveReportRunResult } from "../collectors/liveReportRunner";
 import { validateCredentialsForReport } from "../credentials/credentialRules";
+import { getReportRunPresetForSettings } from "../domain/reportRunPresets";
 import { DEFAULT_REPORT_RUN_SCOPE, validateReportRunScope } from "../domain/reportScope";
-import type { PeriodScope, ReportId, RunPeriodRole, SessionCredentials } from "../domain/types";
+import type {
+  PeriodScope,
+  ReportId,
+  ReportRunPresetId,
+  RunPeriodRole,
+  SessionCredentials,
+} from "../domain/types";
 
 interface ReportRunRequestPayload {
   reportId: ReportId;
@@ -10,6 +17,7 @@ interface ReportRunRequestPayload {
   scope?: PeriodScope;
   pageSize?: number;
   maxPagesPerDataset?: number;
+  runPreset?: ReportRunPresetId;
 }
 
 interface ReportRunDependencies {
@@ -21,6 +29,7 @@ interface ReportRunDependencies {
       scope: PeriodScope;
       pageSize: number;
       maxPagesPerDataset: number;
+      runPreset?: ReportRunPresetId;
     },
   ) => Promise<LiveReportRunResult>;
 }
@@ -44,6 +53,7 @@ export async function handleReportRunRequest(
   const scope = payload.scope ?? {};
   const pageSize = payload.pageSize ?? DEFAULT_REPORT_RUN_SCOPE.pageSize;
   const maxPagesPerDataset = payload.maxPagesPerDataset ?? DEFAULT_REPORT_RUN_SCOPE.maxPagesPerDataset;
+  const runPreset = normalizeRunPreset(payload.runPreset, pageSize, maxPagesPerDataset);
   const validation = validateReportRunScope({
     current: scope,
     pageSize,
@@ -68,6 +78,7 @@ export async function handleReportRunRequest(
         scope,
         pageSize,
         maxPagesPerDataset,
+        runPreset,
       },
     );
 
@@ -90,6 +101,15 @@ function isReportRunRequestPayload(value: unknown): value is ReportRunRequestPay
   }
 
   if (value.scope !== undefined && !isRecord(value.scope)) {
+    return false;
+  }
+
+  if (
+    value.runPreset !== undefined &&
+    value.runPreset !== "quick-sample" &&
+    value.runPreset !== "standard" &&
+    value.runPreset !== "deep-audit"
+  ) {
     return false;
   }
 
@@ -134,4 +154,16 @@ function isOptionalString(value: unknown): value is string | undefined {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function normalizeRunPreset(
+  requestedPreset: ReportRunPresetId | undefined,
+  pageSize: number,
+  maxPagesPerDataset: number,
+): ReportRunPresetId | undefined {
+  if (!requestedPreset) {
+    return undefined;
+  }
+
+  return getReportRunPresetForSettings(pageSize, maxPagesPerDataset)?.id;
 }

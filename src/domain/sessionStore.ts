@@ -2,12 +2,14 @@ import type {
   DatasetName,
   PeriodScope,
   ReportId,
+  ReportRunPresetId,
   ReportWarning,
   RunPeriodRole,
   SessionCredentials,
   SessionDataset,
   SessionState,
 } from "./types";
+import { buildTagHealthRowsFromLiveRecords } from "../reports/tagReport";
 
 interface LiveDatasetPayload {
   datasetName: DatasetName;
@@ -26,6 +28,7 @@ type SessionAction =
       scope: PeriodScope;
       pageSize: number;
       maxPagesPerDataset: number;
+      runPreset?: ReportRunPresetId;
       warnings: ReportWarning[];
       datasets: LiveDatasetPayload[];
     }
@@ -115,6 +118,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       const reportRecords = action.datasets.flatMap(({ datasetName, records }) =>
         records.map((record) => ({ datasetName, ...record })),
       );
+      const visibleReportRecords =
+        action.reportId === "tag-report" ? buildTagHealthRowsFromLiveRecords(reportRecords) : reportRecords;
 
       action.datasets.forEach((dataset, index) => {
         const datasetId = createDatasetId(snapshotId, dataset.datasetName, String(index));
@@ -134,20 +139,27 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       });
 
       const previousOutput = state.reportOutputs[action.reportId];
+      const currentWarnings =
+        action.periodRole === "current" ? action.warnings : getSnapshotWarnings(state, previousOutput?.currentSnapshotId);
+      const comparisonWarnings =
+        action.periodRole === "comparison"
+          ? action.warnings
+          : getSnapshotWarnings(state, previousOutput?.comparisonSnapshotId);
+      const outputWarnings = dedupeWarnings([...currentWarnings, ...comparisonWarnings]);
       const baseOutput = {
         reportId: action.reportId,
         datasetName: action.datasets[0].datasetName,
         fileName: "Live API run",
         loadedAt,
         source: "live-api" as const,
-        warnings: action.warnings,
+        warnings: outputWarnings,
       };
       const nextOutput =
         action.periodRole === "comparison"
           ? {
               ...baseOutput,
               records: previousOutput?.records ?? [],
-              comparisonRecords: reportRecords,
+              comparisonRecords: visibleReportRecords,
               currentScope: previousOutput?.currentScope,
               comparisonScope: action.scope,
               currentSnapshotId: previousOutput?.currentSnapshotId,
@@ -155,7 +167,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
             }
           : {
               ...baseOutput,
-              records: reportRecords,
+              records: visibleReportRecords,
               comparisonRecords: previousOutput?.comparisonRecords,
               currentScope: action.scope,
               comparisonScope: previousOutput?.comparisonScope,
@@ -180,6 +192,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
             scope: action.scope,
             pageSize: action.pageSize,
             maxPagesPerDataset: action.maxPagesPerDataset,
+            runPreset: action.runPreset,
             loadedAt,
             datasetIds,
             warnings: action.warnings,
@@ -246,4 +259,38 @@ function createSnapshotId(reportId: ReportId, periodRole: RunPeriodRole, loadedA
 
 function createDatasetId(...parts: string[]): string {
   return parts.join("__");
+}
+
+function getSnapshotWarnings(state: SessionState, snapshotId: string | undefined): ReportWarning[] {
+  if (!snapshotId) {
+    return [];
+  }
+
+  for (let index = state.reportRunSnapshots.length - 1; index >= 0; index -= 1) {
+    const snapshot = state.reportRunSnapshots[index];
+
+    if (snapshot?.id === snapshotId) {
+      return snapshot.warnings;
+    }
+  }
+
+  return [];
+}
+
+function dedupeWarnings(warnings: ReportWarning[]): ReportWarning[] {
+  const seen = new Set<string>();
+  const uniqueWarnings: ReportWarning[] = [];
+
+  for (const warning of warnings) {
+    const key = [warning.reportId ?? "", warning.code, warning.message].join("\u0000");
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    uniqueWarnings.push(warning);
+  }
+
+  return uniqueWarnings;
 }

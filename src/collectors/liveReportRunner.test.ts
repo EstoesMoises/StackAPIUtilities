@@ -105,11 +105,86 @@ describe("runLiveReport", () => {
     expect(result.scope).toEqual({ startDate: "2026-01-01", endDate: "2026-01-31" });
     expect(result.pageSize).toBe(50);
     expect(result.maxPagesPerDataset).toBe(1);
-    expect(result.warnings).toEqual([]);
+    expect(result.warnings).toEqual([
+      {
+        reportId: "inactive-users",
+        code: "dataset-page-cap",
+        message:
+          "Users hit the custom API volume page cap (requested up to 50 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
+      },
+    ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0].toString()).toContain("pagesize=50");
     expect(fetchMock.mock.calls[0][0].toString()).toContain("fromdate=1767225600");
     expect(fetchMock.mock.calls[0][0].toString()).toContain("todate=1769817600");
+  });
+
+  it("warns when a preset cap leaves more dataset data available", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString();
+      const isTagsDataset = url.includes("/tags?") && !url.includes("/top-answerers/");
+
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: isTagsDataset ? [{ name: "python" }] : itemsForTagReportUrl(url),
+            has_more: isTagsDataset,
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    const result = await runLiveReport("tag-report", basicCredentials, {
+      fetchFn: fetchMock,
+      pageSize: 50,
+      maxPagesPerDataset: 1,
+      runPreset: "quick-sample",
+    });
+
+    expect(result.runPreset).toBe("quick-sample");
+    expect(result.warnings).toEqual([
+      {
+        reportId: "tag-report",
+        code: "dataset-page-cap",
+        message:
+          "Tags hit the Quick sample page cap (requested up to 50 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
+      },
+    ]);
+  });
+
+  it("clears stale preset labels when custom volume settings do not match the requested preset", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString();
+      const isTagsDataset = url.includes("/tags?") && !url.includes("/top-answerers/");
+
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: isTagsDataset ? [{ name: "python" }] : itemsForTagReportUrl(url),
+            has_more: isTagsDataset,
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    const result = await runLiveReport("tag-report", basicCredentials, {
+      fetchFn: fetchMock,
+      pageSize: 75,
+      maxPagesPerDataset: 2,
+      runPreset: "quick-sample",
+    });
+
+    expect(result.runPreset).toBeUndefined();
+    expect(result.warnings).toEqual([
+      {
+        reportId: "tag-report",
+        code: "dataset-page-cap",
+        message:
+          "Tags hit the custom API volume page cap (requested up to 150 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
+      },
+    ]);
   });
 
   it("runs Tag Report by collecting tag SME records from tags", async () => {

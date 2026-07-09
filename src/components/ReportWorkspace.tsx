@@ -1,18 +1,21 @@
 import { useState } from "react";
 import { reportRegistry } from "../domain/reportRegistry";
-import type { PeriodScope, ReportId, ReportRunScope, RunPeriodRole } from "../domain/types";
+import type { PeriodScope, ReportId, ReportRunScope, ReportWarning, RunPeriodRole } from "../domain/types";
 import { DataTable } from "./DataTable";
 import { ReportDashboard } from "./ReportDashboard";
 import { ReportScopePanel } from "./ReportScopePanel";
 import { StackOverflowLogo } from "./StackOverflowLogo";
+import { downloadReportCsv } from "../utils/reportDownloads";
 
 export interface ReportWorkspaceProps {
   reportId: ReportId;
   records: Record<string, unknown>[];
   comparisonRecords?: Record<string, unknown>[];
+  loadedAt?: string;
   currentScope?: PeriodScope;
   comparisonScope?: PeriodScope;
   outputSource?: "live-api" | "upload";
+  warnings?: ReportWarning[];
   scope: ReportRunScope;
   onScopeChange: (scope: ReportRunScope) => void;
   onRun: (periodRole: RunPeriodRole) => void;
@@ -23,9 +26,11 @@ export function ReportWorkspace({
   reportId,
   records,
   comparisonRecords,
+  loadedAt,
   currentScope,
   comparisonScope,
   outputSource,
+  warnings,
   scope,
   onScopeChange,
   onRun,
@@ -34,6 +39,20 @@ export function ReportWorkspace({
   const [tab, setTab] = useState<"dashboard" | "table">("dashboard");
   const report = reportRegistry.find((candidate) => candidate.id === reportId)!;
   const comparisonEnabled = scope.comparison !== undefined;
+  const canDownloadTagHealth = reportId === "tag-report" && records.length > 0;
+
+  function downloadTagHealthCsv() {
+    downloadReportCsv({
+      reportId,
+      datasetName: "tags",
+      records,
+      loadedAt: loadedAt ?? new Date().toISOString(),
+      source: outputSource ?? "upload",
+      periodRole: "current",
+      currentScope,
+      comparisonScope,
+    });
+  }
 
   return (
     <section className="workspace-panel" aria-labelledby="selected-report-heading">
@@ -46,6 +65,13 @@ export function ReportWorkspace({
         </div>
         <StackOverflowLogo className="workspace-stack-mark" variant="glyph" />
       </div>
+      {canDownloadTagHealth && (
+        <div className="workspace-actions">
+          <button className="s-btn s-btn__outlined report-download-button" type="button" onClick={downloadTagHealthCsv}>
+            Download Tag Health CSV
+          </button>
+        </div>
+      )}
       <p className="workspace-copy">{report.description}</p>
       <div className="workspace-readiness" role="note">
         <span className="readiness-dot" aria-hidden="true" />
@@ -54,7 +80,7 @@ export function ReportWorkspace({
           render full script outputs.
         </p>
       </div>
-      <ReportScopePanel scope={scope} onChange={onScopeChange} />
+      <ReportScopePanel reportId={reportId} scope={scope} onChange={onScopeChange} />
       <div className="run-controls">
         <button
           className="s-btn s-btn__filled report-run-primary"
@@ -110,6 +136,7 @@ export function ReportWorkspace({
           currentScope={currentScope}
           comparisonScope={comparisonScope}
           outputSource={outputSource}
+          warnings={warnings}
         />
       ) : (
         <div className="raw-table-panel">

@@ -2,12 +2,14 @@ import { StackApiV2Client } from "../api/stackApiV2";
 import { StackApiV3Client } from "../api/stackApiV3";
 import type { FetchLike, ThrottleNotice } from "../api/httpClient";
 import { normalizeInstanceUrl, validateCredentialsForReport } from "../credentials/credentialRules";
+import { getReportRunPreset, getReportRunPresetForSettings } from "../domain/reportRunPresets";
 import { DEFAULT_REPORT_RUN_SCOPE } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
 import type {
   DatasetName,
   PeriodScope,
   ReportId,
+  ReportRunPresetId,
   ReportWarning,
   RunPeriodRole,
   SessionCredentials,
@@ -28,6 +30,7 @@ export interface LiveReportRunResult {
   scope: PeriodScope;
   pageSize: number;
   maxPagesPerDataset: number;
+  runPreset?: ReportRunPresetId;
   datasets: LiveReportDataset[];
   messages: string[];
   warnings: ReportWarning[];
@@ -40,6 +43,7 @@ export interface LiveReportRunOptions {
   scope?: PeriodScope;
   pageSize?: number;
   maxPagesPerDataset?: number;
+  runPreset?: ReportRunPresetId;
 }
 
 export class UnsupportedLiveReportRunError extends Error {
@@ -86,24 +90,30 @@ export async function runLiveReport(
   const scope = options.scope ?? DEFAULT_REPORT_RUN_SCOPE.current;
   const pageSize = options.pageSize ?? DEFAULT_REPORT_RUN_SCOPE.pageSize;
   const maxPagesPerDataset = options.maxPagesPerDataset ?? DEFAULT_REPORT_RUN_SCOPE.maxPagesPerDataset;
+  const runPreset = normalizeRunPreset(options.runPreset, pageSize, maxPagesPerDataset);
+  const warnings: ReportWarning[] = [];
 
   for (const datasetName of plannedDatasets) {
-    const records = toRecordList(
-      await collectDataset(datasetName, clients, {
-        collectedDatasets,
-        periodRole,
-        scope,
-        pageSize,
-        maxPagesPerDataset,
-      }),
-    );
+    const collection = await collectDataset(datasetName, clients, {
+      collectedDatasets,
+      periodRole,
+      scope,
+      pageSize,
+      maxPagesPerDataset,
+    });
+    const records = toRecordList(collection.records);
+
+    if (collection.pagination.reachedMaxPages && collection.pagination.hasMore) {
+      warnings.push(createDatasetCapWarning(reportId, datasetName, pageSize, maxPagesPerDataset, runPreset));
+    }
+
     collectedDatasets[datasetName] = records;
     datasets.push({ datasetName, records });
   }
 
   datasets.push(...buildSyntheticDatasets(reportId, datasets));
 
-  return {
+  const result: LiveReportRunResult = {
     reportId,
     reportTitle: report.title,
     periodRole,
@@ -112,8 +122,14 @@ export async function runLiveReport(
     maxPagesPerDataset,
     datasets,
     messages: datasets.map((dataset) => formatDatasetMessage(reportId, report.title, dataset)),
-    warnings: [],
+    warnings,
   };
+
+  if (runPreset) {
+    result.runPreset = runPreset;
+  }
+
+  return result;
 }
 
 function buildSyntheticDatasets(
@@ -208,4 +224,53 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatRecordCount(count: number): string {
   return `${count} ${count === 1 ? "record" : "records"}`;
+}
+
+function createDatasetCapWarning(
+  reportId: ReportId,
+  datasetName: DatasetName,
+  pageSize: number,
+  maxPagesPerDataset: number,
+  runPreset: ReportRunPresetId | undefined,
+): ReportWarning {
+  const capSize = pageSize * maxPagesPerDataset;
+  const datasetLabel = formatDatasetName(datasetName);
+  const capLabel = runPreset
+    ? `${getReportRunPreset(runPreset).label} page cap`
+    : "custom API volume page cap";
+
+  return {
+    reportId,
+    code: "dataset-page-cap",
+    message: `${datasetLabel} hit the ${capLabel} (requested up to ${formatNumber(capSize)} records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.`,
+  };
+}
+
+function formatNumber(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+function normalizeRunPreset(
+  requestedPreset: ReportRunPresetId | undefined,
+  pageSize: number,
+  maxPagesPerDataset: number,
+): ReportRunPresetId | undefined {
+  if (!requestedPreset) {
+    return undefined;
+  }
+
+  return getReportRunPresetForSettings(pageSize, maxPagesPerDataset)?.id;
+}
+
+function formatDatasetName(datasetName: DatasetName): string {
+  const explicitLabels: Partial<Record<DatasetName, string>> = {
+    tagSmes: "Tag SMEs",
+    userGroups: "User groups",
+    reputationHistory: "Reputation history",
+    dataExport: "Data export",
+  };
+
+  const label = explicitLabels[datasetName] ?? datasetName.replace(/([a-z])([A-Z])/g, "$1 $2");
+
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }

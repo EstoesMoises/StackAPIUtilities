@@ -35,7 +35,30 @@ interface PagingOptions {
   maxPages?: number;
 }
 
+export interface StackApiPagedResult<T> {
+  items: T[];
+  pageCount: number;
+  reachedMaxPages: boolean;
+  hasMore: boolean;
+}
+
 const TOKEN_BUCKET_LOW_WATERMARK = 30;
+
+function shouldFetchNextPage({
+  page,
+  totalPages,
+  maxPages,
+  lastPageItemCount,
+}: {
+  page: number;
+  totalPages: number | null;
+  maxPages: number;
+  lastPageItemCount: number;
+}) {
+  if (page > maxPages) return false;
+
+  return totalPages === null ? lastPageItemCount > 0 : page <= totalPages;
+}
 
 export class StackApiV3Client {
   private readonly apiV3Url: string;
@@ -55,9 +78,19 @@ export class StackApiV3Client {
     query: Record<string, string> = {},
     options: PagingOptions = {},
   ): Promise<T[]> {
+    return (await this.getPagedResult<T>(path, query, options)).items;
+  }
+
+  async getPagedResult<T = unknown>(
+    path: string,
+    query: Record<string, string> = {},
+    options: PagingOptions = {},
+  ): Promise<StackApiPagedResult<T>> {
     const items: T[] = [];
     let page = 1;
-    let totalPages = 1;
+    let totalPages: number | null = null;
+    let pageCount = 0;
+    let lastPageItemCount = 0;
     const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
 
     do {
@@ -67,14 +100,28 @@ export class StackApiV3Client {
       });
 
       const body = await readJsonResponse<StackApiV3Page<T>>(response, "Stack API v3");
-      items.push(...(body.items ?? []));
-      totalPages = body.totalPages ?? totalPages;
+      const pageItems = body.items ?? [];
+      items.push(...pageItems);
+      lastPageItemCount = pageItems.length;
+      totalPages = typeof body.totalPages === "number" && Number.isFinite(body.totalPages)
+        ? body.totalPages
+        : totalPages;
       await this.notifyThrottle(response.headers);
 
+      pageCount += 1;
       page += 1;
-    } while (page <= totalPages && page <= maxPages);
+    } while (shouldFetchNextPage({ page, totalPages, maxPages, lastPageItemCount }));
 
-    return items;
+    const hasMore = totalPages === null
+      ? pageCount >= maxPages && lastPageItemCount > 0
+      : pageCount < totalPages;
+
+    return {
+      items,
+      pageCount,
+      reachedMaxPages: pageCount >= maxPages && hasMore,
+      hasMore,
+    };
   }
 
   async getUserByEmail(email: string): Promise<StackApiV3UserSummary | null> {
