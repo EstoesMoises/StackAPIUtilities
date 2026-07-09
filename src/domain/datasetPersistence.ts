@@ -1,6 +1,7 @@
 import { reportRegistry } from "./reportRegistry";
 import type {
   DatasetName,
+  PeriodScope,
   ReportId,
   ReportOutput,
   ReportRunSnapshot,
@@ -61,12 +62,15 @@ export function hydrateDatasetSessionState(state: SessionState, value: unknown):
   const selectedReportId = knownReportIds.has(snapshot.selectedReportId)
     ? snapshot.selectedReportId
     : state.selectedReportId;
-  const selectedReportIds = snapshot.selectedReportIds.filter((reportId) => knownReportIds.has(reportId));
+  const selectedReportIds = normalizeSelectedReportIds(
+    selectedReportId,
+    snapshot.selectedReportIds.filter((reportId) => knownReportIds.has(reportId)),
+  );
 
   return {
     ...state,
     selectedReportId,
-    selectedReportIds: selectedReportIds.length > 0 ? selectedReportIds : [selectedReportId],
+    selectedReportIds,
     datasets: snapshot.datasets,
     reportOutputs: snapshot.reportOutputs,
     reportRunSnapshots: snapshot.reportRunSnapshots,
@@ -80,9 +84,10 @@ export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSes
   }
 
   const selectedReportId = isKnownReportId(value.selectedReportId) ? value.selectedReportId : "tag-report";
-  const selectedReportIds = Array.isArray(value.selectedReportIds)
+  const selectedReportIdCandidates = Array.isArray(value.selectedReportIds)
     ? value.selectedReportIds.filter(isKnownReportId)
-    : [selectedReportId];
+    : [];
+  const selectedReportIds = normalizeSelectedReportIds(selectedReportId, selectedReportIdCandidates);
   const datasets = parseDatasetRecord(value.datasets);
 
   if (!datasets) {
@@ -92,7 +97,7 @@ export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSes
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
     selectedReportId,
-    selectedReportIds: selectedReportIds.length > 0 ? selectedReportIds : [selectedReportId],
+    selectedReportIds,
     datasets,
     reportOutputs: parseReportOutputs(value.reportOutputs),
     reportRunSnapshots: parseReportRunSnapshots(value.reportRunSnapshots, datasets),
@@ -108,11 +113,13 @@ function parseDatasetRecord(value: unknown): Record<string, SessionDataset> | nu
   const datasets: Record<string, SessionDataset> = {};
 
   for (const [key, dataset] of Object.entries(value)) {
-    if (!isSessionDataset(dataset) || dataset.id !== key) {
+    const parsedDataset = parseSessionDataset(dataset);
+
+    if (!parsedDataset || parsedDataset.id !== key) {
       return null;
     }
 
-    datasets[key] = dataset;
+    datasets[key] = parsedDataset;
   }
 
   return datasets;
@@ -126,8 +133,10 @@ function parseReportOutputs(value: unknown): Partial<Record<ReportId, ReportOutp
   const outputs: Partial<Record<ReportId, ReportOutput>> = {};
 
   for (const [key, output] of Object.entries(value)) {
-    if (isKnownReportId(key) && isReportOutput(output)) {
-      outputs[key] = output;
+    const parsedOutput = parseReportOutput(output);
+
+    if (isKnownReportId(key) && parsedOutput?.reportId === key) {
+      outputs[key] = parsedOutput;
     }
   }
 
@@ -142,20 +151,9 @@ function parseReportRunSnapshots(
     return [];
   }
 
-  return value.filter((snapshot): snapshot is ReportRunSnapshot => {
-    return (
-      isRecord(snapshot) &&
-      typeof snapshot.id === "string" &&
-      isKnownReportId(snapshot.reportId) &&
-      isRunPeriodRole(snapshot.periodRole) &&
-      isPeriodScope(snapshot.scope) &&
-      Number.isInteger(snapshot.pageSize) &&
-      Number.isInteger(snapshot.maxPagesPerDataset) &&
-      typeof snapshot.loadedAt === "string" &&
-      Array.isArray(snapshot.datasetIds) &&
-      snapshot.datasetIds.every((datasetId) => typeof datasetId === "string" && datasets[datasetId]) &&
-      Array.isArray(snapshot.warnings)
-    );
+  return value.flatMap((snapshot) => {
+    const parsedSnapshot = parseReportRunSnapshot(snapshot, datasets);
+    return parsedSnapshot ? [parsedSnapshot] : [];
   });
 }
 
@@ -164,49 +162,178 @@ function parseWarnings(value: unknown): ReportWarning[] {
     return [];
   }
 
-  return value.filter((warning): warning is ReportWarning => {
-    return (
-      isRecord(warning) &&
-      typeof warning.code === "string" &&
-      typeof warning.message === "string" &&
-      (typeof warning.reportId === "undefined" || isKnownReportId(warning.reportId))
-    );
+  return value.flatMap((warning) => {
+    const parsedWarning = parseWarning(warning);
+    return parsedWarning ? [parsedWarning] : [];
   });
 }
 
-function isSessionDataset(value: unknown): value is SessionDataset {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    isDatasetName(value.name) &&
-    Array.isArray(value.records) &&
-    typeof value.loadedAt === "string" &&
-    (value.source === "live-api" || value.source === "upload") &&
-    (typeof value.snapshotId === "undefined" || typeof value.snapshotId === "string") &&
-    (typeof value.reportId === "undefined" || isKnownReportId(value.reportId)) &&
-    (typeof value.periodRole === "undefined" || isRunPeriodRole(value.periodRole)) &&
-    (typeof value.scope === "undefined" || isPeriodScope(value.scope)) &&
-    (typeof value.fileName === "undefined" || typeof value.fileName === "string") &&
-    (typeof value.warnings === "undefined" || Array.isArray(value.warnings))
-  );
+function parseSessionDataset(value: unknown): SessionDataset | null {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    !isDatasetName(value.name) ||
+    !Array.isArray(value.records) ||
+    typeof value.loadedAt !== "string" ||
+    (value.source !== "live-api" && value.source !== "upload") ||
+    (typeof value.snapshotId !== "undefined" && typeof value.snapshotId !== "string") ||
+    (typeof value.reportId !== "undefined" && !isKnownReportId(value.reportId)) ||
+    (typeof value.periodRole !== "undefined" && !isRunPeriodRole(value.periodRole)) ||
+    (typeof value.fileName !== "undefined" && typeof value.fileName !== "string") ||
+    (typeof value.warnings !== "undefined" && !Array.isArray(value.warnings))
+  ) {
+    return null;
+  }
+
+  const scope = parseOptionalPeriodScope(value.scope);
+
+  if (scope === null) {
+    return null;
+  }
+
+  const dataset: SessionDataset = {
+    id: value.id,
+    name: value.name,
+    records: value.records,
+    loadedAt: value.loadedAt,
+    source: value.source,
+  };
+
+  if (typeof value.snapshotId === "string") {
+    dataset.snapshotId = value.snapshotId;
+  }
+  if (isKnownReportId(value.reportId)) {
+    dataset.reportId = value.reportId;
+  }
+  if (isRunPeriodRole(value.periodRole)) {
+    dataset.periodRole = value.periodRole;
+  }
+  if (scope) {
+    dataset.scope = scope;
+  }
+  if (typeof value.fileName === "string") {
+    dataset.fileName = value.fileName;
+  }
+  if (Array.isArray(value.warnings)) {
+    dataset.warnings = parseWarnings(value.warnings);
+  }
+
+  return dataset;
 }
 
-function isReportOutput(value: unknown): value is ReportOutput {
-  return (
-    isRecord(value) &&
-    isKnownReportId(value.reportId) &&
-    isDatasetName(value.datasetName) &&
-    typeof value.fileName === "string" &&
-    Array.isArray(value.records) &&
-    typeof value.loadedAt === "string" &&
-    (value.source === "live-api" || value.source === "upload") &&
-    (typeof value.comparisonRecords === "undefined" || Array.isArray(value.comparisonRecords)) &&
-    (typeof value.currentScope === "undefined" || isPeriodScope(value.currentScope)) &&
-    (typeof value.comparisonScope === "undefined" || isPeriodScope(value.comparisonScope)) &&
-    (typeof value.currentSnapshotId === "undefined" || typeof value.currentSnapshotId === "string") &&
-    (typeof value.comparisonSnapshotId === "undefined" || typeof value.comparisonSnapshotId === "string") &&
-    (typeof value.warnings === "undefined" || Array.isArray(value.warnings))
-  );
+function parseReportOutput(value: unknown): ReportOutput | null {
+  if (
+    !isRecord(value) ||
+    !isKnownReportId(value.reportId) ||
+    !isDatasetName(value.datasetName) ||
+    typeof value.fileName !== "string" ||
+    !Array.isArray(value.records) ||
+    typeof value.loadedAt !== "string" ||
+    (value.source !== "live-api" && value.source !== "upload") ||
+    (typeof value.comparisonRecords !== "undefined" && !Array.isArray(value.comparisonRecords)) ||
+    (typeof value.currentSnapshotId !== "undefined" && typeof value.currentSnapshotId !== "string") ||
+    (typeof value.comparisonSnapshotId !== "undefined" && typeof value.comparisonSnapshotId !== "string") ||
+    (typeof value.warnings !== "undefined" && !Array.isArray(value.warnings))
+  ) {
+    return null;
+  }
+
+  const currentScope = parseOptionalPeriodScope(value.currentScope);
+  const comparisonScope = parseOptionalPeriodScope(value.comparisonScope);
+
+  if (currentScope === null || comparisonScope === null) {
+    return null;
+  }
+
+  const output: ReportOutput = {
+    reportId: value.reportId,
+    datasetName: value.datasetName,
+    fileName: value.fileName,
+    records: value.records as Record<string, unknown>[],
+    loadedAt: value.loadedAt,
+    source: value.source,
+  };
+
+  if (Array.isArray(value.comparisonRecords)) {
+    output.comparisonRecords = value.comparisonRecords as Record<string, unknown>[];
+  }
+  if (currentScope) {
+    output.currentScope = currentScope;
+  }
+  if (comparisonScope) {
+    output.comparisonScope = comparisonScope;
+  }
+  if (typeof value.currentSnapshotId === "string") {
+    output.currentSnapshotId = value.currentSnapshotId;
+  }
+  if (typeof value.comparisonSnapshotId === "string") {
+    output.comparisonSnapshotId = value.comparisonSnapshotId;
+  }
+  if (Array.isArray(value.warnings)) {
+    output.warnings = parseWarnings(value.warnings);
+  }
+
+  return output;
+}
+
+function parseReportRunSnapshot(
+  value: unknown,
+  datasets: Record<string, SessionDataset>,
+): ReportRunSnapshot | null {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    !isKnownReportId(value.reportId) ||
+    !isRunPeriodRole(value.periodRole) ||
+    !Number.isInteger(value.pageSize) ||
+    !Number.isInteger(value.maxPagesPerDataset) ||
+    typeof value.loadedAt !== "string" ||
+    !Array.isArray(value.datasetIds) ||
+    !value.datasetIds.every((datasetId) => typeof datasetId === "string" && datasets[datasetId]) ||
+    !Array.isArray(value.warnings)
+  ) {
+    return null;
+  }
+
+  const scope = parsePeriodScope(value.scope);
+
+  if (!scope) {
+    return null;
+  }
+
+  return {
+    id: value.id,
+    reportId: value.reportId,
+    periodRole: value.periodRole,
+    scope,
+    pageSize: value.pageSize,
+    maxPagesPerDataset: value.maxPagesPerDataset,
+    loadedAt: value.loadedAt,
+    datasetIds: [...value.datasetIds],
+    warnings: parseWarnings(value.warnings),
+  };
+}
+
+function parseWarning(value: unknown): ReportWarning | null {
+  if (
+    !isRecord(value) ||
+    typeof value.code !== "string" ||
+    typeof value.message !== "string" ||
+    (typeof value.reportId !== "undefined" && !isKnownReportId(value.reportId))
+  ) {
+    return null;
+  }
+
+  const warning: ReportWarning = {
+    code: value.code,
+    message: value.message,
+  };
+
+  if (isKnownReportId(value.reportId)) {
+    warning.reportId = value.reportId;
+  }
+
+  return warning;
 }
 
 function isKnownReportId(value: unknown): value is ReportId {
@@ -221,12 +348,45 @@ function isRunPeriodRole(value: unknown): value is RunPeriodRole {
   return typeof value === "string" && runPeriodRoles.has(value as RunPeriodRole);
 }
 
-function isPeriodScope(value: unknown): value is { startDate?: string; endDate?: string } {
-  return (
-    isRecord(value) &&
-    (typeof value.startDate === "undefined" || typeof value.startDate === "string") &&
-    (typeof value.endDate === "undefined" || typeof value.endDate === "string")
-  );
+function parseOptionalPeriodScope(value: unknown): PeriodScope | undefined | null {
+  if (typeof value === "undefined") {
+    return undefined;
+  }
+
+  return parsePeriodScope(value);
+}
+
+function parsePeriodScope(value: unknown): PeriodScope | null {
+  if (
+    !isRecord(value) ||
+    (typeof value.startDate !== "undefined" && typeof value.startDate !== "string") ||
+    (typeof value.endDate !== "undefined" && typeof value.endDate !== "string")
+  ) {
+    return null;
+  }
+
+  const scope: PeriodScope = {};
+
+  if (typeof value.startDate === "string") {
+    scope.startDate = value.startDate;
+  }
+  if (typeof value.endDate === "string") {
+    scope.endDate = value.endDate;
+  }
+
+  return scope;
+}
+
+function normalizeSelectedReportIds(selectedReportId: ReportId, reportIds: readonly ReportId[]): ReportId[] {
+  const normalized: ReportId[] = [selectedReportId];
+
+  reportIds.forEach((reportId) => {
+    if (reportId !== selectedReportId && !normalized.includes(reportId)) {
+      normalized.push(reportId);
+    }
+  });
+
+  return normalized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
