@@ -294,6 +294,64 @@ describe("sessionStore", () => {
     expect(withoutDataset.reportRunSnapshots).toEqual([]);
   });
 
+  it("keeps transformed live output rows while their snapshot still has backing datasets", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "standard",
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+        },
+        {
+          datasetName: "questions",
+          records: [
+            {
+              question_id: 10,
+              tags: ["python"],
+              answer_count: 1,
+              view_count: 25,
+            },
+          ],
+        },
+      ],
+    });
+    const questionsDataset = Object.values(state.datasets).find((dataset) => dataset.name === "questions");
+
+    expect(state.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 525,
+      }),
+    ]);
+    expect(state.reportOutputs["tag-report"]?.records[0]).not.toHaveProperty("datasetName");
+
+    const withoutQuestions = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: questionsDataset?.id ?? "",
+    });
+
+    expect(Object.values(withoutQuestions.datasets)).toHaveLength(1);
+    expect(Object.values(withoutQuestions.datasets)[0]?.name).toBe("tags");
+    expect(withoutQuestions.reportRunSnapshots).toHaveLength(1);
+    expect(withoutQuestions.reportRunSnapshots[0]?.datasetIds).toEqual([
+      Object.values(withoutQuestions.datasets)[0]?.id,
+    ]);
+    expect(withoutQuestions.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 525,
+      }),
+    ]);
+    expect(withoutQuestions.reportOutputs["tag-report"]?.currentSnapshotId).toBe(questionsDataset?.snapshotId);
+  });
+
   it("stores current and comparison live snapshots without overwriting dataset names", () => {
     const current = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",

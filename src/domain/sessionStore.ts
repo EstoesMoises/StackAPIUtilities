@@ -230,7 +230,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return {
         ...state,
         datasets: remainingDatasets,
-        reportOutputs: removeReportOutputsForDataset(state.reportOutputs, removedDataset),
+        reportOutputs: removeReportOutputsForDataset(state.reportOutputs, removedDataset, reportRunSnapshots),
         reportRunSnapshots,
         warnings: pruneWarningsForRemainingDatasetState(state.warnings, remainingDatasets, reportRunSnapshots),
       };
@@ -266,8 +266,10 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
 function removeReportOutputsForDataset(
   reportOutputs: SessionState["reportOutputs"],
   removedDataset: SessionDataset,
+  retainedReportRunSnapshots: SessionState["reportRunSnapshots"],
 ): SessionState["reportOutputs"] {
   const nextReportOutputs = { ...reportOutputs };
+  const retainedSnapshotIds = new Set(retainedReportRunSnapshots.map((snapshot) => snapshot.id));
 
   for (const reportId of Object.keys(nextReportOutputs) as ReportId[]) {
     const output = nextReportOutputs[reportId];
@@ -276,7 +278,7 @@ function removeReportOutputsForDataset(
       continue;
     }
 
-    const nextOutput = removeDatasetFromReportOutput(output, removedDataset);
+    const nextOutput = removeDatasetFromReportOutput(output, removedDataset, retainedSnapshotIds);
 
     if (nextOutput) {
       nextReportOutputs[reportId] = nextOutput;
@@ -288,7 +290,11 @@ function removeReportOutputsForDataset(
   return nextReportOutputs;
 }
 
-function removeDatasetFromReportOutput(output: ReportOutput, dataset: SessionDataset): ReportOutput | null {
+function removeDatasetFromReportOutput(
+  output: ReportOutput,
+  dataset: SessionDataset,
+  retainedSnapshotIds: ReadonlySet<string>,
+): ReportOutput | null {
   if (isUploadedReportOutputTiedToDataset(output, dataset)) {
     return null;
   }
@@ -298,7 +304,7 @@ function removeDatasetFromReportOutput(output: ReportOutput, dataset: SessionDat
   }
 
   if (output.currentSnapshotId === dataset.snapshotId) {
-    const records = pruneDatasetRecords(output.records, dataset);
+    const records = pruneDatasetRecords(output.records, dataset, retainedSnapshotIds.has(dataset.snapshotId));
     const nextOutput: ReportOutput = {
       ...output,
       records,
@@ -314,7 +320,11 @@ function removeDatasetFromReportOutput(output: ReportOutput, dataset: SessionDat
 
   if (output.comparisonSnapshotId === dataset.snapshotId) {
     const nextOutput: ReportOutput = { ...output };
-    const comparisonRecords = pruneDatasetRecords(output.comparisonRecords ?? [], dataset);
+    const comparisonRecords = pruneDatasetRecords(
+      output.comparisonRecords ?? [],
+      dataset,
+      retainedSnapshotIds.has(dataset.snapshotId),
+    );
 
     if (comparisonRecords.length > 0) {
       nextOutput.comparisonRecords = comparisonRecords;
@@ -347,9 +357,10 @@ function hasReportOutputRecords(output: ReportOutput): boolean {
 function pruneDatasetRecords(
   records: Record<string, unknown>[],
   dataset: SessionDataset,
+  isSnapshotRetained: boolean,
 ): Record<string, unknown>[] {
   if (!records.some((record) => record.datasetName === dataset.name)) {
-    return [];
+    return isSnapshotRetained ? records : [];
   }
 
   return records.filter((record) => record.datasetName !== dataset.name);
