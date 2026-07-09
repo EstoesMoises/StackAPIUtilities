@@ -120,7 +120,7 @@ function parseDatasetRecord(value: unknown): Record<string, SessionDataset> | nu
   for (const [key, dataset] of Object.entries(value)) {
     const parsedDataset = parseSessionDataset(dataset);
 
-    if (!parsedDataset || parsedDataset.id !== key) {
+    if (!isSafeObjectKey(key) || !parsedDataset || parsedDataset.id !== key) {
       return null;
     }
 
@@ -302,7 +302,7 @@ function parseReportRunSnapshot(
     !Number.isInteger(maxPagesPerDataset) ||
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
-    !value.datasetIds.every((datasetId) => typeof datasetId === "string" && datasets[datasetId]) ||
+    !value.datasetIds.every((datasetId) => typeof datasetId === "string" && hasOwn(datasets, datasetId)) ||
     !Array.isArray(value.warnings)
   ) {
     return null;
@@ -408,4 +408,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRecordArray(value: unknown): value is Record<string, unknown>[] {
   return Array.isArray(value) && value.every(isRecord);
+}
+
+function isSafeObjectKey(value: string): boolean {
+  return value !== "__proto__" && value !== "constructor" && value !== "prototype";
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }

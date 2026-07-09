@@ -472,6 +472,56 @@ describe("datasetPersistence", () => {
     expect(parsed?.reportOutputs).toEqual({});
   });
 
+  it("drops report run snapshots whose dataset ids only exist on the object prototype", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {},
+      reportOutputs: {},
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["toString"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+  });
+
+  it("rejects persisted datasets with unsafe prototype keys", () => {
+    const parsed = parseDatasetSessionSnapshot(
+      JSON.parse(`{
+        "version": 1,
+        "selectedReportId": "inactive-users",
+        "selectedReportIds": ["inactive-users"],
+        "datasets": {
+          "__proto__": {
+            "id": "__proto__",
+            "name": "users",
+            "records": [],
+            "loadedAt": "2026-07-09T12:00:00.000Z",
+            "source": "upload"
+          }
+        },
+        "reportOutputs": {},
+        "reportRunSnapshots": [],
+        "warnings": []
+      }`),
+    );
+
+    expect(parsed).toBeNull();
+  });
+
   it("normalizes persisted selections so the selected report id is first and present", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 1,
