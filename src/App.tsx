@@ -12,11 +12,18 @@ import { UploadsPanel, type ImportedUploadResult } from "./components/UploadsPan
 import { UserGroupSyncPanel } from "./components/UserGroupSyncPanel";
 import { WriteToolsCatalog, type WriteToolId } from "./components/WriteToolsCatalog";
 import { validateCredentialsForReport } from "./credentials/credentialRules";
-import { createDatasetSessionSnapshot } from "./domain/datasetPersistence";
+import { createDatasetSessionSnapshot, type PersistedDatasetSessionSnapshot } from "./domain/datasetPersistence";
 import { DEFAULT_REPORT_RUN_SCOPE } from "./domain/reportScope";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
-import type { ReportId, ReportRunProgress, RunPeriodRole, RunQueueItem, SessionCredentials } from "./domain/types";
+import type {
+  ReportId,
+  ReportRunProgress,
+  ReportRunScope,
+  RunPeriodRole,
+  RunQueueItem,
+  SessionCredentials,
+} from "./domain/types";
 import type { ReportRunResponseBody } from "./server/reportRunApi";
 import {
   clearPersistedDatasetSession,
@@ -42,6 +49,7 @@ export function App() {
   const [datasetStorageWarning, setDatasetStorageWarning] = useState<string | null>(null);
   const datasetContentRevisionRef = useRef(0);
   const reportSelectionRevisionRef = useRef(0);
+  const reportScopeRevisionRef = useRef(0);
   const mountedRef = useRef(false);
   const persistenceQueueRef = useRef(Promise.resolve());
   const persistenceSequenceRef = useRef(0);
@@ -65,6 +73,11 @@ export function App() {
     };
   }
 
+  function updateReportScope(nextScope: ReportRunScope) {
+    reportScopeRevisionRef.current += 1;
+    setReportScope(nextScope);
+  }
+
   useEffect(() => {
     mountedRef.current = true;
 
@@ -84,6 +97,7 @@ export function App() {
     let active = true;
     const hydrationContentRevision = datasetContentRevisionRef.current;
     const hydrationSelectionRevision = reportSelectionRevisionRef.current;
+    const hydrationReportScopeRevision = reportScopeRevisionRef.current;
     const hydrationEmptyRevision = explicitEmptyRevisionRef.current;
 
     loadPersistedDatasetSession()
@@ -111,6 +125,12 @@ export function App() {
               ? selectedReportsRef.current
               : undefined,
         });
+        if (
+          reportSelectionRevisionRef.current === hydrationSelectionRevision &&
+          reportScopeRevisionRef.current === hydrationReportScopeRevision
+        ) {
+          setReportScope((currentScope) => restoreReportScopeFromSnapshot(currentScope, snapshot));
+        }
       })
       .catch(() => {
         if (active && mountedRef.current) {
@@ -413,7 +433,7 @@ export function App() {
           outputSource={selectedReportOutput?.source}
           warnings={selectedReportOutput?.warnings}
           scope={reportScope}
-          onScopeChange={setReportScope}
+          onScopeChange={updateReportScope}
           onRun={queueSelectedReportRun}
           onRunBoth={queueBothReportRuns}
         />
@@ -450,6 +470,48 @@ function createFailedProgress(reportTitle: string): ReportRunProgress {
     completedStages: [REPORT_RUN_STAGES[0], REPORT_RUN_STAGES[1]],
     totalStages: REPORT_RUN_STAGES.length,
   };
+}
+
+function restoreReportScopeFromSnapshot(
+  currentScope: ReportRunScope,
+  snapshot: PersistedDatasetSessionSnapshot,
+): ReportRunScope {
+  const runSnapshot = findSelectedReportRunSnapshot(snapshot);
+
+  if (!runSnapshot?.runPreset) {
+    return currentScope;
+  }
+
+  return {
+    ...currentScope,
+    current: runSnapshot.periodRole === "current" ? runSnapshot.scope : currentScope.current,
+    comparison: runSnapshot.periodRole === "comparison" ? runSnapshot.scope : currentScope.comparison,
+    pageSize: runSnapshot.pageSize,
+    maxPagesPerDataset: runSnapshot.maxPagesPerDataset,
+    runPreset: runSnapshot.runPreset,
+  };
+}
+
+function findSelectedReportRunSnapshot(snapshot: PersistedDatasetSessionSnapshot) {
+  const selectedOutput = snapshot.reportOutputs[snapshot.selectedReportId];
+  const snapshotIds = [
+    selectedOutput?.currentSnapshotId,
+    selectedOutput?.comparisonSnapshotId,
+  ];
+
+  for (const snapshotId of snapshotIds) {
+    const matchingSnapshot = snapshot.reportRunSnapshots.find(
+      (runSnapshot) => runSnapshot.id === snapshotId && runSnapshot.runPreset,
+    );
+
+    if (matchingSnapshot) {
+      return matchingSnapshot;
+    }
+  }
+
+  return [...snapshot.reportRunSnapshots]
+    .reverse()
+    .find((runSnapshot) => runSnapshot.reportId === snapshot.selectedReportId && runSnapshot.runPreset);
 }
 
 function renderWriteToolPanel(toolId: WriteToolId, credentials: SessionCredentials | null) {

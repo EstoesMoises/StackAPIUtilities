@@ -111,6 +111,60 @@ describe("AppShell", () => {
     expect(within(datasetsPanel).getByRole("button", { name: "Flush stored datasets" })).toBeInTheDocument();
   });
 
+  it("uses a restored Tag Report run preset for the next live run", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(makeTagReportRunBody("Collected restored-preset tags for Tag Report.")),
+    );
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+        },
+      },
+      reportOutputs: {},
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "tag-report",
+          periodRole: "current",
+          scope: {},
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("1 dataset")).toBeInTheDocument();
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      runPreset: "deep-audit",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+    });
+  });
+
   it("persists live API datasets without credentials or run queue state", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
