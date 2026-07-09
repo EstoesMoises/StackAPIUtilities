@@ -1943,6 +1943,27 @@ select:disabled {
   }
 }
 
+@media (max-width: 900px) {
+  .tag-dashboard-header {
+    display: grid;
+  }
+
+  .tag-dashboard-grid,
+  .tag-dashboard-grid__primary,
+  .tag-status-distribution {
+    grid-template-columns: 1fr;
+  }
+
+  .tag-status-donut {
+    width: 96px;
+    height: 96px;
+  }
+
+  .tag-status-donut::after {
+    inset: 24px;
+  }
+}
+
 @media (max-width: 780px) {
   .app-topbar {
     position: static;
@@ -1999,11 +2020,6 @@ select:disabled {
     grid-template-columns: 1fr;
   }
 
-  .tag-dashboard-grid__primary,
-  .tag-status-distribution {
-    grid-template-columns: 1fr;
-  }
-
   .preset-options {
     grid-template-columns: 1fr;
   }
@@ -2015,6 +2031,20 @@ select:disabled {
   .bar-track {
     grid-column: 1 / -1;
     grid-row: 2;
+  }
+}
+
+@media (max-width: 640px) {
+  .tag-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tag-change-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tag-change-row .tag-delta {
+    justify-self: start;
   }
 }
 
