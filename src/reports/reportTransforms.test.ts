@@ -319,20 +319,77 @@ describe("report transforms", () => {
       delta: -1,
       deltaTone: "good",
     });
+    expect(summary.statusDistribution).toEqual([
+      { status: "Healthy", count: 1, comparisonCount: 1, delta: 0, deltaTone: "neutral" },
+      { status: "Needs SME coverage", count: 0, comparisonCount: 1, delta: -1, deltaTone: "good" },
+      { status: "Needs response attention", count: 1, comparisonCount: 0, delta: 1, deltaTone: "bad" },
+      { status: "Low activity", count: 0, comparisonCount: 0, delta: 0, deltaTone: "neutral" },
+    ]);
     expect(summary.comparison?.statusRows).toEqual([
       { status: "Healthy", current: 1, comparison: 1, delta: 0, deltaTone: "neutral" },
       { status: "Needs SME coverage", current: 0, comparison: 1, delta: -1, deltaTone: "good" },
       { status: "Needs response attention", current: 1, comparison: 0, delta: 1, deltaTone: "bad" },
       { status: "Low activity", current: 0, comparison: 0, delta: 0, deltaTone: "neutral" },
     ]);
-    expect(summary.comparison?.fastestChanges[0]).toMatchObject({
-      tagName: "python",
-      metric: "Unanswered questions",
-      current: 6,
-      comparison: 1,
-      delta: 5,
-      deltaTone: "bad",
-    });
+    expect(summary.comparison?.fastestChanges.map((row) => [row.metric, row.tagName, row.delta])).toEqual([
+      ["Unanswered questions", "python", 5],
+      ["SMEs", "react", 2],
+      ["Questions", "python", 2],
+      ["Questions", "react", -1],
+      ["Page views", "python", 200],
+      ["Page views", "react", -50],
+    ]);
+    expect(summary.comparison?.fastestChanges).toEqual([
+      {
+        tagName: "python",
+        metric: "Unanswered questions",
+        current: 6,
+        comparison: 1,
+        delta: 5,
+        deltaTone: "bad",
+      },
+      {
+        tagName: "react",
+        metric: "SMEs",
+        current: 2,
+        comparison: 0,
+        delta: 2,
+        deltaTone: "good",
+      },
+      {
+        tagName: "python",
+        metric: "Questions",
+        current: 10,
+        comparison: 8,
+        delta: 2,
+        deltaTone: "neutral",
+      },
+      {
+        tagName: "react",
+        metric: "Questions",
+        current: 4,
+        comparison: 5,
+        delta: -1,
+        deltaTone: "neutral",
+      },
+      {
+        tagName: "python",
+        metric: "Page views",
+        current: 900,
+        comparison: 700,
+        delta: 200,
+        deltaTone: "neutral",
+      },
+      {
+        tagName: "react",
+        metric: "Page views",
+        current: 500,
+        comparison: 550,
+        delta: -50,
+        deltaTone: "neutral",
+      },
+    ]);
+    expect(summary.comparison?.fastestChanges.every((row) => row.delta !== 0)).toBe(true);
   });
 
   it("builds Tag Health rows from live tag, question, and tag SME records", () => {

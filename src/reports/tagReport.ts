@@ -31,6 +31,7 @@ export interface TagHealthRow {
 }
 
 export type TagDashboardDeltaTone = "good" | "bad" | "neutral";
+export type TagFastestChangeMetric = "Unanswered questions" | "SMEs" | "Questions" | "Page views";
 
 export interface TagDashboardMetricCard extends MetricCard {
   delta?: number;
@@ -64,7 +65,7 @@ export interface TagHealthComparisonStatusRow {
 
 export interface TagFastestChangeRow {
   tagName: string;
-  metric: string;
+  metric: TagFastestChangeMetric;
   current: number;
   comparison: number;
   delta: number;
@@ -124,6 +125,12 @@ const TAG_HEALTH_STATUSES: TagHealthStatus[] = [
   "Low activity",
 ];
 type TagDashboardDeltaDirection = "increase-good" | "decrease-good" | "neutral";
+const TAG_FASTEST_CHANGE_PRIORITIES: Record<TagFastestChangeMetric, number> = {
+  "Unanswered questions": 1,
+  SMEs: 2,
+  Questions: 3,
+  "Page views": 4,
+};
 
 export function summarizeTags(rows: TagMetricRow[]) {
   const totalViews = rows.reduce((sum, row) => sum + metricNumber(row.totalPageViews), 0);
@@ -416,7 +423,7 @@ function buildFastestChanges(
 function pushChange(
   changes: TagFastestChangeRow[],
   tagName: string,
-  metric: string,
+  metric: TagFastestChangeMetric,
   currentValue: number,
   comparisonValue: number,
   direction: TagDashboardDeltaDirection,
@@ -436,19 +443,8 @@ function pushChange(
   });
 }
 
-function getChangePriority(metric: string): number {
-  switch (metric) {
-    case "Unanswered questions":
-      return 1;
-    case "SMEs":
-      return 2;
-    case "Questions":
-      return 3;
-    case "Page views":
-      return 4;
-    default:
-      return 5;
-  }
+function getChangePriority(metric: TagFastestChangeMetric): number {
+  return TAG_FASTEST_CHANGE_PRIORITIES[metric];
 }
 
 function getStatusDeltaTone(status: TagHealthStatus, delta: number): TagDashboardDeltaTone {
