@@ -53,6 +53,93 @@ describe("handleReportRunRequest", () => {
     });
   });
 
+  it("forwards a valid run preset into the live runner", async () => {
+    const result: LiveReportRunResult = {
+      reportId: "tag-report",
+      reportTitle: "Tag Report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 50,
+      maxPagesPerDataset: 1,
+      runPreset: "quick-sample",
+      datasets: [],
+      messages: [],
+      warnings: [],
+    };
+    const runLiveReport = vi.fn().mockResolvedValue(result);
+
+    const response = await handleReportRunRequest(
+      {
+        reportId: "tag-report",
+        credentials,
+        pageSize: 50,
+        maxPagesPerDataset: 1,
+        runPreset: "quick-sample",
+      },
+      { runLiveReport },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, result });
+    expect(runLiveReport).toHaveBeenCalledWith("tag-report", credentials, {
+      periodRole: "current",
+      scope: {},
+      pageSize: 50,
+      maxPagesPerDataset: 1,
+      runPreset: "quick-sample",
+    });
+  });
+
+  it("clears a valid but mismatched run preset when custom volume settings are submitted", async () => {
+    const result: LiveReportRunResult = {
+      reportId: "tag-report",
+      reportTitle: "Tag Report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 75,
+      maxPagesPerDataset: 2,
+      datasets: [],
+      messages: [],
+      warnings: [],
+    };
+    const runLiveReport = vi.fn().mockResolvedValue(result);
+
+    const response = await handleReportRunRequest(
+      {
+        reportId: "tag-report",
+        credentials,
+        pageSize: 75,
+        maxPagesPerDataset: 2,
+        runPreset: "quick-sample",
+      },
+      { runLiveReport },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, result });
+    expect(runLiveReport.mock.calls[0]?.[2].runPreset).toBeUndefined();
+  });
+
+  it("rejects invalid run presets before calling the runner", async () => {
+    const runLiveReport = vi.fn();
+
+    const response = await handleReportRunRequest(
+      {
+        reportId: "tag-report",
+        credentials,
+        runPreset: "tiny-preview",
+      },
+      { runLiveReport },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Report run request requires a reportId and credentials.",
+    });
+    expect(runLiveReport).not.toHaveBeenCalled();
+  });
+
   it("rejects Enterprise v3 report credentials before calling the runner", async () => {
     const runLiveReport = vi.fn();
 

@@ -22,3 +22,32 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
   await expect(page.getByRole("heading", { name: "Datasets" })).toBeVisible();
   await expect(page.getByText("No datasets loaded in this browser session.")).toBeVisible();
 });
+
+test("Tag Report exposes guided preset details", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Tag Report" })).toBeVisible();
+  const recordCoverage = page.getByRole("group", { name: "Record coverage" });
+
+  await expect(recordCoverage).toBeVisible();
+  await expect(
+    recordCoverage.locator(".preset-option-records").filter({
+      hasText: "Up to 500 each",
+    }),
+  ).toBeVisible();
+  await expect(
+    recordCoverage.locator(".preset-option-records-detail").filter({
+      hasText: "Users, tags, questions, articles",
+    }),
+  ).toHaveCount(3);
+  await expect(
+    page.getByText("SME detail is separate: up to 500 top-answerer records for each collected tag"),
+  ).toBeVisible();
+
+  await page.getByRole("radio", { name: "Deep audit" }).check();
+  await expect(
+    recordCoverage.locator(".preset-option-records").filter({
+      hasText: "Up to 2,000 each",
+    }),
+  ).toBeVisible();
+});

@@ -168,6 +168,95 @@ describe("sessionStore", () => {
     ]);
   });
 
+  it("stores curated Tag Health rows as visible live Tag Report output while retaining raw datasets", () => {
+    const warnings = [
+      {
+        reportId: "tag-report" as const,
+        code: "dataset-page-cap",
+        message: "The run reached the configured page cap for questions.",
+      },
+    ];
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "standard",
+      warnings,
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 350, tagWatchers: 12 }],
+        },
+        {
+          datasetName: "questions",
+          records: [
+            {
+              question_id: 10,
+              tags: ["python"],
+              answer_count: 1,
+              is_answered: true,
+              view_count: 50,
+              creation_date: 1_700_000_000,
+              first_answer_creation_date: 1_700_007_200,
+            },
+          ],
+        },
+        {
+          datasetName: "tagSmes",
+          records: [{ tagName: "python", user_id: 1 }],
+        },
+      ],
+    });
+
+    expect(Object.values(state.datasets)).toHaveLength(3);
+    expect(Object.values(state.datasets).find((dataset) => dataset.name === "tags")?.records).toEqual([
+      { name: "python", totalPageViews: 350, tagWatchers: 12 },
+    ]);
+    expect(state.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        health_status: "Healthy",
+        page_views: 400,
+        question_count: 1,
+        sme_count: 1,
+      }),
+    ]);
+    expect(state.reportOutputs["tag-report"]?.records[0]).not.toHaveProperty("datasetName");
+    expect(state.reportOutputs["tag-report"]?.warnings).toEqual(warnings);
+    expect(state.reportRunSnapshots[0]?.warnings).toEqual(warnings);
+  });
+
+  it("persists the selected run preset on live snapshots", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python" }],
+        },
+      ],
+    });
+
+    expect(state.reportRunSnapshots[0]).toEqual(
+      expect.objectContaining({
+        reportId: "tag-report",
+        pageSize: 100,
+        maxPagesPerDataset: 20,
+        runPreset: "deep-audit",
+      }),
+    );
+  });
+
   it("stores current and comparison live snapshots without overwriting dataset names", () => {
     const current = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",
@@ -212,6 +301,66 @@ describe("sessionStore", () => {
     expect(comparison.reportOutputs["inactive-users"]?.comparisonRecords).toEqual([
       { datasetName: "users", user_id: 2, display_name: "Grace" },
     ]);
+  });
+
+  it("preserves visible current and comparison warnings while replacing rerun period warnings", () => {
+    const currentWarning = {
+      reportId: "tag-report" as const,
+      code: "dataset-page-cap",
+      message: "Current questions reached the configured page cap.",
+    };
+    const comparisonWarning = {
+      reportId: "tag-report" as const,
+      code: "dataset-page-cap",
+      message: "Comparison questions reached the configured page cap.",
+    };
+    const currentWithWarning = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [currentWarning],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 100 }] }],
+    });
+    const comparisonWithoutWarning = sessionReducer(currentWithWarning, {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 90 }] }],
+    });
+    const comparisonWithWarning = sessionReducer(comparisonWithoutWarning, {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "comparison",
+      scope: { startDate: "2026-04-01", endDate: "2026-04-30" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [comparisonWarning, comparisonWarning],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 80 }] }],
+    });
+    const currentRerunWithoutWarning = sessionReducer(comparisonWithWarning, {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: { startDate: "2026-07-01", endDate: "2026-07-31" },
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      warnings: [],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 120 }] }],
+    });
+
+    expect(comparisonWithoutWarning.reportOutputs["tag-report"]?.warnings).toEqual([currentWarning]);
+    expect(comparisonWithWarning.reportOutputs["tag-report"]?.warnings).toEqual([
+      currentWarning,
+      comparisonWarning,
+    ]);
+    expect(currentRerunWithoutWarning.reportOutputs["tag-report"]?.warnings).toEqual([comparisonWarning]);
   });
 
   it("removes a managed dataset from the active session", () => {

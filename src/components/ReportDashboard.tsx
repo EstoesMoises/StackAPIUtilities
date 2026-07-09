@@ -1,12 +1,17 @@
 import type { ReactNode } from "react";
 import { formatPeriodLabel } from "../domain/reportScope";
-import type { PeriodScope, ReportId } from "../domain/types";
+import type { PeriodScope, ReportId, ReportWarning } from "../domain/types";
 import { summarizeCommunityMembers, type CommunityMemberRow } from "../reports/communityMembers";
 import { summarizeDataExport } from "../reports/dataExport";
 import { buildInteractionSummary, type InteractionEdge } from "../reports/interactions";
 import { summarizeInactiveUsers, type InactiveUserRow } from "../reports/inactiveUsers";
 import type { MetricCard } from "../reports/reportModels";
-import { summarizeTags, type TagMetricRow } from "../reports/tagReport";
+import {
+  buildTagHealthRows,
+  buildTagHealthRowsFromLiveRecords,
+  summarizeTagHealthRows,
+  type TagHealthRow,
+} from "../reports/tagReport";
 import { summarizeUsers, type UserMetricRow } from "../reports/userReport";
 import { DashboardCards } from "./DashboardCards";
 import { BarList } from "./charts/BarList";
@@ -19,6 +24,7 @@ interface ReportDashboardProps {
   currentScope?: PeriodScope;
   comparisonScope?: PeriodScope;
   outputSource?: "live-api" | "upload";
+  warnings?: ReportWarning[];
 }
 
 export function ReportDashboard({
@@ -28,9 +34,10 @@ export function ReportDashboard({
   currentScope,
   comparisonScope,
   outputSource,
+  warnings = [],
 }: ReportDashboardProps) {
   const comparisonSection =
-    comparisonRecords === undefined
+    reportId === "tag-report" || comparisonRecords === undefined
       ? undefined
       : renderComparisonDashboard({
           currentRecords: records,
@@ -41,9 +48,7 @@ export function ReportDashboard({
 
   if (records.length === 0 && comparisonRecords === undefined) {
     return (
-      <div className="dashboard-summary">
-        <DashboardCards cards={[]} />
-      </div>
+      <DashboardLayout cards={[]} warnings={warnings} />
     );
   }
 
@@ -51,8 +56,57 @@ export function ReportDashboard({
     const liveInteractions = records.filter((record) => record.datasetName === "interactions");
 
     if (liveInteractions.length > 0) {
-      return renderInteractionsDashboard(liveInteractions as unknown as InteractionEdge[], comparisonSection);
+      return renderInteractionsDashboard(liveInteractions as unknown as InteractionEdge[], comparisonSection, warnings);
     }
+  }
+
+  if (reportId === "tag-report") {
+    const tagHealthRows = normalizeTagHealthRows(records, outputSource);
+    const tagHealthComparisonRows =
+      comparisonRecords === undefined ? undefined : normalizeTagHealthRows(comparisonRecords, outputSource);
+    const tagHealthComparisonSection =
+      tagHealthComparisonRows === undefined
+        ? undefined
+        : renderComparisonDashboard({
+            currentRecords: tagHealthRows as unknown as Record<string, unknown>[],
+            comparisonRecords: tagHealthComparisonRows as unknown as Record<string, unknown>[],
+            currentScope,
+            comparisonScope,
+            groupColumnLabel: "Health status",
+            getGroup: getTagHealthComparisonGroup,
+          });
+    const summary = summarizeTagHealthRows(tagHealthRows);
+
+    return (
+      <DashboardLayout cards={summary.metricCards} comparisonSection={tagHealthComparisonSection} warnings={warnings}>
+        <DashboardSection title="Top tags by page views">
+          <BarList
+            rows={summary.topTagsByViews.map((row) => ({
+              label: row.tag_name,
+              value: finiteNumber(row.page_views),
+            }))}
+          />
+        </DashboardSection>
+        <DashboardSection title="Tags needing SME coverage">
+          <BarList
+            rows={summary.tagsNeedingSmeCoverage.map((row) => ({
+              label: row.tag_name,
+              value: finiteNumber(row.question_count),
+            }))}
+            emptyMessage="No tags need SME coverage."
+          />
+        </DashboardSection>
+        <DashboardSection title="Tags needing response attention">
+          <BarList
+            rows={summary.tagsNeedingResponse.map((row) => ({
+              label: row.tag_name,
+              value: finiteNumber(row.unanswered_questions) || finiteNumber(row.median_first_answer_hours),
+            }))}
+            emptyMessage="No tags need response attention."
+          />
+        </DashboardSection>
+      </DashboardLayout>
+    );
   }
 
   if (outputSource === "live-api") {
@@ -65,26 +119,10 @@ export function ReportDashboard({
           { label: "Live Datasets", value: Object.keys(datasetCounts).length },
         ]}
         comparisonSection={comparisonSection}
+        warnings={warnings}
       >
         <DashboardSection title="Live datasets">
           <BarList rows={toBarRows(datasetCounts)} />
-        </DashboardSection>
-      </DashboardLayout>
-    );
-  }
-
-  if (reportId === "tag-report") {
-    const summary = summarizeTags(records as unknown as TagMetricRow[]);
-
-    return (
-      <DashboardLayout cards={summary.metricCards} comparisonSection={comparisonSection}>
-        <DashboardSection title="Top tags by page views">
-          <BarList
-            rows={summary.topTagsByViews.map((row) => ({
-              label: row.tagName,
-              value: finiteNumber(row.totalPageViews),
-            }))}
-          />
         </DashboardSection>
       </DashboardLayout>
     );
@@ -101,6 +139,7 @@ export function ReportDashboard({
           { label: "Departments", value: Object.keys(summary.departmentCounts).length },
         ]}
         comparisonSection={comparisonSection}
+        warnings={warnings}
       >
         <DashboardSection title="Account status distribution">
           <BarList rows={toBarRows(summary.accountStatusCounts)} />
@@ -129,6 +168,7 @@ export function ReportDashboard({
           { label: "High Reputation", value: summary.highReputationInactiveUsers },
         ]}
         comparisonSection={comparisonSection}
+        warnings={warnings}
       >
         <DashboardSection title="Inactive user risk">
           <BarList
@@ -144,7 +184,7 @@ export function ReportDashboard({
   }
 
   if (reportId === "interactions") {
-    return renderInteractionsDashboard(records as unknown as InteractionEdge[], comparisonSection);
+    return renderInteractionsDashboard(records as unknown as InteractionEdge[], comparisonSection, warnings);
   }
 
   if (reportId === "community-members") {
@@ -158,6 +198,7 @@ export function ReportDashboard({
           { label: "Departments", value: Object.keys(summary.departmentCounts).length },
         ]}
         comparisonSection={comparisonSection}
+        warnings={warnings}
       >
         <DashboardSection title="Department distribution">
           <BarList rows={toBarRows(summary.departmentCounts)} />
@@ -173,6 +214,7 @@ export function ReportDashboard({
       <DashboardLayout
         cards={[{ label: "Imported Records", value: records.length }]}
         comparisonSection={comparisonSection}
+        warnings={warnings}
       >
         <DashboardSection title="Dataset records">
           <BarList rows={toBarRows(summary.datasetCounts)} />
@@ -185,11 +227,16 @@ export function ReportDashboard({
     <DashboardLayout
       cards={[{ label: "Records", value: records.length }]}
       comparisonSection={comparisonSection}
+      warnings={warnings}
     />
   );
 }
 
-function renderInteractionsDashboard(records: InteractionEdge[], comparisonSection?: ReactNode) {
+function renderInteractionsDashboard(
+  records: InteractionEdge[],
+  comparisonSection?: ReactNode,
+  warnings?: ReportWarning[],
+) {
   const summary = buildInteractionSummary(records);
 
   return (
@@ -200,6 +247,7 @@ function renderInteractionsDashboard(records: InteractionEdge[], comparisonSecti
         { label: "Edges", value: summary.edges.length },
       ]}
       comparisonSection={comparisonSection}
+      warnings={warnings}
     >
       <DashboardSection title="Top interactions">
         <InteractionMatrix edges={summary.topEdges} />
@@ -211,17 +259,40 @@ function renderInteractionsDashboard(records: InteractionEdge[], comparisonSecti
 function DashboardLayout({
   cards,
   comparisonSection,
+  warnings,
   children,
 }: {
   cards: MetricCard[];
   comparisonSection?: ReactNode;
+  warnings?: ReportWarning[];
   children?: ReactNode;
 }) {
   return (
     <div className="dashboard-summary">
+      <DashboardWarnings warnings={warnings ?? []} />
       <DashboardCards cards={cards} />
       {comparisonSection}
       {children}
+    </div>
+  );
+}
+
+function DashboardWarnings({ warnings }: { warnings: ReportWarning[] }) {
+  if (warnings.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="dashboard-warnings s-notice s-notice__warning" role="alert" aria-label="Report warnings">
+      <strong>Report warnings</strong>
+      <ul>
+        {warnings.map((warning, index) => (
+          <li key={`${warning.code}-${index}`}>
+            <span className="dashboard-warning-code">{warning.code}</span>
+            <span>{warning.message}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -251,11 +322,40 @@ function countBy<T>(rows: T[], getKey: (row: T) => string): Record<string, numbe
   }, {});
 }
 
+function normalizeTagHealthRows(
+  records: Record<string, unknown>[],
+  outputSource: "live-api" | "upload" | undefined,
+): TagHealthRow[] {
+  if (records.length === 0) {
+    return [];
+  }
+
+  if (records.every(isTagHealthRow)) {
+    return records as unknown as TagHealthRow[];
+  }
+
+  if (outputSource === "live-api" && records.some((record) => typeof record.datasetName === "string")) {
+    return buildTagHealthRowsFromLiveRecords(records);
+  }
+
+  return buildTagHealthRows(records);
+}
+
+function isTagHealthRow(record: Record<string, unknown>): boolean {
+  return (
+    typeof record.tag_name === "string" &&
+    typeof record.health_status === "string" &&
+    typeof record.page_views === "number"
+  );
+}
+
 interface ComparisonDashboardInput {
   currentRecords: Record<string, unknown>[];
   comparisonRecords: Record<string, unknown>[];
   currentScope?: PeriodScope;
   comparisonScope?: PeriodScope;
+  groupColumnLabel?: string;
+  getGroup?: (record: Record<string, unknown>) => string;
 }
 
 function renderComparisonDashboard({
@@ -263,8 +363,10 @@ function renderComparisonDashboard({
   comparisonRecords,
   currentScope,
   comparisonScope,
+  groupColumnLabel = "Dataset",
+  getGroup = getComparisonGroup,
 }: ComparisonDashboardInput) {
-  const rows = buildComparisonRows(currentRecords, comparisonRecords);
+  const rows = buildComparisonRows(currentRecords, comparisonRecords, getGroup);
 
   return (
     <DashboardSection title="Period comparison">
@@ -289,7 +391,7 @@ function renderComparisonDashboard({
         <table className="comparison-table">
           <thead>
             <tr>
-              <th scope="col">Dataset</th>
+              <th scope="col">{groupColumnLabel}</th>
               <th scope="col">Current</th>
               <th scope="col">Comparison</th>
               <th scope="col">Change</th>
@@ -314,9 +416,10 @@ function renderComparisonDashboard({
 function buildComparisonRows(
   currentRecords: Record<string, unknown>[],
   comparisonRecords: Record<string, unknown>[],
+  getGroup: (record: Record<string, unknown>) => string,
 ) {
-  const currentCounts = countBy(currentRecords, getComparisonGroup);
-  const comparisonCounts = countBy(comparisonRecords, getComparisonGroup);
+  const currentCounts = countBy(currentRecords, getGroup);
+  const comparisonCounts = countBy(comparisonRecords, getGroup);
   const labels = new Set([...Object.keys(currentCounts), ...Object.keys(comparisonCounts)]);
 
   return [...labels]
@@ -336,6 +439,10 @@ function buildComparisonRows(
 
 function getComparisonGroup(record: Record<string, unknown>): string {
   return String(record.datasetName ?? "Records");
+}
+
+function getTagHealthComparisonGroup(record: Record<string, unknown>): string {
+  return String(record.health_status ?? "Unknown status");
 }
 
 function formatDelta(delta: number): string {

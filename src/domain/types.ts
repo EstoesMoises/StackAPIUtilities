@@ -13,11 +13,14 @@ export interface PeriodScope {
   endDate?: string;
 }
 
+export type ReportRunPresetId = "quick-sample" | "standard" | "deep-audit";
+
 export interface ReportRunScope {
   current: PeriodScope;
   comparison?: PeriodScope;
   pageSize: number;
   maxPagesPerDataset: number;
+  runPreset?: ReportRunPresetId;
 }
 
 export type DatasetName =
@@ -101,6 +104,7 @@ export interface ReportRunSnapshot {
   scope: PeriodScope;
   pageSize: number;
   maxPagesPerDataset: number;
+  runPreset?: ReportRunPresetId;
   loadedAt: string;
   datasetIds: string[];
   warnings: ReportWarning[];
@@ -126,6 +130,14 @@ export interface RunQueueItem {
   reportId: ReportId;
   status: "queued" | "running" | "succeeded" | "failed";
   message: string;
+}
+
+export interface ReportRunProgress {
+  reportTitle: string;
+  status: "idle" | "running" | "succeeded" | "failed";
+  currentStage: string;
+  completedStages: string[];
+  totalStages: number;
 }
 
 export interface SessionState {

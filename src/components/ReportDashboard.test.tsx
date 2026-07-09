@@ -45,4 +45,139 @@ describe("ReportDashboard", () => {
 
     expect(screen.queryByText("Period comparison")).not.toBeInTheDocument();
   });
+
+  it("renders warnings and Tag Health dashboard sections", () => {
+    render(
+      <ReportDashboard
+        reportId="tag-report"
+        outputSource="live-api"
+        records={[
+          {
+            tag_name: "python",
+            health_status: "Healthy",
+            page_views: 900,
+            question_count: 2,
+            answer_count: 3,
+            sme_count: 1,
+            watcher_count: 8,
+            unanswered_questions: 0,
+            median_first_answer_hours: 2,
+            recommended_action: "Maintain current coverage and response habits.",
+          },
+          {
+            tag_name: "react",
+            health_status: "Needs SME coverage",
+            page_views: 700,
+            question_count: 4,
+            answer_count: 1,
+            sme_count: 0,
+            watcher_count: 12,
+            unanswered_questions: 0,
+            median_first_answer_hours: 4,
+            recommended_action: "Assign or confirm SMEs for this tag.",
+          },
+          {
+            tag_name: "java",
+            health_status: "Needs response attention",
+            page_views: 600,
+            question_count: 5,
+            answer_count: 2,
+            sme_count: 2,
+            watcher_count: 10,
+            unanswered_questions: 3,
+            median_first_answer_hours: 30,
+            recommended_action: "Review unanswered questions and response time for this tag.",
+          },
+        ]}
+        warnings={[
+          {
+            reportId: "tag-report",
+            code: "dataset-page-cap",
+            message: "Questions hit the configured page cap; results may be partial.",
+          },
+        ]}
+      />,
+    );
+
+    const warningArea = screen.getByRole("alert", { name: "Report warnings" });
+    expect(within(warningArea).getByText("dataset-page-cap")).toBeInTheDocument();
+    expect(
+      within(warningArea).getByText("Questions hit the configured page cap; results may be partial."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Tags Covered")).toBeInTheDocument();
+    expect(screen.getByText("Healthy Tags")).toBeInTheDocument();
+    expect(screen.getByText("Response Attention")).toBeInTheDocument();
+    expect(screen.getByText("SME Coverage")).toBeInTheDocument();
+    expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
+    expect(screen.getByText("Tags needing SME coverage")).toBeInTheDocument();
+    expect(screen.getByText("Tags needing response attention")).toBeInTheDocument();
+    expect(screen.getByLabelText("python: 900")).toBeInTheDocument();
+    expect(screen.getByLabelText("react: 4")).toBeInTheDocument();
+    expect(screen.getByLabelText("java: 3")).toBeInTheDocument();
+  });
+
+  it("compares curated Tag Health rows by health status", () => {
+    render(
+      <ReportDashboard
+        reportId="tag-report"
+        records={[
+          tagHealthRecord("python", "Healthy"),
+          tagHealthRecord("react", "Needs SME coverage"),
+          tagHealthRecord("typescript", "Needs SME coverage"),
+        ]}
+        comparisonRecords={[
+          tagHealthRecord("python", "Healthy"),
+          tagHealthRecord("javascript", "Healthy"),
+          tagHealthRecord("java", "Needs response attention"),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Period comparison")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Health status" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Dataset" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("row", { name: /Records/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /Needs SME coverage 2 0 \+2/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /Needs response attention 0 1 -1/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /Healthy 1 2 -1/ })).toBeInTheDocument();
+  });
+
+  it("normalizes imported Tag Metric rows into Tag Health dashboard rows", () => {
+    render(
+      <ReportDashboard
+        reportId="tag-report"
+        records={[
+          {
+            tagName: "typescript",
+            totalPageViews: 450,
+            questionCount: 8,
+            answerCount: 4,
+            totalSmes: 0,
+            questionsNoAnswers: 0,
+            medianFirstAnswerHours: 6,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Tags Covered")).toBeInTheDocument();
+    expect(screen.getByText("Tags needing SME coverage")).toBeInTheDocument();
+    expect(screen.getByLabelText("typescript: 450")).toBeInTheDocument();
+    expect(screen.getByLabelText("typescript: 8")).toBeInTheDocument();
+  });
 });
+
+function tagHealthRecord(tagName: string, healthStatus: string) {
+  return {
+    tag_name: tagName,
+    health_status: healthStatus,
+    page_views: 100,
+    question_count: 1,
+    answer_count: 1,
+    sme_count: healthStatus === "Needs SME coverage" ? 0 : 1,
+    watcher_count: 1,
+    unanswered_questions: healthStatus === "Needs response attention" ? 1 : 0,
+    median_first_answer_hours: 2,
+    recommended_action: "Maintain current coverage and response habits.",
+  };
+}

@@ -36,6 +36,46 @@ describe("StackApiV3Client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("returns pagination metadata when max pages leaves more v3 data available", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ items: [{ id: "a" }], totalPages: 3 }), { status: 200 }),
+    );
+
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: fetchMock,
+    });
+
+    await expect(client.getPagedResult("/tags", {}, { maxPages: 1 })).resolves.toEqual({
+      items: [{ id: "a" }],
+      pageCount: 1,
+      reachedMaxPages: true,
+      hasMore: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats missing totalPages as capped when max pages stops a non-empty v3 result", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ items: [{ id: "a" }] }), { status: 200 }),
+    );
+
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: fetchMock,
+    });
+
+    await expect(client.getPagedResult("/tags", {}, { maxPages: 1 })).resolves.toEqual({
+      items: [{ id: "a" }],
+      pageCount: 1,
+      reachedMaxPages: true,
+      hasMore: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("calls the throttle callback when token bucket is low", async () => {
     const wait = vi.fn();
     const fetchMock = vi.fn().mockResolvedValue(

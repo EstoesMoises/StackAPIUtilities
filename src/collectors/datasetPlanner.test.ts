@@ -50,24 +50,36 @@ describe("planDatasetsForReports", () => {
 describe("collectDataset", () => {
   it("collects v2 datasets with the expected endpoint and pagesize", async () => {
     const clients = createMockClients();
-    await expect(collectDataset("users", clients)).resolves.toEqual([{ id: 1 }]);
-    expect(clients.v2.getPagedItems).toHaveBeenCalledWith("/users", { pagesize: "100" });
+    await expect(collectDataset("users", clients)).resolves.toEqual({
+      records: [{ id: 1 }],
+      pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+    });
+    expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/users", { pagesize: "100" });
   });
 
   it("collects v3 datasets with the expected endpoint and pagesize", async () => {
     const clients = createMockClients();
-    await expect(collectDataset("communities", clients)).resolves.toEqual([{ id: "community" }]);
-    expect(clients.v3.getPagedItems).toHaveBeenCalledWith("/communities", { pagesize: "100" });
+    await expect(collectDataset("communities", clients)).resolves.toEqual({
+      records: [{ id: "community" }],
+      pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+    });
+    expect(clients.v3.getPagedResult).toHaveBeenCalledWith("/communities", { pagesize: "100" });
   });
 
   it("collects answer and comment export datasets through v2 endpoints", async () => {
     const clients = createMockClients();
 
-    await expect(collectDataset("answers", clients)).resolves.toEqual([{ id: 1 }]);
-    await expect(collectDataset("comments", clients)).resolves.toEqual([{ id: 1 }]);
+    await expect(collectDataset("answers", clients)).resolves.toEqual({
+      records: [{ id: 1 }],
+      pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+    });
+    await expect(collectDataset("comments", clients)).resolves.toEqual({
+      records: [{ id: 1 }],
+      pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+    });
 
-    expect(clients.v2.getPagedItems).toHaveBeenCalledWith("/answers", { pagesize: "100" });
-    expect(clients.v2.getPagedItems).toHaveBeenCalledWith("/comments", { pagesize: "100" });
+    expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/answers", { pagesize: "100" });
+    expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/comments", { pagesize: "100" });
   });
 
   it("collects tag SME records from previously collected tags", async () => {
@@ -79,15 +91,18 @@ describe("collectDataset", () => {
           tags: [{ name: "python" }, { tagName: "c#" }],
         },
       }),
-    ).resolves.toEqual([
-      { tagName: "python", id: 1 },
-      { tagName: "c#", id: 1 },
-    ]);
+    ).resolves.toEqual({
+      records: [
+        { tagName: "python", id: 1 },
+        { tagName: "c#", id: 1 },
+      ],
+      pagination: { pageCount: 2, reachedMaxPages: false, hasMore: false },
+    });
 
-    expect(clients.v2.getPagedItems).toHaveBeenCalledWith("/tags/python/top-answerers/all_time", {
+    expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/tags/python/top-answerers/all_time", {
       pagesize: "100",
     });
-    expect(clients.v2.getPagedItems).toHaveBeenCalledWith("/tags/c%23/top-answerers/all_time", {
+    expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/tags/c%23/top-answerers/all_time", {
       pagesize: "100",
     });
   });
@@ -101,9 +116,12 @@ describe("collectDataset", () => {
           users: [{ user_id: 1 }, { userId: 2 }],
         },
       }),
-    ).resolves.toEqual([{ id: 1 }]);
+    ).resolves.toEqual({
+      records: [{ id: 1 }],
+      pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+    });
 
-    expect(clients.v2.getPagedItems).toHaveBeenCalledWith("/users/1;2/reputation-history", {
+    expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/users/1;2/reputation-history", {
       pagesize: "100",
     });
   });
@@ -119,9 +137,21 @@ describe("collectDataset", () => {
 function createMockClients() {
   return {
     v2: {
+      getPagedResult: vi.fn().mockResolvedValue({
+        items: [{ id: 1 }],
+        pageCount: 1,
+        reachedMaxPages: false,
+        hasMore: false,
+      }),
       getPagedItems: vi.fn().mockResolvedValue([{ id: 1 }]),
     },
     v3: {
+      getPagedResult: vi.fn().mockResolvedValue({
+        items: [{ id: "community" }],
+        pageCount: 1,
+        reachedMaxPages: false,
+        hasMore: false,
+      }),
       getPagedItems: vi.fn().mockResolvedValue([{ id: "community" }]),
     },
   };

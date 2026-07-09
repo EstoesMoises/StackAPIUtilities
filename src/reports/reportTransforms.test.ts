@@ -3,7 +3,13 @@ import { summarizeCommunityMembers } from "./communityMembers";
 import { summarizeDataExport } from "./dataExport";
 import { summarizeInactiveUsers } from "./inactiveUsers";
 import { buildInteractionSummary } from "./interactions";
-import { summarizeTags, type TagMetricRow } from "./tagReport";
+import {
+  buildTagHealthRows,
+  buildTagHealthRowsFromLiveRecords,
+  summarizeTagHealthRows,
+  summarizeTags,
+  type TagMetricRow,
+} from "./tagReport";
 import { summarizeUsers } from "./userReport";
 
 describe("report transforms", () => {
@@ -37,6 +43,198 @@ describe("report transforms", () => {
     summarizeTags(rows);
 
     expect(rows.map((row) => row.tagName)).toEqual(["r", "python"]);
+  });
+
+  it("builds Tag Health rows with conservative health statuses and actions", () => {
+    const healthRows = buildTagHealthRows([
+      {
+        tagName: "python",
+        totalPageViews: 500,
+        tagWatchers: 20,
+        totalSmes: 0,
+        questionCount: 8,
+        answerCount: 11,
+        questionsNoAnswers: 1,
+        medianFirstAnswerHours: 12,
+      },
+      {
+        tagName: "old-product",
+        totalPageViews: 4,
+        tagWatchers: 0,
+        totalSmes: 0,
+        questionCount: 0,
+        answerCount: 0,
+        questionsNoAnswers: 0,
+      },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({
+      tag_name: "python",
+      health_status: "Needs SME coverage",
+      page_views: 500,
+      question_count: 8,
+      answer_count: 11,
+      sme_count: 0,
+      watcher_count: 20,
+      unanswered_questions: 1,
+      median_first_answer_hours: 12,
+      recommended_action: "Assign or confirm SMEs for this tag.",
+    });
+    expect(healthRows[1]).toMatchObject({
+      tag_name: "old-product",
+      health_status: "Low activity",
+      recommended_action: "Review whether this tag is still useful or should be consolidated.",
+    });
+  });
+
+  it("calls out meaningful tag activity without SMEs even when there are no questions", () => {
+    const [healthRow] = buildTagHealthRows([
+      {
+        tagName: "platform-api",
+        totalPageViews: 250,
+        tagWatchers: 12,
+        totalSmes: 0,
+        questionCount: 0,
+        answerCount: 0,
+      },
+    ]);
+
+    expect(healthRow).toMatchObject({
+      tag_name: "platform-api",
+      health_status: "Needs SME coverage",
+      recommended_action: "Assign or confirm SMEs for this tag.",
+    });
+  });
+
+  it("uses medianTimeToFirstAnswerHours as a slow-response signal", () => {
+    const [healthRow] = buildTagHealthRows([
+      {
+        tagName: "python",
+        totalPageViews: 100,
+        tagWatchers: 8,
+        totalSmes: 1,
+        questionCount: 4,
+        answerCount: 5,
+        medianTimeToFirstAnswerHours: 36,
+      },
+    ]);
+
+    expect(healthRow).toMatchObject({
+      health_status: "Needs response attention",
+      median_first_answer_hours: 36,
+      recommended_action: "Review unanswered questions and response time for this tag.",
+    });
+  });
+
+  it("summarizes Tag Health rows for dashboard-ready metrics and slices", () => {
+    const summary = summarizeTagHealthRows([
+      {
+        tag_name: "python",
+        health_status: "Needs response attention",
+        page_views: 500,
+        question_count: 8,
+        answer_count: 11,
+        sme_count: 2,
+        watcher_count: 20,
+        unanswered_questions: 3,
+        median_first_answer_hours: 36,
+        recommended_action: "Review unanswered questions and response time for this tag.",
+      },
+      {
+        tag_name: "r",
+        health_status: "Healthy",
+        page_views: 250,
+        question_count: 5,
+        answer_count: 8,
+        sme_count: 1,
+        watcher_count: 12,
+        unanswered_questions: 0,
+        median_first_answer_hours: 5,
+        recommended_action: "Maintain current coverage and response habits.",
+      },
+      {
+        tag_name: "excel",
+        health_status: "Needs SME coverage",
+        page_views: 150,
+        question_count: 3,
+        answer_count: 4,
+        sme_count: 0,
+        watcher_count: 6,
+        unanswered_questions: 0,
+        median_first_answer_hours: 9,
+        recommended_action: "Assign or confirm SMEs for this tag.",
+      },
+    ]);
+
+    expect(summary.metricCards).toContainEqual({ label: "Tags Covered", value: 3 });
+    expect(summary.metricCards).toContainEqual({ label: "Response Attention", value: 1 });
+    expect(summary.tagsNeedingResponse.map((row) => row.tag_name)).toEqual(["python"]);
+    expect(summary.tagsNeedingSmeCoverage.map((row) => row.tag_name)).toEqual(["excel"]);
+    expect(summary.topTagsByViews.map((row) => row.tag_name)).toEqual(["python", "r", "excel"]);
+  });
+
+  it("builds Tag Health rows from live tag, question, and tag SME records", () => {
+    const healthRows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "python", count: 4 },
+      { datasetName: "questions", question_id: 1, tags: ["python"], answer_count: 0, view_count: 30 },
+      { datasetName: "questions", question_id: 2, tags: ["python"], answer_count: 2, view_count: 50 },
+      { datasetName: "tagSmes", tagName: "python", user_id: 96, score: 12 },
+    ]);
+
+    expect(healthRows).toEqual([
+      {
+        tag_name: "python",
+        health_status: "Needs response attention",
+        page_views: 80,
+        question_count: 2,
+        answer_count: 2,
+        sme_count: 1,
+        watcher_count: 0,
+        unanswered_questions: 1,
+        median_first_answer_hours: 0,
+        recommended_action: "Review unanswered questions and response time for this tag.",
+      },
+    ]);
+  });
+
+  it("counts live questions with answers but is_answered false as needing response attention", () => {
+    const healthRows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "python" },
+      { datasetName: "questions", question_id: 1, tags: ["python"], answer_count: 2, is_answered: false, view_count: 45 },
+      { datasetName: "tagSmes", tagName: "python", user_id: 96, score: 12 },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({
+      tag_name: "python",
+      health_status: "Needs response attention",
+      answer_count: 2,
+      unanswered_questions: 1,
+      recommended_action: "Review unanswered questions and response time for this tag.",
+    });
+  });
+
+  it("uses live first_answer_date values when calculating Tag Health response time", () => {
+    const healthRows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "python" },
+      {
+        datasetName: "questions",
+        question_id: 1,
+        tags: ["python"],
+        answer_count: 1,
+        is_answered: true,
+        creation_date: 1_704_067_200,
+        first_answer_date: 1_704_240_000,
+        view_count: 45,
+      },
+      { datasetName: "tagSmes", tagName: "python", user_id: 96, score: 12 },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({
+      tag_name: "python",
+      health_status: "Needs response attention",
+      median_first_answer_hours: 48,
+      recommended_action: "Review unanswered questions and response time for this tag.",
+    });
   });
 
   it("summarizes user metrics", () => {

@@ -16,7 +16,7 @@ import { createDatasetSessionSnapshot } from "./domain/datasetPersistence";
 import { DEFAULT_REPORT_RUN_SCOPE } from "./domain/reportScope";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
-import type { ReportId, RunPeriodRole, RunQueueItem, SessionCredentials } from "./domain/types";
+import type { ReportId, ReportRunProgress, RunPeriodRole, RunQueueItem, SessionCredentials } from "./domain/types";
 import type { ReportRunResponseBody } from "./server/reportRunApi";
 import {
   clearPersistedDatasetSession,
@@ -24,11 +24,19 @@ import {
   savePersistedDatasetSession,
 } from "./utils/browserDatasetStorage";
 
+const REPORT_RUN_STAGES = [
+  "Validate credentials",
+  "Plan required datasets",
+  "Collecting live API datasets",
+  "Build report output",
+] as const;
+
 export function App() {
   const [state, dispatch] = useReducer(sessionReducer, undefined, createInitialSessionState);
   const [activePanel, setActivePanel] = useState<AppPanel>("report");
   const [selectedWriteToolId, setSelectedWriteToolId] = useState<WriteToolId>("user-group-sync");
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
+  const [runProgress, setRunProgress] = useState<ReportRunProgress | undefined>();
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
   const [datasetStorageReady, setDatasetStorageReady] = useState(false);
   const [datasetStorageWarning, setDatasetStorageWarning] = useState<string | null>(null);
@@ -43,6 +51,7 @@ export function App() {
   });
   const suppressNextEmptyClearRef = useRef(false);
   const explicitEmptyRevisionRef = useRef(0);
+  const activeRunIdRef = useRef(0);
 
   function markDatasetContentChanged() {
     datasetContentRevisionRef.current += 1;
@@ -164,6 +173,7 @@ export function App() {
 
   function selectReport(reportId: ReportId) {
     markReportSelectionChanged(reportId);
+    clearActiveRunProgress();
     dispatch({ type: "report/select", reportId });
     setActivePanel("report");
   }
@@ -176,6 +186,7 @@ export function App() {
   async function queueSelectedReportRun(periodRole: RunPeriodRole = "current") {
     const report = reportRegistry.find((candidate) => candidate.id === state.selectedReportId)!;
     if (!state.credentials) {
+      clearActiveRunProgress();
       setRunQueue([
         {
           id: `${state.selectedReportId}-missing-credentials`,
@@ -185,11 +196,12 @@ export function App() {
         },
       ]);
       setActivePanel("credentials");
-      return;
+      return false;
     }
 
     const validation = validateCredentialsForReport(state.selectedReportId, state.credentials);
     if (!validation.valid) {
+      clearActiveRunProgress();
       setRunQueue(
         validation.messages.map((message, index) => ({
           id: `${state.selectedReportId}-credential-error-${index}`,
@@ -199,7 +211,7 @@ export function App() {
         })),
       );
       setActivePanel("credentials");
-      return;
+      return false;
     }
 
     setRunQueue([
@@ -210,9 +222,12 @@ export function App() {
         message: `Running ${report.title} ${periodRole} period live API collection...`,
       },
     ]);
+    const runId = startActiveRun();
+    setRunProgress(createRunningProgress(report.title));
 
     try {
       const periodScope = periodRole === "comparison" ? reportScope.comparison ?? {} : reportScope.current;
+      const runPreset = state.selectedReportId === "tag-report" ? reportScope.runPreset : undefined;
       const response = await fetch("/api/reports/run", {
         method: "POST",
         headers: {
@@ -225,12 +240,17 @@ export function App() {
           scope: periodScope,
           pageSize: reportScope.pageSize,
           maxPagesPerDataset: reportScope.maxPagesPerDataset,
+          runPreset,
         }),
       });
       const body = (await response.json()) as ReportRunResponseBody;
 
       if (!body.ok) {
         throw new Error(body.error);
+      }
+
+      if (!isActiveRun(runId)) {
+        return false;
       }
 
       const result = body.result;
@@ -242,9 +262,11 @@ export function App() {
         scope: result.scope,
         pageSize: result.pageSize,
         maxPagesPerDataset: result.maxPagesPerDataset,
+        runPreset: result.runPreset,
         warnings: result.warnings,
         datasets: result.datasets,
       });
+      setRunProgress(createSucceededProgress(report.title));
       setRunQueue([
         ...result.messages.map((message, index) => ({
           id: `${state.selectedReportId}-live-dataset-${index}`,
@@ -260,7 +282,13 @@ export function App() {
         },
       ]);
       setActivePanel("report");
+      return true;
     } catch (error) {
+      if (!isActiveRun(runId)) {
+        return false;
+      }
+
+      setRunProgress(createFailedProgress(report.title));
       setRunQueue([
         {
           id: `${state.selectedReportId}-live-failed`,
@@ -269,12 +297,13 @@ export function App() {
           message: getLiveRunErrorMessage(error, report.title),
         },
       ]);
+      return true;
     }
   }
 
   async function queueBothReportRuns() {
-    await queueSelectedReportRun("current");
-    if (reportScope.comparison) {
+    const currentRunHandled = await queueSelectedReportRun("current");
+    if (currentRunHandled && reportScope.comparison) {
       await queueSelectedReportRun("comparison");
     }
   }
@@ -283,6 +312,7 @@ export function App() {
     const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
 
     markDatasetContentChanged();
+    clearActiveRunProgress();
     dispatch({
       type: "import/loaded",
       datasetName: result.datasetName,
@@ -313,7 +343,22 @@ export function App() {
     markDatasetContentChanged();
     explicitEmptyRevisionRef.current += 1;
     dispatch({ type: "datasets/flush" });
+    clearActiveRunProgress();
+  }
+
+  function startActiveRun() {
+    activeRunIdRef.current += 1;
+    return activeRunIdRef.current;
+  }
+
+  function clearActiveRunProgress() {
+    activeRunIdRef.current += 1;
+    setRunProgress(undefined);
     setRunQueue([]);
+  }
+
+  function isActiveRun(runId: number) {
+    return activeRunIdRef.current === runId;
   }
 
   const selectedReportOutput = state.reportOutputs[state.selectedReportId];
@@ -335,7 +380,7 @@ export function App() {
       sidebar={sidebar}
     >
       <SessionOverview state={state} />
-      <RunStatus queue={runQueue} />
+      <RunStatus queue={runQueue} progress={runProgress} />
       {datasetStorageWarning && (
         <div className="s-notice s-notice__warning mt16" role="status">
           {datasetStorageWarning}
@@ -362,9 +407,11 @@ export function App() {
           reportId={state.selectedReportId}
           records={selectedReportRecords}
           comparisonRecords={selectedReportOutput?.comparisonRecords}
+          loadedAt={selectedReportOutput?.loadedAt}
           currentScope={selectedReportOutput?.currentScope}
           comparisonScope={selectedReportOutput?.comparisonScope}
           outputSource={selectedReportOutput?.source}
+          warnings={selectedReportOutput?.warnings}
           scope={reportScope}
           onScopeChange={setReportScope}
           onRun={queueSelectedReportRun}
@@ -373,6 +420,36 @@ export function App() {
       )}
     </AppShell>
   );
+}
+
+function createRunningProgress(reportTitle: string): ReportRunProgress {
+  return {
+    reportTitle,
+    status: "running",
+    currentStage: "Collecting live API datasets",
+    completedStages: [REPORT_RUN_STAGES[0], REPORT_RUN_STAGES[1]],
+    totalStages: REPORT_RUN_STAGES.length,
+  };
+}
+
+function createSucceededProgress(reportTitle: string): ReportRunProgress {
+  return {
+    reportTitle,
+    status: "succeeded",
+    currentStage: "Build report output",
+    completedStages: [...REPORT_RUN_STAGES],
+    totalStages: REPORT_RUN_STAGES.length,
+  };
+}
+
+function createFailedProgress(reportTitle: string): ReportRunProgress {
+  return {
+    reportTitle,
+    status: "failed",
+    currentStage: "Live API run failed",
+    completedStages: [REPORT_RUN_STAGES[0], REPORT_RUN_STAGES[1]],
+    totalStages: REPORT_RUN_STAGES.length,
+  };
 }
 
 function renderWriteToolPanel(toolId: WriteToolId, credentials: SessionCredentials | null) {

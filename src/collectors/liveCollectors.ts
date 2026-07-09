@@ -7,11 +7,31 @@ export interface LiveCollectorClients {
 }
 
 export interface DatasetClient {
+  getPagedResult(
+    path: string,
+    query?: Record<string, string>,
+    options?: { maxPages?: number },
+  ): Promise<DatasetPagedResult<unknown>>;
   getPagedItems(
     path: string,
     query?: Record<string, string>,
     options?: { maxPages?: number },
   ): Promise<unknown[]>;
+}
+
+export interface DatasetPaginationMetadata {
+  pageCount: number;
+  reachedMaxPages: boolean;
+  hasMore: boolean;
+}
+
+export interface DatasetPagedResult<T> extends DatasetPaginationMetadata {
+  items: T[];
+}
+
+export interface CollectedDatasetResult {
+  records: unknown[];
+  pagination: DatasetPaginationMetadata;
 }
 
 export interface LiveCollectorContext {
@@ -71,7 +91,7 @@ export async function collectDataset(
   dataset: DatasetName,
   clients: LiveCollectorClients,
   context: LiveCollectorContext = {},
-): Promise<unknown[]> {
+): Promise<CollectedDatasetResult> {
   if (dataset === "tagSmes") {
     return collectTagSmes(clients, getCollectedDataset(context, "tags"), context);
   }
@@ -86,7 +106,7 @@ export async function collectDataset(
     throw new UnsupportedLiveDatasetError(dataset);
   }
 
-  return getPagedItems(
+  return collectPagedResult(
     clients[endpoint.client],
     endpoint.path,
     buildDatasetQuery(context, endpoint.client === "v2"),
@@ -98,56 +118,67 @@ async function collectTagSmes(
   clients: LiveCollectorClients,
   tags: Record<string, unknown>[],
   context: LiveCollectorContext,
-): Promise<Record<string, unknown>[]> {
+): Promise<CollectedDatasetResult> {
   const records: Record<string, unknown>[] = [];
+  let pagination = createEmptyPaginationMetadata();
 
   for (const tagName of uniqueValues(tags.map(getTagName))) {
-    const tagScores = await getPagedItems(
+    const tagScores = await collectPagedResult(
       clients.v2,
       `/tags/${encodeURIComponent(tagName)}/top-answerers/all_time`,
       buildDatasetQuery(context, false),
       context,
     );
 
-    records.push(...toRecordList(tagScores).map((record) => ({ tagName, ...record })));
+    records.push(...toRecordList(tagScores.records).map((record) => ({ tagName, ...record })));
+    pagination = mergePaginationMetadata(pagination, tagScores.pagination);
   }
 
-  return records;
+  return { records, pagination };
 }
 
 async function collectReputationHistory(
   clients: LiveCollectorClients,
   users: Record<string, unknown>[],
   context: LiveCollectorContext,
-): Promise<Record<string, unknown>[]> {
+): Promise<CollectedDatasetResult> {
   const records: Record<string, unknown>[] = [];
+  let pagination = createEmptyPaginationMetadata();
   const userIds = uniqueValues(users.map((user) => getNumberField(user, "user_id", "userId", "id")));
 
   for (const userIdBatch of chunk(userIds, 100)) {
-    const reputationEvents = await getPagedItems(
+    const reputationEvents = await collectPagedResult(
       clients.v2,
       `/users/${userIdBatch.join(";")}/reputation-history`,
       buildDatasetQuery(context, true),
       context,
     );
 
-    records.push(...toRecordList(reputationEvents));
+    records.push(...toRecordList(reputationEvents.records));
+    pagination = mergePaginationMetadata(pagination, reputationEvents.pagination);
   }
 
-  return records;
+  return { records, pagination };
 }
 
-function getPagedItems(
+async function collectPagedResult(
   client: DatasetClient,
   path: string,
   query: Record<string, string>,
   context: LiveCollectorContext,
-): Promise<unknown[]> {
-  if (typeof context.maxPagesPerDataset === "number") {
-    return client.getPagedItems(path, query, { maxPages: context.maxPagesPerDataset });
-  }
+): Promise<CollectedDatasetResult> {
+  const result = typeof context.maxPagesPerDataset === "number"
+    ? await client.getPagedResult(path, query, { maxPages: context.maxPagesPerDataset })
+    : await client.getPagedResult(path, query);
 
-  return client.getPagedItems(path, query);
+  return {
+    records: result.items,
+    pagination: {
+      pageCount: result.pageCount,
+      reachedMaxPages: result.reachedMaxPages,
+      hasMore: result.hasMore,
+    },
+  };
 }
 
 function buildDatasetQuery(
@@ -224,4 +255,23 @@ function toRecordList(records: unknown[]): Record<string, unknown>[] {
 
     return { value: record };
   });
+}
+
+function createEmptyPaginationMetadata(): DatasetPaginationMetadata {
+  return {
+    pageCount: 0,
+    reachedMaxPages: false,
+    hasMore: false,
+  };
+}
+
+function mergePaginationMetadata(
+  first: DatasetPaginationMetadata,
+  second: DatasetPaginationMetadata,
+): DatasetPaginationMetadata {
+  return {
+    pageCount: first.pageCount + second.pageCount,
+    reachedMaxPages: first.reachedMaxPages || second.reachedMaxPages,
+    hasMore: first.hasMore || second.hasMore,
+  };
 }
