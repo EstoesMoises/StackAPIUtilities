@@ -70,6 +70,29 @@ describe("StackApiV2Client", () => {
     await expect(client.getPagedItems("/tags")).rejects.toThrow("Stack API v2.3 request failed with 400");
   });
 
+  it("includes structured Stack API error details on non-200 responses", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error_id: 403,
+          error_message: "`key` is not valid for passed `access_token`, application did not create token.",
+          error_name: "access_denied",
+        }),
+        { status: 400 },
+      ),
+    );
+    const client = new StackApiV2Client({
+      apiV2Url: "https://demo.stackenterprise.co/api/2.3",
+      teamSlug: null,
+      headers: { "X-API-Key": "bad" },
+      fetchFn: fetchMock,
+    });
+
+    await expect(client.getPagedItems("/tags")).rejects.toThrow(
+      "Stack API v2.3 request failed with 400: access_denied - `key` is not valid for passed `access_token`, application did not create token.",
+    );
+  });
+
   it("throws a contextual error on invalid JSON responses", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("not json", { status: 200 }));
     const client = new StackApiV2Client({

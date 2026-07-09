@@ -32,7 +32,7 @@ describe("ReportWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run current period" })).toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
-    expect(screen.getByText("SME Coverage")).toBeInTheDocument();
+    expect(screen.getByText("SME Gaps")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
     expect(screen.getByLabelText("python: 100")).toBeInTheDocument();
     expect(screen.queryByText("NaN")).not.toBeInTheDocument();

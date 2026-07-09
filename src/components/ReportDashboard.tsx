@@ -14,6 +14,7 @@ import {
 } from "../reports/tagReport";
 import { summarizeUsers, type UserMetricRow } from "../reports/userReport";
 import { DashboardCards } from "./DashboardCards";
+import { TagReportDashboard } from "./TagReportDashboard";
 import { BarList } from "./charts/BarList";
 import { InteractionMatrix } from "./charts/InteractionMatrix";
 
@@ -46,6 +47,19 @@ export function ReportDashboard({
           comparisonScope,
         });
 
+  if (reportId === "tag-report") {
+    const tagHealthRows = normalizeTagHealthRows(records, outputSource);
+    const tagHealthComparisonRows =
+      comparisonRecords === undefined ? undefined : normalizeTagHealthRows(comparisonRecords, outputSource);
+    const summary = summarizeTagHealthRows(tagHealthRows, tagHealthComparisonRows);
+
+    return (
+      <DashboardLayout cards={[]} warnings={warnings} showCards={false}>
+        <TagReportDashboard summary={summary} currentScope={currentScope} comparisonScope={comparisonScope} />
+      </DashboardLayout>
+    );
+  }
+
   if (records.length === 0 && comparisonRecords === undefined) {
     return (
       <DashboardLayout cards={[]} warnings={warnings} />
@@ -58,55 +72,6 @@ export function ReportDashboard({
     if (liveInteractions.length > 0) {
       return renderInteractionsDashboard(liveInteractions as unknown as InteractionEdge[], comparisonSection, warnings);
     }
-  }
-
-  if (reportId === "tag-report") {
-    const tagHealthRows = normalizeTagHealthRows(records, outputSource);
-    const tagHealthComparisonRows =
-      comparisonRecords === undefined ? undefined : normalizeTagHealthRows(comparisonRecords, outputSource);
-    const tagHealthComparisonSection =
-      tagHealthComparisonRows === undefined
-        ? undefined
-        : renderComparisonDashboard({
-            currentRecords: tagHealthRows as unknown as Record<string, unknown>[],
-            comparisonRecords: tagHealthComparisonRows as unknown as Record<string, unknown>[],
-            currentScope,
-            comparisonScope,
-            groupColumnLabel: "Health status",
-            getGroup: getTagHealthComparisonGroup,
-          });
-    const summary = summarizeTagHealthRows(tagHealthRows);
-
-    return (
-      <DashboardLayout cards={summary.metricCards} comparisonSection={tagHealthComparisonSection} warnings={warnings}>
-        <DashboardSection title="Top tags by page views">
-          <BarList
-            rows={summary.topTagsByViews.map((row) => ({
-              label: row.tag_name,
-              value: finiteNumber(row.page_views),
-            }))}
-          />
-        </DashboardSection>
-        <DashboardSection title="Tags needing SME coverage">
-          <BarList
-            rows={summary.tagsNeedingSmeCoverage.map((row) => ({
-              label: row.tag_name,
-              value: finiteNumber(row.question_count),
-            }))}
-            emptyMessage="No tags need SME coverage."
-          />
-        </DashboardSection>
-        <DashboardSection title="Tags needing response attention">
-          <BarList
-            rows={summary.tagsNeedingResponse.map((row) => ({
-              label: row.tag_name,
-              value: finiteNumber(row.unanswered_questions) || finiteNumber(row.median_first_answer_hours),
-            }))}
-            emptyMessage="No tags need response attention."
-          />
-        </DashboardSection>
-      </DashboardLayout>
-    );
   }
 
   if (outputSource === "live-api") {
@@ -261,16 +226,18 @@ function DashboardLayout({
   comparisonSection,
   warnings,
   children,
+  showCards = true,
 }: {
   cards: MetricCard[];
   comparisonSection?: ReactNode;
   warnings?: ReportWarning[];
   children?: ReactNode;
+  showCards?: boolean;
 }) {
   return (
     <div className="dashboard-summary">
       <DashboardWarnings warnings={warnings ?? []} />
-      <DashboardCards cards={cards} />
+      {showCards ? <DashboardCards cards={cards} /> : null}
       {comparisonSection}
       {children}
     </div>
@@ -334,11 +301,18 @@ function normalizeTagHealthRows(
     return records as unknown as TagHealthRow[];
   }
 
-  if (outputSource === "live-api" && records.some((record) => typeof record.datasetName === "string")) {
+  if (
+    records.some(isLiveTagReportRecord) ||
+    (outputSource === "live-api" && records.some((record) => typeof record.datasetName === "string"))
+  ) {
     return buildTagHealthRowsFromLiveRecords(records);
   }
 
   return buildTagHealthRows(records);
+}
+
+function isLiveTagReportRecord(record: Record<string, unknown>): boolean {
+  return record.datasetName === "tags" || record.datasetName === "questions" || record.datasetName === "tagSmes";
 }
 
 function isTagHealthRow(record: Record<string, unknown>): boolean {
@@ -439,10 +413,6 @@ function buildComparisonRows(
 
 function getComparisonGroup(record: Record<string, unknown>): string {
   return String(record.datasetName ?? "Records");
-}
-
-function getTagHealthComparisonGroup(record: Record<string, unknown>): string {
-  return String(record.health_status ?? "Unknown status");
 }
 
 function formatDelta(delta: number): string {
