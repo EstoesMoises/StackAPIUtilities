@@ -340,6 +340,8 @@ function getFirstAnswerHours(record: Record<string, unknown>): number | null {
     record,
     "first_answer_creation_date",
     "firstAnswerCreationDate",
+    "first_answer_date",
+    "firstAnswerDate",
     "first_answered_at",
     "firstAnsweredAt",
   );

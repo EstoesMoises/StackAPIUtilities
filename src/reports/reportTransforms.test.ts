@@ -213,6 +213,30 @@ describe("report transforms", () => {
     });
   });
 
+  it("uses live first_answer_date values when calculating Tag Health response time", () => {
+    const healthRows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "python" },
+      {
+        datasetName: "questions",
+        question_id: 1,
+        tags: ["python"],
+        answer_count: 1,
+        is_answered: true,
+        creation_date: 1_704_067_200,
+        first_answer_date: 1_704_240_000,
+        view_count: 45,
+      },
+      { datasetName: "tagSmes", tagName: "python", user_id: 96, score: 12 },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({
+      tag_name: "python",
+      health_status: "Needs response attention",
+      median_first_answer_hours: 48,
+      recommended_action: "Review unanswered questions and response time for this tag.",
+    });
+  });
+
   it("summarizes user metrics", () => {
     const summary = summarizeUsers([
       { userId: 1, displayName: "A", netReputation: 20, accountInactivityDays: 0, answers: 5, questions: 1, accountStatus: "Registered", department: "Engineering" },
