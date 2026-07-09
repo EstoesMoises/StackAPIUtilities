@@ -165,6 +165,131 @@ describe("AppShell", () => {
     });
   });
 
+  it("uses restored current and comparison scopes for the next paired Tag Report run", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body));
+
+      return jsonResponse({
+        ok: true,
+        result: {
+          reportId: "tag-report",
+          reportTitle: "Tag Report",
+          periodRole: payload.periodRole,
+          scope: payload.scope,
+          pageSize: payload.pageSize,
+          maxPagesPerDataset: payload.maxPagesPerDataset,
+          runPreset: payload.runPreset,
+          warnings: [],
+          datasets: [
+            {
+              datasetName: "tags",
+              records:
+                payload.periodRole === "comparison"
+                  ? [{ name: "javascript", totalPageViews: 250, questionCount: 2 }]
+                  : [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+            },
+          ],
+          messages: [`Collected ${payload.periodRole} tags for Tag Report.`],
+        },
+      });
+    });
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      datasets: {
+        "current-tags": {
+          id: "current-tags",
+          snapshotId: "current-snapshot",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+        },
+        "comparison-tags": {
+          id: "comparison-tags",
+          snapshotId: "comparison-snapshot",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ name: "javascript", totalPageViews: 250, questionCount: 2 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "comparison",
+        },
+      },
+      reportOutputs: {
+        "tag-report": {
+          reportId: "tag-report",
+          datasetName: "tags",
+          fileName: "Live API run",
+          records: [{ tag_name: "python", page_views: 500 }],
+          comparisonRecords: [{ tag_name: "javascript", page_views: 250 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-07-01", endDate: "2026-07-08" },
+          comparisonScope: { startDate: "2026-06-01", endDate: "2026-06-08" },
+          currentSnapshotId: "current-snapshot",
+          comparisonSnapshotId: "comparison-snapshot",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "current-snapshot",
+          reportId: "tag-report",
+          periodRole: "current",
+          scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["current-tags"],
+          warnings: [],
+        },
+        {
+          id: "comparison-snapshot",
+          reportId: "tag-report",
+          periodRole: "comparison",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["comparison-tags"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("2 datasets")).toBeInTheDocument();
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run both periods" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const currentRunBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const comparisonRunBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(currentRunBody).toMatchObject({
+      periodRole: "current",
+      scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
+      runPreset: "deep-audit",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+    });
+    expect(comparisonRunBody).toMatchObject({
+      periodRole: "comparison",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
+      runPreset: "deep-audit",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+    });
+  });
+
   it("persists live API datasets without credentials or run queue state", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(

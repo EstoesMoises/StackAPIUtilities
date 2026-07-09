@@ -476,7 +476,11 @@ function restoreReportScopeFromSnapshot(
   currentScope: ReportRunScope,
   snapshot: PersistedDatasetSessionSnapshot,
 ): ReportRunScope {
-  const runSnapshot = findSelectedReportRunSnapshot(snapshot);
+  const selectedRunSnapshots = findSelectedReportRunSnapshots(snapshot);
+  const runSnapshot =
+    selectedRunSnapshots.current ??
+    selectedRunSnapshots.comparison ??
+    findLatestSelectedReportRunSnapshot(snapshot);
 
   if (!runSnapshot?.runPreset) {
     return currentScope;
@@ -484,31 +488,36 @@ function restoreReportScopeFromSnapshot(
 
   return {
     ...currentScope,
-    current: runSnapshot.periodRole === "current" ? runSnapshot.scope : currentScope.current,
-    comparison: runSnapshot.periodRole === "comparison" ? runSnapshot.scope : currentScope.comparison,
+    current:
+      selectedRunSnapshots.current?.scope ??
+      (runSnapshot.periodRole === "current" ? runSnapshot.scope : currentScope.current),
+    comparison:
+      selectedRunSnapshots.comparison?.scope ??
+      (runSnapshot.periodRole === "comparison" ? runSnapshot.scope : currentScope.comparison),
     pageSize: runSnapshot.pageSize,
     maxPagesPerDataset: runSnapshot.maxPagesPerDataset,
     runPreset: runSnapshot.runPreset,
   };
 }
 
-function findSelectedReportRunSnapshot(snapshot: PersistedDatasetSessionSnapshot) {
+function findSelectedReportRunSnapshots(snapshot: PersistedDatasetSessionSnapshot) {
   const selectedOutput = snapshot.reportOutputs[snapshot.selectedReportId];
-  const snapshotIds = [
-    selectedOutput?.currentSnapshotId,
-    selectedOutput?.comparisonSnapshotId,
-  ];
 
-  for (const snapshotId of snapshotIds) {
-    const matchingSnapshot = snapshot.reportRunSnapshots.find(
-      (runSnapshot) => runSnapshot.id === snapshotId && runSnapshot.runPreset,
-    );
+  return {
+    current: findReportRunSnapshotById(snapshot, selectedOutput?.currentSnapshotId),
+    comparison: findReportRunSnapshotById(snapshot, selectedOutput?.comparisonSnapshotId),
+  };
+}
 
-    if (matchingSnapshot) {
-      return matchingSnapshot;
-    }
+function findReportRunSnapshotById(snapshot: PersistedDatasetSessionSnapshot, snapshotId: string | undefined) {
+  if (!snapshotId) {
+    return undefined;
   }
 
+  return snapshot.reportRunSnapshots.find((runSnapshot) => runSnapshot.id === snapshotId && runSnapshot.runPreset);
+}
+
+function findLatestSelectedReportRunSnapshot(snapshot: PersistedDatasetSessionSnapshot) {
   return [...snapshot.reportRunSnapshots]
     .reverse()
     .find((runSnapshot) => runSnapshot.reportId === snapshot.selectedReportId && runSnapshot.runPreset);
