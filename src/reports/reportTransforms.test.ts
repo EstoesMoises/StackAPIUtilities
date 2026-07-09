@@ -392,6 +392,104 @@ describe("report transforms", () => {
     expect(summary.comparison?.fastestChanges.every((row) => row.delta !== 0)).toBe(true);
   });
 
+  it("canonicalizes imported Tag Health statuses before summary counts and queues", () => {
+    const summary = summarizeTagHealthRows([
+      tagHealthRow({
+        tag_name: "python",
+        health_status: "Needs Response Attention " as TagHealthRow["health_status"],
+        unanswered_questions: 4,
+        median_first_answer_hours: 30,
+        recommended_action: "Review unanswered questions and response time for this tag.",
+      }),
+      tagHealthRow({
+        tag_name: "react",
+        health_status: "needs sme coverage" as TagHealthRow["health_status"],
+        page_views: 450,
+        question_count: 6,
+        sme_count: 0,
+        recommended_action: "Assign or confirm SMEs for this tag.",
+      }),
+    ]);
+
+    expect(summary.metricCards).toContainEqual({ label: "SME Gaps", value: 1 });
+    expect(summary.metricCards).toContainEqual({ label: "Response Attention", value: 1 });
+    expect(summary.statusDistribution.map((row) => [row.status, row.count])).toEqual([
+      ["Healthy", 0],
+      ["Needs SME coverage", 1],
+      ["Needs response attention", 1],
+      ["Low activity", 0],
+    ]);
+    expect(summary.responseAttentionQueue.map((row) => row.tagName)).toEqual(["python"]);
+    expect(summary.smeCoverageQueue.map((row) => row.tagName)).toEqual(["react"]);
+  });
+
+  it("aggregates duplicate tag rows when calculating fastest comparison changes", () => {
+    const summary = summarizeTagHealthRows(
+      [
+        tagHealthRow({
+          tag_name: "python",
+          unanswered_questions: 5,
+          sme_count: 1,
+          question_count: 10,
+          page_views: 100,
+        }),
+        tagHealthRow({
+          tag_name: "python",
+          unanswered_questions: 2,
+          sme_count: 1,
+          question_count: 4,
+          page_views: 40,
+        }),
+      ],
+      [
+        tagHealthRow({
+          tag_name: "python",
+          unanswered_questions: 1,
+          sme_count: 1,
+          question_count: 6,
+          page_views: 60,
+        }),
+        tagHealthRow({
+          tag_name: "python",
+          unanswered_questions: 4,
+          sme_count: 0,
+          question_count: 7,
+          page_views: 80,
+        }),
+      ],
+    );
+
+    expect(summary.comparison?.fastestChanges).toEqual([
+      {
+        tagName: "python",
+        metric: "Unanswered questions",
+        current: 7,
+        comparison: 5,
+        delta: 2,
+        deltaTone: "bad",
+      },
+      {
+        tagName: "python",
+        metric: "SMEs",
+        current: 2,
+        comparison: 1,
+        delta: 1,
+        deltaTone: "good",
+      },
+      {
+        tagName: "python",
+        metric: "Questions",
+        current: 14,
+        comparison: 13,
+        delta: 1,
+        deltaTone: "neutral",
+      },
+    ]);
+
+    const changeKeys = summary.comparison?.fastestChanges.map((row) => `${row.tagName}:${row.metric}`) ?? [];
+    expect(new Set(changeKeys).size).toBe(changeKeys.length);
+  });
+
   it("builds Tag Health rows from live tag, question, and tag SME records", () => {
     const healthRows = buildTagHealthRowsFromLiveRecords([
       { datasetName: "tags", name: "python", count: 4 },

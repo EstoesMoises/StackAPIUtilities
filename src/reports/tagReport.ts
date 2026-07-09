@@ -197,14 +197,17 @@ export function summarizeTagHealthRows(
   rows: readonly TagHealthRow[],
   comparisonRows?: readonly TagHealthRow[],
 ): TagHealthSummary {
-  const healthStatusCounts = countHealthStatuses(rows);
-  const comparisonHealthStatusCounts = comparisonRows === undefined ? undefined : countHealthStatuses(comparisonRows);
-  const totalQuestions = rows.reduce((sum, row) => sum + metricNumber(row.question_count), 0);
+  const normalizedRows = rows.map(normalizeTagHealthRow);
+  const normalizedComparisonRows = comparisonRows?.map(normalizeTagHealthRow);
+  const healthStatusCounts = countHealthStatuses(normalizedRows);
+  const comparisonHealthStatusCounts =
+    normalizedComparisonRows === undefined ? undefined : countHealthStatuses(normalizedComparisonRows);
+  const totalQuestions = normalizedRows.reduce((sum, row) => sum + metricNumber(row.question_count), 0);
   const comparisonTotalQuestions =
-    comparisonRows === undefined
+    normalizedComparisonRows === undefined
       ? undefined
-      : comparisonRows.reduce((sum, row) => sum + metricNumber(row.question_count), 0);
-  const tagsNeedingResponse = [...rows]
+      : normalizedComparisonRows.reduce((sum, row) => sum + metricNumber(row.question_count), 0);
+  const tagsNeedingResponse = [...normalizedRows]
     .filter((row) => row.health_status === "Needs response attention")
     .sort(
       (a, b) =>
@@ -214,7 +217,7 @@ export function summarizeTagHealthRows(
         a.tag_name.localeCompare(b.tag_name),
     )
     .slice(0, 10);
-  const tagsNeedingSmeCoverage = [...rows]
+  const tagsNeedingSmeCoverage = [...normalizedRows]
     .filter((row) => row.health_status === "Needs SME coverage")
     .sort(
       (a, b) =>
@@ -232,10 +235,12 @@ export function summarizeTagHealthRows(
       responseAttentionCount: healthStatusCounts["Needs response attention"],
       totalQuestions,
       comparison:
-        comparisonRows === undefined || comparisonHealthStatusCounts === undefined || comparisonTotalQuestions === undefined
+        normalizedComparisonRows === undefined ||
+        comparisonHealthStatusCounts === undefined ||
+        comparisonTotalQuestions === undefined
           ? undefined
           : {
-              rowCount: comparisonRows.length,
+              rowCount: normalizedComparisonRows.length,
               healthyCount: comparisonHealthStatusCounts.Healthy,
               smeGapCount: comparisonHealthStatusCounts["Needs SME coverage"],
               responseAttentionCount: comparisonHealthStatusCounts["Needs response attention"],
@@ -245,7 +250,7 @@ export function summarizeTagHealthRows(
     totalQuestions,
     healthStatusCounts,
     statusDistribution: buildStatusDistribution(healthStatusCounts, comparisonHealthStatusCounts),
-    topTagsByViews: [...rows]
+    topTagsByViews: [...normalizedRows]
       .sort(
         (a, b) =>
           metricNumber(b.page_views) - metricNumber(a.page_views) ||
@@ -272,13 +277,45 @@ export function summarizeTagHealthRows(
       recommendedAction: row.recommended_action,
     })),
     comparison:
-      comparisonRows === undefined || comparisonHealthStatusCounts === undefined
+      normalizedComparisonRows === undefined || comparisonHealthStatusCounts === undefined
         ? undefined
         : {
             statusRows: buildComparisonStatusRows(healthStatusCounts, comparisonHealthStatusCounts),
-            fastestChanges: buildFastestChanges(rows, comparisonRows),
+            fastestChanges: buildFastestChanges(normalizedRows, normalizedComparisonRows),
           },
   };
+}
+
+function normalizeTagHealthRow(row: TagHealthRow): TagHealthRow {
+  const healthStatus =
+    normalizeTagHealthStatus(row.health_status) ??
+    getTagHealthStatus({
+      pageViews: metricNumber(row.page_views),
+      questionCount: metricNumber(row.question_count),
+      smeCount: metricNumber(row.sme_count),
+      unansweredQuestions: metricNumber(row.unanswered_questions),
+      medianFirstAnswerHours: metricNumber(row.median_first_answer_hours),
+    });
+  const recommendedAction = String(row.recommended_action ?? "").trim() || getRecommendedAction(healthStatus);
+
+  return {
+    ...row,
+    health_status: healthStatus,
+    recommended_action: recommendedAction,
+  };
+}
+
+function normalizeTagHealthStatus(status: unknown): TagHealthStatus | undefined {
+  const normalizedStatus = normalizeStatusText(status);
+  return TAG_HEALTH_STATUSES.find((candidate) => normalizeStatusText(candidate) === normalizedStatus);
+}
+
+function normalizeStatusText(status: unknown): string {
+  return String(status ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
 }
 
 function countHealthStatuses(rows: readonly TagHealthRow[]): Record<TagHealthStatus, number> {
@@ -388,10 +425,10 @@ function buildFastestChanges(
   rows: readonly TagHealthRow[],
   comparisonRows: readonly TagHealthRow[],
 ): TagFastestChangeRow[] {
-  const comparisonByTag = new Map(comparisonRows.map((row) => [row.tag_name, row]));
+  const comparisonByTag = new Map(aggregateFastestChangeRows(comparisonRows).map((row) => [row.tag_name, row]));
   const changes: TagFastestChangeRow[] = [];
 
-  for (const row of rows) {
+  for (const row of aggregateFastestChangeRows(rows)) {
     const comparison = comparisonByTag.get(row.tag_name);
     if (!comparison) continue;
 
@@ -418,6 +455,34 @@ function buildFastestChanges(
         a.metric.localeCompare(b.metric),
     )
     .slice(0, 6);
+}
+
+function aggregateFastestChangeRows(rows: readonly TagHealthRow[]): TagHealthRow[] {
+  const aggregates = new Map<string, TagHealthRow>();
+
+  for (const row of rows) {
+    const tagName = row.tag_name.trim() || "Unknown tag";
+    const aggregate = aggregates.get(tagName);
+
+    if (aggregate) {
+      aggregate.unanswered_questions += metricNumber(row.unanswered_questions);
+      aggregate.sme_count += metricNumber(row.sme_count);
+      aggregate.question_count += metricNumber(row.question_count);
+      aggregate.page_views += metricNumber(row.page_views);
+      continue;
+    }
+
+    aggregates.set(tagName, {
+      ...row,
+      tag_name: tagName,
+      unanswered_questions: metricNumber(row.unanswered_questions),
+      sme_count: metricNumber(row.sme_count),
+      question_count: metricNumber(row.question_count),
+      page_views: metricNumber(row.page_views),
+    });
+  }
+
+  return [...aggregates.values()];
 }
 
 function pushChange(

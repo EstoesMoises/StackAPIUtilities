@@ -200,6 +200,37 @@ describe("ReportDashboard", () => {
     expect(screen.queryByRole("columnheader", { name: "Dataset" })).not.toBeInTheDocument();
   });
 
+  it("normalizes Tag Health comparison records from their own live source shape", () => {
+    render(
+      <ReportDashboard
+        reportId="tag-report"
+        outputSource="upload"
+        records={[
+          tagHealthRecord("python", "Needs response attention", {
+            unanswered_questions: 6,
+            page_views: 900,
+            question_count: 10,
+          }),
+        ]}
+        comparisonRecords={[
+          { datasetName: "tags", name: "python", count: 8 },
+          { datasetName: "questions", question_id: 1, tags: ["python"], answer_count: 0, view_count: 700 },
+          { datasetName: "tagSmes", tagName: "python", user_id: 96, score: 12 },
+        ]}
+        currentScope={{ startDate: "2026-06-01", endDate: "2026-06-30" }}
+        comparisonScope={{ startDate: "2026-05-01", endDate: "2026-05-31" }}
+      />,
+    );
+
+    expect(screen.getByRole("row", { name: "Needs response attention 1 1 0" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "Low activity 0 0 0" })).toBeInTheDocument();
+
+    const fastestChanges = screen.getByRole("list", { name: "Fastest changes" });
+    expect(within(fastestChanges).getByText("Unanswered questions")).toBeInTheDocument();
+    expect(within(fastestChanges).getByText("+5")).toBeInTheDocument();
+    expect(within(fastestChanges).queryByText("+6")).not.toBeInTheDocument();
+  });
+
   it("normalizes imported Tag Metric rows into the hybrid Tag Health dashboard", () => {
     render(
       <ReportDashboard

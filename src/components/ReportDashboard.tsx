@@ -301,11 +301,18 @@ function normalizeTagHealthRows(
     return records as unknown as TagHealthRow[];
   }
 
-  if (outputSource === "live-api" && records.some((record) => typeof record.datasetName === "string")) {
+  if (
+    records.some(isLiveTagReportRecord) ||
+    (outputSource === "live-api" && records.some((record) => typeof record.datasetName === "string"))
+  ) {
     return buildTagHealthRowsFromLiveRecords(records);
   }
 
   return buildTagHealthRows(records);
+}
+
+function isLiveTagReportRecord(record: Record<string, unknown>): boolean {
+  return record.datasetName === "tags" || record.datasetName === "questions" || record.datasetName === "tagSmes";
 }
 
 function isTagHealthRow(record: Record<string, unknown>): boolean {
