@@ -101,6 +101,9 @@ describe("ReportDashboard", () => {
 
     const warningArea = screen.getByRole("alert", { name: "Report warnings" });
     expect(within(warningArea).getByText("dataset-page-cap")).toBeInTheDocument();
+    expect(
+      within(warningArea).getByText("Questions hit the configured page cap; results may be partial."),
+    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tag Health Dashboard" })).toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
     expect(screen.getByText("Healthy Tags")).toBeInTheDocument();
@@ -114,17 +117,44 @@ describe("ReportDashboard", () => {
     expect(screen.getByLabelText("python: 900")).toBeInTheDocument();
 
     const smeQueue = screen.getByRole("region", { name: "SME coverage queue" });
+    const reactRow = getRowByCellText(smeQueue, "react");
     expect(within(smeQueue).getByRole("columnheader", { name: "Questions" })).toHaveTextContent(/^Questions$/);
     expect(within(smeQueue).getByRole("columnheader", { name: "SMEs" })).toHaveTextContent(/^SMEs$/);
+    expect(reactRow).not.toHaveAttribute("aria-label");
+    expect(within(reactRow).getByRole("cell", { name: "react" })).toBeInTheDocument();
+    expect(within(reactRow).getByRole("cell", { name: "4" })).toBeInTheDocument();
+    expect(within(reactRow).getByRole("cell", { name: "0" })).toBeInTheDocument();
+    expect(within(reactRow).getByRole("cell", { name: "Assign or confirm SMEs for this tag." })).toBeInTheDocument();
 
     const responseQueue = screen.getByRole("region", { name: "Response attention queue" });
+    const javaRow = getRowByCellText(responseQueue, "java");
     expect(within(responseQueue).getByRole("columnheader", { name: "Unanswered" })).toHaveTextContent(/^Unanswered$/);
     expect(within(responseQueue).getByRole("columnheader", { name: "Median first answer" })).toHaveTextContent(
       /^Median first answer$/,
     );
-    expect(screen.getByRole("row", { name: "react 4 0" })).toBeInTheDocument();
-    expect(screen.getByRole("row", { name: "java 3 30h" })).toBeInTheDocument();
+    expect(javaRow).not.toHaveAttribute("aria-label");
+    expect(within(javaRow).getByRole("cell", { name: "java" })).toBeInTheDocument();
+    expect(within(javaRow).getByRole("cell", { name: "3" })).toBeInTheDocument();
+    expect(within(javaRow).getByRole("cell", { name: "30h" })).toBeInTheDocument();
+    expect(
+      within(javaRow).getByRole("cell", { name: "Review unanswered questions and response time for this tag." }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Period comparison")).not.toBeInTheDocument();
+  });
+
+  it("renders the Tag Health operations overview for empty Tag Reports", () => {
+    render(<ReportDashboard reportId="tag-report" outputSource="live-api" records={[]} />);
+
+    expect(screen.getByRole("heading", { name: "Tag Health Dashboard" })).toBeInTheDocument();
+    expect(screen.getByText("Current-period context")).toBeInTheDocument();
+    expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
+    expect(screen.getByText("No chart data loaded.")).toBeInTheDocument();
+
+    const smeQueue = screen.getByRole("region", { name: "SME coverage queue" });
+    expect(within(smeQueue).getByText("No tags need SME coverage.")).toBeInTheDocument();
+
+    const responseQueue = screen.getByRole("region", { name: "Response attention queue" });
+    expect(within(responseQueue).getByText("No tags need response attention.")).toBeInTheDocument();
   });
 
   it("compares curated Tag Health rows by health status", () => {
@@ -174,9 +204,21 @@ describe("ReportDashboard", () => {
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
     expect(screen.getByText("SME coverage queue")).toBeInTheDocument();
     expect(screen.getByLabelText("typescript: 450")).toBeInTheDocument();
-    expect(screen.getByRole("row", { name: "typescript 8 0" })).toBeInTheDocument();
+    const smeQueue = screen.getByRole("region", { name: "SME coverage queue" });
+    const typescriptRow = getRowByCellText(smeQueue, "typescript");
+    expect(within(typescriptRow).getByRole("cell", { name: "8" })).toBeInTheDocument();
+    expect(within(typescriptRow).getByRole("cell", { name: "0" })).toBeInTheDocument();
   });
 });
+
+function getRowByCellText(region: HTMLElement, cellText: string) {
+  const row = within(region)
+    .getAllByRole("row")
+    .find((candidate) => within(candidate).queryByRole("cell", { name: cellText }));
+
+  expect(row).toBeDefined();
+  return row as HTMLElement;
+}
 
 function tagHealthRecord(tagName: string, healthStatus: string) {
   return {

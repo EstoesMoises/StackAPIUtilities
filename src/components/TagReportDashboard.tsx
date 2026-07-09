@@ -100,7 +100,7 @@ function TagMetricStrip({ summary }: { summary: TagHealthSummary }) {
 }
 
 function TagStatusDistribution({ rows }: { rows: TagStatusDistributionRow[] }) {
-  const total = rows.reduce((sum, row) => sum + finiteNumber(row.count), 0);
+  const total = getStatusDistributionTotal(rows);
 
   return (
     <div className="tag-status-distribution">
@@ -133,13 +133,12 @@ function TagStatusDistribution({ rows }: { rows: TagStatusDistributionRow[] }) {
 function TagOverviewNote({ summary, currentScope }: { summary: TagHealthSummary; currentScope?: PeriodScope }) {
   const smeQueueCount = summary.smeCoverageQueue.length;
   const responseQueueCount = summary.responseAttentionQueue.length;
-  const tagsCovered = summary.metricCards[0]?.value ?? 0;
-  const tagsCoveredCount = typeof tagsCovered === "number" ? finiteNumber(tagsCovered) : undefined;
+  const tagsCovered = getStatusDistributionTotal(summary.statusDistribution);
 
   return (
     <DashboardPanel title="Current-period context">
       <p className="tag-dashboard-copy">
-        Showing {formatMetricValue(tagsCovered)} {tagsCoveredCount === 1 ? "tag" : "tags"} for{" "}
+        Showing {formatMetricValue(tagsCovered)} {tagsCovered === 1 ? "tag" : "tags"} for{" "}
         <strong>{formatPeriodLabel(currentScope ?? {})}</strong>. The active queues contain{" "}
         <strong>{formatMetricValue(smeQueueCount)}</strong> SME coverage{" "}
         {smeQueueCount === 1 ? "gap" : "gaps"} and <strong>{formatMetricValue(responseQueueCount)}</strong>{" "}
@@ -267,7 +266,7 @@ function TagQueuePanel({
                 const secondaryValue = formatQueueValue(row.secondaryMetricLabel, row.secondaryMetricValue);
 
                 return (
-                  <tr aria-label={`${row.tagName} ${primaryValue} ${secondaryValue}`} key={row.tagName}>
+                  <tr key={row.tagName}>
                     <td>{row.tagName}</td>
                     <td>{primaryValue}</td>
                     <td>{secondaryValue}</td>
@@ -295,7 +294,7 @@ function DashboardPanel({ title, children }: { title: string; children: ReactNod
 }
 
 function buildDistributionGradient(rows: TagStatusDistributionRow[]): string {
-  const total = rows.reduce((sum, row) => sum + finiteNumber(row.count), 0);
+  const total = getStatusDistributionTotal(rows);
   if (total === 0) return "var(--so-canvas-2)";
 
   let cursor = 0;
@@ -341,6 +340,10 @@ function formatDelta(delta: number): string {
 function formatQueueValue(label: string, value: number): string {
   const formattedValue = formatMetricValue(finiteNumber(value));
   return label === "Median first answer" ? `${formattedValue}h` : formattedValue;
+}
+
+function getStatusDistributionTotal(rows: TagStatusDistributionRow[]): number {
+  return rows.reduce((sum, row) => sum + finiteNumber(row.count), 0);
 }
 
 function finiteNumber(value: number | undefined): number {

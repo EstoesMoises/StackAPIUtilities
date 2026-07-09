@@ -47,6 +47,19 @@ export function ReportDashboard({
           comparisonScope,
         });
 
+  if (reportId === "tag-report") {
+    const tagHealthRows = normalizeTagHealthRows(records, outputSource);
+    const tagHealthComparisonRows =
+      comparisonRecords === undefined ? undefined : normalizeTagHealthRows(comparisonRecords, outputSource);
+    const summary = summarizeTagHealthRows(tagHealthRows, tagHealthComparisonRows);
+
+    return (
+      <DashboardLayout cards={[]} warnings={warnings} showCards={false}>
+        <TagReportDashboard summary={summary} currentScope={currentScope} comparisonScope={comparisonScope} />
+      </DashboardLayout>
+    );
+  }
+
   if (records.length === 0 && comparisonRecords === undefined) {
     return (
       <DashboardLayout cards={[]} warnings={warnings} />
@@ -59,19 +72,6 @@ export function ReportDashboard({
     if (liveInteractions.length > 0) {
       return renderInteractionsDashboard(liveInteractions as unknown as InteractionEdge[], comparisonSection, warnings);
     }
-  }
-
-  if (reportId === "tag-report") {
-    const tagHealthRows = normalizeTagHealthRows(records, outputSource);
-    const tagHealthComparisonRows =
-      comparisonRecords === undefined ? undefined : normalizeTagHealthRows(comparisonRecords, outputSource);
-    const summary = summarizeTagHealthRows(tagHealthRows, tagHealthComparisonRows);
-
-    return (
-      <DashboardLayout cards={[]} warnings={warnings} showCards={false}>
-        <TagReportDashboard summary={summary} currentScope={currentScope} comparisonScope={comparisonScope} />
-      </DashboardLayout>
-    );
   }
 
   if (outputSource === "live-api") {
