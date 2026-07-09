@@ -86,6 +86,12 @@ describe("DatasetsPanel", () => {
 
     expect(onFlushDatasets).toHaveBeenCalledOnce();
   });
+
+  it("hides the bulk flush action when no flush callback is available", () => {
+    render(<DatasetsPanel datasets={[liveDataset()]} onRemoveDataset={() => undefined} />);
+
+    expect(screen.queryByRole("button", { name: "Flush stored datasets" })).not.toBeInTheDocument();
+  });
 });
 
 function liveDataset(): SessionDataset {

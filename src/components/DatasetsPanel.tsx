@@ -6,7 +6,7 @@ import { downloadSessionDataset } from "../utils/datasetDownloads";
 interface DatasetsPanelProps {
   datasets: SessionDataset[];
   onRemoveDataset: (datasetId: string) => void;
-  onFlushDatasets: () => void;
+  onFlushDatasets?: () => void;
 }
 
 export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: DatasetsPanelProps) {
@@ -21,7 +21,7 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
             Datasets
           </h2>
         </div>
-        {sortedDatasets.length > 0 && (
+        {sortedDatasets.length > 0 && onFlushDatasets && (
           <button className="s-btn s-btn__outlined" type="button" onClick={onFlushDatasets}>
             Flush stored datasets
           </button>
