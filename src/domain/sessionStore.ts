@@ -1,3 +1,4 @@
+import { hydrateDatasetSessionState } from "./datasetPersistence";
 import type {
   DatasetName,
   PeriodScope,
@@ -37,6 +38,8 @@ type SessionAction =
       reportId: ReportId;
     }
   | { type: "dataset/remove"; datasetId: string }
+  | { type: "session/hydratePersistentDatasets"; snapshot: unknown }
+  | { type: "datasets/flush" }
   | { type: "session/reset" };
 
 export function createInitialSessionState(): SessionState {
@@ -210,6 +213,16 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           .filter((snapshot) => snapshot.datasetIds.length > 0),
       };
     }
+    case "session/hydratePersistentDatasets":
+      return hydrateDatasetSessionState(state, action.snapshot);
+    case "datasets/flush":
+      return {
+        ...state,
+        datasets: {},
+        reportOutputs: {},
+        reportRunSnapshots: [],
+        warnings: [],
+      };
     case "session/reset":
       return createInitialSessionState();
     default:

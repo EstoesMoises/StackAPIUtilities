@@ -224,4 +224,66 @@ describe("sessionStore", () => {
     expect(reset.reportOutputs).toEqual({});
     expect(reset.reportRunSnapshots).toEqual([]);
   });
+
+  it("hydrates persisted datasets without changing memory-only credentials", () => {
+    const withCredentials = sessionReducer(createInitialSessionState(), {
+      type: "credentials/set",
+      credentials: {
+        instanceType: "basic-business",
+        baseUrl: "https://stackoverflowteams.com/c/example",
+        pat: "pat-token",
+        authSource: "manual-pat",
+      },
+    });
+    const hydrated = sessionReducer(withCredentials, {
+      type: "session/hydratePersistentDatasets",
+      snapshot: {
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {
+          "dataset-1": {
+            id: "dataset-1",
+            name: "users",
+            records: [{ user_id: 1 }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "upload",
+          },
+        },
+        reportOutputs: {},
+        reportRunSnapshots: [],
+        warnings: [],
+      },
+    });
+
+    expect(hydrated.credentials).toBe(withCredentials.credentials);
+    expect(hydrated.selectedReportId).toBe("inactive-users");
+    expect(hydrated.datasets["dataset-1"]?.records).toEqual([{ user_id: 1 }]);
+  });
+
+  it("flushes datasets and report state while keeping credentials", () => {
+    const withCredentials = sessionReducer(createInitialSessionState(), {
+      type: "credentials/set",
+      credentials: {
+        instanceType: "basic-business",
+        baseUrl: "https://stackoverflowteams.com/c/example",
+        pat: "pat-token",
+        authSource: "manual-pat",
+      },
+    });
+    const withDataset = sessionReducer(withCredentials, {
+      type: "import/loaded",
+      datasetName: "tags",
+      fileName: "tag_metrics.csv",
+      records: [{ tagName: "python" }],
+      reportId: "tag-report",
+    });
+    const flushed = sessionReducer(withDataset, { type: "datasets/flush" });
+
+    expect(flushed.credentials).toBe(withCredentials.credentials);
+    expect(flushed.datasets).toEqual({});
+    expect(flushed.reportOutputs).toEqual({});
+    expect(flushed.reportRunSnapshots).toEqual([]);
+    expect(flushed.warnings).toEqual([]);
+  });
 });
