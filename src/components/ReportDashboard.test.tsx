@@ -157,30 +157,43 @@ describe("ReportDashboard", () => {
     expect(within(responseQueue).getByText("No tags need response attention.")).toBeInTheDocument();
   });
 
-  it("compares curated Tag Health rows by health status", () => {
+  it("renders Tag Health comparison deltas and fastest changes inside the hybrid dashboard", () => {
     render(
       <ReportDashboard
         reportId="tag-report"
         records={[
-          tagHealthRecord("python", "Healthy"),
-          tagHealthRecord("react", "Needs SME coverage"),
-          tagHealthRecord("typescript", "Needs SME coverage"),
+          tagHealthRecord("python", "Needs response attention", {
+            unanswered_questions: 6,
+            page_views: 900,
+            question_count: 10,
+          }),
+          tagHealthRecord("react", "Healthy", { sme_count: 2, page_views: 500, question_count: 4 }),
         ]}
         comparisonRecords={[
-          tagHealthRecord("python", "Healthy"),
-          tagHealthRecord("javascript", "Healthy"),
-          tagHealthRecord("java", "Needs response attention"),
+          tagHealthRecord("python", "Healthy", {
+            unanswered_questions: 1,
+            page_views: 700,
+            question_count: 8,
+          }),
+          tagHealthRecord("react", "Needs SME coverage", { sme_count: 0, page_views: 550, question_count: 5 }),
         ]}
+        currentScope={{ startDate: "2026-06-01", endDate: "2026-06-30" }}
+        comparisonScope={{ startDate: "2026-05-01", endDate: "2026-05-31" }}
       />,
     );
 
+    expect(
+      screen.getByText("Current period: 2026-06-01 to 2026-06-30 · Comparison: 2026-05-01 to 2026-05-31"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Period comparison")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Health status" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "Needs response attention 1 0 +1" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "Needs SME coverage 0 1 -1" })).toBeInTheDocument();
+    expect(screen.getByText("Fastest changes")).toBeInTheDocument();
+    expect(screen.getByText("Unanswered questions")).toBeInTheDocument();
+    expect(screen.getByText("+5")).toBeInTheDocument();
+    expect(screen.queryByText("Current Records")).not.toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Dataset" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("row", { name: /Records/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("row", { name: /Needs SME coverage 2 0 \+2/ })).toBeInTheDocument();
-    expect(screen.getByRole("row", { name: /Needs response attention 0 1 -1/ })).toBeInTheDocument();
-    expect(screen.getByRole("row", { name: /Healthy 1 2 -1/ })).toBeInTheDocument();
   });
 
   it("normalizes imported Tag Metric rows into Tag Health dashboard rows", () => {
@@ -220,7 +233,11 @@ function getRowByCellText(region: HTMLElement, cellText: string) {
   return row as HTMLElement;
 }
 
-function tagHealthRecord(tagName: string, healthStatus: string) {
+function tagHealthRecord(
+  tagName: string,
+  healthStatus: string,
+  overrides: Partial<Record<string, number | string>> = {},
+) {
   return {
     tag_name: tagName,
     health_status: healthStatus,
@@ -232,5 +249,6 @@ function tagHealthRecord(tagName: string, healthStatus: string) {
     unanswered_questions: healthStatus === "Needs response attention" ? 1 : 0,
     median_first_answer_hours: 2,
     recommended_action: "Maintain current coverage and response habits.",
+    ...overrides,
   };
 }

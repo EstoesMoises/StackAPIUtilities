@@ -27,13 +27,13 @@ export function TagReportDashboard({ summary, currentScope, comparisonScope }: T
           <p className="tag-dashboard-subtitle">Tag Health operations</p>
           <h3 id="tag-dashboard-title">Tag Health Dashboard</h3>
           <p className="tag-dashboard-copy">
-            Current period: <strong>{currentPeriod}</strong>
             {comparisonPeriod ? (
+              `Current period: ${currentPeriod} · Comparison: ${comparisonPeriod}`
+            ) : (
               <>
-                {" "}
-                <span aria-hidden="true">/</span> Compared with: <strong>{comparisonPeriod}</strong>
+                Current period: <strong>{currentPeriod}</strong>
               </>
-            ) : null}
+            )}
           </p>
         </div>
         <span className="tag-dashboard-pill">CSV aligned</span>
@@ -46,7 +46,7 @@ export function TagReportDashboard({ summary, currentScope, comparisonScope }: T
           <TagStatusDistribution rows={summary.statusDistribution} />
         </DashboardPanel>
         {summary.comparison ? (
-          <TagComparisonPanel
+          <TagPeriodComparison
             comparison={summary.comparison}
             currentScope={currentScope}
             comparisonScope={comparisonScope}
@@ -148,7 +148,7 @@ function TagOverviewNote({ summary, currentScope }: { summary: TagHealthSummary;
   );
 }
 
-function TagComparisonPanel({
+function TagPeriodComparison({
   comparison,
   currentScope,
   comparisonScope,
@@ -176,7 +176,7 @@ function TagComparisonPanel({
               <th scope="col">Health status</th>
               <th scope="col">Current</th>
               <th scope="col">Comparison</th>
-              <th scope="col">Change</th>
+              <th scope="col">Delta</th>
             </tr>
           </thead>
           <tbody>
@@ -195,37 +195,31 @@ function TagComparisonPanel({
           </tbody>
         </table>
       </div>
-      {comparison.fastestChanges.length === 0 ? null : (
-        <div className="tag-comparison-table-wrap">
-          <table className="tag-comparison-table">
-            <thead>
-              <tr>
-                <th scope="col">Tag</th>
-                <th scope="col">Metric</th>
-                <th scope="col">Current</th>
-                <th scope="col">Comparison</th>
-                <th scope="col">Change</th>
-              </tr>
-            </thead>
-            <tbody>
-              {comparison.fastestChanges.map((row) => (
-                <tr key={`${row.tagName}-${row.metric}`}>
-                  <td>{row.tagName}</td>
-                  <td>{row.metric}</td>
-                  <td>{formatMetricValue(row.current)}</td>
-                  <td>{formatMetricValue(row.comparison)}</td>
-                  <td>
-                    <span className={`tag-inline-delta tag-delta tag-delta__${row.deltaTone}`}>
-                      {formatDelta(row.delta)}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <TagFastestChanges rows={comparison.fastestChanges} />
     </DashboardPanel>
+  );
+}
+
+function TagFastestChanges({ rows }: { rows: TagHealthComparisonSummary["fastestChanges"] }) {
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="tag-fastest-changes">
+      <h5>Fastest changes</h5>
+      <ul className="tag-change-list" aria-label="Fastest changes">
+        {rows.map((row) => (
+          <li className="tag-change-row" key={`${row.tagName}-${row.metric}`}>
+            <strong>{row.tagName}</strong>
+            <span>{row.metric}</span>
+            <span className={`tag-inline-delta tag-delta tag-delta__${row.deltaTone}`}>
+              {formatDelta(row.delta)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

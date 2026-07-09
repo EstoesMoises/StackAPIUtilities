@@ -1300,6 +1300,45 @@ select:disabled {
   line-height: 1.4;
 }
 
+.tag-fastest-changes {
+  display: grid;
+  gap: 8px;
+}
+
+.tag-fastest-changes h5 {
+  margin: 0;
+  color: var(--so-ink);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.tag-change-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tag-change-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) minmax(120px, 1.3fr) minmax(44px, auto);
+  gap: 10px;
+  align-items: center;
+  min-height: 34px;
+  padding: 8px 9px;
+  border: 1px solid var(--so-border);
+  border-radius: 6px;
+  color: var(--so-text);
+  font-size: 13px;
+}
+
+.tag-change-row strong {
+  color: var(--so-ink);
+  overflow-wrap: anywhere;
+}
+
 .comparison-scope-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
