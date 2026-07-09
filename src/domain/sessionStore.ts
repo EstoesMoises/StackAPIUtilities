@@ -282,23 +282,31 @@ function removeDatasetFromReportOutput(output: ReportOutput, dataset: SessionDat
   }
 
   if (output.currentSnapshotId === dataset.snapshotId) {
+    const records = pruneDatasetRecords(output.records, dataset);
     const nextOutput: ReportOutput = {
       ...output,
-      records: [],
+      records,
     };
 
-    delete nextOutput.currentScope;
-    delete nextOutput.currentSnapshotId;
+    if (records.length === 0) {
+      delete nextOutput.currentScope;
+      delete nextOutput.currentSnapshotId;
+    }
 
     return hasReportOutputRecords(nextOutput) ? nextOutput : null;
   }
 
   if (output.comparisonSnapshotId === dataset.snapshotId) {
     const nextOutput: ReportOutput = { ...output };
+    const comparisonRecords = pruneDatasetRecords(output.comparisonRecords ?? [], dataset);
 
-    delete nextOutput.comparisonRecords;
-    delete nextOutput.comparisonScope;
-    delete nextOutput.comparisonSnapshotId;
+    if (comparisonRecords.length > 0) {
+      nextOutput.comparisonRecords = comparisonRecords;
+    } else {
+      delete nextOutput.comparisonRecords;
+      delete nextOutput.comparisonScope;
+      delete nextOutput.comparisonSnapshotId;
+    }
 
     return hasReportOutputRecords(nextOutput) ? nextOutput : null;
   }
@@ -318,6 +326,13 @@ function isUploadedReportOutputTiedToDataset(output: ReportOutput, dataset: Sess
 
 function hasReportOutputRecords(output: ReportOutput): boolean {
   return output.records.length > 0 || Boolean(output.comparisonRecords?.length);
+}
+
+function pruneDatasetRecords(
+  records: Record<string, unknown>[],
+  dataset: SessionDataset,
+): Record<string, unknown>[] {
+  return records.filter((record) => record.datasetName !== dataset.name);
 }
 
 function storeUploadedDataset(

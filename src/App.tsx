@@ -42,6 +42,7 @@ export function App() {
     selectedReportIds: state.selectedReportIds,
   });
   const suppressNextEmptyClearRef = useRef(false);
+  const explicitFlushRevisionRef = useRef(0);
 
   function markDatasetContentChanged() {
     datasetContentRevisionRef.current += 1;
@@ -74,6 +75,7 @@ export function App() {
     let active = true;
     const hydrationContentRevision = datasetContentRevisionRef.current;
     const hydrationSelectionRevision = reportSelectionRevisionRef.current;
+    const hydrationFlushRevision = explicitFlushRevisionRef.current;
 
     loadPersistedDatasetSession()
       .then((snapshot) => {
@@ -86,7 +88,9 @@ export function App() {
         }
 
         if (datasetContentRevisionRef.current !== hydrationContentRevision) {
-          suppressNextEmptyClearRef.current = true;
+          if (explicitFlushRevisionRef.current === hydrationFlushRevision) {
+            suppressNextEmptyClearRef.current = true;
+          }
           return;
         }
 
@@ -304,6 +308,7 @@ export function App() {
 
   function flushStoredDatasets() {
     markDatasetContentChanged();
+    explicitFlushRevisionRef.current += 1;
     dispatch({ type: "datasets/flush" });
     setRunQueue([]);
   }

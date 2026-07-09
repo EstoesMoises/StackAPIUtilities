@@ -211,7 +211,7 @@ describe("sessionStore", () => {
     expect(withoutDataset.datasets[datasetId]).toBeUndefined();
   });
 
-  it("clears live report output when removing a dataset from its run snapshot", () => {
+  it("prunes live report output records when removing one dataset from a multi-dataset snapshot", () => {
     const state = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",
       reportId: "inactive-users",
@@ -243,7 +243,14 @@ describe("sessionStore", () => {
     expect(Object.values(withoutDataset.datasets)[0]?.name).toBe("tags");
     expect(withoutDataset.reportRunSnapshots).toHaveLength(1);
     expect(withoutDataset.reportRunSnapshots[0]?.datasetIds).toEqual([Object.values(withoutDataset.datasets)[0]?.id]);
-    expect(withoutDataset.reportOutputs["inactive-users"]).toBeUndefined();
+    expect(withoutDataset.reportOutputs["inactive-users"]?.records).toEqual([
+      { datasetName: "tags", name: "python" },
+    ]);
+    expect(withoutDataset.reportOutputs["inactive-users"]?.currentScope).toEqual({
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+    });
+    expect(withoutDataset.reportOutputs["inactive-users"]?.currentSnapshotId).toEqual(datasetToRemove?.snapshotId);
   });
 
   it("keeps current output records when removing only a comparison live dataset", () => {
