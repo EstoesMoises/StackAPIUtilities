@@ -42,7 +42,7 @@ export function App() {
     selectedReportIds: state.selectedReportIds,
   });
   const suppressNextEmptyClearRef = useRef(false);
-  const explicitFlushRevisionRef = useRef(0);
+  const explicitEmptyRevisionRef = useRef(0);
 
   function markDatasetContentChanged() {
     datasetContentRevisionRef.current += 1;
@@ -75,7 +75,7 @@ export function App() {
     let active = true;
     const hydrationContentRevision = datasetContentRevisionRef.current;
     const hydrationSelectionRevision = reportSelectionRevisionRef.current;
-    const hydrationFlushRevision = explicitFlushRevisionRef.current;
+    const hydrationEmptyRevision = explicitEmptyRevisionRef.current;
 
     loadPersistedDatasetSession()
       .then((snapshot) => {
@@ -88,7 +88,7 @@ export function App() {
         }
 
         if (datasetContentRevisionRef.current !== hydrationContentRevision) {
-          if (explicitFlushRevisionRef.current === hydrationFlushRevision) {
+          if (explicitEmptyRevisionRef.current === hydrationEmptyRevision) {
             suppressNextEmptyClearRef.current = true;
           }
           return;
@@ -303,12 +303,15 @@ export function App() {
 
   function removeDataset(datasetId: string) {
     markDatasetContentChanged();
+    if (state.datasets[datasetId] && Object.keys(state.datasets).length === 1) {
+      explicitEmptyRevisionRef.current += 1;
+    }
     dispatch({ type: "dataset/remove", datasetId });
   }
 
   function flushStoredDatasets() {
     markDatasetContentChanged();
-    explicitFlushRevisionRef.current += 1;
+    explicitEmptyRevisionRef.current += 1;
     dispatch({ type: "datasets/flush" });
     setRunQueue([]);
   }

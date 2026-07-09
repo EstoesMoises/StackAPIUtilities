@@ -411,6 +411,78 @@ describe("AppShell", () => {
     expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
   });
 
+  it("clears stored datasets when row removal empties the session before slow hydration resolves", async () => {
+    const user = userEvent.setup();
+    const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
+    loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Remove tags upload dataset" }));
+
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+
+    await act(async () => {
+      loadDeferred.resolve({
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {
+          "stale-dataset": {
+            id: "stale-dataset",
+            snapshotId: "stale-snapshot",
+            reportId: "inactive-users",
+            name: "users",
+            records: [{ user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            periodRole: "current",
+          },
+        },
+        reportOutputs: {
+          "inactive-users": {
+            reportId: "inactive-users",
+            datasetName: "users",
+            fileName: "Stale API run",
+            records: [{ datasetName: "users", user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            currentSnapshotId: "stale-snapshot",
+          },
+        },
+        reportRunSnapshots: [
+          {
+            id: "stale-snapshot",
+            reportId: "inactive-users",
+            periodRole: "current",
+            scope: {},
+            pageSize: 100,
+            maxPagesPerDataset: 5,
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            datasetIds: ["stale-dataset"],
+            warnings: [],
+          },
+        ],
+        warnings: [],
+      });
+      await loadDeferred.promise;
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
+    expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
+  });
+
   it("keeps newer report selection and hydrates stored datasets when slow browser hydration resolves later", async () => {
     const user = userEvent.setup();
     const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();

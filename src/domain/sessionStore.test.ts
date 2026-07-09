@@ -114,6 +114,21 @@ describe("sessionStore", () => {
     expect(state.reportOutputs["tag-report"]?.records).toEqual([{ tagName: "python" }]);
   });
 
+  it("removes uploaded report output when removing its uploaded dataset", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "import/loaded",
+      datasetName: "tags",
+      fileName: "tag_metrics.csv",
+      records: [{ tagName: "python" }],
+      reportId: "tag-report",
+    });
+    const [datasetId] = Object.keys(state.datasets);
+    const withoutDataset = sessionReducer(state, { type: "dataset/remove", datasetId });
+
+    expect(withoutDataset.datasets[datasetId]).toBeUndefined();
+    expect(withoutDataset.reportOutputs["tag-report"]).toBeUndefined();
+  });
+
   it("stores live API datasets and exposes raw live report records", () => {
     const state = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",
