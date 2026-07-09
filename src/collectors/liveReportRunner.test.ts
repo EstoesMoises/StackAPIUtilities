@@ -61,6 +61,28 @@ describe("runLiveReport", () => {
     );
   });
 
+  it("does not attach Enterprise access tokens to v2-only dataset requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [{ user_id: 1, display_name: "Ada" }], has_more: false }), {
+        status: 200,
+      }),
+    );
+
+    await runLiveReport(
+      "inactive-users",
+      {
+        instanceType: "enterprise",
+        baseUrl: "https://demo.stackenterprise.co",
+        apiKey: "key",
+        accessToken: "mismatched-token",
+        authSource: "manual-enterprise-token",
+      },
+      { fetchFn: fetchMock },
+    );
+
+    expect(fetchMock.mock.calls[0][1]?.headers).toEqual({ "X-API-Key": "key" });
+  });
+
   it("collects mapped live datasets for a selected report", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ items: [{ user_id: 1, display_name: "Ada" }], has_more: false }), {
