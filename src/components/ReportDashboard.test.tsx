@@ -200,7 +200,7 @@ describe("ReportDashboard", () => {
     expect(screen.queryByRole("columnheader", { name: "Dataset" })).not.toBeInTheDocument();
   });
 
-  it("normalizes imported Tag Metric rows into Tag Health dashboard rows", () => {
+  it("normalizes imported Tag Metric rows into the hybrid Tag Health dashboard", () => {
     render(
       <ReportDashboard
         reportId="tag-report"
@@ -218,13 +218,34 @@ describe("ReportDashboard", () => {
       />,
     );
 
-    expect(screen.getByText("Tags Covered")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tag Health Dashboard" })).toBeInTheDocument();
     expect(screen.getByText("SME coverage queue")).toBeInTheDocument();
     expect(screen.getByLabelText("typescript: 450")).toBeInTheDocument();
     const smeQueue = screen.getByRole("region", { name: "SME coverage queue" });
     const typescriptRow = getRowByCellText(smeQueue, "typescript");
     expect(within(typescriptRow).getByRole("cell", { name: "8" })).toBeInTheDocument();
     expect(within(typescriptRow).getByRole("cell", { name: "0" })).toBeInTheDocument();
+  });
+
+  it("normalizes live Tag Report records into the hybrid dashboard", () => {
+    render(
+      <ReportDashboard
+        reportId="tag-report"
+        outputSource="live-api"
+        records={[
+          { datasetName: "tags", name: "python", count: 2 },
+          { datasetName: "questions", question_id: 1, tags: ["python"], answer_count: 0, view_count: 30 },
+          { datasetName: "tagSmes", tagName: "python", user_id: 96, score: 12 },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Tag Health Dashboard" })).toBeInTheDocument();
+    expect(screen.getByText("Response attention queue")).toBeInTheDocument();
+    const responseQueue = screen.getByRole("region", { name: "Response attention queue" });
+    const pythonRow = getRowByCellText(responseQueue, "python");
+    expect(within(pythonRow).getByRole("cell", { name: "1" })).toBeInTheDocument();
+    expect(within(pythonRow).getByRole("cell", { name: "0h" })).toBeInTheDocument();
   });
 });
 
