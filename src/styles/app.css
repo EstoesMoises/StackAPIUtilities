@@ -511,6 +511,14 @@ select:disabled {
   line-height: 1.3;
 }
 
+.preset-group-help {
+  max-width: 68ch;
+  margin: 0 0 10px;
+  color: var(--so-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .preset-options {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -567,6 +575,13 @@ select:disabled {
   font-size: 13px;
   font-weight: 800;
   line-height: 1.25;
+}
+
+.preset-option-records {
+  color: var(--so-ink);
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1.3;
 }
 
 .preset-option-copy {

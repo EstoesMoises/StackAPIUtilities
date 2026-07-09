@@ -36,10 +36,11 @@ describe("ReportScopePanel", () => {
 
     render(<ReportScopePanel reportId="tag-report" scope={DEFAULT_REPORT_RUN_SCOPE} onChange={onChange} />);
 
-    expect(screen.getByRole("group", { name: "Run depth" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Record coverage" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Standard report" })).toBeChecked();
-    expect(screen.getByText(/Requests up to 500 records per dataset/)).toBeInTheDocument();
-    expect(screen.getByText(/pageSize 100 and maxPagesPerDataset 5/)).toBeInTheDocument();
+    expect(screen.getByText("Up to 2,500 estimated records across 5 Tag Report data groups")).toBeInTheDocument();
+    expect(screen.getByText(/500 records per data group across 5 Tag Report data groups/)).toBeInTheDocument();
+    expect(screen.getByText(/Technical settings: pageSize 100, maxPagesPerDataset 5/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("radio", { name: "Deep audit" }));
 
@@ -86,7 +87,12 @@ describe("ReportScopePanel", () => {
     expect(screen.getByRole("radio", { name: "Standard report" })).not.toBeChecked();
     expect(screen.getByRole("radio", { name: "Quick sample" })).not.toBeChecked();
     expect(screen.getByRole("radio", { name: "Deep audit" })).not.toBeChecked();
-    expect(screen.getByText(/Custom API volume/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /Custom record coverage: up to 4,000 estimated records/,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /Technical settings: pageSize 100 and maxPagesPerDataset 8/,
+    );
 
     await user.click(screen.getByRole("radio", { name: "Standard report" }));
 
@@ -100,7 +106,7 @@ describe("ReportScopePanel", () => {
 
     render(<ReportScopePanel reportId="inactive-users" scope={DEFAULT_REPORT_RUN_SCOPE} onChange={onChange} />);
 
-    expect(screen.queryByRole("group", { name: "Run depth" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Record coverage" })).not.toBeInTheDocument();
     await user.clear(screen.getByLabelText("Page size"));
     await user.type(screen.getByLabelText("Page size"), "50");
 

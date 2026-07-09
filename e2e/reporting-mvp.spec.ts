@@ -27,9 +27,20 @@ test("Tag Report exposes guided preset details", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Tag Report" })).toBeVisible();
-  await expect(page.getByRole("group", { name: "Run depth" })).toBeVisible();
-  await expect(page.getByText("Requests up to 500 records per dataset")).toBeVisible();
+  const recordCoverage = page.getByRole("group", { name: "Record coverage" });
+
+  await expect(recordCoverage).toBeVisible();
+  await expect(
+    recordCoverage.locator(".preset-option-records").filter({
+      hasText: "Up to 2,500 estimated records across 5 Tag Report data groups",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("500 records per data group across 5 Tag Report data groups")).toBeVisible();
 
   await page.getByRole("radio", { name: "Deep audit" }).check();
-  await expect(page.getByText("Requests up to 2,000 records per dataset")).toBeVisible();
+  await expect(
+    recordCoverage.locator(".preset-option-records").filter({
+      hasText: "Up to 10,000 estimated records across 5 Tag Report data groups",
+    }),
+  ).toBeVisible();
 });

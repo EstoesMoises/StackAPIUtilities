@@ -2,8 +2,11 @@ import { useEffect, useId, useState } from "react";
 import {
   REPORT_RUN_PRESETS,
   applyReportRunPreset,
+  getEstimatedTotalRecordsForSettings,
+  getMaxRecordsForSettings,
   getReportRunPresetDisclosure,
   getReportRunPresetForSettings,
+  getReportRunPresetRecordSummary,
 } from "../domain/reportRunPresets";
 import { validateReportRunScope } from "../domain/reportScope";
 import type { ReportId, ReportRunPresetId, ReportRunScope } from "../domain/types";
@@ -21,6 +24,9 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const presetIdPrefix = useId();
   const selectedPreset = getReportRunPresetForSettings(scope.pageSize, scope.maxPagesPerDataset);
+  const selectedVolumeSummary = selectedPreset
+    ? getReportRunPresetRecordSummary(selectedPreset.id)
+    : getCustomVolumeSummary(scope);
 
   function updateCurrent(field: "startDate" | "endDate", value: string) {
     onChange({
@@ -116,11 +122,16 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
       </div>
       {isTagReport && (
         <>
-          <fieldset className="preset-group" aria-label="Run depth">
-            <legend>Run depth</legend>
+          <fieldset className="preset-group" aria-label="Record coverage">
+            <legend>Record coverage</legend>
+            <p className="preset-group-help">
+              Choose the amount of Tag Report data to collect. Higher record limits reduce the chance of
+              partial results, but can take longer to run.
+            </p>
             <div className="preset-options">
               {REPORT_RUN_PRESETS.map((preset) => {
                 const labelId = `${presetIdPrefix}-${preset.id}-label`;
+                const recordsId = `${presetIdPrefix}-${preset.id}-records`;
                 const copyId = `${presetIdPrefix}-${preset.id}-copy`;
                 const disclosureId = `${presetIdPrefix}-${preset.id}-disclosure`;
 
@@ -131,12 +142,15 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
                       name="tag-report-run-preset"
                       checked={selectedPreset?.id === preset.id}
                       aria-labelledby={labelId}
-                      aria-describedby={`${copyId} ${disclosureId}`}
+                      aria-describedby={`${recordsId} ${copyId} ${disclosureId}`}
                       onChange={() => updatePreset(preset.id)}
                     />
                     <span className="preset-option-main">
                       <span className="preset-option-label" id={labelId}>
                         {preset.label}
+                      </span>
+                      <span className="preset-option-records" id={recordsId}>
+                        {getReportRunPresetRecordSummary(preset.id)}
                       </span>
                       <span className="preset-option-copy" id={copyId}>
                         {preset.shortDescription}
@@ -152,10 +166,10 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
           </fieldset>
           {!selectedPreset && (
             <p className="preset-custom-note" role="status">
-              Custom API volume: pageSize {Number.isNaN(scope.pageSize) ? "unset" : scope.pageSize} and
-              maxPagesPerDataset{" "}
-              {Number.isNaN(scope.maxPagesPerDataset) ? "unset" : scope.maxPagesPerDataset}. Select a preset
-              above to restore its defaults.
+              {selectedVolumeSummary}. Technical settings: pageSize{" "}
+              {Number.isNaN(scope.pageSize) ? "unset" : scope.pageSize} and maxPagesPerDataset{" "}
+              {Number.isNaN(scope.maxPagesPerDataset) ? "unset" : scope.maxPagesPerDataset}. Select a
+              preset above to restore its defaults.
             </p>
           )}
           <details
@@ -166,8 +180,8 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
               Advanced API volume settings
             </summary>
             <p className="scope-help">
-              These collection caps affect runtime and completeness. Increase them when avoiding capped results
-              matters more than speed.
+              {selectedVolumeSummary}. These collection caps affect runtime and completeness. Increase them
+              when avoiding capped results matters more than speed.
             </p>
             <div className="scope-grid">{volumeControls}</div>
           </details>
@@ -217,6 +231,21 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
 
 function normalizeOptionalValue(value: string): string | undefined {
   return value.trim() === "" ? undefined : value;
+}
+
+function getCustomVolumeSummary(scope: ReportRunScope): string {
+  if (!Number.isFinite(scope.pageSize) || !Number.isFinite(scope.maxPagesPerDataset)) {
+    return "Custom record coverage is incomplete";
+  }
+
+  const totalRecords = getEstimatedTotalRecordsForSettings(scope.pageSize, scope.maxPagesPerDataset);
+  const recordsPerDataGroup = getMaxRecordsForSettings(scope.pageSize, scope.maxPagesPerDataset);
+
+  return `Custom record coverage: up to ${totalRecords.toLocaleString(
+    "en-US",
+  )} estimated records across 5 Tag Report data groups (${recordsPerDataGroup.toLocaleString(
+    "en-US",
+  )} per data group)`;
 }
 
 interface ScopeNumberFieldProps {
