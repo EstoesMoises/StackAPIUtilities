@@ -41,14 +41,16 @@ const knownReportIds = new Set<ReportId>(reportRegistry.map((report) => report.i
 const runPeriodRoles = new Set<RunPeriodRole>(["current", "comparison"]);
 
 export function createDatasetSessionSnapshot(state: SessionState): PersistedDatasetSessionSnapshot {
+  const datasets = parseDatasetRecord(state.datasets) ?? {};
+
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
     selectedReportId: state.selectedReportId,
-    selectedReportIds: [...state.selectedReportIds],
-    datasets: state.datasets,
-    reportOutputs: state.reportOutputs,
-    reportRunSnapshots: state.reportRunSnapshots,
-    warnings: state.warnings,
+    selectedReportIds: normalizeSelectedReportIds(state.selectedReportId, state.selectedReportIds),
+    datasets,
+    reportOutputs: parseReportOutputs(state.reportOutputs),
+    reportRunSnapshots: parseReportRunSnapshots(state.reportRunSnapshots, datasets),
+    warnings: parseWarnings(state.warnings),
   };
 }
 
@@ -91,6 +93,9 @@ export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSes
   const datasets = parseDatasetRecord(value.datasets);
 
   if (!datasets) {
+    return null;
+  }
+  if (!isRecord(value.reportOutputs) || !Array.isArray(value.reportRunSnapshots) || !Array.isArray(value.warnings)) {
     return null;
   }
 

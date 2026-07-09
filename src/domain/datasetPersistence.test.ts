@@ -82,6 +82,121 @@ describe("datasetPersistence", () => {
     expect(snapshot).not.toHaveProperty("runQueue");
   });
 
+  it("creates a snapshot with sanitized nested dataset and report state", () => {
+    const state = {
+      ...createInitialSessionState(),
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          name: "users",
+          records: [{ user_id: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          warnings: [
+            {
+              reportId: "inactive-users",
+              code: "dataset-warning",
+              message: "Dataset warning.",
+              credentials: { pat: "dataset-warning-secret" },
+              runQueue: [{ id: "dataset-warning-run" }],
+            },
+          ],
+          credentials: { pat: "dataset-secret" },
+          runQueue: [{ id: "dataset-run" }],
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [{ datasetName: "users", user_id: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+          warnings: [
+            {
+              reportId: "inactive-users",
+              code: "output-warning",
+              message: "Output warning.",
+              credentials: { pat: "output-warning-secret" },
+              runQueue: [{ id: "output-warning-run" }],
+            },
+          ],
+          credentials: { pat: "output-secret" },
+          runQueue: [{ id: "output-run" }],
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [
+            {
+              reportId: "inactive-users",
+              code: "snapshot-warning",
+              message: "Snapshot warning.",
+              credentials: { pat: "snapshot-warning-secret" },
+              runQueue: [{ id: "snapshot-warning-run" }],
+            },
+          ],
+          credentials: { pat: "snapshot-secret" },
+          runQueue: [{ id: "snapshot-run" }],
+        },
+      ],
+      warnings: [
+        {
+          reportId: "inactive-users",
+          code: "top-level-warning",
+          message: "Top-level warning.",
+          credentials: { pat: "top-level-secret" },
+          runQueue: [{ id: "top-level-run" }],
+        },
+      ],
+    } as unknown as SessionState;
+
+    const snapshot = createDatasetSessionSnapshot(state);
+
+    expect(snapshot.datasets["dataset-1"]).not.toHaveProperty("credentials");
+    expect(snapshot.datasets["dataset-1"]).not.toHaveProperty("runQueue");
+    expect(snapshot.datasets["dataset-1"]?.warnings?.[0]).toEqual({
+      reportId: "inactive-users",
+      code: "dataset-warning",
+      message: "Dataset warning.",
+    });
+    expect(snapshot.reportOutputs["inactive-users"]).not.toHaveProperty("credentials");
+    expect(snapshot.reportOutputs["inactive-users"]).not.toHaveProperty("runQueue");
+    expect(snapshot.reportOutputs["inactive-users"]?.warnings?.[0]).toEqual({
+      reportId: "inactive-users",
+      code: "output-warning",
+      message: "Output warning.",
+    });
+    expect(snapshot.reportRunSnapshots[0]).not.toHaveProperty("credentials");
+    expect(snapshot.reportRunSnapshots[0]).not.toHaveProperty("runQueue");
+    expect(snapshot.reportRunSnapshots[0]?.warnings[0]).toEqual({
+      reportId: "inactive-users",
+      code: "snapshot-warning",
+      message: "Snapshot warning.",
+    });
+    expect(snapshot.warnings[0]).toEqual({
+      reportId: "inactive-users",
+      code: "top-level-warning",
+      message: "Top-level warning.",
+    });
+  });
+
   it("hydrates valid persisted dataset state while preserving memory-only credentials", () => {
     const baseState: SessionState = {
       ...createInitialSessionState(),
@@ -149,6 +264,22 @@ describe("datasetPersistence", () => {
         warnings: [],
       }),
     ).toBeNull();
+  });
+
+  it("returns null for malformed top-level report state fields", () => {
+    const baseSnapshot = {
+      version: 1,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      datasets: {},
+      reportOutputs: {},
+      reportRunSnapshots: [],
+      warnings: [],
+    };
+
+    expect(parseDatasetSessionSnapshot({ ...baseSnapshot, reportOutputs: [] })).toBeNull();
+    expect(parseDatasetSessionSnapshot({ ...baseSnapshot, reportRunSnapshots: {} })).toBeNull();
+    expect(parseDatasetSessionSnapshot({ ...baseSnapshot, warnings: {} })).toBeNull();
   });
 
   it("falls back to the initial report selection when persisted report ids are unknown", () => {
