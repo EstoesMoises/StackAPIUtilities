@@ -557,6 +557,49 @@ describe("datasetPersistence", () => {
     expect(parsed?.reportRunSnapshots).toEqual([]);
   });
 
+  it("preserves valid run preset metadata on persisted report run snapshots", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 1,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ name: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+        },
+      },
+      reportOutputs: {},
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "tag-report",
+          periodRole: "current",
+          scope: {},
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    expect(parsed?.reportRunSnapshots[0]).toEqual(
+      expect.objectContaining({
+        id: "snapshot-1",
+        runPreset: "deep-audit",
+      }),
+    );
+  });
+
   it("rejects persisted datasets with unsafe prototype keys", () => {
     const parsed = parseDatasetSessionSnapshot(
       JSON.parse(`{

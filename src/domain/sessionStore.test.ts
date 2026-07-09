@@ -257,6 +257,43 @@ describe("sessionStore", () => {
     );
   });
 
+  it("removes transformed live output rows when removing their backing dataset", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "standard",
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+        },
+      ],
+    });
+    const [dataset] = Object.values(state.datasets);
+
+    expect(state.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 500,
+      }),
+    ]);
+    expect(state.reportOutputs["tag-report"]?.records[0]).not.toHaveProperty("datasetName");
+
+    const withoutDataset = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: dataset?.id ?? "",
+    });
+
+    expect(withoutDataset.datasets).toEqual({});
+    expect(withoutDataset.reportOutputs["tag-report"]).toBeUndefined();
+    expect(withoutDataset.reportRunSnapshots).toEqual([]);
+  });
+
   it("stores current and comparison live snapshots without overwriting dataset names", () => {
     const current = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",

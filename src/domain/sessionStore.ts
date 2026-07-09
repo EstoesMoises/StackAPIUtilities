@@ -348,6 +348,10 @@ function pruneDatasetRecords(
   records: Record<string, unknown>[],
   dataset: SessionDataset,
 ): Record<string, unknown>[] {
+  if (!records.some((record) => record.datasetName === dataset.name)) {
+    return [];
+  }
+
   return records.filter((record) => record.datasetName !== dataset.name);
 }
 

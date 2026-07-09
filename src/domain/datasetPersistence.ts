@@ -4,6 +4,7 @@ import type {
   PeriodScope,
   ReportId,
   ReportOutput,
+  ReportRunPresetId,
   ReportRunSnapshot,
   ReportWarning,
   RunPeriodRole,
@@ -39,6 +40,7 @@ const knownDatasetNames = new Set<DatasetName>([
 ]);
 const knownReportIds = new Set<ReportId>(reportRegistry.map((report) => report.id));
 const runPeriodRoles = new Set<RunPeriodRole>(["current", "comparison"]);
+const reportRunPresetIds = new Set<ReportRunPresetId>(["quick-sample", "standard", "deep-audit"]);
 
 export function createDatasetSessionSnapshot(state: SessionState): PersistedDatasetSessionSnapshot {
   const datasets = parseDatasetRecord(state.datasets) ?? {};
@@ -343,7 +345,8 @@ function parseReportRunSnapshot(
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
     !value.datasetIds.every((datasetId) => typeof datasetId === "string" && hasOwn(datasets, datasetId)) ||
-    !Array.isArray(value.warnings)
+    !Array.isArray(value.warnings) ||
+    (typeof value.runPreset !== "undefined" && !isReportRunPresetId(value.runPreset))
   ) {
     return null;
   }
@@ -354,7 +357,7 @@ function parseReportRunSnapshot(
     return null;
   }
 
-  return {
+  const snapshot: ReportRunSnapshot = {
     id: value.id,
     reportId: value.reportId,
     periodRole: value.periodRole,
@@ -365,6 +368,12 @@ function parseReportRunSnapshot(
     datasetIds: [...value.datasetIds],
     warnings: parseWarnings(value.warnings),
   };
+
+  if (isReportRunPresetId(value.runPreset)) {
+    snapshot.runPreset = value.runPreset;
+  }
+
+  return snapshot;
 }
 
 function parseWarning(value: unknown): ReportWarning | null {
@@ -399,6 +408,10 @@ function isDatasetName(value: unknown): value is DatasetName {
 
 function isRunPeriodRole(value: unknown): value is RunPeriodRole {
   return typeof value === "string" && runPeriodRoles.has(value as RunPeriodRole);
+}
+
+function isReportRunPresetId(value: unknown): value is ReportRunPresetId {
+  return typeof value === "string" && reportRunPresetIds.has(value as ReportRunPresetId);
 }
 
 function parseOptionalPeriodScope(value: unknown): PeriodScope | undefined | null {
