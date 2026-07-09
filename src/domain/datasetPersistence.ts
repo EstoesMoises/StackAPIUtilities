@@ -42,14 +42,15 @@ const runPeriodRoles = new Set<RunPeriodRole>(["current", "comparison"]);
 
 export function createDatasetSessionSnapshot(state: SessionState): PersistedDatasetSessionSnapshot {
   const datasets = parseDatasetRecord(state.datasets) ?? {};
+  const reportRunSnapshots = parseReportRunSnapshots(state.reportRunSnapshots, datasets);
 
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
     selectedReportId: state.selectedReportId,
     selectedReportIds: normalizeSelectedReportIds(state.selectedReportId, state.selectedReportIds),
     datasets,
-    reportOutputs: parseReportOutputs(state.reportOutputs),
-    reportRunSnapshots: parseReportRunSnapshots(state.reportRunSnapshots, datasets),
+    reportOutputs: parseReportOutputs(state.reportOutputs, datasets, reportRunSnapshots),
+    reportRunSnapshots,
     warnings: parseWarnings(state.warnings),
   };
 }
@@ -99,13 +100,15 @@ export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSes
     return null;
   }
 
+  const reportRunSnapshots = parseReportRunSnapshots(value.reportRunSnapshots, datasets);
+
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
     selectedReportId,
     selectedReportIds,
     datasets,
-    reportOutputs: parseReportOutputs(value.reportOutputs),
-    reportRunSnapshots: parseReportRunSnapshots(value.reportRunSnapshots, datasets),
+    reportOutputs: parseReportOutputs(value.reportOutputs, datasets, reportRunSnapshots),
+    reportRunSnapshots,
     warnings: parseWarnings(value.warnings),
   };
 }
@@ -130,7 +133,11 @@ function parseDatasetRecord(value: unknown): Record<string, SessionDataset> | nu
   return datasets;
 }
 
-function parseReportOutputs(value: unknown): Partial<Record<ReportId, ReportOutput>> {
+function parseReportOutputs(
+  value: unknown,
+  datasets: Record<string, SessionDataset>,
+  reportRunSnapshots: ReportRunSnapshot[],
+): Partial<Record<ReportId, ReportOutput>> {
   if (!isRecord(value)) {
     return {};
   }
@@ -140,7 +147,11 @@ function parseReportOutputs(value: unknown): Partial<Record<ReportId, ReportOutp
   for (const [key, output] of Object.entries(value)) {
     const parsedOutput = parseReportOutput(output);
 
-    if (isKnownReportId(key) && parsedOutput?.reportId === key) {
+    if (
+      isKnownReportId(key) &&
+      parsedOutput?.reportId === key &&
+      isReportOutputBackedByDatasetState(parsedOutput, datasets, reportRunSnapshots)
+    ) {
       outputs[key] = parsedOutput;
     }
   }
@@ -279,6 +290,35 @@ function parseReportOutput(value: unknown): ReportOutput | null {
   }
 
   return output;
+}
+
+function isReportOutputBackedByDatasetState(
+  output: ReportOutput,
+  datasets: Record<string, SessionDataset>,
+  reportRunSnapshots: ReportRunSnapshot[],
+): boolean {
+  if (output.source === "upload") {
+    return Object.values(datasets).some(
+      (dataset) =>
+        dataset.source === "upload" &&
+        dataset.reportId === output.reportId &&
+        dataset.name === output.datasetName &&
+        dataset.fileName === output.fileName &&
+        dataset.loadedAt === output.loadedAt,
+    );
+  }
+
+  const outputSnapshotIds = [output.currentSnapshotId, output.comparisonSnapshotId].filter(
+    (snapshotId): snapshotId is string => typeof snapshotId === "string",
+  );
+
+  if (outputSnapshotIds.length === 0) {
+    return false;
+  }
+
+  return outputSnapshotIds.every((snapshotId) =>
+    reportRunSnapshots.some((snapshot) => snapshot.id === snapshotId && snapshot.reportId === output.reportId),
+  );
 }
 
 function parseReportRunSnapshot(

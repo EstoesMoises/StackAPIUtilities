@@ -472,6 +472,65 @@ describe("datasetPersistence", () => {
     expect(parsed?.reportOutputs).toEqual({});
   });
 
+  it("drops report outputs that have no backing persisted dataset state", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "upload-dataset": {
+          id: "upload-dataset",
+          name: "tags",
+          records: [{ tagName: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+          reportId: "tag-report",
+          fileName: "tag_metrics.csv",
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [{ datasetName: "users", user_id: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentSnapshotId: "missing-snapshot",
+        },
+        "tag-report": {
+          reportId: "tag-report",
+          datasetName: "tags",
+          fileName: "tag_metrics.csv",
+          records: [{ tagName: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+        },
+        "api-user-report": {
+          reportId: "api-user-report",
+          datasetName: "users",
+          fileName: "users.csv",
+          records: [{ userId: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+        },
+      },
+      reportRunSnapshots: [],
+      warnings: [],
+    });
+
+    expect(parsed?.reportOutputs).toEqual({
+      "tag-report": {
+        reportId: "tag-report",
+        datasetName: "tags",
+        fileName: "tag_metrics.csv",
+        records: [{ tagName: "python" }],
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        source: "upload",
+      },
+    });
+  });
+
   it("drops report run snapshots whose dataset ids only exist on the object prototype", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 1,

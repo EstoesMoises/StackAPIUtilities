@@ -207,16 +207,19 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         return state;
       }
 
+      const reportRunSnapshots = state.reportRunSnapshots
+        .map((snapshot) => ({
+          ...snapshot,
+          datasetIds: snapshot.datasetIds.filter((datasetId) => datasetId !== action.datasetId),
+        }))
+        .filter((snapshot) => snapshot.datasetIds.length > 0);
+
       return {
         ...state,
         datasets: remainingDatasets,
         reportOutputs: removeReportOutputsForDataset(state.reportOutputs, removedDataset),
-        reportRunSnapshots: state.reportRunSnapshots
-          .map((snapshot) => ({
-            ...snapshot,
-            datasetIds: snapshot.datasetIds.filter((datasetId) => datasetId !== action.datasetId),
-          }))
-          .filter((snapshot) => snapshot.datasetIds.length > 0),
+        reportRunSnapshots,
+        warnings: pruneWarningsForRemainingDatasetState(state.warnings, remainingDatasets, reportRunSnapshots),
       };
     }
     case "session/hydratePersistentDatasets": {
@@ -333,6 +336,33 @@ function pruneDatasetRecords(
   dataset: SessionDataset,
 ): Record<string, unknown>[] {
   return records.filter((record) => record.datasetName !== dataset.name);
+}
+
+function pruneWarningsForRemainingDatasetState(
+  warnings: ReportWarning[],
+  datasets: Record<string, SessionDataset>,
+  reportRunSnapshots: SessionState["reportRunSnapshots"],
+): ReportWarning[] {
+  if (warnings.length === 0) {
+    return warnings;
+  }
+
+  const remainingWarnings = [
+    ...Object.values(datasets).flatMap((dataset) => dataset.warnings ?? []),
+    ...reportRunSnapshots.flatMap((snapshot) => snapshot.warnings),
+  ];
+
+  if (remainingWarnings.length === 0) {
+    return [];
+  }
+
+  return warnings.filter((warning) =>
+    remainingWarnings.some((remainingWarning) => isSameWarning(remainingWarning, warning)),
+  );
+}
+
+function isSameWarning(left: ReportWarning, right: ReportWarning): boolean {
+  return left.reportId === right.reportId && left.code === right.code && left.message === right.message;
 }
 
 function storeUploadedDataset(

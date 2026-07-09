@@ -268,6 +268,50 @@ describe("sessionStore", () => {
     expect(withoutDataset.reportOutputs["inactive-users"]?.currentSnapshotId).toEqual(datasetToRemove?.snapshotId);
   });
 
+  it("keeps live warnings until the last dataset from the warned snapshot is removed", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [{ reportId: "inactive-users", code: "dataset-cap-reached", message: "Partial data." }],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+        {
+          datasetName: "tags",
+          records: [{ name: "python" }],
+        },
+      ],
+    });
+    const usersDataset = Object.values(state.datasets).find((dataset) => dataset.name === "users");
+    const tagsDataset = Object.values(state.datasets).find((dataset) => dataset.name === "tags");
+
+    expect(usersDataset).toBeDefined();
+    expect(tagsDataset).toBeDefined();
+
+    const withoutUsers = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: usersDataset?.id ?? "",
+    });
+
+    expect(withoutUsers.warnings).toEqual([
+      { reportId: "inactive-users", code: "dataset-cap-reached", message: "Partial data." },
+    ]);
+
+    const withoutTags = sessionReducer(withoutUsers, {
+      type: "dataset/remove",
+      datasetId: tagsDataset?.id ?? "",
+    });
+
+    expect(withoutTags.reportRunSnapshots).toEqual([]);
+    expect(withoutTags.warnings).toEqual([]);
+  });
+
   it("keeps current output records when removing only a comparison live dataset", () => {
     const current = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",
