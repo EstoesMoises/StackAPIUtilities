@@ -13,13 +13,15 @@ The reporting MVP focuses on browser-ready read-only reports:
 - Community Members
 - Data Export
 
-Uploaded report outputs are parsed locally in the browser session and rendered as dashboards plus raw tables. Credentials and generated report data are session-only; the app does not persist credentials or report data in browser storage.
+Uploaded report outputs are parsed locally in the browser and rendered as dashboards plus raw tables. Credentials are session-only and are not persisted in browser storage. Loaded datasets are stored locally in this browser by default so report runs and uploads can survive refreshes, tab closes, and browser restarts until the user removes individual datasets or flushes all stored datasets from the Datasets panel.
 
 Live API execution runs through the same-origin Next.js route at `/api/reports/run`, which lets the server call Stack Enterprise or Teams APIs without browser CORS blocking credential headers. Reports that still need unsupported live datasets stop before fetching and direct users to upload existing CSV or JSON outputs.
 
 ## Credentials
 
-Credentials and generated report data are session-only; the app does not persist them in browser storage.
+Credentials are session-only; the app does not persist access tokens, API keys, PATs, OAuth client IDs, or OAuth state in browser storage.
+
+Loaded report datasets are stored locally in this browser by default. Use the Datasets panel to remove individual datasets or flush all stored datasets.
 
 The shared credentials screen supports three authentication lanes:
 

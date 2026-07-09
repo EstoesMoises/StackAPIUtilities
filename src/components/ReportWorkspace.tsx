@@ -51,7 +51,7 @@ export function ReportWorkspace({
         <span className="readiness-dot" aria-hidden="true" />
         <p className="m0">
           Ready for session credentials. Live API runs collect mapped datasets; uploads
-          render full script outputs.
+          render full script outputs. Loaded datasets stay in this browser until removed.
         </p>
       </div>
       <ReportScopePanel scope={scope} onChange={onScopeChange} />

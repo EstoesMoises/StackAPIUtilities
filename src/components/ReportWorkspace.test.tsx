@@ -18,7 +18,7 @@ describe("ReportWorkspace", () => {
     expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Ready for session credentials. Live API runs collect mapped datasets; uploads render full script outputs.",
+        "Ready for session credentials. Live API runs collect mapped datasets; uploads render full script outputs. Loaded datasets stay in this browser until removed.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run current period" })).toBeInTheDocument();
