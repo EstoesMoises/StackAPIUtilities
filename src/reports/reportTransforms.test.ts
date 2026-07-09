@@ -8,6 +8,7 @@ import {
   buildTagHealthRowsFromLiveRecords,
   summarizeTagHealthRows,
   summarizeTags,
+  type TagHealthRow,
   type TagMetricRow,
 } from "./tagReport";
 import { summarizeUsers } from "./userReport";
@@ -168,9 +169,170 @@ describe("report transforms", () => {
 
     expect(summary.metricCards).toContainEqual({ label: "Tags Covered", value: 3 });
     expect(summary.metricCards).toContainEqual({ label: "Response Attention", value: 1 });
+    expect(summary.metricCards).toContainEqual({ label: "SME Gaps", value: 1 });
     expect(summary.tagsNeedingResponse.map((row) => row.tag_name)).toEqual(["python"]);
     expect(summary.tagsNeedingSmeCoverage.map((row) => row.tag_name)).toEqual(["excel"]);
     expect(summary.topTagsByViews.map((row) => row.tag_name)).toEqual(["python", "r", "excel"]);
+  });
+
+  it("summarizes Tag Health rows with dashboard distribution and action queues", () => {
+    const summary = summarizeTagHealthRows([
+      tagHealthRow({
+        tag_name: "python",
+        health_status: "Needs response attention",
+        page_views: 500,
+        question_count: 8,
+        answer_count: 11,
+        sme_count: 2,
+        watcher_count: 20,
+        unanswered_questions: 3,
+        median_first_answer_hours: 36,
+        recommended_action: "Review unanswered questions and response time for this tag.",
+      }),
+      tagHealthRow({
+        tag_name: "react",
+        health_status: "Needs SME coverage",
+        page_views: 450,
+        question_count: 6,
+        answer_count: 4,
+        sme_count: 0,
+        watcher_count: 12,
+        unanswered_questions: 0,
+        median_first_answer_hours: 8,
+        recommended_action: "Assign or confirm SMEs for this tag.",
+      }),
+      tagHealthRow({
+        tag_name: "r",
+        health_status: "Healthy",
+        page_views: 250,
+        question_count: 5,
+        answer_count: 8,
+        sme_count: 1,
+        watcher_count: 12,
+        unanswered_questions: 0,
+        median_first_answer_hours: 5,
+        recommended_action: "Maintain current coverage and response habits.",
+      }),
+    ]);
+
+    expect(summary.totalQuestions).toBe(19);
+    expect(summary.metricCards).toEqual([
+      { label: "Tags Covered", value: 3 },
+      { label: "Healthy Tags", value: 1 },
+      { label: "SME Gaps", value: 1 },
+      { label: "Response Attention", value: 1 },
+      { label: "Questions", value: 19 },
+    ]);
+    expect(summary.statusDistribution.map((row) => [row.status, row.count])).toEqual([
+      ["Healthy", 1],
+      ["Needs SME coverage", 1],
+      ["Needs response attention", 1],
+      ["Low activity", 0],
+    ]);
+    expect(summary.smeCoverageQueue).toEqual([
+      {
+        tagName: "react",
+        primaryMetricLabel: "Questions",
+        primaryMetricValue: 6,
+        secondaryMetricLabel: "SMEs",
+        secondaryMetricValue: 0,
+        recommendedAction: "Assign or confirm SMEs for this tag.",
+      },
+    ]);
+    expect(summary.responseAttentionQueue).toEqual([
+      {
+        tagName: "python",
+        primaryMetricLabel: "Unanswered",
+        primaryMetricValue: 3,
+        secondaryMetricLabel: "Median first answer",
+        secondaryMetricValue: 36,
+        recommendedAction: "Review unanswered questions and response time for this tag.",
+      },
+    ]);
+  });
+
+  it("summarizes Tag Health comparison rows for KPI deltas, status movement, and fastest changes", () => {
+    const summary = summarizeTagHealthRows(
+      [
+        tagHealthRow({
+          tag_name: "python",
+          health_status: "Needs response attention",
+          page_views: 900,
+          question_count: 10,
+          answer_count: 8,
+          sme_count: 1,
+          watcher_count: 10,
+          unanswered_questions: 6,
+          median_first_answer_hours: 30,
+          recommended_action: "Review unanswered questions and response time for this tag.",
+        }),
+        tagHealthRow({
+          tag_name: "react",
+          health_status: "Healthy",
+          page_views: 500,
+          question_count: 4,
+          answer_count: 8,
+          sme_count: 2,
+          watcher_count: 8,
+          unanswered_questions: 0,
+          median_first_answer_hours: 4,
+          recommended_action: "Maintain current coverage and response habits.",
+        }),
+      ],
+      [
+        tagHealthRow({
+          tag_name: "python",
+          health_status: "Healthy",
+          page_views: 700,
+          question_count: 8,
+          answer_count: 8,
+          sme_count: 1,
+          watcher_count: 9,
+          unanswered_questions: 1,
+          median_first_answer_hours: 6,
+          recommended_action: "Maintain current coverage and response habits.",
+        }),
+        tagHealthRow({
+          tag_name: "react",
+          health_status: "Needs SME coverage",
+          page_views: 550,
+          question_count: 5,
+          answer_count: 5,
+          sme_count: 0,
+          watcher_count: 8,
+          unanswered_questions: 0,
+          median_first_answer_hours: 5,
+          recommended_action: "Assign or confirm SMEs for this tag.",
+        }),
+      ],
+    );
+
+    expect(summary.metricCards).toContainEqual({
+      label: "Response Attention",
+      value: 1,
+      delta: 1,
+      deltaTone: "bad",
+    });
+    expect(summary.metricCards).toContainEqual({
+      label: "SME Gaps",
+      value: 0,
+      delta: -1,
+      deltaTone: "good",
+    });
+    expect(summary.comparison?.statusRows).toEqual([
+      { status: "Healthy", current: 1, comparison: 1, delta: 0, deltaTone: "neutral" },
+      { status: "Needs SME coverage", current: 0, comparison: 1, delta: -1, deltaTone: "good" },
+      { status: "Needs response attention", current: 1, comparison: 0, delta: 1, deltaTone: "bad" },
+      { status: "Low activity", current: 0, comparison: 0, delta: 0, deltaTone: "neutral" },
+    ]);
+    expect(summary.comparison?.fastestChanges[0]).toMatchObject({
+      tagName: "python",
+      metric: "Unanswered questions",
+      current: 6,
+      comparison: 1,
+      delta: 5,
+      deltaTone: "bad",
+    });
   });
 
   it("builds Tag Health rows from live tag, question, and tag SME records", () => {
@@ -300,3 +462,19 @@ describe("report transforms", () => {
     expect(summary.datasetCounts).toEqual({ users: 1, tags: 2 });
   });
 });
+
+function tagHealthRow(overrides: Partial<TagHealthRow>): TagHealthRow {
+  return {
+    tag_name: "tag",
+    health_status: "Healthy",
+    page_views: 0,
+    question_count: 0,
+    answer_count: 0,
+    sme_count: 0,
+    watcher_count: 0,
+    unanswered_questions: 0,
+    median_first_answer_hours: 0,
+    recommended_action: "Maintain current coverage and response habits.",
+    ...overrides,
+  };
+}

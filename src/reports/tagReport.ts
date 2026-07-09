@@ -30,6 +30,52 @@ export interface TagHealthRow {
   recommended_action: string;
 }
 
+export type TagDashboardDeltaTone = "good" | "bad" | "neutral";
+
+export interface TagDashboardMetricCard extends MetricCard {
+  delta?: number;
+  deltaTone?: TagDashboardDeltaTone;
+}
+
+export interface TagStatusDistributionRow {
+  status: TagHealthStatus;
+  count: number;
+  comparisonCount?: number;
+  delta?: number;
+  deltaTone?: TagDashboardDeltaTone;
+}
+
+export interface TagActionQueueRow {
+  tagName: string;
+  primaryMetricLabel: string;
+  primaryMetricValue: number;
+  secondaryMetricLabel: string;
+  secondaryMetricValue: number;
+  recommendedAction: string;
+}
+
+export interface TagHealthComparisonStatusRow {
+  status: TagHealthStatus;
+  current: number;
+  comparison: number;
+  delta: number;
+  deltaTone: TagDashboardDeltaTone;
+}
+
+export interface TagFastestChangeRow {
+  tagName: string;
+  metric: string;
+  current: number;
+  comparison: number;
+  delta: number;
+  deltaTone: TagDashboardDeltaTone;
+}
+
+export interface TagHealthComparisonSummary {
+  statusRows: TagHealthComparisonStatusRow[];
+  fastestChanges: TagFastestChangeRow[];
+}
+
 export const TAG_HEALTH_CSV_HEADERS = [
   "tag_name",
   "health_status",
@@ -44,11 +90,16 @@ export const TAG_HEALTH_CSV_HEADERS = [
 ] as const satisfies readonly (keyof TagHealthRow)[];
 
 export interface TagHealthSummary {
-  metricCards: MetricCard[];
+  metricCards: TagDashboardMetricCard[];
+  totalQuestions: number;
   healthStatusCounts: Record<TagHealthStatus, number>;
+  statusDistribution: TagStatusDistributionRow[];
   topTagsByViews: TagHealthRow[];
   tagsNeedingResponse: TagHealthRow[];
   tagsNeedingSmeCoverage: TagHealthRow[];
+  smeCoverageQueue: TagActionQueueRow[];
+  responseAttentionQueue: TagActionQueueRow[];
+  comparison?: TagHealthComparisonSummary;
 }
 
 interface LiveTagAggregate {
@@ -72,6 +123,7 @@ const TAG_HEALTH_STATUSES: TagHealthStatus[] = [
   "Needs response attention",
   "Low activity",
 ];
+type TagDashboardDeltaDirection = "increase-good" | "decrease-good" | "neutral";
 
 export function summarizeTags(rows: TagMetricRow[]) {
   const totalViews = rows.reduce((sum, row) => sum + metricNumber(row.totalPageViews), 0);
@@ -134,16 +186,17 @@ export function buildTagHealthRows(rows: readonly Record<string, unknown>[]): Ta
   });
 }
 
-export function summarizeTagHealthRows(rows: readonly TagHealthRow[]): TagHealthSummary {
-  const healthStatusCounts = TAG_HEALTH_STATUSES.reduce<Record<TagHealthStatus, number>>((counts, status) => {
-    counts[status] = 0;
-    return counts;
-  }, {} as Record<TagHealthStatus, number>);
-
-  for (const row of rows) {
-    healthStatusCounts[row.health_status] = (healthStatusCounts[row.health_status] ?? 0) + 1;
-  }
-
+export function summarizeTagHealthRows(
+  rows: readonly TagHealthRow[],
+  comparisonRows?: readonly TagHealthRow[],
+): TagHealthSummary {
+  const healthStatusCounts = countHealthStatuses(rows);
+  const comparisonHealthStatusCounts = comparisonRows === undefined ? undefined : countHealthStatuses(comparisonRows);
+  const totalQuestions = rows.reduce((sum, row) => sum + metricNumber(row.question_count), 0);
+  const comparisonTotalQuestions =
+    comparisonRows === undefined
+      ? undefined
+      : comparisonRows.reduce((sum, row) => sum + metricNumber(row.question_count), 0);
   const tagsNeedingResponse = [...rows]
     .filter((row) => row.health_status === "Needs response attention")
     .sort(
@@ -165,13 +218,26 @@ export function summarizeTagHealthRows(rows: readonly TagHealthRow[]): TagHealth
     .slice(0, 10);
 
   return {
-    metricCards: [
-      { label: "Tags Covered", value: rows.length },
-      { label: "Healthy Tags", value: healthStatusCounts.Healthy },
-      { label: "Response Attention", value: healthStatusCounts["Needs response attention"] },
-      { label: "SME Coverage", value: healthStatusCounts["Needs SME coverage"] },
-    ],
+    metricCards: buildTagDashboardMetricCards({
+      rowCount: rows.length,
+      healthyCount: healthStatusCounts.Healthy,
+      smeGapCount: healthStatusCounts["Needs SME coverage"],
+      responseAttentionCount: healthStatusCounts["Needs response attention"],
+      totalQuestions,
+      comparison:
+        comparisonRows === undefined || comparisonHealthStatusCounts === undefined || comparisonTotalQuestions === undefined
+          ? undefined
+          : {
+              rowCount: comparisonRows.length,
+              healthyCount: comparisonHealthStatusCounts.Healthy,
+              smeGapCount: comparisonHealthStatusCounts["Needs SME coverage"],
+              responseAttentionCount: comparisonHealthStatusCounts["Needs response attention"],
+              totalQuestions: comparisonTotalQuestions,
+            },
+    }),
+    totalQuestions,
     healthStatusCounts,
+    statusDistribution: buildStatusDistribution(healthStatusCounts, comparisonHealthStatusCounts),
     topTagsByViews: [...rows]
       .sort(
         (a, b) =>
@@ -182,7 +248,222 @@ export function summarizeTagHealthRows(rows: readonly TagHealthRow[]): TagHealth
       .slice(0, 10),
     tagsNeedingResponse,
     tagsNeedingSmeCoverage,
+    smeCoverageQueue: tagsNeedingSmeCoverage.map((row) => ({
+      tagName: row.tag_name,
+      primaryMetricLabel: "Questions",
+      primaryMetricValue: metricNumber(row.question_count),
+      secondaryMetricLabel: "SMEs",
+      secondaryMetricValue: metricNumber(row.sme_count),
+      recommendedAction: row.recommended_action,
+    })),
+    responseAttentionQueue: tagsNeedingResponse.map((row) => ({
+      tagName: row.tag_name,
+      primaryMetricLabel: "Unanswered",
+      primaryMetricValue: metricNumber(row.unanswered_questions),
+      secondaryMetricLabel: "Median first answer",
+      secondaryMetricValue: metricNumber(row.median_first_answer_hours),
+      recommendedAction: row.recommended_action,
+    })),
+    comparison:
+      comparisonRows === undefined || comparisonHealthStatusCounts === undefined
+        ? undefined
+        : {
+            statusRows: buildComparisonStatusRows(healthStatusCounts, comparisonHealthStatusCounts),
+            fastestChanges: buildFastestChanges(rows, comparisonRows),
+          },
   };
+}
+
+function countHealthStatuses(rows: readonly TagHealthRow[]): Record<TagHealthStatus, number> {
+  const counts = TAG_HEALTH_STATUSES.reduce<Record<TagHealthStatus, number>>((statusCounts, status) => {
+    statusCounts[status] = 0;
+    return statusCounts;
+  }, {} as Record<TagHealthStatus, number>);
+
+  for (const row of rows) {
+    counts[row.health_status] = (counts[row.health_status] ?? 0) + 1;
+  }
+
+  return counts;
+}
+
+function buildTagDashboardMetricCards({
+  rowCount,
+  healthyCount,
+  smeGapCount,
+  responseAttentionCount,
+  totalQuestions,
+  comparison,
+}: {
+  rowCount: number;
+  healthyCount: number;
+  smeGapCount: number;
+  responseAttentionCount: number;
+  totalQuestions: number;
+  comparison?: {
+    rowCount: number;
+    healthyCount: number;
+    smeGapCount: number;
+    responseAttentionCount: number;
+    totalQuestions: number;
+  };
+}): TagDashboardMetricCard[] {
+  return [
+    buildMetricCard("Tags Covered", rowCount, comparison?.rowCount, "neutral"),
+    buildMetricCard("Healthy Tags", healthyCount, comparison?.healthyCount, "increase-good"),
+    buildMetricCard("SME Gaps", smeGapCount, comparison?.smeGapCount, "decrease-good"),
+    buildMetricCard(
+      "Response Attention",
+      responseAttentionCount,
+      comparison?.responseAttentionCount,
+      "decrease-good",
+    ),
+    buildMetricCard("Questions", totalQuestions, comparison?.totalQuestions, "neutral"),
+  ];
+}
+
+function buildMetricCard(
+  label: string,
+  value: number,
+  comparisonValue: number | undefined,
+  direction: TagDashboardDeltaDirection,
+): TagDashboardMetricCard {
+  if (comparisonValue === undefined) return { label, value };
+
+  const delta = value - comparisonValue;
+  return {
+    label,
+    value,
+    delta,
+    deltaTone: getDeltaTone(delta, direction),
+  };
+}
+
+function buildStatusDistribution(
+  currentCounts: Record<TagHealthStatus, number>,
+  comparisonCounts?: Record<TagHealthStatus, number>,
+): TagStatusDistributionRow[] {
+  return TAG_HEALTH_STATUSES.map((status) => {
+    const count = currentCounts[status] ?? 0;
+    const comparisonCount = comparisonCounts?.[status];
+    const delta = comparisonCount === undefined ? undefined : count - comparisonCount;
+
+    return {
+      status,
+      count,
+      comparisonCount,
+      delta,
+      deltaTone: delta === undefined ? undefined : getStatusDeltaTone(status, delta),
+    };
+  });
+}
+
+function buildComparisonStatusRows(
+  currentCounts: Record<TagHealthStatus, number>,
+  comparisonCounts: Record<TagHealthStatus, number>,
+): TagHealthComparisonStatusRow[] {
+  return TAG_HEALTH_STATUSES.map((status) => {
+    const current = currentCounts[status] ?? 0;
+    const comparison = comparisonCounts[status] ?? 0;
+    const delta = current - comparison;
+
+    return {
+      status,
+      current,
+      comparison,
+      delta,
+      deltaTone: getStatusDeltaTone(status, delta),
+    };
+  });
+}
+
+function buildFastestChanges(
+  rows: readonly TagHealthRow[],
+  comparisonRows: readonly TagHealthRow[],
+): TagFastestChangeRow[] {
+  const comparisonByTag = new Map(comparisonRows.map((row) => [row.tag_name, row]));
+  const changes: TagFastestChangeRow[] = [];
+
+  for (const row of rows) {
+    const comparison = comparisonByTag.get(row.tag_name);
+    if (!comparison) continue;
+
+    pushChange(
+      changes,
+      row.tag_name,
+      "Unanswered questions",
+      row.unanswered_questions,
+      comparison.unanswered_questions,
+      "decrease-good",
+    );
+    pushChange(changes, row.tag_name, "SMEs", row.sme_count, comparison.sme_count, "increase-good");
+    pushChange(changes, row.tag_name, "Questions", row.question_count, comparison.question_count, "neutral");
+    pushChange(changes, row.tag_name, "Page views", row.page_views, comparison.page_views, "neutral");
+  }
+
+  return changes
+    .sort(
+      (a, b) =>
+        getChangePriority(a.metric) - getChangePriority(b.metric) ||
+        Math.abs(b.delta) - Math.abs(a.delta) ||
+        b.current - a.current ||
+        a.tagName.localeCompare(b.tagName) ||
+        a.metric.localeCompare(b.metric),
+    )
+    .slice(0, 6);
+}
+
+function pushChange(
+  changes: TagFastestChangeRow[],
+  tagName: string,
+  metric: string,
+  currentValue: number,
+  comparisonValue: number,
+  direction: TagDashboardDeltaDirection,
+) {
+  const current = metricNumber(currentValue);
+  const comparison = metricNumber(comparisonValue);
+  const delta = current - comparison;
+  if (delta === 0) return;
+
+  changes.push({
+    tagName,
+    metric,
+    current,
+    comparison,
+    delta,
+    deltaTone: getDeltaTone(delta, direction),
+  });
+}
+
+function getChangePriority(metric: string): number {
+  switch (metric) {
+    case "Unanswered questions":
+      return 1;
+    case "SMEs":
+      return 2;
+    case "Questions":
+      return 3;
+    case "Page views":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
+function getStatusDeltaTone(status: TagHealthStatus, delta: number): TagDashboardDeltaTone {
+  if (delta === 0) return "neutral";
+  if (status === "Healthy") return delta > 0 ? "good" : "bad";
+  if (status === "Needs SME coverage" || status === "Needs response attention") {
+    return delta < 0 ? "good" : "bad";
+  }
+  return "neutral";
+}
+
+function getDeltaTone(delta: number, direction: TagDashboardDeltaDirection): TagDashboardDeltaTone {
+  if (delta === 0 || direction === "neutral") return "neutral";
+  if (direction === "increase-good") return delta > 0 ? "good" : "bad";
+  return delta < 0 ? "good" : "bad";
 }
 
 export function buildTagHealthRowsFromLiveRecords(records: readonly Record<string, unknown>[]): TagHealthRow[] {
