@@ -346,10 +346,73 @@ describe("sessionStore", () => {
     expect(withoutQuestions.reportOutputs["tag-report"]?.records).toEqual([
       expect.objectContaining({
         tag_name: "python",
-        page_views: 525,
+        page_views: 500,
+        question_count: 4,
       }),
     ]);
     expect(withoutQuestions.reportOutputs["tag-report"]?.currentSnapshotId).toBe(questionsDataset?.snapshotId);
+  });
+
+  it("rebuilds transformed live output rows after removing their primary backing dataset", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "standard",
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+        },
+        {
+          datasetName: "questions",
+          records: [
+            {
+              question_id: 10,
+              tags: ["python"],
+              answer_count: 1,
+              view_count: 25,
+            },
+          ],
+        },
+        {
+          datasetName: "tagSmes",
+          records: [{ tagName: "python", user_id: 1 }],
+        },
+      ],
+    });
+    const tagsDataset = Object.values(state.datasets).find((dataset) => dataset.name === "tags");
+
+    expect(state.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 525,
+        question_count: 1,
+        sme_count: 1,
+      }),
+    ]);
+
+    const withoutTags = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: tagsDataset?.id ?? "",
+    });
+
+    expect(Object.values(withoutTags.datasets)).toHaveLength(2);
+    expect(Object.values(withoutTags.datasets).map((dataset) => dataset.name)).toEqual(["questions", "tagSmes"]);
+    expect(withoutTags.reportRunSnapshots).toHaveLength(1);
+    expect(withoutTags.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 25,
+        question_count: 1,
+        sme_count: 1,
+      }),
+    ]);
+    expect(withoutTags.reportOutputs["tag-report"]?.currentSnapshotId).toBe(tagsDataset?.snapshotId);
   });
 
   it("stores current and comparison live snapshots without overwriting dataset names", () => {

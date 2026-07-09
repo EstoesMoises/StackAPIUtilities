@@ -230,7 +230,12 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return {
         ...state,
         datasets: remainingDatasets,
-        reportOutputs: removeReportOutputsForDataset(state.reportOutputs, removedDataset, reportRunSnapshots),
+        reportOutputs: removeReportOutputsForDataset(
+          state.reportOutputs,
+          removedDataset,
+          reportRunSnapshots,
+          remainingDatasets,
+        ),
         reportRunSnapshots,
         warnings: pruneWarningsForRemainingDatasetState(state.warnings, remainingDatasets, reportRunSnapshots),
       };
@@ -267,6 +272,7 @@ function removeReportOutputsForDataset(
   reportOutputs: SessionState["reportOutputs"],
   removedDataset: SessionDataset,
   retainedReportRunSnapshots: SessionState["reportRunSnapshots"],
+  remainingDatasets: SessionState["datasets"],
 ): SessionState["reportOutputs"] {
   const nextReportOutputs = { ...reportOutputs };
   const retainedSnapshotIds = new Set(retainedReportRunSnapshots.map((snapshot) => snapshot.id));
@@ -278,7 +284,7 @@ function removeReportOutputsForDataset(
       continue;
     }
 
-    const nextOutput = removeDatasetFromReportOutput(output, removedDataset, retainedSnapshotIds);
+    const nextOutput = removeDatasetFromReportOutput(output, removedDataset, retainedSnapshotIds, remainingDatasets);
 
     if (nextOutput) {
       nextReportOutputs[reportId] = nextOutput;
@@ -294,6 +300,7 @@ function removeDatasetFromReportOutput(
   output: ReportOutput,
   dataset: SessionDataset,
   retainedSnapshotIds: ReadonlySet<string>,
+  remainingDatasets: SessionState["datasets"],
 ): ReportOutput | null {
   if (isUploadedReportOutputTiedToDataset(output, dataset)) {
     return null;
@@ -304,7 +311,14 @@ function removeDatasetFromReportOutput(
   }
 
   if (output.currentSnapshotId === dataset.snapshotId) {
-    const records = pruneDatasetRecords(output.records, dataset, retainedSnapshotIds.has(dataset.snapshotId));
+    const records = pruneDatasetRecords(
+      output.records,
+      dataset,
+      retainedSnapshotIds.has(dataset.snapshotId),
+      output.reportId,
+      dataset.snapshotId,
+      remainingDatasets,
+    );
     const nextOutput: ReportOutput = {
       ...output,
       records,
@@ -324,6 +338,9 @@ function removeDatasetFromReportOutput(
       output.comparisonRecords ?? [],
       dataset,
       retainedSnapshotIds.has(dataset.snapshotId),
+      output.reportId,
+      dataset.snapshotId,
+      remainingDatasets,
     );
 
     if (comparisonRecords.length > 0) {
@@ -358,12 +375,50 @@ function pruneDatasetRecords(
   records: Record<string, unknown>[],
   dataset: SessionDataset,
   isSnapshotRetained: boolean,
+  reportId: ReportId,
+  snapshotId: string,
+  remainingDatasets: SessionState["datasets"],
 ): Record<string, unknown>[] {
-  if (!records.some((record) => record.datasetName === dataset.name)) {
-    return isSnapshotRetained ? records : [];
+  if (records.some((record) => Object.prototype.hasOwnProperty.call(record, "datasetName"))) {
+    return records.filter((record) => record.datasetName !== dataset.name);
   }
 
-  return records.filter((record) => record.datasetName !== dataset.name);
+  if (!isSnapshotRetained) {
+    return [];
+  }
+
+  return buildVisibleReportRecordsForSnapshot(reportId, snapshotId, remainingDatasets);
+}
+
+function buildVisibleReportRecordsForSnapshot(
+  reportId: ReportId,
+  snapshotId: string,
+  datasets: SessionState["datasets"],
+): Record<string, unknown>[] {
+  const reportRecords = Object.values(datasets)
+    .filter(
+      (dataset) =>
+        dataset.source === "live-api" && dataset.snapshotId === snapshotId && dataset.reportId === reportId,
+    )
+    .flatMap((dataset) =>
+      dataset.records.map((record) => createReportRecord(dataset.name, record)),
+    );
+
+  return reportId === "tag-report"
+    ? buildTagHealthRowsFromLiveRecords(reportRecords).map((record) => ({ ...record }))
+    : reportRecords;
+}
+
+function createReportRecord(datasetName: DatasetName, record: unknown): Record<string, unknown> {
+  if (isRecordObject(record)) {
+    return { datasetName, ...record };
+  }
+
+  return { datasetName, value: record };
+}
+
+function isRecordObject(record: unknown): record is Record<string, unknown> {
+  return typeof record === "object" && record !== null && !Array.isArray(record);
 }
 
 function pruneWarningsForRemainingDatasetState(
