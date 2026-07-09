@@ -150,7 +150,8 @@ describe("AppShell", () => {
     expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
     await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
 
-    const savedSnapshot = savePersistedDatasetSessionMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    const saveCalls = savePersistedDatasetSessionMock.mock.calls;
+    const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0] as unknown as Record<string, unknown>;
     expect(savedSnapshot).toMatchObject({
       version: 1,
       selectedReportId: "inactive-users",
@@ -222,6 +223,182 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("tab", { name: "Raw Table" }));
     expect(screen.queryByText("Ada")).not.toBeInTheDocument();
     await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+  });
+
+  it("clears storage after an in-flight dataset save settles when flushing", async () => {
+    const user = userEvent.setup();
+    const saveDeferred = createDeferred<void>();
+    const operations: string[] = [];
+
+    clearPersistedDatasetSessionMock.mockImplementation(() => {
+      operations.push("clear");
+      return Promise.resolve();
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    operations.length = 0;
+    clearPersistedDatasetSessionMock.mockClear();
+    savePersistedDatasetSessionMock.mockImplementationOnce(() => {
+      operations.push("save:start");
+      return saveDeferred.promise.then(() => {
+        operations.push("save:resolved");
+      });
+    });
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
+
+    expect(clearPersistedDatasetSessionMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      saveDeferred.resolve();
+      await saveDeferred.promise;
+    });
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalledTimes(1));
+    expect(operations).toEqual(["save:start", "save:resolved", "clear"]);
+  });
+
+  it("keeps newer imported data when slow browser hydration resolves later", async () => {
+    const user = userEvent.setup();
+    const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
+    loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    expect(screen.getByText("Page Views")).toBeInTheDocument();
+    expect(screen.getByText("889,996")).toBeInTheDocument();
+
+    await act(async () => {
+      loadDeferred.resolve({
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {
+          "stale-dataset": {
+            id: "stale-dataset",
+            snapshotId: "stale-snapshot",
+            reportId: "inactive-users",
+            name: "users",
+            records: [{ user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            periodRole: "current",
+          },
+        },
+        reportOutputs: {
+          "inactive-users": {
+            reportId: "inactive-users",
+            datasetName: "users",
+            fileName: "Stale API run",
+            records: [{ datasetName: "users", user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            currentSnapshotId: "stale-snapshot",
+          },
+        },
+        reportRunSnapshots: [
+          {
+            id: "stale-snapshot",
+            reportId: "inactive-users",
+            periodRole: "current",
+            scope: {},
+            pageSize: 100,
+            maxPagesPerDataset: 5,
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            datasetIds: ["stale-dataset"],
+            warnings: [],
+          },
+        ],
+        warnings: [],
+      });
+      await loadDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Page Views")).toBeInTheDocument();
+    expect(screen.getByText("889,996")).toBeInTheDocument();
+    expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
+  });
+
+  it("ignores stale persistence failures after a newer flush", async () => {
+    const user = userEvent.setup();
+    const saveDeferred = createDeferred<void>();
+
+    render(<App />);
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    clearPersistedDatasetSessionMock.mockClear();
+    savePersistedDatasetSessionMock.mockImplementationOnce(() => saveDeferred.promise);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
+
+    await act(async () => {
+      saveDeferred.reject(new Error("Quota exceeded"));
+      await saveDeferred.promise.catch(() => undefined);
+    });
+
+    expect(
+      screen.queryByText("Dataset changes could not be stored in this browser. Current session data will still work."),
+    ).not.toBeInTheDocument();
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+  });
+
+  it("does not warn after unmount when persistence rejects", async () => {
+    const user = userEvent.setup();
+    const saveDeferred = createDeferred<void>();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const { unmount } = render(<App />);
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    savePersistedDatasetSessionMock.mockImplementationOnce(() => saveDeferred.promise);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    unmount();
+
+    await act(async () => {
+      saveDeferred.reject(new Error("Quota exceeded"));
+      await saveDeferred.promise.catch(() => undefined);
+    });
+
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it("shows a non-blocking warning when browser dataset storage fails", async () => {
@@ -561,4 +738,15 @@ function jsonResponse(body: unknown) {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return { promise, reject, resolve };
 }

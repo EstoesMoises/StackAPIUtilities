@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { AppShell, type AppPanel } from "./components/AppShell";
 import { CredentialsPanel } from "./components/CredentialsPanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
@@ -32,9 +32,26 @@ export function App() {
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
   const [datasetStorageReady, setDatasetStorageReady] = useState(false);
   const [datasetStorageWarning, setDatasetStorageWarning] = useState<string | null>(null);
+  const datasetSessionRevisionRef = useRef(0);
+  const mountedRef = useRef(false);
+  const persistenceQueueRef = useRef(Promise.resolve());
+  const persistenceSequenceRef = useRef(0);
+
+  function markDatasetSessionChanged() {
+    datasetSessionRevisionRef.current += 1;
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
+    const hydrationRevision = datasetSessionRevisionRef.current;
 
     loadPersistedDatasetSession()
       .then((snapshot) => {
@@ -42,12 +59,12 @@ export function App() {
           return;
         }
 
-        if (snapshot) {
+        if (snapshot && datasetSessionRevisionRef.current === hydrationRevision) {
           dispatch({ type: "session/hydratePersistentDatasets", snapshot });
         }
       })
       .catch(() => {
-        if (active) {
+        if (active && mountedRef.current) {
           setDatasetStorageWarning(
             "Datasets could not be restored from browser storage. Current session data will still work.",
           );
@@ -69,15 +86,22 @@ export function App() {
       return;
     }
 
-    const persist = Object.keys(state.datasets).length > 0
+    const sequence = persistenceSequenceRef.current + 1;
+    persistenceSequenceRef.current = sequence;
+    const persist = () => Object.keys(state.datasets).length > 0
       ? savePersistedDatasetSession(createDatasetSessionSnapshot(state))
       : clearPersistedDatasetSession();
 
-    persist.catch(() => {
-      setDatasetStorageWarning(
-        "Dataset changes could not be stored in this browser. Current session data will still work.",
-      );
-    });
+    persistenceQueueRef.current = persistenceQueueRef.current
+      .catch(() => undefined)
+      .then(() => persist())
+      .catch(() => {
+        if (mountedRef.current && sequence === persistenceSequenceRef.current) {
+          setDatasetStorageWarning(
+            "Dataset changes could not be stored in this browser. Current session data will still work.",
+          );
+        }
+      });
   }, [
     datasetStorageReady,
     state.datasets,
@@ -159,6 +183,7 @@ export function App() {
       }
 
       const result = body.result;
+      markDatasetSessionChanged();
       dispatch({
         type: "live/loaded",
         reportId: result.reportId,
@@ -206,6 +231,7 @@ export function App() {
   function importUploadedReport(result: ImportedUploadResult) {
     const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
 
+    markDatasetSessionChanged();
     dispatch({
       type: "import/loaded",
       datasetName: result.datasetName,
@@ -224,7 +250,13 @@ export function App() {
     setActivePanel("report");
   }
 
+  function removeDataset(datasetId: string) {
+    markDatasetSessionChanged();
+    dispatch({ type: "dataset/remove", datasetId });
+  }
+
   function flushStoredDatasets() {
+    markDatasetSessionChanged();
     dispatch({ type: "datasets/flush" });
     setRunQueue([]);
   }
@@ -265,7 +297,7 @@ export function App() {
       {activePanel === "datasets" && (
         <DatasetsPanel
           datasets={datasets}
-          onRemoveDataset={(datasetId) => dispatch({ type: "dataset/remove", datasetId })}
+          onRemoveDataset={removeDataset}
           onFlushDatasets={flushStoredDatasets}
         />
       )}
