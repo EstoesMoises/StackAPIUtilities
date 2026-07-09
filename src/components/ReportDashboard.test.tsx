@@ -46,7 +46,7 @@ describe("ReportDashboard", () => {
     expect(screen.queryByText("Period comparison")).not.toBeInTheDocument();
   });
 
-  it("renders warnings and Tag Health dashboard sections", () => {
+  it("renders warnings and the Tag Health operations overview", () => {
     render(
       <ReportDashboard
         reportId="tag-report"
@@ -101,19 +101,24 @@ describe("ReportDashboard", () => {
 
     const warningArea = screen.getByRole("alert", { name: "Report warnings" });
     expect(within(warningArea).getByText("dataset-page-cap")).toBeInTheDocument();
-    expect(
-      within(warningArea).getByText("Questions hit the configured page cap; results may be partial."),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tag Health Dashboard" })).toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
     expect(screen.getByText("Healthy Tags")).toBeInTheDocument();
-    expect(screen.getByText("Response Attention")).toBeInTheDocument();
     expect(screen.getByText("SME Gaps")).toBeInTheDocument();
+    expect(screen.getByText("Response Attention")).toBeInTheDocument();
+    expect(screen.getByText("Questions")).toBeInTheDocument();
+    expect(screen.getByText("Status distribution")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
-    expect(screen.getByText("Tags needing SME coverage")).toBeInTheDocument();
-    expect(screen.getByText("Tags needing response attention")).toBeInTheDocument();
+    expect(screen.getByText("SME coverage queue")).toBeInTheDocument();
+    expect(screen.getByText("Response attention queue")).toBeInTheDocument();
     expect(screen.getByLabelText("python: 900")).toBeInTheDocument();
-    expect(screen.getByLabelText("react: 4")).toBeInTheDocument();
-    expect(screen.getByLabelText("java: 3")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Questions" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "SMEs" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Unanswered" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Median first answer" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "react 4 0" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "java 3 30h" })).toBeInTheDocument();
+    expect(screen.queryByText("Period comparison")).not.toBeInTheDocument();
   });
 
   it("compares curated Tag Health rows by health status", () => {
@@ -161,9 +166,9 @@ describe("ReportDashboard", () => {
     );
 
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
-    expect(screen.getByText("Tags needing SME coverage")).toBeInTheDocument();
+    expect(screen.getByText("SME coverage queue")).toBeInTheDocument();
     expect(screen.getByLabelText("typescript: 450")).toBeInTheDocument();
-    expect(screen.getByLabelText("typescript: 8")).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "typescript 8 0" })).toBeInTheDocument();
   });
 });
 

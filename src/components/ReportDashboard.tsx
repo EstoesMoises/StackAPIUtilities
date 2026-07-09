@@ -14,6 +14,7 @@ import {
 } from "../reports/tagReport";
 import { summarizeUsers, type UserMetricRow } from "../reports/userReport";
 import { DashboardCards } from "./DashboardCards";
+import { TagReportDashboard } from "./TagReportDashboard";
 import { BarList } from "./charts/BarList";
 import { InteractionMatrix } from "./charts/InteractionMatrix";
 
@@ -64,47 +65,11 @@ export function ReportDashboard({
     const tagHealthRows = normalizeTagHealthRows(records, outputSource);
     const tagHealthComparisonRows =
       comparisonRecords === undefined ? undefined : normalizeTagHealthRows(comparisonRecords, outputSource);
-    const tagHealthComparisonSection =
-      tagHealthComparisonRows === undefined
-        ? undefined
-        : renderComparisonDashboard({
-            currentRecords: tagHealthRows as unknown as Record<string, unknown>[],
-            comparisonRecords: tagHealthComparisonRows as unknown as Record<string, unknown>[],
-            currentScope,
-            comparisonScope,
-            groupColumnLabel: "Health status",
-            getGroup: getTagHealthComparisonGroup,
-          });
-    const summary = summarizeTagHealthRows(tagHealthRows);
+    const summary = summarizeTagHealthRows(tagHealthRows, tagHealthComparisonRows);
 
     return (
-      <DashboardLayout cards={summary.metricCards} comparisonSection={tagHealthComparisonSection} warnings={warnings}>
-        <DashboardSection title="Top tags by page views">
-          <BarList
-            rows={summary.topTagsByViews.map((row) => ({
-              label: row.tag_name,
-              value: finiteNumber(row.page_views),
-            }))}
-          />
-        </DashboardSection>
-        <DashboardSection title="Tags needing SME coverage">
-          <BarList
-            rows={summary.tagsNeedingSmeCoverage.map((row) => ({
-              label: row.tag_name,
-              value: finiteNumber(row.question_count),
-            }))}
-            emptyMessage="No tags need SME coverage."
-          />
-        </DashboardSection>
-        <DashboardSection title="Tags needing response attention">
-          <BarList
-            rows={summary.tagsNeedingResponse.map((row) => ({
-              label: row.tag_name,
-              value: finiteNumber(row.unanswered_questions) || finiteNumber(row.median_first_answer_hours),
-            }))}
-            emptyMessage="No tags need response attention."
-          />
-        </DashboardSection>
+      <DashboardLayout cards={[]} warnings={warnings} showCards={false}>
+        <TagReportDashboard summary={summary} currentScope={currentScope} comparisonScope={comparisonScope} />
       </DashboardLayout>
     );
   }
@@ -261,16 +226,18 @@ function DashboardLayout({
   comparisonSection,
   warnings,
   children,
+  showCards = true,
 }: {
   cards: MetricCard[];
   comparisonSection?: ReactNode;
   warnings?: ReportWarning[];
   children?: ReactNode;
+  showCards?: boolean;
 }) {
   return (
     <div className="dashboard-summary">
       <DashboardWarnings warnings={warnings ?? []} />
-      <DashboardCards cards={cards} />
+      {showCards ? <DashboardCards cards={cards} /> : null}
       {comparisonSection}
       {children}
     </div>
@@ -439,10 +406,6 @@ function buildComparisonRows(
 
 function getComparisonGroup(record: Record<string, unknown>): string {
   return String(record.datasetName ?? "Records");
-}
-
-function getTagHealthComparisonGroup(record: Record<string, unknown>): string {
-  return String(record.health_status ?? "Unknown status");
 }
 
 function formatDelta(delta: number): string {
