@@ -211,6 +211,41 @@ describe("sessionStore", () => {
     expect(withoutDataset.datasets[datasetId]).toBeUndefined();
   });
 
+  it("clears live report output when removing a dataset from its run snapshot", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+        {
+          datasetName: "tags",
+          records: [{ name: "python" }],
+        },
+      ],
+    });
+    const datasetToRemove = Object.values(state.datasets).find((dataset) => dataset.name === "users");
+
+    expect(datasetToRemove).toBeDefined();
+    const withoutDataset = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: datasetToRemove?.id ?? "",
+    });
+
+    expect(Object.values(withoutDataset.datasets)).toHaveLength(1);
+    expect(Object.values(withoutDataset.datasets)[0]?.name).toBe("tags");
+    expect(withoutDataset.reportRunSnapshots).toHaveLength(1);
+    expect(withoutDataset.reportRunSnapshots[0]?.datasetIds).toEqual([Object.values(withoutDataset.datasets)[0]?.id]);
+    expect(withoutDataset.reportOutputs["inactive-users"]).toBeUndefined();
+  });
+
   it("clears credentials and datasets on reset", () => {
     const withData = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",

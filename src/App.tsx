@@ -113,6 +113,7 @@ export function App() {
   ]);
 
   function selectReport(reportId: ReportId) {
+    markDatasetSessionChanged();
     dispatch({ type: "report/select", reportId });
     setActivePanel("report");
   }

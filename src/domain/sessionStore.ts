@@ -3,6 +3,7 @@ import type {
   DatasetName,
   PeriodScope,
   ReportId,
+  ReportOutput,
   ReportWarning,
   RunPeriodRole,
   SessionCredentials,
@@ -205,6 +206,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return {
         ...state,
         datasets: remainingDatasets,
+        reportOutputs: removeReportOutputsForDataset(state.reportOutputs, removedDataset),
         reportRunSnapshots: state.reportRunSnapshots
           .map((snapshot) => ({
             ...snapshot,
@@ -228,6 +230,40 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     default:
       return state;
   }
+}
+
+function removeReportOutputsForDataset(
+  reportOutputs: SessionState["reportOutputs"],
+  removedDataset: SessionDataset,
+): SessionState["reportOutputs"] {
+  const nextReportOutputs = { ...reportOutputs };
+
+  for (const reportId of Object.keys(nextReportOutputs) as ReportId[]) {
+    const output = nextReportOutputs[reportId];
+
+    if (output && isReportOutputTiedToDataset(output, removedDataset)) {
+      delete nextReportOutputs[reportId];
+    }
+  }
+
+  return nextReportOutputs;
+}
+
+function isReportOutputTiedToDataset(output: ReportOutput, dataset: SessionDataset): boolean {
+  if (
+    dataset.snapshotId &&
+    (output.currentSnapshotId === dataset.snapshotId || output.comparisonSnapshotId === dataset.snapshotId)
+  ) {
+    return true;
+  }
+
+  return (
+    dataset.source === "upload" &&
+    output.source === "upload" &&
+    output.reportId === dataset.reportId &&
+    output.datasetName === dataset.name &&
+    output.loadedAt === dataset.loadedAt
+  );
 }
 
 function storeUploadedDataset(

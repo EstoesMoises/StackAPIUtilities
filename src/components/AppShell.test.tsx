@@ -339,6 +339,117 @@ describe("AppShell", () => {
     expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
   });
 
+  it("keeps newer report selection when slow browser hydration resolves later", async () => {
+    const user = userEvent.setup();
+    const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
+    loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+
+    expect(screen.getByRole("button", { name: "Inactive Users" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
+
+    await act(async () => {
+      loadDeferred.resolve({
+        version: 1,
+        selectedReportId: "data-export",
+        selectedReportIds: ["data-export"],
+        datasets: {},
+        reportOutputs: {},
+        reportRunSnapshots: [],
+        warnings: [],
+      });
+      await loadDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("button", { name: "Inactive Users" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Data Export" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("does not persist removed report output records when another dataset remains", async () => {
+    const user = userEvent.setup();
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-users": {
+          id: "dataset-users",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        },
+        "dataset-tags": {
+          id: "dataset-tags",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "tags",
+          records: [{ name: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [
+            { datasetName: "users", user_id: 1, display_name: "Ada" },
+            { datasetName: "tags", name: "python" },
+          ],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-users", "dataset-tags"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("2 datasets")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+    savePersistedDatasetSessionMock.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Remove users current dataset" }));
+
+    expect(screen.getByText("1 dataset")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    const saveCalls = savePersistedDatasetSessionMock.mock.calls;
+    const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0];
+    expect(savedSnapshot?.datasets).toHaveProperty("dataset-tags");
+    expect(savedSnapshot?.datasets).not.toHaveProperty("dataset-users");
+    expect(JSON.stringify(savedSnapshot?.reportOutputs)).not.toContain("Ada");
+  });
+
   it("ignores stale persistence failures after a newer flush", async () => {
     const user = userEvent.setup();
     const saveDeferred = createDeferred<void>();
