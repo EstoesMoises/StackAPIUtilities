@@ -261,6 +261,30 @@ describe("sessionStore", () => {
     expect(hydrated.datasets["dataset-1"]?.records).toEqual([{ user_id: 1 }]);
   });
 
+  it("leaves existing state unchanged when persistent hydration is invalid", () => {
+    const withDataset = sessionReducer(createInitialSessionState(), {
+      type: "import/loaded",
+      datasetName: "tags",
+      fileName: "tag_metrics.csv",
+      records: [{ tagName: "python" }],
+      reportId: "tag-report",
+    });
+    const hydrated = sessionReducer(withDataset, {
+      type: "session/hydratePersistentDatasets",
+      snapshot: {
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {},
+        reportOutputs: [],
+        reportRunSnapshots: [],
+        warnings: [],
+      },
+    });
+
+    expect(hydrated).toBe(withDataset);
+  });
+
   it("flushes datasets and report state while keeping credentials", () => {
     const withCredentials = sessionReducer(createInitialSessionState(), {
       type: "credentials/set",

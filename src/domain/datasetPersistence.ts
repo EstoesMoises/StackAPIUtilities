@@ -232,10 +232,10 @@ function parseReportOutput(value: unknown): ReportOutput | null {
     !isKnownReportId(value.reportId) ||
     !isDatasetName(value.datasetName) ||
     typeof value.fileName !== "string" ||
-    !Array.isArray(value.records) ||
+    !isRecordArray(value.records) ||
     typeof value.loadedAt !== "string" ||
     (value.source !== "live-api" && value.source !== "upload") ||
-    (typeof value.comparisonRecords !== "undefined" && !Array.isArray(value.comparisonRecords)) ||
+    (typeof value.comparisonRecords !== "undefined" && !isRecordArray(value.comparisonRecords)) ||
     (typeof value.currentSnapshotId !== "undefined" && typeof value.currentSnapshotId !== "string") ||
     (typeof value.comparisonSnapshotId !== "undefined" && typeof value.comparisonSnapshotId !== "string") ||
     (typeof value.warnings !== "undefined" && !Array.isArray(value.warnings))
@@ -254,13 +254,13 @@ function parseReportOutput(value: unknown): ReportOutput | null {
     reportId: value.reportId,
     datasetName: value.datasetName,
     fileName: value.fileName,
-    records: value.records as Record<string, unknown>[],
+    records: value.records,
     loadedAt: value.loadedAt,
     source: value.source,
   };
 
-  if (Array.isArray(value.comparisonRecords)) {
-    output.comparisonRecords = value.comparisonRecords as Record<string, unknown>[];
+  if (isRecordArray(value.comparisonRecords)) {
+    output.comparisonRecords = value.comparisonRecords;
   }
   if (currentScope) {
     output.currentScope = currentScope;
@@ -285,13 +285,21 @@ function parseReportRunSnapshot(
   value: unknown,
   datasets: Record<string, SessionDataset>,
 ): ReportRunSnapshot | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const pageSize = value.pageSize;
+  const maxPagesPerDataset = value.maxPagesPerDataset;
+
   if (
-    !isRecord(value) ||
     typeof value.id !== "string" ||
     !isKnownReportId(value.reportId) ||
     !isRunPeriodRole(value.periodRole) ||
-    !Number.isInteger(value.pageSize) ||
-    !Number.isInteger(value.maxPagesPerDataset) ||
+    typeof pageSize !== "number" ||
+    !Number.isInteger(pageSize) ||
+    typeof maxPagesPerDataset !== "number" ||
+    !Number.isInteger(maxPagesPerDataset) ||
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
     !value.datasetIds.every((datasetId) => typeof datasetId === "string" && datasets[datasetId]) ||
@@ -311,8 +319,8 @@ function parseReportRunSnapshot(
     reportId: value.reportId,
     periodRole: value.periodRole,
     scope,
-    pageSize: value.pageSize,
-    maxPagesPerDataset: value.maxPagesPerDataset,
+    pageSize,
+    maxPagesPerDataset,
     loadedAt: value.loadedAt,
     datasetIds: [...value.datasetIds],
     warnings: parseWarnings(value.warnings),
@@ -396,4 +404,8 @@ function normalizeSelectedReportIds(selectedReportId: ReportId, reportIds: reado
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRecordArray(value: unknown): value is Record<string, unknown>[] {
+  return Array.isArray(value) && value.every(isRecord);
 }

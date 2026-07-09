@@ -440,6 +440,38 @@ describe("datasetPersistence", () => {
     expect(parsed?.reportOutputs).toEqual({});
   });
 
+  it("ignores report outputs with invalid record arrays", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {},
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "invalid_records.csv",
+          records: [null],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+        },
+        "tag-report": {
+          reportId: "tag-report",
+          datasetName: "tags",
+          fileName: "invalid_comparison_records.csv",
+          records: [{ tagName: "python" }],
+          comparisonRecords: [null],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+        },
+      },
+      reportRunSnapshots: [],
+      warnings: [],
+    });
+
+    expect(parsed?.reportOutputs).toEqual({});
+  });
+
   it("normalizes persisted selections so the selected report id is first and present", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 1,
