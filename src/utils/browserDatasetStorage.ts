@@ -33,8 +33,13 @@ export async function savePersistedDatasetSession(
   }
 
   try {
-    const store = database.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME);
-    await requestToPromise(store.put(snapshot, SNAPSHOT_KEY));
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+
+    await Promise.all([
+      requestToPromise(store.put(snapshot, SNAPSHOT_KEY)),
+      transactionToPromise(transaction),
+    ]);
   } finally {
     database.close();
   }
@@ -48,8 +53,13 @@ export async function clearPersistedDatasetSession(): Promise<void> {
   }
 
   try {
-    const store = database.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME);
-    await requestToPromise(store.delete(SNAPSHOT_KEY));
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+
+    await Promise.all([
+      requestToPromise(store.delete(SNAPSHOT_KEY)),
+      transactionToPromise(transaction),
+    ]);
   } finally {
     database.close();
   }
@@ -77,5 +87,13 @@ function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
+  });
+}
+
+function transactionToPromise(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed."));
+    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted."));
   });
 }
