@@ -106,16 +106,22 @@ describe("ReportDashboard", () => {
     expect(screen.getByText("Healthy Tags")).toBeInTheDocument();
     expect(screen.getByText("SME Gaps")).toBeInTheDocument();
     expect(screen.getByText("Response Attention")).toBeInTheDocument();
-    expect(screen.getByText("Questions")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Tag Health metrics")).getByText("Questions")).toBeInTheDocument();
     expect(screen.getByText("Status distribution")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
     expect(screen.getByText("SME coverage queue")).toBeInTheDocument();
     expect(screen.getByText("Response attention queue")).toBeInTheDocument();
     expect(screen.getByLabelText("python: 900")).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Questions" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "SMEs" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Unanswered" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Median first answer" })).toBeInTheDocument();
+
+    const smeQueue = screen.getByRole("region", { name: "SME coverage queue" });
+    expect(within(smeQueue).getByRole("columnheader", { name: "Questions" })).toHaveTextContent(/^Questions$/);
+    expect(within(smeQueue).getByRole("columnheader", { name: "SMEs" })).toHaveTextContent(/^SMEs$/);
+
+    const responseQueue = screen.getByRole("region", { name: "Response attention queue" });
+    expect(within(responseQueue).getByRole("columnheader", { name: "Unanswered" })).toHaveTextContent(/^Unanswered$/);
+    expect(within(responseQueue).getByRole("columnheader", { name: "Median first answer" })).toHaveTextContent(
+      /^Median first answer$/,
+    );
     expect(screen.getByRole("row", { name: "react 4 0" })).toBeInTheDocument();
     expect(screen.getByRole("row", { name: "java 3 30h" })).toBeInTheDocument();
     expect(screen.queryByText("Period comparison")).not.toBeInTheDocument();

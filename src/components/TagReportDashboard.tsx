@@ -253,10 +253,10 @@ function TagQueuePanel({
               <tr>
                 <th scope="col">Tag</th>
                 <th aria-label={primaryMetricLabel} scope="col">
-                  {formatQueueHeaderLabel(primaryMetricLabel)}
+                  {primaryMetricLabel}
                 </th>
                 <th aria-label={secondaryMetricLabel} scope="col">
-                  {formatQueueHeaderLabel(secondaryMetricLabel)}
+                  {secondaryMetricLabel}
                 </th>
                 <th scope="col">Recommended action</th>
               </tr>
@@ -341,10 +341,6 @@ function formatDelta(delta: number): string {
 function formatQueueValue(label: string, value: number): string {
   const formattedValue = formatMetricValue(finiteNumber(value));
   return label === "Median first answer" ? `${formattedValue}h` : formattedValue;
-}
-
-function formatQueueHeaderLabel(label: string): string {
-  return label === "Questions" ? "Question count" : label;
 }
 
 function finiteNumber(value: number | undefined): number {
