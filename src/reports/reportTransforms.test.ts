@@ -392,6 +392,66 @@ describe("report transforms", () => {
     expect(summary.comparison?.fastestChanges.every((row) => row.delta !== 0)).toBe(true);
   });
 
+  it("uses aggregated per-tag rows for Tag Health KPI and status comparisons", () => {
+    const summary = summarizeTagHealthRows(
+      [
+        tagHealthRow({
+          tag_name: "python",
+          health_status: "Healthy",
+          page_views: 100,
+          question_count: 4,
+          sme_count: 0,
+        }),
+        tagHealthRow({
+          tag_name: "python",
+          health_status: "Needs response attention",
+          page_views: 50,
+          question_count: 2,
+          sme_count: 0,
+          unanswered_questions: 1,
+        }),
+      ],
+      [
+        tagHealthRow({
+          tag_name: "python",
+          health_status: "Needs SME coverage",
+          page_views: 120,
+          question_count: 5,
+          sme_count: 0,
+        }),
+      ],
+    );
+
+    expect(summary.metricCards).toContainEqual({
+      label: "Tags Covered",
+      value: 1,
+      delta: 0,
+      deltaTone: "neutral",
+    });
+    expect(summary.metricCards).toContainEqual({
+      label: "SME Gaps",
+      value: 1,
+      delta: 0,
+      deltaTone: "neutral",
+    });
+    expect(summary.statusDistribution).toEqual([
+      { status: "Healthy", count: 0, comparisonCount: 0, delta: 0, deltaTone: "neutral" },
+      { status: "Needs SME coverage", count: 1, comparisonCount: 1, delta: 0, deltaTone: "neutral" },
+      { status: "Needs response attention", count: 0, comparisonCount: 0, delta: 0, deltaTone: "neutral" },
+      { status: "Low activity", count: 0, comparisonCount: 0, delta: 0, deltaTone: "neutral" },
+    ]);
+    expect(summary.smeCoverageQueue).toEqual([
+      {
+        tagName: "python",
+        primaryMetricLabel: "Questions",
+        primaryMetricValue: 6,
+        secondaryMetricLabel: "SMEs",
+        secondaryMetricValue: 0,
+        recommendedAction: "Assign or confirm SMEs for this tag.",
+      },
+    ]);
+  });
+
   it("canonicalizes imported Tag Health statuses before summary counts and queues", () => {
     const summary = summarizeTagHealthRows([
       tagHealthRow({

@@ -197,8 +197,9 @@ export function summarizeTagHealthRows(
   rows: readonly TagHealthRow[],
   comparisonRows?: readonly TagHealthRow[],
 ): TagHealthSummary {
-  const normalizedRows = rows.map(normalizeTagHealthRow);
-  const normalizedComparisonRows = comparisonRows?.map(normalizeTagHealthRow);
+  const normalizedRows = aggregateTagHealthRows(rows.map(normalizeTagHealthRow));
+  const normalizedComparisonRows =
+    comparisonRows === undefined ? undefined : aggregateTagHealthRows(comparisonRows.map(normalizeTagHealthRow));
   const healthStatusCounts = countHealthStatuses(normalizedRows);
   const comparisonHealthStatusCounts =
     normalizedComparisonRows === undefined ? undefined : countHealthStatuses(normalizedComparisonRows);
@@ -229,7 +230,7 @@ export function summarizeTagHealthRows(
 
   return {
     metricCards: buildTagDashboardMetricCards({
-      rowCount: rows.length,
+      rowCount: normalizedRows.length,
       healthyCount: healthStatusCounts.Healthy,
       smeGapCount: healthStatusCounts["Needs SME coverage"],
       responseAttentionCount: healthStatusCounts["Needs response attention"],
@@ -316,6 +317,65 @@ function normalizeStatusText(status: unknown): string {
     .toLowerCase()
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ");
+}
+
+function aggregateTagHealthRows(rows: readonly TagHealthRow[]): TagHealthRow[] {
+  const aggregates = new Map<string, { row: TagHealthRow; rowCount: number }>();
+
+  for (const row of rows) {
+    const tagName = row.tag_name.trim() || "Unknown tag";
+    const aggregate = aggregates.get(tagName);
+
+    if (aggregate) {
+      aggregate.row.page_views += metricNumber(row.page_views);
+      aggregate.row.question_count += metricNumber(row.question_count);
+      aggregate.row.answer_count += metricNumber(row.answer_count);
+      aggregate.row.sme_count += metricNumber(row.sme_count);
+      aggregate.row.watcher_count += metricNumber(row.watcher_count);
+      aggregate.row.unanswered_questions += metricNumber(row.unanswered_questions);
+      aggregate.row.median_first_answer_hours = Math.max(
+        metricNumber(aggregate.row.median_first_answer_hours),
+        metricNumber(row.median_first_answer_hours),
+      );
+      aggregate.rowCount += 1;
+      continue;
+    }
+
+    aggregates.set(tagName, {
+      row: {
+        ...row,
+        tag_name: tagName,
+        page_views: metricNumber(row.page_views),
+        question_count: metricNumber(row.question_count),
+        answer_count: metricNumber(row.answer_count),
+        sme_count: metricNumber(row.sme_count),
+        watcher_count: metricNumber(row.watcher_count),
+        unanswered_questions: metricNumber(row.unanswered_questions),
+        median_first_answer_hours: metricNumber(row.median_first_answer_hours),
+      },
+      rowCount: 1,
+    });
+  }
+
+  return [...aggregates.values()].map(({ row, rowCount }) =>
+    rowCount === 1 ? row : normalizeAggregatedTagHealthRow(row),
+  );
+}
+
+function normalizeAggregatedTagHealthRow(row: TagHealthRow): TagHealthRow {
+  const healthStatus = getTagHealthStatus({
+    pageViews: row.page_views,
+    questionCount: row.question_count,
+    smeCount: row.sme_count,
+    unansweredQuestions: row.unanswered_questions,
+    medianFirstAnswerHours: row.median_first_answer_hours,
+  });
+
+  return {
+    ...row,
+    health_status: healthStatus,
+    recommended_action: getRecommendedAction(healthStatus),
+  };
 }
 
 function countHealthStatuses(rows: readonly TagHealthRow[]): Record<TagHealthStatus, number> {
@@ -425,10 +485,10 @@ function buildFastestChanges(
   rows: readonly TagHealthRow[],
   comparisonRows: readonly TagHealthRow[],
 ): TagFastestChangeRow[] {
-  const comparisonByTag = new Map(aggregateFastestChangeRows(comparisonRows).map((row) => [row.tag_name, row]));
+  const comparisonByTag = new Map(comparisonRows.map((row) => [row.tag_name, row]));
   const changes: TagFastestChangeRow[] = [];
 
-  for (const row of aggregateFastestChangeRows(rows)) {
+  for (const row of rows) {
     const comparison = comparisonByTag.get(row.tag_name);
     if (!comparison) continue;
 
@@ -455,34 +515,6 @@ function buildFastestChanges(
         a.metric.localeCompare(b.metric),
     )
     .slice(0, 6);
-}
-
-function aggregateFastestChangeRows(rows: readonly TagHealthRow[]): TagHealthRow[] {
-  const aggregates = new Map<string, TagHealthRow>();
-
-  for (const row of rows) {
-    const tagName = row.tag_name.trim() || "Unknown tag";
-    const aggregate = aggregates.get(tagName);
-
-    if (aggregate) {
-      aggregate.unanswered_questions += metricNumber(row.unanswered_questions);
-      aggregate.sme_count += metricNumber(row.sme_count);
-      aggregate.question_count += metricNumber(row.question_count);
-      aggregate.page_views += metricNumber(row.page_views);
-      continue;
-    }
-
-    aggregates.set(tagName, {
-      ...row,
-      tag_name: tagName,
-      unanswered_questions: metricNumber(row.unanswered_questions),
-      sme_count: metricNumber(row.sme_count),
-      question_count: metricNumber(row.question_count),
-      page_views: metricNumber(row.page_views),
-    });
-  }
-
-  return [...aggregates.values()];
 }
 
 function pushChange(
