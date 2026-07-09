@@ -423,7 +423,7 @@ describe("report transforms", () => {
     expect(summary.smeCoverageQueue.map((row) => row.tagName)).toEqual(["react"]);
   });
 
-  it("routes unknown imported Tag Health statuses with response signals to the response queue", () => {
+  it("routes unknown imported Tag Health statuses with missing SMEs to the SME queue", () => {
     const summary = summarizeTagHealthRows([
       tagHealthRow({
         tag_name: "python",
@@ -437,25 +437,25 @@ describe("report transforms", () => {
       }),
     ]);
 
-    expect(summary.metricCards).toContainEqual({ label: "SME Gaps", value: 0 });
-    expect(summary.metricCards).toContainEqual({ label: "Response Attention", value: 1 });
+    expect(summary.metricCards).toContainEqual({ label: "SME Gaps", value: 1 });
+    expect(summary.metricCards).toContainEqual({ label: "Response Attention", value: 0 });
     expect(summary.statusDistribution.map((row) => [row.status, row.count])).toEqual([
       ["Healthy", 0],
-      ["Needs SME coverage", 0],
-      ["Needs response attention", 1],
+      ["Needs SME coverage", 1],
+      ["Needs response attention", 0],
       ["Low activity", 0],
     ]);
-    expect(summary.responseAttentionQueue).toEqual([
+    expect(summary.smeCoverageQueue).toEqual([
       {
         tagName: "python",
-        primaryMetricLabel: "Unanswered",
-        primaryMetricValue: 2,
-        secondaryMetricLabel: "Median first answer",
-        secondaryMetricValue: 30,
-        recommendedAction: "Review unanswered questions and response time for this tag.",
+        primaryMetricLabel: "Questions",
+        primaryMetricValue: 8,
+        secondaryMetricLabel: "SMEs",
+        secondaryMetricValue: 0,
+        recommendedAction: "Assign or confirm SMEs for this tag.",
       },
     ]);
-    expect(summary.smeCoverageQueue).toEqual([]);
+    expect(summary.responseAttentionQueue).toEqual([]);
   });
 
   it("aggregates duplicate tag rows when calculating fastest comparison changes", () => {
