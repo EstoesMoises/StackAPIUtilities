@@ -289,7 +289,7 @@ export function summarizeTagHealthRows(
 function normalizeTagHealthRow(row: TagHealthRow): TagHealthRow {
   const healthStatus =
     normalizeTagHealthStatus(row.health_status) ??
-    getTagHealthStatus({
+    getImportedStatusFallback({
       pageViews: metricNumber(row.page_views),
       questionCount: metricNumber(row.question_count),
       smeCount: metricNumber(row.sme_count),
@@ -303,6 +303,34 @@ function normalizeTagHealthRow(row: TagHealthRow): TagHealthRow {
     health_status: healthStatus,
     recommended_action: recommendedAction,
   };
+}
+
+function getImportedStatusFallback({
+  pageViews,
+  questionCount,
+  smeCount,
+  unansweredQuestions,
+  medianFirstAnswerHours,
+}: {
+  pageViews: number;
+  questionCount: number;
+  smeCount: number;
+  unansweredQuestions: number;
+  medianFirstAnswerHours: number;
+}): TagHealthStatus {
+  if (questionCount === 0 && pageViews <= LOW_ACTIVITY_MAX_PAGE_VIEWS) {
+    return "Low activity";
+  }
+
+  if (unansweredQuestions > 0 || medianFirstAnswerHours >= RESPONSE_ATTENTION_HOURS) {
+    return "Needs response attention";
+  }
+
+  if (smeCount === 0 && (questionCount > 0 || pageViews > LOW_ACTIVITY_MAX_PAGE_VIEWS)) {
+    return "Needs SME coverage";
+  }
+
+  return "Healthy";
 }
 
 function normalizeTagHealthStatus(status: unknown): TagHealthStatus | undefined {

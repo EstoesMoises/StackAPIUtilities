@@ -423,6 +423,41 @@ describe("report transforms", () => {
     expect(summary.smeCoverageQueue.map((row) => row.tagName)).toEqual(["react"]);
   });
 
+  it("routes unknown imported Tag Health statuses with response signals to the response queue", () => {
+    const summary = summarizeTagHealthRows([
+      tagHealthRow({
+        tag_name: "python",
+        health_status: "Escalate" as TagHealthRow["health_status"],
+        page_views: 500,
+        question_count: 8,
+        sme_count: 0,
+        unanswered_questions: 2,
+        median_first_answer_hours: 30,
+        recommended_action: "",
+      }),
+    ]);
+
+    expect(summary.metricCards).toContainEqual({ label: "SME Gaps", value: 0 });
+    expect(summary.metricCards).toContainEqual({ label: "Response Attention", value: 1 });
+    expect(summary.statusDistribution.map((row) => [row.status, row.count])).toEqual([
+      ["Healthy", 0],
+      ["Needs SME coverage", 0],
+      ["Needs response attention", 1],
+      ["Low activity", 0],
+    ]);
+    expect(summary.responseAttentionQueue).toEqual([
+      {
+        tagName: "python",
+        primaryMetricLabel: "Unanswered",
+        primaryMetricValue: 2,
+        secondaryMetricLabel: "Median first answer",
+        secondaryMetricValue: 30,
+        recommendedAction: "Review unanswered questions and response time for this tag.",
+      },
+    ]);
+    expect(summary.smeCoverageQueue).toEqual([]);
+  });
+
   it("aggregates duplicate tag rows when calculating fastest comparison changes", () => {
     const summary = summarizeTagHealthRows(
       [
