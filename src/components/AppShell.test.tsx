@@ -1,8 +1,23 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
+import {
+  clearPersistedDatasetSession,
+  loadPersistedDatasetSession,
+  savePersistedDatasetSession,
+} from "../utils/browserDatasetStorage";
+
+vi.mock("../utils/browserDatasetStorage", () => ({
+  clearPersistedDatasetSession: vi.fn(),
+  loadPersistedDatasetSession: vi.fn(),
+  savePersistedDatasetSession: vi.fn(),
+}));
+
+const loadPersistedDatasetSessionMock = vi.mocked(loadPersistedDatasetSession);
+const savePersistedDatasetSessionMock = vi.mocked(savePersistedDatasetSession);
+const clearPersistedDatasetSessionMock = vi.mocked(clearPersistedDatasetSession);
 
 const basicBusinessPatCredentials = {
   instanceType: "basic-business",
@@ -11,12 +26,19 @@ const basicBusinessPatCredentials = {
   authSource: "manual-pat",
 } as const;
 
+beforeEach(() => {
+  loadPersistedDatasetSessionMock.mockResolvedValue(null);
+  savePersistedDatasetSessionMock.mockResolvedValue(undefined);
+  clearPersistedDatasetSessionMock.mockResolvedValue(undefined);
+});
+
 afterEach(() => {
+  vi.clearAllMocks();
   vi.restoreAllMocks();
 });
 
 describe("AppShell", () => {
-  it("renders report catalog and all MVP reports", () => {
+  it("renders report catalog and all MVP reports", async () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Stack API Utilities" })).toBeInTheDocument();
@@ -26,6 +48,157 @@ describe("AppShell", () => {
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tag Report" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Data Export" })).toBeInTheDocument();
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+  });
+
+  it("hydrates persisted browser datasets without credentials", async () => {
+    const user = userEvent.setup();
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [{ datasetName: "users", user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("1 dataset")).toBeInTheDocument();
+    expect(screen.getByText("No credentials")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+
+    const datasetsPanel = screen.getByRole("region", { name: "Datasets" });
+    expect(within(datasetsPanel).getByText("Inactive Users")).toBeInTheDocument();
+    expect(within(datasetsPanel).getByText("2026-06-01 to 2026-06-30")).toBeInTheDocument();
+    expect(within(datasetsPanel).getByRole("button", { name: "Flush stored datasets" })).toBeInTheDocument();
+  });
+
+  it("persists live API datasets without credentials or run queue state", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        ok: true,
+        result: {
+          reportId: "inactive-users",
+          reportTitle: "Inactive Users",
+          periodRole: "current",
+          scope: {},
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          warnings: [],
+          datasets: [
+            {
+              datasetName: "users",
+              records: [{ user_id: 1, display_name: "Ada" }],
+            },
+          ],
+          messages: ["Collected users (1 record) for Inactive Users."],
+        },
+      }), {
+        status: 200,
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
+    await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    const savedSnapshot = savePersistedDatasetSessionMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(savedSnapshot).toMatchObject({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+    });
+    expect(savedSnapshot).not.toHaveProperty("credentials");
+    expect(savedSnapshot).not.toHaveProperty("runQueue");
+  });
+
+  it("flushes current and persisted datasets in bulk", async () => {
+    const user = userEvent.setup();
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          name: "users",
+          records: [{ user_id: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+        },
+      },
+      reportOutputs: {},
+      reportRunSnapshots: [],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("1 dataset")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
+
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+  });
+
+  it("shows a non-blocking warning when browser dataset storage fails", async () => {
+    loadPersistedDatasetSessionMock.mockRejectedValueOnce(new Error("Blocked"));
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Datasets could not be restored from browser storage. Current session data will still work."),
+    ).toBeInTheDocument();
   });
 
   it("opens the shared credentials panel", async () => {

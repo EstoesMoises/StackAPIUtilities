@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { AppShell, type AppPanel } from "./components/AppShell";
 import { CredentialsPanel } from "./components/CredentialsPanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
@@ -12,11 +12,17 @@ import { UploadsPanel, type ImportedUploadResult } from "./components/UploadsPan
 import { UserGroupSyncPanel } from "./components/UserGroupSyncPanel";
 import { WriteToolsCatalog, type WriteToolId } from "./components/WriteToolsCatalog";
 import { validateCredentialsForReport } from "./credentials/credentialRules";
+import { createDatasetSessionSnapshot } from "./domain/datasetPersistence";
 import { DEFAULT_REPORT_RUN_SCOPE } from "./domain/reportScope";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
 import type { ReportId, RunPeriodRole, RunQueueItem, SessionCredentials } from "./domain/types";
 import type { ReportRunResponseBody } from "./server/reportRunApi";
+import {
+  clearPersistedDatasetSession,
+  loadPersistedDatasetSession,
+  savePersistedDatasetSession,
+} from "./utils/browserDatasetStorage";
 
 export function App() {
   const [state, dispatch] = useReducer(sessionReducer, undefined, createInitialSessionState);
@@ -24,6 +30,63 @@ export function App() {
   const [selectedWriteToolId, setSelectedWriteToolId] = useState<WriteToolId>("user-group-sync");
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
+  const [datasetStorageReady, setDatasetStorageReady] = useState(false);
+  const [datasetStorageWarning, setDatasetStorageWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    loadPersistedDatasetSession()
+      .then((snapshot) => {
+        if (!active) {
+          return;
+        }
+
+        if (snapshot) {
+          dispatch({ type: "session/hydratePersistentDatasets", snapshot });
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setDatasetStorageWarning(
+            "Datasets could not be restored from browser storage. Current session data will still work.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setDatasetStorageReady(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!datasetStorageReady) {
+      return;
+    }
+
+    const persist = Object.keys(state.datasets).length > 0
+      ? savePersistedDatasetSession(createDatasetSessionSnapshot(state))
+      : clearPersistedDatasetSession();
+
+    persist.catch(() => {
+      setDatasetStorageWarning(
+        "Dataset changes could not be stored in this browser. Current session data will still work.",
+      );
+    });
+  }, [
+    datasetStorageReady,
+    state.datasets,
+    state.reportOutputs,
+    state.reportRunSnapshots,
+    state.selectedReportId,
+    state.selectedReportIds,
+    state.warnings,
+  ]);
 
   function selectReport(reportId: ReportId) {
     dispatch({ type: "report/select", reportId });
@@ -161,6 +224,11 @@ export function App() {
     setActivePanel("report");
   }
 
+  function flushStoredDatasets() {
+    dispatch({ type: "datasets/flush" });
+    setRunQueue([]);
+  }
+
   const selectedReportOutput = state.reportOutputs[state.selectedReportId];
   const selectedReportRecords = selectedReportOutput?.records ?? [];
   const datasets = Object.values(state.datasets);
@@ -181,6 +249,11 @@ export function App() {
     >
       <SessionOverview state={state} />
       <RunStatus queue={runQueue} />
+      {datasetStorageWarning && (
+        <div className="s-notice s-notice__warning mt16" role="status">
+          {datasetStorageWarning}
+        </div>
+      )}
       {activePanel === "credentials" && (
         <CredentialsPanel
           selectedReportId={state.selectedReportId}
@@ -193,6 +266,7 @@ export function App() {
         <DatasetsPanel
           datasets={datasets}
           onRemoveDataset={(datasetId) => dispatch({ type: "dataset/remove", datasetId })}
+          onFlushDatasets={flushStoredDatasets}
         />
       )}
       {activePanel === "write-tools" && renderWriteToolPanel(selectedWriteToolId, state.credentials)}
