@@ -169,25 +169,58 @@ describe("AppShell", () => {
       datasets: {
         "dataset-1": {
           id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
           name: "users",
-          records: [{ user_id: 1 }],
+          records: [{ user_id: 1, display_name: "Ada" }],
           loadedAt: "2026-07-09T12:00:00.000Z",
-          source: "upload",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
         },
       },
-      reportOutputs: {},
-      reportRunSnapshots: [],
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [{ datasetName: "users", user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
       warnings: [],
     });
 
     render(<App />);
 
     expect(await screen.findByText("1 dataset")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Raw Table" }));
+    expect(screen.getByText("Ada")).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "Datasets" }));
     await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
 
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("tab", { name: "Raw Table" }));
+    expect(screen.queryByText("Ada")).not.toBeInTheDocument();
     await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
   });
 
