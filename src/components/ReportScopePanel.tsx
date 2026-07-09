@@ -2,8 +2,8 @@ import { useEffect, useId, useState } from "react";
 import {
   REPORT_RUN_PRESETS,
   applyReportRunPreset,
-  getEstimatedTotalRecordsForSettings,
   getMaxRecordsForSettings,
+  getPrimaryGroupRecordSummary,
   getReportRunPresetDisclosure,
   getReportRunPresetForSettings,
   getReportRunPresetRecordSummary,
@@ -238,14 +238,14 @@ function getCustomVolumeSummary(scope: ReportRunScope): string {
     return "Custom record coverage is incomplete";
   }
 
-  const totalRecords = getEstimatedTotalRecordsForSettings(scope.pageSize, scope.maxPagesPerDataset);
   const recordsPerDataGroup = getMaxRecordsForSettings(scope.pageSize, scope.maxPagesPerDataset);
+  const primaryGroupSummary = getPrimaryGroupRecordSummary(recordsPerDataGroup);
+  const smeRecordLimit = recordsPerDataGroup.toLocaleString("en-US");
 
-  return `Custom record coverage: up to ${totalRecords.toLocaleString(
-    "en-US",
-  )} estimated records across 5 Tag Report data groups (${recordsPerDataGroup.toLocaleString(
-    "en-US",
-  )} per data group)`;
+  return [
+    `Custom record coverage: ${primaryGroupSummary}.`,
+    `SME detail is separate and can add up to ${smeRecordLimit} top-answerer records for each collected tag`,
+  ].join(" ");
 }
 
 interface ScopeNumberFieldProps {

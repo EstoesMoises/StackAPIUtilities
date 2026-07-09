@@ -5,7 +5,6 @@ import {
   applyReportRunPreset,
   getReportRunPreset,
   getReportRunPresetDisclosure,
-  getReportRunPresetEstimatedTotalRecords,
   getReportRunPresetMaxRecords,
   getReportRunPresetRecordSummary,
 } from "./reportRunPresets";
@@ -29,18 +28,21 @@ describe("report run presets", () => {
     expect(getReportRunPresetMaxRecords("deep-audit")).toBe(2000);
   });
 
-  it("calculates the estimated total records for Tag Report presets", () => {
-    expect(getReportRunPresetEstimatedTotalRecords("quick-sample")).toBe(250);
-    expect(getReportRunPresetEstimatedTotalRecords("standard")).toBe(2500);
-    expect(getReportRunPresetEstimatedTotalRecords("deep-audit")).toBe(10000);
+  it("describes primary Tag Report record limits without blending them into one total", () => {
+    expect(getReportRunPresetRecordSummary("quick-sample")).toBe(
+      "Up to 50 users, 50 tags, 50 questions, and 50 articles",
+    );
     expect(getReportRunPresetRecordSummary("standard")).toBe(
-      "Up to 2,500 estimated records across 5 Tag Report data groups",
+      "Up to 500 users, 500 tags, 500 questions, and 500 articles",
+    );
+    expect(getReportRunPresetRecordSummary("deep-audit")).toBe(
+      "Up to 2,000 users, 2,000 tags, 2,000 questions, and 2,000 articles",
     );
   });
 
   it("discloses technical settings in user-facing copy", () => {
     expect(getReportRunPresetDisclosure("deep-audit")).toBe(
-      "2,000 records per data group across 5 Tag Report data groups. Technical settings: pageSize 100, maxPagesPerDataset 20. SME detail can add up to 2,000 top-answerer records for each collected tag. Slower, but reduces the chance of capped results.",
+      "SME detail is separate: up to 2,000 top-answerer records for each collected tag. Technical settings: pageSize 100, maxPagesPerDataset 20. Slower, but reduces the chance of capped results.",
     );
   });
 

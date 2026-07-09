@@ -9,8 +9,6 @@ interface ReportRunPreset {
   maxPagesPerDataset: number;
 }
 
-const TAG_REPORT_DATA_GROUP_COUNT = 5;
-
 export const REPORT_RUN_PRESETS: readonly ReportRunPreset[] = [
   {
     id: "quick-sample",
@@ -58,20 +56,16 @@ export function getReportRunPresetMaxRecords(id: ReportRunPresetId): number {
   return getMaxRecordsForSettings(preset.pageSize, preset.maxPagesPerDataset);
 }
 
-export function getReportRunPresetEstimatedTotalRecords(id: ReportRunPresetId): number {
-  const preset = getReportRunPreset(id);
-  return getEstimatedTotalRecordsForSettings(preset.pageSize, preset.maxPagesPerDataset);
-}
-
 export function getReportRunPresetRecordSummary(id: ReportRunPresetId): string {
-  return `Up to ${formatNumber(
-    getReportRunPresetEstimatedTotalRecords(id),
-  )} estimated records across ${TAG_REPORT_DATA_GROUP_COUNT} Tag Report data groups`;
+  return getPrimaryGroupRecordSummary(getReportRunPresetMaxRecords(id));
 }
 
 export function getReportRunPresetDisclosure(id: ReportRunPresetId): string {
   const preset = getReportRunPreset(id);
-  return `${formatNumber(getReportRunPresetMaxRecords(id))} records per data group across ${TAG_REPORT_DATA_GROUP_COUNT} Tag Report data groups. Technical settings: pageSize ${preset.pageSize}, maxPagesPerDataset ${preset.maxPagesPerDataset}. SME detail can add up to ${formatNumber(getReportRunPresetMaxRecords(id))} top-answerer records for each collected tag. ${preset.completenessTradeoff}`;
+  const maxRecords = getReportRunPresetMaxRecords(id);
+  return `SME detail is separate: up to ${formatNumber(
+    maxRecords,
+  )} top-answerer records for each collected tag. Technical settings: pageSize ${preset.pageSize}, maxPagesPerDataset ${preset.maxPagesPerDataset}. ${preset.completenessTradeoff}`;
 }
 
 export function applyReportRunPreset(
@@ -92,8 +86,9 @@ export function getMaxRecordsForSettings(pageSize: number, maxPagesPerDataset: n
   return pageSize * maxPagesPerDataset;
 }
 
-export function getEstimatedTotalRecordsForSettings(pageSize: number, maxPagesPerDataset: number): number {
-  return getMaxRecordsForSettings(pageSize, maxPagesPerDataset) * TAG_REPORT_DATA_GROUP_COUNT;
+export function getPrimaryGroupRecordSummary(maxRecords: number): string {
+  const formatted = formatNumber(maxRecords);
+  return `Up to ${formatted} users, ${formatted} tags, ${formatted} questions, and ${formatted} articles`;
 }
 
 function formatNumber(value: number): string {

@@ -38,8 +38,12 @@ describe("ReportScopePanel", () => {
 
     expect(screen.getByRole("group", { name: "Record coverage" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Standard report" })).toBeChecked();
-    expect(screen.getByText("Up to 2,500 estimated records across 5 Tag Report data groups")).toBeInTheDocument();
-    expect(screen.getByText(/500 records per data group across 5 Tag Report data groups/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Up to 500 users, 500 tags, 500 questions, and 500 articles"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/SME detail is separate: up to 500 top-answerer records for each collected tag/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Technical settings: pageSize 100, maxPagesPerDataset 5/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("radio", { name: "Deep audit" }));
@@ -88,7 +92,10 @@ describe("ReportScopePanel", () => {
     expect(screen.getByRole("radio", { name: "Quick sample" })).not.toBeChecked();
     expect(screen.getByRole("radio", { name: "Deep audit" })).not.toBeChecked();
     expect(screen.getByRole("status")).toHaveTextContent(
-      /Custom record coverage: up to 4,000 estimated records/,
+      /Custom record coverage: Up to 800 users, 800 tags, 800 questions, and 800 articles/,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /SME detail is separate and can add up to 800 top-answerer records for each collected tag/,
     );
     expect(screen.getByRole("status")).toHaveTextContent(
       /Technical settings: pageSize 100 and maxPagesPerDataset 8/,
