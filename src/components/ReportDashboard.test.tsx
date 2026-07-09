@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import type { TagHealthRow } from "../reports/tagReport";
 import { ReportDashboard } from "./ReportDashboard";
 
 describe("ReportDashboard", () => {
@@ -187,11 +188,14 @@ describe("ReportDashboard", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Period comparison")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Health status" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Delta" })).toBeInTheDocument();
     expect(screen.getByRole("row", { name: "Needs response attention 1 0 +1" })).toBeInTheDocument();
     expect(screen.getByRole("row", { name: "Needs SME coverage 0 1 -1" })).toBeInTheDocument();
+
+    const fastestChanges = screen.getByRole("list", { name: "Fastest changes" });
     expect(screen.getByText("Fastest changes")).toBeInTheDocument();
-    expect(screen.getByText("Unanswered questions")).toBeInTheDocument();
-    expect(screen.getByText("+5")).toBeInTheDocument();
+    expect(within(fastestChanges).getByText("Unanswered questions")).toBeInTheDocument();
+    expect(within(fastestChanges).getByText("+5")).toBeInTheDocument();
     expect(screen.queryByText("Current Records")).not.toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Dataset" })).not.toBeInTheDocument();
   });
@@ -235,8 +239,8 @@ function getRowByCellText(region: HTMLElement, cellText: string) {
 
 function tagHealthRecord(
   tagName: string,
-  healthStatus: string,
-  overrides: Partial<Record<string, number | string>> = {},
+  healthStatus: TagHealthRow["health_status"],
+  overrides: Partial<TagHealthRow> = {},
 ) {
   return {
     tag_name: tagName,

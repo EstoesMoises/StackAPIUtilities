@@ -1323,9 +1323,10 @@ select:disabled {
 
 .tag-change-row {
   display: grid;
-  grid-template-columns: minmax(92px, 1fr) minmax(120px, 1.3fr) minmax(44px, auto);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(44px, auto);
   gap: 10px;
   align-items: center;
+  min-width: 0;
   min-height: 34px;
   padding: 8px 9px;
   border: 1px solid var(--so-border);
@@ -1334,9 +1335,22 @@ select:disabled {
   font-size: 13px;
 }
 
+.tag-change-row > * {
+  min-width: 0;
+}
+
 .tag-change-row strong {
   color: var(--so-ink);
   overflow-wrap: anywhere;
+}
+
+.tag-change-row span:not(.tag-delta) {
+  overflow-wrap: anywhere;
+}
+
+.tag-change-row .tag-delta {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .comparison-scope-grid {
