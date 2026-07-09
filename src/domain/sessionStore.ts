@@ -39,7 +39,11 @@ type SessionAction =
       reportId: ReportId;
     }
   | { type: "dataset/remove"; datasetId: string }
-  | { type: "session/hydratePersistentDatasets"; snapshot: unknown }
+  | {
+      type: "session/hydratePersistentDatasets";
+      snapshot: unknown;
+      preserveSelection?: Pick<SessionState, "selectedReportId" | "selectedReportIds">;
+    }
   | { type: "datasets/flush" }
   | { type: "session/reset" };
 
@@ -215,8 +219,19 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           .filter((snapshot) => snapshot.datasetIds.length > 0),
       };
     }
-    case "session/hydratePersistentDatasets":
-      return hydrateDatasetSessionState(state, action.snapshot);
+    case "session/hydratePersistentDatasets": {
+      const hydrated = hydrateDatasetSessionState(state, action.snapshot);
+
+      if (!action.preserveSelection || hydrated === state) {
+        return hydrated;
+      }
+
+      return {
+        ...hydrated,
+        selectedReportId: action.preserveSelection.selectedReportId,
+        selectedReportIds: action.preserveSelection.selectedReportIds,
+      };
+    }
     case "datasets/flush":
       return {
         ...state,
@@ -241,7 +256,15 @@ function removeReportOutputsForDataset(
   for (const reportId of Object.keys(nextReportOutputs) as ReportId[]) {
     const output = nextReportOutputs[reportId];
 
-    if (output && isReportOutputTiedToDataset(output, removedDataset)) {
+    if (!output) {
+      continue;
+    }
+
+    const nextOutput = removeDatasetFromReportOutput(output, removedDataset);
+
+    if (nextOutput) {
+      nextReportOutputs[reportId] = nextOutput;
+    } else {
       delete nextReportOutputs[reportId];
     }
   }
@@ -249,14 +272,41 @@ function removeReportOutputsForDataset(
   return nextReportOutputs;
 }
 
-function isReportOutputTiedToDataset(output: ReportOutput, dataset: SessionDataset): boolean {
-  if (
-    dataset.snapshotId &&
-    (output.currentSnapshotId === dataset.snapshotId || output.comparisonSnapshotId === dataset.snapshotId)
-  ) {
-    return true;
+function removeDatasetFromReportOutput(output: ReportOutput, dataset: SessionDataset): ReportOutput | null {
+  if (isUploadedReportOutputTiedToDataset(output, dataset)) {
+    return null;
   }
 
+  if (!dataset.snapshotId) {
+    return output;
+  }
+
+  if (output.currentSnapshotId === dataset.snapshotId) {
+    const nextOutput: ReportOutput = {
+      ...output,
+      records: [],
+    };
+
+    delete nextOutput.currentScope;
+    delete nextOutput.currentSnapshotId;
+
+    return hasReportOutputRecords(nextOutput) ? nextOutput : null;
+  }
+
+  if (output.comparisonSnapshotId === dataset.snapshotId) {
+    const nextOutput: ReportOutput = { ...output };
+
+    delete nextOutput.comparisonRecords;
+    delete nextOutput.comparisonScope;
+    delete nextOutput.comparisonSnapshotId;
+
+    return hasReportOutputRecords(nextOutput) ? nextOutput : null;
+  }
+
+  return output;
+}
+
+function isUploadedReportOutputTiedToDataset(output: ReportOutput, dataset: SessionDataset): boolean {
   return (
     dataset.source === "upload" &&
     output.source === "upload" &&
@@ -264,6 +314,10 @@ function isReportOutputTiedToDataset(output: ReportOutput, dataset: SessionDatas
     output.datasetName === dataset.name &&
     output.loadedAt === dataset.loadedAt
   );
+}
+
+function hasReportOutputRecords(output: ReportOutput): boolean {
+  return output.records.length > 0 || Boolean(output.comparisonRecords?.length);
 }
 
 function storeUploadedDataset(

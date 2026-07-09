@@ -339,7 +339,7 @@ describe("AppShell", () => {
     expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
   });
 
-  it("keeps newer report selection when slow browser hydration resolves later", async () => {
+  it("keeps newer report selection and hydrates stored datasets when slow browser hydration resolves later", async () => {
     const user = userEvent.setup();
     const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
     loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
@@ -356,18 +356,59 @@ describe("AppShell", () => {
         version: 1,
         selectedReportId: "data-export",
         selectedReportIds: ["data-export"],
-        datasets: {},
-        reportOutputs: {},
-        reportRunSnapshots: [],
+        datasets: {
+          "dataset-1": {
+            id: "dataset-1",
+            snapshotId: "snapshot-1",
+            reportId: "data-export",
+            name: "dataExport",
+            records: [{ id: 1, value: "persisted" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            periodRole: "current",
+          },
+        },
+        reportOutputs: {
+          "data-export": {
+            reportId: "data-export",
+            datasetName: "dataExport",
+            fileName: "Live API run",
+            records: [{ datasetName: "dataExport", id: 1, value: "persisted" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            currentSnapshotId: "snapshot-1",
+          },
+        },
+        reportRunSnapshots: [
+          {
+            id: "snapshot-1",
+            reportId: "data-export",
+            periodRole: "current",
+            scope: {},
+            pageSize: 100,
+            maxPagesPerDataset: 5,
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            datasetIds: ["dataset-1"],
+            warnings: [],
+          },
+        ],
         warnings: [],
       });
       await loadDeferred.promise;
       await Promise.resolve();
     });
 
+    expect(screen.getByText("1 dataset")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Inactive Users" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Data Export" })).toHaveAttribute("aria-pressed", "false");
+    expect(clearPersistedDatasetSessionMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+
+    const datasetsPanel = screen.getByRole("region", { name: "Datasets" });
+    expect(within(datasetsPanel).getByText("Data Export")).toBeInTheDocument();
+    expect(within(datasetsPanel).getByText("dataExport")).toBeInTheDocument();
   });
 
   it("does not persist removed report output records when another dataset remains", async () => {

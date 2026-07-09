@@ -32,13 +32,27 @@ export function App() {
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
   const [datasetStorageReady, setDatasetStorageReady] = useState(false);
   const [datasetStorageWarning, setDatasetStorageWarning] = useState<string | null>(null);
-  const datasetSessionRevisionRef = useRef(0);
+  const datasetContentRevisionRef = useRef(0);
+  const reportSelectionRevisionRef = useRef(0);
   const mountedRef = useRef(false);
   const persistenceQueueRef = useRef(Promise.resolve());
   const persistenceSequenceRef = useRef(0);
+  const selectedReportsRef = useRef({
+    selectedReportId: state.selectedReportId,
+    selectedReportIds: state.selectedReportIds,
+  });
+  const suppressNextEmptyClearRef = useRef(false);
 
-  function markDatasetSessionChanged() {
-    datasetSessionRevisionRef.current += 1;
+  function markDatasetContentChanged() {
+    datasetContentRevisionRef.current += 1;
+  }
+
+  function markReportSelectionChanged(reportId: ReportId) {
+    reportSelectionRevisionRef.current += 1;
+    selectedReportsRef.current = {
+      selectedReportId: reportId,
+      selectedReportIds: [reportId],
+    };
   }
 
   useEffect(() => {
@@ -50,8 +64,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    selectedReportsRef.current = {
+      selectedReportId: state.selectedReportId,
+      selectedReportIds: state.selectedReportIds,
+    };
+  }, [state.selectedReportId, state.selectedReportIds]);
+
+  useEffect(() => {
     let active = true;
-    const hydrationRevision = datasetSessionRevisionRef.current;
+    const hydrationContentRevision = datasetContentRevisionRef.current;
+    const hydrationSelectionRevision = reportSelectionRevisionRef.current;
 
     loadPersistedDatasetSession()
       .then((snapshot) => {
@@ -59,9 +81,23 @@ export function App() {
           return;
         }
 
-        if (snapshot && datasetSessionRevisionRef.current === hydrationRevision) {
-          dispatch({ type: "session/hydratePersistentDatasets", snapshot });
+        if (!snapshot) {
+          return;
         }
+
+        if (datasetContentRevisionRef.current !== hydrationContentRevision) {
+          suppressNextEmptyClearRef.current = true;
+          return;
+        }
+
+        dispatch({
+          type: "session/hydratePersistentDatasets",
+          snapshot,
+          preserveSelection:
+            reportSelectionRevisionRef.current !== hydrationSelectionRevision
+              ? selectedReportsRef.current
+              : undefined,
+        });
       })
       .catch(() => {
         if (active && mountedRef.current) {
@@ -86,9 +122,19 @@ export function App() {
       return;
     }
 
+    const hasDatasets = Object.keys(state.datasets).length > 0;
+
+    if (!hasDatasets && suppressNextEmptyClearRef.current) {
+      suppressNextEmptyClearRef.current = false;
+      return;
+    }
+    if (hasDatasets) {
+      suppressNextEmptyClearRef.current = false;
+    }
+
     const sequence = persistenceSequenceRef.current + 1;
     persistenceSequenceRef.current = sequence;
-    const persist = () => Object.keys(state.datasets).length > 0
+    const persist = () => hasDatasets
       ? savePersistedDatasetSession(createDatasetSessionSnapshot(state))
       : clearPersistedDatasetSession();
 
@@ -113,7 +159,7 @@ export function App() {
   ]);
 
   function selectReport(reportId: ReportId) {
-    markDatasetSessionChanged();
+    markReportSelectionChanged(reportId);
     dispatch({ type: "report/select", reportId });
     setActivePanel("report");
   }
@@ -184,7 +230,7 @@ export function App() {
       }
 
       const result = body.result;
-      markDatasetSessionChanged();
+      markDatasetContentChanged();
       dispatch({
         type: "live/loaded",
         reportId: result.reportId,
@@ -232,7 +278,7 @@ export function App() {
   function importUploadedReport(result: ImportedUploadResult) {
     const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
 
-    markDatasetSessionChanged();
+    markDatasetContentChanged();
     dispatch({
       type: "import/loaded",
       datasetName: result.datasetName,
@@ -252,12 +298,12 @@ export function App() {
   }
 
   function removeDataset(datasetId: string) {
-    markDatasetSessionChanged();
+    markDatasetContentChanged();
     dispatch({ type: "dataset/remove", datasetId });
   }
 
   function flushStoredDatasets() {
-    markDatasetSessionChanged();
+    markDatasetContentChanged();
     dispatch({ type: "datasets/flush" });
     setRunQueue([]);
   }

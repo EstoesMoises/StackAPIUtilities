@@ -246,6 +246,114 @@ describe("sessionStore", () => {
     expect(withoutDataset.reportOutputs["inactive-users"]).toBeUndefined();
   });
 
+  it("keeps current output records when removing only a comparison live dataset", () => {
+    const current = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+      ],
+    });
+    const comparison = sessionReducer(current, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 2, display_name: "Grace" }],
+        },
+      ],
+    });
+    const comparisonDataset = Object.values(comparison.datasets).find(
+      (dataset) => dataset.periodRole === "comparison",
+    );
+
+    expect(comparisonDataset).toBeDefined();
+    const withoutComparison = sessionReducer(comparison, {
+      type: "dataset/remove",
+      datasetId: comparisonDataset?.id ?? "",
+    });
+
+    expect(Object.values(withoutComparison.datasets)).toHaveLength(1);
+    expect(withoutComparison.reportRunSnapshots).toHaveLength(1);
+    expect(withoutComparison.reportRunSnapshots[0]?.periodRole).toBe("current");
+    expect(withoutComparison.reportOutputs["inactive-users"]?.records).toEqual([
+      { datasetName: "users", user_id: 1, display_name: "Ada" },
+    ]);
+    expect(withoutComparison.reportOutputs["inactive-users"]?.currentSnapshotId).toEqual(
+      current.reportOutputs["inactive-users"]?.currentSnapshotId,
+    );
+    expect(withoutComparison.reportOutputs["inactive-users"]?.comparisonRecords).toBeUndefined();
+    expect(withoutComparison.reportOutputs["inactive-users"]?.comparisonScope).toBeUndefined();
+    expect(withoutComparison.reportOutputs["inactive-users"]?.comparisonSnapshotId).toBeUndefined();
+  });
+
+  it("keeps comparison output records when removing only a current live dataset", () => {
+    const current = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+      ],
+    });
+    const comparison = sessionReducer(current, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 2, display_name: "Grace" }],
+        },
+      ],
+    });
+    const currentDataset = Object.values(comparison.datasets).find((dataset) => dataset.periodRole === "current");
+
+    expect(currentDataset).toBeDefined();
+    const withoutCurrent = sessionReducer(comparison, {
+      type: "dataset/remove",
+      datasetId: currentDataset?.id ?? "",
+    });
+
+    expect(Object.values(withoutCurrent.datasets)).toHaveLength(1);
+    expect(withoutCurrent.reportRunSnapshots).toHaveLength(1);
+    expect(withoutCurrent.reportRunSnapshots[0]?.periodRole).toBe("comparison");
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.records).toEqual([]);
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.currentScope).toBeUndefined();
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.currentSnapshotId).toBeUndefined();
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.comparisonRecords).toEqual([
+      { datasetName: "users", user_id: 2, display_name: "Grace" },
+    ]);
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.comparisonSnapshotId).toEqual(
+      comparison.reportOutputs["inactive-users"]?.comparisonSnapshotId,
+    );
+  });
+
   it("clears credentials and datasets on reset", () => {
     const withData = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",
