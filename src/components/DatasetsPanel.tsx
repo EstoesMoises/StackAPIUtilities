@@ -6,23 +6,29 @@ import { downloadSessionDataset } from "../utils/datasetDownloads";
 interface DatasetsPanelProps {
   datasets: SessionDataset[];
   onRemoveDataset: (datasetId: string) => void;
+  onFlushDatasets?: () => void;
 }
 
-export function DatasetsPanel({ datasets, onRemoveDataset }: DatasetsPanelProps) {
+export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: DatasetsPanelProps) {
   const sortedDatasets = [...datasets].sort((a, b) => b.loadedAt.localeCompare(a.loadedAt));
 
   return (
     <section className="workspace-panel datasets-panel" aria-labelledby="datasets-heading">
       <div className="workspace-header">
         <div>
-          <p className="workspace-kicker">Session data</p>
+          <p className="workspace-kicker">Browser-local data</p>
           <h2 className="workspace-heading" id="datasets-heading">
             Datasets
           </h2>
         </div>
+        {sortedDatasets.length > 0 && onFlushDatasets && (
+          <button className="s-btn s-btn__outlined" type="button" onClick={onFlushDatasets}>
+            Flush stored datasets
+          </button>
+        )}
       </div>
       {sortedDatasets.length === 0 ? (
-        <p className="workspace-copy">No datasets loaded in this browser session.</p>
+        <p className="workspace-copy">No datasets loaded or stored in this browser.</p>
       ) : (
         <div className="datasets-table-wrap">
           <table className="datasets-table">

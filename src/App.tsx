@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { AppShell, type AppPanel } from "./components/AppShell";
 import { CredentialsPanel } from "./components/CredentialsPanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
@@ -12,11 +12,24 @@ import { UploadsPanel, type ImportedUploadResult } from "./components/UploadsPan
 import { UserGroupSyncPanel } from "./components/UserGroupSyncPanel";
 import { WriteToolsCatalog, type WriteToolId } from "./components/WriteToolsCatalog";
 import { validateCredentialsForReport } from "./credentials/credentialRules";
+import { createDatasetSessionSnapshot, type PersistedDatasetSessionSnapshot } from "./domain/datasetPersistence";
 import { DEFAULT_REPORT_RUN_SCOPE } from "./domain/reportScope";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
-import type { ReportId, ReportRunProgress, RunPeriodRole, RunQueueItem, SessionCredentials } from "./domain/types";
+import type {
+  ReportId,
+  ReportRunProgress,
+  ReportRunScope,
+  RunPeriodRole,
+  RunQueueItem,
+  SessionCredentials,
+} from "./domain/types";
 import type { ReportRunResponseBody } from "./server/reportRunApi";
+import {
+  clearPersistedDatasetSession,
+  loadPersistedDatasetSession,
+  savePersistedDatasetSession,
+} from "./utils/browserDatasetStorage";
 
 const REPORT_RUN_STAGES = [
   "Validate credentials",
@@ -32,9 +45,154 @@ export function App() {
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
   const [runProgress, setRunProgress] = useState<ReportRunProgress | undefined>();
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
+  const [datasetStorageReady, setDatasetStorageReady] = useState(false);
+  const [datasetStorageWarning, setDatasetStorageWarning] = useState<string | null>(null);
+  const datasetContentRevisionRef = useRef(0);
+  const reportSelectionRevisionRef = useRef(0);
+  const reportScopeRevisionRef = useRef(0);
+  const mountedRef = useRef(false);
+  const persistenceQueueRef = useRef(Promise.resolve());
+  const persistenceSequenceRef = useRef(0);
+  const selectedReportsRef = useRef({
+    selectedReportId: state.selectedReportId,
+    selectedReportIds: state.selectedReportIds,
+  });
+  const suppressNextEmptyClearRef = useRef(false);
+  const explicitEmptyRevisionRef = useRef(0);
   const activeRunIdRef = useRef(0);
 
+  function markDatasetContentChanged() {
+    datasetContentRevisionRef.current += 1;
+  }
+
+  function markReportSelectionChanged(reportId: ReportId) {
+    reportSelectionRevisionRef.current += 1;
+    selectedReportsRef.current = {
+      selectedReportId: reportId,
+      selectedReportIds: [reportId],
+    };
+  }
+
+  function updateReportScope(nextScope: ReportRunScope) {
+    reportScopeRevisionRef.current += 1;
+    setReportScope(nextScope);
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    selectedReportsRef.current = {
+      selectedReportId: state.selectedReportId,
+      selectedReportIds: state.selectedReportIds,
+    };
+  }, [state.selectedReportId, state.selectedReportIds]);
+
+  useEffect(() => {
+    let active = true;
+    const hydrationContentRevision = datasetContentRevisionRef.current;
+    const hydrationSelectionRevision = reportSelectionRevisionRef.current;
+    const hydrationReportScopeRevision = reportScopeRevisionRef.current;
+    const hydrationEmptyRevision = explicitEmptyRevisionRef.current;
+
+    loadPersistedDatasetSession()
+      .then((snapshot) => {
+        if (!active) {
+          return;
+        }
+
+        if (!snapshot) {
+          return;
+        }
+
+        if (datasetContentRevisionRef.current !== hydrationContentRevision) {
+          if (explicitEmptyRevisionRef.current === hydrationEmptyRevision) {
+            suppressNextEmptyClearRef.current = true;
+          }
+          return;
+        }
+
+        dispatch({
+          type: "session/hydratePersistentDatasets",
+          snapshot,
+          preserveSelection:
+            reportSelectionRevisionRef.current !== hydrationSelectionRevision
+              ? selectedReportsRef.current
+              : undefined,
+        });
+        if (
+          reportSelectionRevisionRef.current === hydrationSelectionRevision &&
+          reportScopeRevisionRef.current === hydrationReportScopeRevision
+        ) {
+          setReportScope((currentScope) => restoreReportScopeFromSnapshot(currentScope, snapshot));
+        }
+      })
+      .catch(() => {
+        if (active && mountedRef.current) {
+          setDatasetStorageWarning(
+            "Datasets could not be restored from browser storage. Current session data will still work.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setDatasetStorageReady(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!datasetStorageReady) {
+      return;
+    }
+
+    const hasDatasets = Object.keys(state.datasets).length > 0;
+
+    if (!hasDatasets && suppressNextEmptyClearRef.current) {
+      suppressNextEmptyClearRef.current = false;
+      return;
+    }
+    if (hasDatasets) {
+      suppressNextEmptyClearRef.current = false;
+    }
+
+    const sequence = persistenceSequenceRef.current + 1;
+    persistenceSequenceRef.current = sequence;
+    const persist = () => hasDatasets
+      ? savePersistedDatasetSession(createDatasetSessionSnapshot(state))
+      : clearPersistedDatasetSession();
+
+    persistenceQueueRef.current = persistenceQueueRef.current
+      .catch(() => undefined)
+      .then(() => persist())
+      .catch(() => {
+        if (mountedRef.current && sequence === persistenceSequenceRef.current) {
+          setDatasetStorageWarning(
+            "Dataset changes could not be stored in this browser. Current session data will still work.",
+          );
+        }
+      });
+  }, [
+    datasetStorageReady,
+    state.datasets,
+    state.reportOutputs,
+    state.reportRunSnapshots,
+    state.selectedReportId,
+    state.selectedReportIds,
+    state.warnings,
+  ]);
+
   function selectReport(reportId: ReportId) {
+    markReportSelectionChanged(reportId);
     clearActiveRunProgress();
     dispatch({ type: "report/select", reportId });
     setActivePanel("report");
@@ -116,6 +274,7 @@ export function App() {
       }
 
       const result = body.result;
+      markDatasetContentChanged();
       dispatch({
         type: "live/loaded",
         reportId: result.reportId,
@@ -172,6 +331,7 @@ export function App() {
   function importUploadedReport(result: ImportedUploadResult) {
     const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
 
+    markDatasetContentChanged();
     clearActiveRunProgress();
     dispatch({
       type: "import/loaded",
@@ -189,6 +349,21 @@ export function App() {
       },
     ]);
     setActivePanel("report");
+  }
+
+  function removeDataset(datasetId: string) {
+    markDatasetContentChanged();
+    if (state.datasets[datasetId] && Object.keys(state.datasets).length === 1) {
+      explicitEmptyRevisionRef.current += 1;
+    }
+    dispatch({ type: "dataset/remove", datasetId });
+  }
+
+  function flushStoredDatasets() {
+    markDatasetContentChanged();
+    explicitEmptyRevisionRef.current += 1;
+    dispatch({ type: "datasets/flush" });
+    clearActiveRunProgress();
   }
 
   function startActiveRun() {
@@ -226,6 +401,11 @@ export function App() {
     >
       <SessionOverview state={state} />
       <RunStatus queue={runQueue} progress={runProgress} />
+      {datasetStorageWarning && (
+        <div className="s-notice s-notice__warning mt16" role="status">
+          {datasetStorageWarning}
+        </div>
+      )}
       {activePanel === "credentials" && (
         <CredentialsPanel
           selectedReportId={state.selectedReportId}
@@ -237,7 +417,8 @@ export function App() {
       {activePanel === "datasets" && (
         <DatasetsPanel
           datasets={datasets}
-          onRemoveDataset={(datasetId) => dispatch({ type: "dataset/remove", datasetId })}
+          onRemoveDataset={removeDataset}
+          onFlushDatasets={flushStoredDatasets}
         />
       )}
       {activePanel === "write-tools" && renderWriteToolPanel(selectedWriteToolId, state.credentials)}
@@ -252,7 +433,7 @@ export function App() {
           outputSource={selectedReportOutput?.source}
           warnings={selectedReportOutput?.warnings}
           scope={reportScope}
-          onScopeChange={setReportScope}
+          onScopeChange={updateReportScope}
           onRun={queueSelectedReportRun}
           onRunBoth={queueBothReportRuns}
         />
@@ -289,6 +470,57 @@ function createFailedProgress(reportTitle: string): ReportRunProgress {
     completedStages: [REPORT_RUN_STAGES[0], REPORT_RUN_STAGES[1]],
     totalStages: REPORT_RUN_STAGES.length,
   };
+}
+
+function restoreReportScopeFromSnapshot(
+  currentScope: ReportRunScope,
+  snapshot: PersistedDatasetSessionSnapshot,
+): ReportRunScope {
+  const selectedRunSnapshots = findSelectedReportRunSnapshots(snapshot);
+  const runSnapshot =
+    selectedRunSnapshots.current ??
+    selectedRunSnapshots.comparison ??
+    findLatestSelectedReportRunSnapshot(snapshot);
+
+  if (!runSnapshot?.runPreset) {
+    return currentScope;
+  }
+
+  return {
+    ...currentScope,
+    current:
+      selectedRunSnapshots.current?.scope ??
+      (runSnapshot.periodRole === "current" ? runSnapshot.scope : currentScope.current),
+    comparison:
+      selectedRunSnapshots.comparison?.scope ??
+      (runSnapshot.periodRole === "comparison" ? runSnapshot.scope : currentScope.comparison),
+    pageSize: runSnapshot.pageSize,
+    maxPagesPerDataset: runSnapshot.maxPagesPerDataset,
+    runPreset: runSnapshot.runPreset,
+  };
+}
+
+function findSelectedReportRunSnapshots(snapshot: PersistedDatasetSessionSnapshot) {
+  const selectedOutput = snapshot.reportOutputs[snapshot.selectedReportId];
+
+  return {
+    current: findReportRunSnapshotById(snapshot, selectedOutput?.currentSnapshotId),
+    comparison: findReportRunSnapshotById(snapshot, selectedOutput?.comparisonSnapshotId),
+  };
+}
+
+function findReportRunSnapshotById(snapshot: PersistedDatasetSessionSnapshot, snapshotId: string | undefined) {
+  if (!snapshotId) {
+    return undefined;
+  }
+
+  return snapshot.reportRunSnapshots.find((runSnapshot) => runSnapshot.id === snapshotId && runSnapshot.runPreset);
+}
+
+function findLatestSelectedReportRunSnapshot(snapshot: PersistedDatasetSessionSnapshot) {
+  return [...snapshot.reportRunSnapshots]
+    .reverse()
+    .find((runSnapshot) => runSnapshot.reportId === snapshot.selectedReportId && runSnapshot.runPreset);
 }
 
 function renderWriteToolPanel(toolId: WriteToolId, credentials: SessionCredentials | null) {

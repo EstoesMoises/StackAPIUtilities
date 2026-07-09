@@ -114,6 +114,21 @@ describe("sessionStore", () => {
     expect(state.reportOutputs["tag-report"]?.records).toEqual([{ tagName: "python" }]);
   });
 
+  it("removes uploaded report output when removing its uploaded dataset", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "import/loaded",
+      datasetName: "tags",
+      fileName: "tag_metrics.csv",
+      records: [{ tagName: "python" }],
+      reportId: "tag-report",
+    });
+    const [datasetId] = Object.keys(state.datasets);
+    const withoutDataset = sessionReducer(state, { type: "dataset/remove", datasetId });
+
+    expect(withoutDataset.datasets[datasetId]).toBeUndefined();
+    expect(withoutDataset.reportOutputs["tag-report"]).toBeUndefined();
+  });
+
   it("stores live API datasets and exposes raw live report records", () => {
     const state = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",
@@ -242,6 +257,164 @@ describe("sessionStore", () => {
     );
   });
 
+  it("removes transformed live output rows when removing their backing dataset", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "standard",
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+        },
+      ],
+    });
+    const [dataset] = Object.values(state.datasets);
+
+    expect(state.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 500,
+      }),
+    ]);
+    expect(state.reportOutputs["tag-report"]?.records[0]).not.toHaveProperty("datasetName");
+
+    const withoutDataset = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: dataset?.id ?? "",
+    });
+
+    expect(withoutDataset.datasets).toEqual({});
+    expect(withoutDataset.reportOutputs["tag-report"]).toBeUndefined();
+    expect(withoutDataset.reportRunSnapshots).toEqual([]);
+  });
+
+  it("keeps transformed live output rows while their snapshot still has backing datasets", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "standard",
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+        },
+        {
+          datasetName: "questions",
+          records: [
+            {
+              question_id: 10,
+              tags: ["python"],
+              answer_count: 1,
+              view_count: 25,
+            },
+          ],
+        },
+      ],
+    });
+    const questionsDataset = Object.values(state.datasets).find((dataset) => dataset.name === "questions");
+
+    expect(state.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 525,
+      }),
+    ]);
+    expect(state.reportOutputs["tag-report"]?.records[0]).not.toHaveProperty("datasetName");
+
+    const withoutQuestions = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: questionsDataset?.id ?? "",
+    });
+
+    expect(Object.values(withoutQuestions.datasets)).toHaveLength(1);
+    expect(Object.values(withoutQuestions.datasets)[0]?.name).toBe("tags");
+    expect(withoutQuestions.reportRunSnapshots).toHaveLength(1);
+    expect(withoutQuestions.reportRunSnapshots[0]?.datasetIds).toEqual([
+      Object.values(withoutQuestions.datasets)[0]?.id,
+    ]);
+    expect(withoutQuestions.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 500,
+        question_count: 4,
+      }),
+    ]);
+    expect(withoutQuestions.reportOutputs["tag-report"]?.currentSnapshotId).toBe(questionsDataset?.snapshotId);
+  });
+
+  it("rebuilds transformed live output rows after removing their primary backing dataset", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "standard",
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+        },
+        {
+          datasetName: "questions",
+          records: [
+            {
+              question_id: 10,
+              tags: ["python"],
+              answer_count: 1,
+              view_count: 25,
+            },
+          ],
+        },
+        {
+          datasetName: "tagSmes",
+          records: [{ tagName: "python", user_id: 1 }],
+        },
+      ],
+    });
+    const tagsDataset = Object.values(state.datasets).find((dataset) => dataset.name === "tags");
+
+    expect(state.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 525,
+        question_count: 1,
+        sme_count: 1,
+      }),
+    ]);
+
+    const withoutTags = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: tagsDataset?.id ?? "",
+    });
+
+    expect(Object.values(withoutTags.datasets)).toHaveLength(2);
+    expect(Object.values(withoutTags.datasets).map((dataset) => dataset.name)).toEqual(["questions", "tagSmes"]);
+    expect(withoutTags.reportRunSnapshots).toHaveLength(1);
+    expect(withoutTags.reportOutputs["tag-report"]?.records).toEqual([
+      expect.objectContaining({
+        tag_name: "python",
+        page_views: 25,
+        question_count: 1,
+        sme_count: 1,
+      }),
+    ]);
+    expect(withoutTags.reportOutputs["tag-report"]?.currentSnapshotId).toBe(tagsDataset?.snapshotId);
+  });
+
   it("stores current and comparison live snapshots without overwriting dataset names", () => {
     const current = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",
@@ -360,6 +533,200 @@ describe("sessionStore", () => {
     expect(withoutDataset.datasets[datasetId]).toBeUndefined();
   });
 
+  it("prunes live report output records when removing one dataset from a multi-dataset snapshot", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+        {
+          datasetName: "tags",
+          records: [{ name: "python" }],
+        },
+      ],
+    });
+    const datasetToRemove = Object.values(state.datasets).find((dataset) => dataset.name === "users");
+
+    expect(datasetToRemove).toBeDefined();
+    const withoutDataset = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: datasetToRemove?.id ?? "",
+    });
+
+    expect(Object.values(withoutDataset.datasets)).toHaveLength(1);
+    expect(Object.values(withoutDataset.datasets)[0]?.name).toBe("tags");
+    expect(withoutDataset.reportRunSnapshots).toHaveLength(1);
+    expect(withoutDataset.reportRunSnapshots[0]?.datasetIds).toEqual([Object.values(withoutDataset.datasets)[0]?.id]);
+    expect(withoutDataset.reportOutputs["inactive-users"]?.records).toEqual([
+      { datasetName: "tags", name: "python" },
+    ]);
+    expect(withoutDataset.reportOutputs["inactive-users"]?.currentScope).toEqual({
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+    });
+    expect(withoutDataset.reportOutputs["inactive-users"]?.currentSnapshotId).toEqual(datasetToRemove?.snapshotId);
+  });
+
+  it("keeps live warnings until the last dataset from the warned snapshot is removed", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [{ reportId: "inactive-users", code: "dataset-cap-reached", message: "Partial data." }],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+        {
+          datasetName: "tags",
+          records: [{ name: "python" }],
+        },
+      ],
+    });
+    const usersDataset = Object.values(state.datasets).find((dataset) => dataset.name === "users");
+    const tagsDataset = Object.values(state.datasets).find((dataset) => dataset.name === "tags");
+
+    expect(usersDataset).toBeDefined();
+    expect(tagsDataset).toBeDefined();
+
+    const withoutUsers = sessionReducer(state, {
+      type: "dataset/remove",
+      datasetId: usersDataset?.id ?? "",
+    });
+
+    expect(withoutUsers.warnings).toEqual([
+      { reportId: "inactive-users", code: "dataset-cap-reached", message: "Partial data." },
+    ]);
+
+    const withoutTags = sessionReducer(withoutUsers, {
+      type: "dataset/remove",
+      datasetId: tagsDataset?.id ?? "",
+    });
+
+    expect(withoutTags.reportRunSnapshots).toEqual([]);
+    expect(withoutTags.warnings).toEqual([]);
+  });
+
+  it("keeps current output records when removing only a comparison live dataset", () => {
+    const current = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+      ],
+    });
+    const comparison = sessionReducer(current, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 2, display_name: "Grace" }],
+        },
+      ],
+    });
+    const comparisonDataset = Object.values(comparison.datasets).find(
+      (dataset) => dataset.periodRole === "comparison",
+    );
+
+    expect(comparisonDataset).toBeDefined();
+    const withoutComparison = sessionReducer(comparison, {
+      type: "dataset/remove",
+      datasetId: comparisonDataset?.id ?? "",
+    });
+
+    expect(Object.values(withoutComparison.datasets)).toHaveLength(1);
+    expect(withoutComparison.reportRunSnapshots).toHaveLength(1);
+    expect(withoutComparison.reportRunSnapshots[0]?.periodRole).toBe("current");
+    expect(withoutComparison.reportOutputs["inactive-users"]?.records).toEqual([
+      { datasetName: "users", user_id: 1, display_name: "Ada" },
+    ]);
+    expect(withoutComparison.reportOutputs["inactive-users"]?.currentSnapshotId).toEqual(
+      current.reportOutputs["inactive-users"]?.currentSnapshotId,
+    );
+    expect(withoutComparison.reportOutputs["inactive-users"]?.comparisonRecords).toBeUndefined();
+    expect(withoutComparison.reportOutputs["inactive-users"]?.comparisonScope).toBeUndefined();
+    expect(withoutComparison.reportOutputs["inactive-users"]?.comparisonSnapshotId).toBeUndefined();
+  });
+
+  it("keeps comparison output records when removing only a current live dataset", () => {
+    const current = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+        },
+      ],
+    });
+    const comparison = sessionReducer(current, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 2, display_name: "Grace" }],
+        },
+      ],
+    });
+    const currentDataset = Object.values(comparison.datasets).find((dataset) => dataset.periodRole === "current");
+
+    expect(currentDataset).toBeDefined();
+    const withoutCurrent = sessionReducer(comparison, {
+      type: "dataset/remove",
+      datasetId: currentDataset?.id ?? "",
+    });
+
+    expect(Object.values(withoutCurrent.datasets)).toHaveLength(1);
+    expect(withoutCurrent.reportRunSnapshots).toHaveLength(1);
+    expect(withoutCurrent.reportRunSnapshots[0]?.periodRole).toBe("comparison");
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.records).toEqual([]);
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.currentScope).toBeUndefined();
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.currentSnapshotId).toBeUndefined();
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.comparisonRecords).toEqual([
+      { datasetName: "users", user_id: 2, display_name: "Grace" },
+    ]);
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.comparisonSnapshotId).toEqual(
+      comparison.reportOutputs["inactive-users"]?.comparisonSnapshotId,
+    );
+  });
+
   it("clears credentials and datasets on reset", () => {
     const withData = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",
@@ -372,5 +739,91 @@ describe("sessionStore", () => {
     expect(reset.datasets).toEqual({});
     expect(reset.reportOutputs).toEqual({});
     expect(reset.reportRunSnapshots).toEqual([]);
+  });
+
+  it("hydrates persisted datasets without changing memory-only credentials", () => {
+    const withCredentials = sessionReducer(createInitialSessionState(), {
+      type: "credentials/set",
+      credentials: {
+        instanceType: "basic-business",
+        baseUrl: "https://stackoverflowteams.com/c/example",
+        pat: "pat-token",
+        authSource: "manual-pat",
+      },
+    });
+    const hydrated = sessionReducer(withCredentials, {
+      type: "session/hydratePersistentDatasets",
+      snapshot: {
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {
+          "dataset-1": {
+            id: "dataset-1",
+            name: "users",
+            records: [{ user_id: 1 }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "upload",
+          },
+        },
+        reportOutputs: {},
+        reportRunSnapshots: [],
+        warnings: [],
+      },
+    });
+
+    expect(hydrated.credentials).toBe(withCredentials.credentials);
+    expect(hydrated.selectedReportId).toBe("inactive-users");
+    expect(hydrated.datasets["dataset-1"]?.records).toEqual([{ user_id: 1 }]);
+  });
+
+  it("leaves existing state unchanged when persistent hydration is invalid", () => {
+    const withDataset = sessionReducer(createInitialSessionState(), {
+      type: "import/loaded",
+      datasetName: "tags",
+      fileName: "tag_metrics.csv",
+      records: [{ tagName: "python" }],
+      reportId: "tag-report",
+    });
+    const hydrated = sessionReducer(withDataset, {
+      type: "session/hydratePersistentDatasets",
+      snapshot: {
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {},
+        reportOutputs: [],
+        reportRunSnapshots: [],
+        warnings: [],
+      },
+    });
+
+    expect(hydrated).toBe(withDataset);
+  });
+
+  it("flushes datasets and report state while keeping credentials", () => {
+    const withCredentials = sessionReducer(createInitialSessionState(), {
+      type: "credentials/set",
+      credentials: {
+        instanceType: "basic-business",
+        baseUrl: "https://stackoverflowteams.com/c/example",
+        pat: "pat-token",
+        authSource: "manual-pat",
+      },
+    });
+    const withDataset = sessionReducer(withCredentials, {
+      type: "import/loaded",
+      datasetName: "tags",
+      fileName: "tag_metrics.csv",
+      records: [{ tagName: "python" }],
+      reportId: "tag-report",
+    });
+    const flushed = sessionReducer(withDataset, { type: "datasets/flush" });
+
+    expect(flushed.credentials).toBe(withCredentials.credentials);
+    expect(flushed.datasets).toEqual({});
+    expect(flushed.reportOutputs).toEqual({});
+    expect(flushed.reportRunSnapshots).toEqual([]);
+    expect(flushed.warnings).toEqual([]);
   });
 });

@@ -1,7 +1,9 @@
+import { hydrateDatasetSessionState } from "./datasetPersistence";
 import type {
   DatasetName,
   PeriodScope,
   ReportId,
+  ReportOutput,
   ReportRunPresetId,
   ReportWarning,
   RunPeriodRole,
@@ -40,6 +42,12 @@ type SessionAction =
       reportId: ReportId;
     }
   | { type: "dataset/remove"; datasetId: string }
+  | {
+      type: "session/hydratePersistentDatasets";
+      snapshot: unknown;
+      preserveSelection?: Pick<SessionState, "selectedReportId" | "selectedReportIds">;
+    }
+  | { type: "datasets/flush" }
   | { type: "session/reset" };
 
 export function createInitialSessionState(): SessionState {
@@ -212,22 +220,232 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         return state;
       }
 
+      const reportRunSnapshots = state.reportRunSnapshots
+        .map((snapshot) => ({
+          ...snapshot,
+          datasetIds: snapshot.datasetIds.filter((datasetId) => datasetId !== action.datasetId),
+        }))
+        .filter((snapshot) => snapshot.datasetIds.length > 0);
+
       return {
         ...state,
         datasets: remainingDatasets,
-        reportRunSnapshots: state.reportRunSnapshots
-          .map((snapshot) => ({
-            ...snapshot,
-            datasetIds: snapshot.datasetIds.filter((datasetId) => datasetId !== action.datasetId),
-          }))
-          .filter((snapshot) => snapshot.datasetIds.length > 0),
+        reportOutputs: removeReportOutputsForDataset(
+          state.reportOutputs,
+          removedDataset,
+          reportRunSnapshots,
+          remainingDatasets,
+        ),
+        reportRunSnapshots,
+        warnings: pruneWarningsForRemainingDatasetState(state.warnings, remainingDatasets, reportRunSnapshots),
       };
     }
+    case "session/hydratePersistentDatasets": {
+      const hydrated = hydrateDatasetSessionState(state, action.snapshot);
+
+      if (!action.preserveSelection || hydrated === state) {
+        return hydrated;
+      }
+
+      return {
+        ...hydrated,
+        selectedReportId: action.preserveSelection.selectedReportId,
+        selectedReportIds: action.preserveSelection.selectedReportIds,
+      };
+    }
+    case "datasets/flush":
+      return {
+        ...state,
+        datasets: {},
+        reportOutputs: {},
+        reportRunSnapshots: [],
+        warnings: [],
+      };
     case "session/reset":
       return createInitialSessionState();
     default:
       return state;
   }
+}
+
+function removeReportOutputsForDataset(
+  reportOutputs: SessionState["reportOutputs"],
+  removedDataset: SessionDataset,
+  retainedReportRunSnapshots: SessionState["reportRunSnapshots"],
+  remainingDatasets: SessionState["datasets"],
+): SessionState["reportOutputs"] {
+  const nextReportOutputs = { ...reportOutputs };
+  const retainedSnapshotIds = new Set(retainedReportRunSnapshots.map((snapshot) => snapshot.id));
+
+  for (const reportId of Object.keys(nextReportOutputs) as ReportId[]) {
+    const output = nextReportOutputs[reportId];
+
+    if (!output) {
+      continue;
+    }
+
+    const nextOutput = removeDatasetFromReportOutput(output, removedDataset, retainedSnapshotIds, remainingDatasets);
+
+    if (nextOutput) {
+      nextReportOutputs[reportId] = nextOutput;
+    } else {
+      delete nextReportOutputs[reportId];
+    }
+  }
+
+  return nextReportOutputs;
+}
+
+function removeDatasetFromReportOutput(
+  output: ReportOutput,
+  dataset: SessionDataset,
+  retainedSnapshotIds: ReadonlySet<string>,
+  remainingDatasets: SessionState["datasets"],
+): ReportOutput | null {
+  if (isUploadedReportOutputTiedToDataset(output, dataset)) {
+    return null;
+  }
+
+  if (!dataset.snapshotId) {
+    return output;
+  }
+
+  if (output.currentSnapshotId === dataset.snapshotId) {
+    const records = pruneDatasetRecords(
+      output.records,
+      dataset,
+      retainedSnapshotIds.has(dataset.snapshotId),
+      output.reportId,
+      dataset.snapshotId,
+      remainingDatasets,
+    );
+    const nextOutput: ReportOutput = {
+      ...output,
+      records,
+    };
+
+    if (records.length === 0) {
+      delete nextOutput.currentScope;
+      delete nextOutput.currentSnapshotId;
+    }
+
+    return hasReportOutputRecords(nextOutput) ? nextOutput : null;
+  }
+
+  if (output.comparisonSnapshotId === dataset.snapshotId) {
+    const nextOutput: ReportOutput = { ...output };
+    const comparisonRecords = pruneDatasetRecords(
+      output.comparisonRecords ?? [],
+      dataset,
+      retainedSnapshotIds.has(dataset.snapshotId),
+      output.reportId,
+      dataset.snapshotId,
+      remainingDatasets,
+    );
+
+    if (comparisonRecords.length > 0) {
+      nextOutput.comparisonRecords = comparisonRecords;
+    } else {
+      delete nextOutput.comparisonRecords;
+      delete nextOutput.comparisonScope;
+      delete nextOutput.comparisonSnapshotId;
+    }
+
+    return hasReportOutputRecords(nextOutput) ? nextOutput : null;
+  }
+
+  return output;
+}
+
+function isUploadedReportOutputTiedToDataset(output: ReportOutput, dataset: SessionDataset): boolean {
+  return (
+    dataset.source === "upload" &&
+    output.source === "upload" &&
+    output.reportId === dataset.reportId &&
+    output.datasetName === dataset.name &&
+    output.loadedAt === dataset.loadedAt
+  );
+}
+
+function hasReportOutputRecords(output: ReportOutput): boolean {
+  return output.records.length > 0 || Boolean(output.comparisonRecords?.length);
+}
+
+function pruneDatasetRecords(
+  records: Record<string, unknown>[],
+  dataset: SessionDataset,
+  isSnapshotRetained: boolean,
+  reportId: ReportId,
+  snapshotId: string,
+  remainingDatasets: SessionState["datasets"],
+): Record<string, unknown>[] {
+  if (records.some((record) => Object.prototype.hasOwnProperty.call(record, "datasetName"))) {
+    return records.filter((record) => record.datasetName !== dataset.name);
+  }
+
+  if (!isSnapshotRetained) {
+    return [];
+  }
+
+  return buildVisibleReportRecordsForSnapshot(reportId, snapshotId, remainingDatasets);
+}
+
+function buildVisibleReportRecordsForSnapshot(
+  reportId: ReportId,
+  snapshotId: string,
+  datasets: SessionState["datasets"],
+): Record<string, unknown>[] {
+  const reportRecords = Object.values(datasets)
+    .filter(
+      (dataset) =>
+        dataset.source === "live-api" && dataset.snapshotId === snapshotId && dataset.reportId === reportId,
+    )
+    .flatMap((dataset) =>
+      dataset.records.map((record) => createReportRecord(dataset.name, record)),
+    );
+
+  return reportId === "tag-report"
+    ? buildTagHealthRowsFromLiveRecords(reportRecords).map((record) => ({ ...record }))
+    : reportRecords;
+}
+
+function createReportRecord(datasetName: DatasetName, record: unknown): Record<string, unknown> {
+  if (isRecordObject(record)) {
+    return { datasetName, ...record };
+  }
+
+  return { datasetName, value: record };
+}
+
+function isRecordObject(record: unknown): record is Record<string, unknown> {
+  return typeof record === "object" && record !== null && !Array.isArray(record);
+}
+
+function pruneWarningsForRemainingDatasetState(
+  warnings: ReportWarning[],
+  datasets: Record<string, SessionDataset>,
+  reportRunSnapshots: SessionState["reportRunSnapshots"],
+): ReportWarning[] {
+  if (warnings.length === 0) {
+    return warnings;
+  }
+
+  const remainingWarnings = [
+    ...Object.values(datasets).flatMap((dataset) => dataset.warnings ?? []),
+    ...reportRunSnapshots.flatMap((snapshot) => snapshot.warnings),
+  ];
+
+  if (remainingWarnings.length === 0) {
+    return [];
+  }
+
+  return warnings.filter((warning) =>
+    remainingWarnings.some((remainingWarning) => isSameWarning(remainingWarning, warning)),
+  );
+}
+
+function isSameWarning(left: ReportWarning, right: ReportWarning): boolean {
+  return left.reportId === right.reportId && left.code === right.code && left.message === right.message;
 }
 
 function storeUploadedDataset(

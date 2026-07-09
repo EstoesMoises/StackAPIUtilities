@@ -1,8 +1,23 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
+import {
+  clearPersistedDatasetSession,
+  loadPersistedDatasetSession,
+  savePersistedDatasetSession,
+} from "../utils/browserDatasetStorage";
+
+vi.mock("../utils/browserDatasetStorage", () => ({
+  clearPersistedDatasetSession: vi.fn(),
+  loadPersistedDatasetSession: vi.fn(),
+  savePersistedDatasetSession: vi.fn(),
+}));
+
+const loadPersistedDatasetSessionMock = vi.mocked(loadPersistedDatasetSession);
+const savePersistedDatasetSessionMock = vi.mocked(savePersistedDatasetSession);
+const clearPersistedDatasetSessionMock = vi.mocked(clearPersistedDatasetSession);
 
 const basicBusinessPatCredentials = {
   instanceType: "basic-business",
@@ -11,12 +26,19 @@ const basicBusinessPatCredentials = {
   authSource: "manual-pat",
 } as const;
 
+beforeEach(() => {
+  loadPersistedDatasetSessionMock.mockResolvedValue(null);
+  savePersistedDatasetSessionMock.mockResolvedValue(undefined);
+  clearPersistedDatasetSessionMock.mockResolvedValue(undefined);
+});
+
 afterEach(() => {
+  vi.clearAllMocks();
   vi.restoreAllMocks();
 });
 
 describe("AppShell", () => {
-  it("renders report catalog and all MVP reports", () => {
+  it("renders report catalog and all MVP reports", async () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Stack API Utilities" })).toBeInTheDocument();
@@ -26,6 +48,845 @@ describe("AppShell", () => {
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tag Report" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Data Export" })).toBeInTheDocument();
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+  });
+
+  it("hydrates persisted browser datasets without credentials", async () => {
+    const user = userEvent.setup();
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [{ datasetName: "users", user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("1 dataset")).toBeInTheDocument();
+    expect(screen.getByText("No credentials")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+
+    const datasetsPanel = screen.getByRole("region", { name: "Datasets" });
+    expect(within(datasetsPanel).getByText("Inactive Users")).toBeInTheDocument();
+    expect(within(datasetsPanel).getByText("2026-06-01 to 2026-06-30")).toBeInTheDocument();
+    expect(within(datasetsPanel).getByRole("button", { name: "Flush stored datasets" })).toBeInTheDocument();
+  });
+
+  it("uses a restored Tag Report run preset for the next live run", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(makeTagReportRunBody("Collected restored-preset tags for Tag Report.")),
+    );
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+        },
+      },
+      reportOutputs: {},
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "tag-report",
+          periodRole: "current",
+          scope: {},
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("1 dataset")).toBeInTheDocument();
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      runPreset: "deep-audit",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+    });
+  });
+
+  it("uses restored current and comparison scopes for the next paired Tag Report run", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body));
+
+      return jsonResponse({
+        ok: true,
+        result: {
+          reportId: "tag-report",
+          reportTitle: "Tag Report",
+          periodRole: payload.periodRole,
+          scope: payload.scope,
+          pageSize: payload.pageSize,
+          maxPagesPerDataset: payload.maxPagesPerDataset,
+          runPreset: payload.runPreset,
+          warnings: [],
+          datasets: [
+            {
+              datasetName: "tags",
+              records:
+                payload.periodRole === "comparison"
+                  ? [{ name: "javascript", totalPageViews: 250, questionCount: 2 }]
+                  : [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+            },
+          ],
+          messages: [`Collected ${payload.periodRole} tags for Tag Report.`],
+        },
+      });
+    });
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      datasets: {
+        "current-tags": {
+          id: "current-tags",
+          snapshotId: "current-snapshot",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+        },
+        "comparison-tags": {
+          id: "comparison-tags",
+          snapshotId: "comparison-snapshot",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ name: "javascript", totalPageViews: 250, questionCount: 2 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "comparison",
+        },
+      },
+      reportOutputs: {
+        "tag-report": {
+          reportId: "tag-report",
+          datasetName: "tags",
+          fileName: "Live API run",
+          records: [{ tag_name: "python", page_views: 500 }],
+          comparisonRecords: [{ tag_name: "javascript", page_views: 250 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-07-01", endDate: "2026-07-08" },
+          comparisonScope: { startDate: "2026-06-01", endDate: "2026-06-08" },
+          currentSnapshotId: "current-snapshot",
+          comparisonSnapshotId: "comparison-snapshot",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "current-snapshot",
+          reportId: "tag-report",
+          periodRole: "current",
+          scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["current-tags"],
+          warnings: [],
+        },
+        {
+          id: "comparison-snapshot",
+          reportId: "tag-report",
+          periodRole: "comparison",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["comparison-tags"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("2 datasets")).toBeInTheDocument();
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run both periods" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const currentRunBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const comparisonRunBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(currentRunBody).toMatchObject({
+      periodRole: "current",
+      scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
+      runPreset: "deep-audit",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+    });
+    expect(comparisonRunBody).toMatchObject({
+      periodRole: "comparison",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
+      runPreset: "deep-audit",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+    });
+  });
+
+  it("persists live API datasets without credentials or run queue state", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        ok: true,
+        result: {
+          reportId: "inactive-users",
+          reportTitle: "Inactive Users",
+          periodRole: "current",
+          scope: {},
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          warnings: [],
+          datasets: [
+            {
+              datasetName: "users",
+              records: [{ user_id: 1, display_name: "Ada" }],
+            },
+          ],
+          messages: ["Collected users (1 record) for Inactive Users."],
+        },
+      }), {
+        status: 200,
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
+    await user.type(screen.getByLabelText("Personal access token"), "pat-token");
+    await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    const saveCalls = savePersistedDatasetSessionMock.mock.calls;
+    const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0] as unknown as Record<string, unknown>;
+    expect(savedSnapshot).toMatchObject({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+    });
+    expect(savedSnapshot).not.toHaveProperty("credentials");
+    expect(savedSnapshot).not.toHaveProperty("runQueue");
+  });
+
+  it("flushes current and persisted datasets in bulk", async () => {
+    const user = userEvent.setup();
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [{ datasetName: "users", user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("1 dataset")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Raw Table" }));
+    expect(screen.getByText("Ada")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
+
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("tab", { name: "Raw Table" }));
+    expect(screen.queryByText("Ada")).not.toBeInTheDocument();
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+  });
+
+  it("clears storage after an in-flight dataset save settles when flushing", async () => {
+    const user = userEvent.setup();
+    const saveDeferred = createDeferred<void>();
+    const operations: string[] = [];
+
+    clearPersistedDatasetSessionMock.mockImplementation(() => {
+      operations.push("clear");
+      return Promise.resolve();
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    operations.length = 0;
+    clearPersistedDatasetSessionMock.mockClear();
+    savePersistedDatasetSessionMock.mockImplementationOnce(() => {
+      operations.push("save:start");
+      return saveDeferred.promise.then(() => {
+        operations.push("save:resolved");
+      });
+    });
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
+
+    expect(clearPersistedDatasetSessionMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      saveDeferred.resolve();
+      await saveDeferred.promise;
+    });
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalledTimes(1));
+    expect(operations).toEqual(["save:start", "save:resolved", "clear"]);
+  });
+
+  it("keeps newer imported data when slow browser hydration resolves later", async () => {
+    const user = userEvent.setup();
+    const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
+    loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
+    expect(screen.getAllByText("machine-learning").length).toBeGreaterThan(0);
+    expect(screen.getByText("551,412")).toBeInTheDocument();
+
+    await act(async () => {
+      loadDeferred.resolve({
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {
+          "stale-dataset": {
+            id: "stale-dataset",
+            snapshotId: "stale-snapshot",
+            reportId: "inactive-users",
+            name: "users",
+            records: [{ user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            periodRole: "current",
+          },
+        },
+        reportOutputs: {
+          "inactive-users": {
+            reportId: "inactive-users",
+            datasetName: "users",
+            fileName: "Stale API run",
+            records: [{ datasetName: "users", user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            currentSnapshotId: "stale-snapshot",
+          },
+        },
+        reportRunSnapshots: [
+          {
+            id: "stale-snapshot",
+            reportId: "inactive-users",
+            periodRole: "current",
+            scope: {},
+            pageSize: 100,
+            maxPagesPerDataset: 5,
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            datasetIds: ["stale-dataset"],
+            warnings: [],
+          },
+        ],
+        warnings: [],
+      });
+      await loadDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
+    expect(screen.getAllByText("machine-learning").length).toBeGreaterThan(0);
+    expect(screen.getByText("551,412")).toBeInTheDocument();
+    expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
+  });
+
+  it("clears stored datasets when an explicit flush happens before slow hydration resolves", async () => {
+    const user = userEvent.setup();
+    const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
+    loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
+
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+
+    await act(async () => {
+      loadDeferred.resolve({
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {
+          "stale-dataset": {
+            id: "stale-dataset",
+            snapshotId: "stale-snapshot",
+            reportId: "inactive-users",
+            name: "users",
+            records: [{ user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            periodRole: "current",
+          },
+        },
+        reportOutputs: {
+          "inactive-users": {
+            reportId: "inactive-users",
+            datasetName: "users",
+            fileName: "Stale API run",
+            records: [{ datasetName: "users", user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            currentSnapshotId: "stale-snapshot",
+          },
+        },
+        reportRunSnapshots: [
+          {
+            id: "stale-snapshot",
+            reportId: "inactive-users",
+            periodRole: "current",
+            scope: {},
+            pageSize: 100,
+            maxPagesPerDataset: 5,
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            datasetIds: ["stale-dataset"],
+            warnings: [],
+          },
+        ],
+        warnings: [],
+      });
+      await loadDeferred.promise;
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
+    expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
+  });
+
+  it("clears stored datasets when row removal empties browser-local data before slow hydration resolves", async () => {
+    const user = userEvent.setup();
+    const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
+    loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Remove tags upload dataset" }));
+
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+
+    await act(async () => {
+      loadDeferred.resolve({
+        version: 1,
+        selectedReportId: "inactive-users",
+        selectedReportIds: ["inactive-users"],
+        datasets: {
+          "stale-dataset": {
+            id: "stale-dataset",
+            snapshotId: "stale-snapshot",
+            reportId: "inactive-users",
+            name: "users",
+            records: [{ user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            periodRole: "current",
+          },
+        },
+        reportOutputs: {
+          "inactive-users": {
+            reportId: "inactive-users",
+            datasetName: "users",
+            fileName: "Stale API run",
+            records: [{ datasetName: "users", user_id: 2, display_name: "Stale User" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            currentSnapshotId: "stale-snapshot",
+          },
+        },
+        reportRunSnapshots: [
+          {
+            id: "stale-snapshot",
+            reportId: "inactive-users",
+            periodRole: "current",
+            scope: {},
+            pageSize: 100,
+            maxPagesPerDataset: 5,
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            datasetIds: ["stale-dataset"],
+            warnings: [],
+          },
+        ],
+        warnings: [],
+      });
+      await loadDeferred.promise;
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
+    expect(screen.queryByText("Stale User")).not.toBeInTheDocument();
+  });
+
+  it("keeps newer report selection and hydrates stored datasets when slow browser hydration resolves later", async () => {
+    const user = userEvent.setup();
+    const loadDeferred = createDeferred<Awaited<ReturnType<typeof loadPersistedDatasetSession>>>();
+    loadPersistedDatasetSessionMock.mockReturnValueOnce(loadDeferred.promise);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+
+    expect(screen.getByRole("button", { name: "Inactive Users" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
+
+    await act(async () => {
+      loadDeferred.resolve({
+        version: 1,
+        selectedReportId: "data-export",
+        selectedReportIds: ["data-export"],
+        datasets: {
+          "dataset-1": {
+            id: "dataset-1",
+            snapshotId: "snapshot-1",
+            reportId: "data-export",
+            name: "dataExport",
+            records: [{ id: 1, value: "persisted" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            periodRole: "current",
+          },
+        },
+        reportOutputs: {
+          "data-export": {
+            reportId: "data-export",
+            datasetName: "dataExport",
+            fileName: "Live API run",
+            records: [{ datasetName: "dataExport", id: 1, value: "persisted" }],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            currentSnapshotId: "snapshot-1",
+          },
+        },
+        reportRunSnapshots: [
+          {
+            id: "snapshot-1",
+            reportId: "data-export",
+            periodRole: "current",
+            scope: {},
+            pageSize: 100,
+            maxPagesPerDataset: 5,
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            datasetIds: ["dataset-1"],
+            warnings: [],
+          },
+        ],
+        warnings: [],
+      });
+      await loadDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("1 dataset")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Inactive Users" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Data Export" })).toHaveAttribute("aria-pressed", "false");
+    expect(clearPersistedDatasetSessionMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+
+    const datasetsPanel = screen.getByRole("region", { name: "Datasets" });
+    expect(within(datasetsPanel).getByText("Data Export")).toBeInTheDocument();
+    expect(within(datasetsPanel).getByText("dataExport")).toBeInTheDocument();
+  });
+
+  it("does not persist removed report output records when another dataset remains", async () => {
+    const user = userEvent.setup();
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce({
+      version: 1,
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-users": {
+          id: "dataset-users",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        },
+        "dataset-tags": {
+          id: "dataset-tags",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "tags",
+          records: [{ name: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [
+            { datasetName: "users", user_id: 1, display_name: "Ada" },
+            { datasetName: "tags", name: "python" },
+          ],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageSize: 100,
+          maxPagesPerDataset: 5,
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-users", "dataset-tags"],
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("2 datasets")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+    savePersistedDatasetSessionMock.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Remove users current dataset" }));
+
+    expect(screen.getByText("1 dataset")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    const saveCalls = savePersistedDatasetSessionMock.mock.calls;
+    const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0];
+    expect(savedSnapshot?.datasets).toHaveProperty("dataset-tags");
+    expect(savedSnapshot?.datasets).not.toHaveProperty("dataset-users");
+    expect(JSON.stringify(savedSnapshot?.reportOutputs)).toContain("python");
+    expect(JSON.stringify(savedSnapshot?.reportOutputs)).not.toContain("Ada");
+  });
+
+  it("ignores stale persistence failures after a newer flush", async () => {
+    const user = userEvent.setup();
+    const saveDeferred = createDeferred<void>();
+
+    render(<App />);
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    clearPersistedDatasetSessionMock.mockClear();
+    savePersistedDatasetSessionMock.mockImplementationOnce(() => saveDeferred.promise);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(screen.getByRole("button", { name: "Flush stored datasets" }));
+
+    await act(async () => {
+      saveDeferred.reject(new Error("Quota exceeded"));
+      await saveDeferred.promise.catch(() => undefined);
+    });
+
+    expect(
+      screen.queryByText("Dataset changes could not be stored in this browser. Current session data will still work."),
+    ).not.toBeInTheDocument();
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+  });
+
+  it("does not warn after unmount when persistence rejects", async () => {
+    const user = userEvent.setup();
+    const saveDeferred = createDeferred<void>();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const { unmount } = render(<App />);
+
+    await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+    savePersistedDatasetSessionMock.mockImplementationOnce(() => saveDeferred.promise);
+
+    await user.click(screen.getByRole("button", { name: "Uploads" }));
+    await user.upload(
+      screen.getByLabelText("Upload report outputs"),
+      new File([tagMetricsCsv], "tag_metrics.csv", { type: "text/csv" }),
+    );
+
+    expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+
+    unmount();
+
+    await act(async () => {
+      saveDeferred.reject(new Error("Quota exceeded"));
+      await saveDeferred.promise.catch(() => undefined);
+    });
+
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("shows a non-blocking warning when browser dataset storage fails", async () => {
+    loadPersistedDatasetSessionMock.mockRejectedValueOnce(new Error("Blocked"));
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Datasets could not be restored from browser storage. Current session data will still work."),
+    ).toBeInTheDocument();
   });
 
   it("opens the shared credentials panel", async () => {
@@ -107,7 +968,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("heading", { name: "Session Credentials" })).toBeInTheDocument();
   });
 
-  it("runs a server-backed live API report and stores live datasets in session", async () => {
+  it("runs a server-backed live API report and stores live datasets locally", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({

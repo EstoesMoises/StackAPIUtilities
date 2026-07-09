@@ -52,7 +52,7 @@ export function UploadsPanel({ onImported }: UploadsPanelProps) {
       </div>
       <p className="fs-body2 workspace-copy">
         Upload existing CSV or JSON outputs from current SO4T scripts. Files are parsed locally in
-        this browser session only.
+        this browser. Loaded datasets stay stored locally until removed from the Datasets panel.
       </p>
       <label className="upload-dropzone">
         <span className="upload-dropzone-title">Upload report outputs</span>
