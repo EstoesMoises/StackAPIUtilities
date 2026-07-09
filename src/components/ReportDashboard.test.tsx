@@ -107,7 +107,7 @@ describe("ReportDashboard", () => {
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
     expect(screen.getByText("Healthy Tags")).toBeInTheDocument();
     expect(screen.getByText("Response Attention")).toBeInTheDocument();
-    expect(screen.getByText("SME Coverage")).toBeInTheDocument();
+    expect(screen.getByText("SME Gaps")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
     expect(screen.getByText("Tags needing SME coverage")).toBeInTheDocument();
     expect(screen.getByText("Tags needing response attention")).toBeInTheDocument();

@@ -89,7 +89,7 @@ describe("AppShell", () => {
     expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
-    expect(screen.getByText("SME Coverage")).toBeInTheDocument();
+    expect(screen.getByText("SME Gaps")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
     expect(screen.getByLabelText("machine-learning: 551412")).toBeInTheDocument();
   });
