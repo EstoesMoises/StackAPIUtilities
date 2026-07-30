@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StackApiV3Client } from "./stackApiV3";
 
+const API_V3_USER_AGENT =
+  "StackAPIUtilities/0.1 (+https://github.com/EstoesMoises/StackAPIUtilities)";
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -99,6 +102,151 @@ describe("StackApiV3Client", () => {
     expect(wait).toHaveBeenCalledWith({ kind: "token-bucket", seconds: 60, remaining: 25 });
   });
 
+  it("calls the throttle callback when burst capacity is low", async () => {
+    const onThrottle = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], totalPages: 1 }), {
+        status: 200,
+        headers: {
+          "x-burst-throttle-calls-left": "4",
+          "x-burst-throttle-seconds-until-full": "2",
+        },
+      }),
+    );
+
+    const client = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "token",
+      fetchFn: fetchMock,
+      onThrottle,
+    });
+
+    await client.getPagedItems("/users");
+
+    expect(onThrottle).toHaveBeenCalledWith({ kind: "burst", seconds: 2, remaining: 4 });
+  });
+
+  it("retries a throttled GET after the longest server-directed delay", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response("rate limited", {
+          status: 429,
+          headers: {
+            "Retry-After": "1",
+            "x-burst-throttle-seconds-until-full": "4",
+            "x-token-bucket-seconds-until-next-refill": "2",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 42, email: "ada@example.com" }), {
+          status: 200,
+        }),
+      );
+    const client = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "token",
+      fetchFn: fetchMock,
+      waitFn,
+    });
+
+    await expect(client.getUserByEmail("ada@example.com")).resolves.toEqual({
+      id: 42,
+      email: "ada@example.com",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(waitFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).toHaveBeenCalledWith(4);
+    expect(fetchMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "User-Agent": API_V3_USER_AGENT,
+        }),
+      }),
+    );
+  });
+
+  it("supports HTTP-date Retry-After values", async () => {
+    const now = Date.parse("2026-07-30T17:00:00.000Z");
+    const waitFn = vi.fn(async () => undefined);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response("rate limited", {
+          status: 429,
+          headers: {
+            "Retry-After": new Date(now + 3_000).toUTCString(),
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 42, email: "ada@example.com" }), {
+          status: 200,
+        }),
+      );
+    const client = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "token",
+      fetchFn: fetchMock,
+      waitFn,
+      nowFn: () => now,
+    });
+
+    await client.getUserByEmail("ada@example.com");
+
+    expect(waitFn).toHaveBeenCalledWith(3);
+  });
+
+  it("uses a two-second retry fallback when throttle headers are invalid", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response("rate limited", {
+          status: 429,
+          headers: {
+            "Retry-After": "invalid",
+            "x-burst-throttle-seconds-until-full": "-1",
+            "x-token-bucket-seconds-until-next-refill": "invalid",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 42, email: "ada@example.com" }), {
+          status: 200,
+        }),
+      );
+    const client = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "token",
+      fetchFn: fetchMock,
+      waitFn,
+    });
+
+    await client.getUserByEmail("ada@example.com");
+
+    expect(waitFn).toHaveBeenCalledWith(2);
+  });
+
+  it("stops retrying a GET after three retries", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchMock = vi.fn(async () => new Response("rate limited", { status: 429 }));
+    const client = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "token",
+      fetchFn: fetchMock,
+      waitFn,
+    });
+
+    await expect(client.getUserByEmail("ada@example.com")).rejects.toThrow(
+      "Stack API v3 request failed with 429",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(waitFn).toHaveBeenCalledTimes(3);
+    expect(waitFn).toHaveBeenNthCalledWith(1, 2);
+    expect(waitFn).toHaveBeenNthCalledWith(2, 2);
+    expect(waitFn).toHaveBeenNthCalledWith(3, 2);
+  });
+
   it("calls the default browser fetch with the global receiver", async () => {
     const fetchMock = vi.fn(function (this: unknown) {
       if (this !== globalThis) {
@@ -141,7 +289,11 @@ describe("StackApiV3Client", () => {
     );
     expect(fetchMock.mock.calls[0][1]).toEqual(
       expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer token",
+          "Content-Type": "application/json",
+          "User-Agent": API_V3_USER_AGENT,
+        }),
       }),
     );
   });
@@ -187,12 +339,20 @@ describe("StackApiV3Client", () => {
     );
     expect(fetchMock.mock.calls[0][1]).toEqual(
       expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer token",
+          "Content-Type": "application/json",
+          "User-Agent": API_V3_USER_AGENT,
+        }),
       }),
     );
     expect(fetchMock.mock.calls[1][1]).toEqual(
       expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer token",
+          "Content-Type": "application/json",
+          "User-Agent": API_V3_USER_AGENT,
+        }),
       }),
     );
   });
@@ -221,7 +381,11 @@ describe("StackApiV3Client", () => {
     expect(fetchMock.mock.calls[0][1]).toEqual(
       expect.objectContaining({
         method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer token",
+          "Content-Type": "application/json",
+          "User-Agent": API_V3_USER_AGENT,
+        }),
         body: JSON.stringify({ name: "Ada Lovelace VRM", userIds: [1, 2] }),
       }),
     );
@@ -231,7 +395,11 @@ describe("StackApiV3Client", () => {
     expect(fetchMock.mock.calls[1][1]).toEqual(
       expect.objectContaining({
         method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer token",
+          "Content-Type": "application/json",
+          "User-Agent": API_V3_USER_AGENT,
+        }),
         body: JSON.stringify([3]),
       }),
     );
@@ -252,9 +420,37 @@ describe("StackApiV3Client", () => {
     expect(fetchMock.mock.calls[0][1]).toEqual(
       expect.objectContaining({
         method: "DELETE",
-        headers: expect.objectContaining({ Authorization: "Bearer token", "Content-Type": "application/json" }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer token",
+          "Content-Type": "application/json",
+          "User-Agent": API_V3_USER_AGENT,
+        }),
       }),
     );
+  });
+
+  it("does not retry throttled write requests", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchMock = vi.fn(async () => new Response("rate limited", { status: 429 }));
+    const client = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "token",
+      fetchFn: fetchMock,
+      waitFn,
+    });
+
+    await expect(client.createUserGroup({ name: "Ada Lovelace VRM", userIds: [1] })).rejects.toThrow(
+      "Stack API v3 request failed with 429",
+    );
+    await expect(client.addUserGroupMembers(7, [2])).rejects.toThrow(
+      "Stack API v3 request failed with 429",
+    );
+    await expect(client.removeUserGroupMember(7, 3)).rejects.toThrow(
+      "Stack API v3 request failed with 429",
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(waitFn).not.toHaveBeenCalled();
   });
 
   it("throws Stack API v3 errors when removing a group member fails", async () => {

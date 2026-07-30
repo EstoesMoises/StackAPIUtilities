@@ -1,10 +1,15 @@
 import { type FetchLike, type ThrottleNotice, readJsonResponse } from "./httpClient";
 
+type WaitFn = (seconds: number) => Promise<void>;
+type NowFn = () => number;
+
 interface StackApiV3ClientOptions {
   apiV3Url: string;
   token: string;
   fetchFn?: FetchLike;
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
+  waitFn?: WaitFn;
+  nowFn?: NowFn;
 }
 
 interface StackApiV3Page<T> {
@@ -42,7 +47,15 @@ export interface StackApiPagedResult<T> {
   hasMore: boolean;
 }
 
+const API_V3_USER_AGENT =
+  "StackAPIUtilities/0.1 (+https://github.com/EstoesMoises/StackAPIUtilities)";
+const BURST_LOW_WATERMARK = 5;
 const TOKEN_BUCKET_LOW_WATERMARK = 30;
+const MAX_GET_RETRIES = 3;
+const FALLBACK_RETRY_SECONDS = 2;
+
+const waitSeconds: WaitFn = (seconds) =>
+  new Promise((resolve) => setTimeout(resolve, seconds * 1_000));
 
 function shouldFetchNextPage({
   page,
@@ -65,12 +78,16 @@ export class StackApiV3Client {
   private readonly token: string;
   private readonly fetchFn: FetchLike;
   private readonly onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
+  private readonly waitFn: WaitFn;
+  private readonly nowFn: NowFn;
 
   constructor(options: StackApiV3ClientOptions) {
     this.apiV3Url = options.apiV3Url.replace(/\/+$/, "");
     this.token = options.token;
     this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.onThrottle = options.onThrottle;
+    this.waitFn = options.waitFn ?? waitSeconds;
+    this.nowFn = options.nowFn ?? (() => Date.now());
   }
 
   async getPagedItems<T = unknown>(
@@ -95,9 +112,7 @@ export class StackApiV3Client {
 
     do {
       const url = this.buildUrl(path, { ...query, page: String(page) });
-      const response = await this.fetchFn(url, {
-        headers: this.createJsonHeaders(),
-      });
+      const response = await this.readResponse(url);
 
       const body = await readJsonResponse<StackApiV3Page<T>>(response, "Stack API v3");
       const pageItems = body.items ?? [];
@@ -106,8 +121,6 @@ export class StackApiV3Client {
       totalPages = typeof body.totalPages === "number" && Number.isFinite(body.totalPages)
         ? body.totalPages
         : totalPages;
-      await this.notifyThrottle(response.headers);
-
       pageCount += 1;
       page += 1;
     } while (shouldFetchNextPage({ page, totalPages, maxPages, lastPageItemCount }));
@@ -125,9 +138,9 @@ export class StackApiV3Client {
   }
 
   async getUserByEmail(email: string): Promise<StackApiV3UserSummary | null> {
-    const response = await this.fetchFn(this.buildUrl(`/users/by-email/${encodeURIComponent(email)}`, {}), {
-      headers: this.createJsonHeaders(),
-    });
+    const response = await this.readResponse(
+      this.buildUrl(`/users/by-email/${encodeURIComponent(email)}`, {}),
+    );
 
     if (response.status === 404) {
       return null;
@@ -184,12 +197,44 @@ export class StackApiV3Client {
     return {
       Authorization: `Bearer ${this.token}`,
       "Content-Type": "application/json",
+      "User-Agent": API_V3_USER_AGENT,
     };
+  }
+
+  private async readResponse(url: URL): Promise<Response> {
+    for (let retryCount = 0; ; retryCount += 1) {
+      const response = await this.fetchFn(url, {
+        headers: this.createJsonHeaders(),
+      });
+
+      if (response.status !== 429) {
+        await this.notifyThrottle(response.headers);
+        return response;
+      }
+
+      if (retryCount >= MAX_GET_RETRIES) {
+        return response;
+      }
+
+      await this.waitFn(getRetryDelaySeconds(response.headers, this.nowFn()));
+    }
   }
 
   private async notifyThrottle(headers: Headers): Promise<void> {
     if (!this.onThrottle) {
       return;
+    }
+
+    const burstCallsLeft = parseIntegerHeader(headers, "x-burst-throttle-calls-left");
+    const burstSecondsUntilFull = parseIntegerHeader(headers, "x-burst-throttle-seconds-until-full");
+
+    if (
+      burstCallsLeft !== null &&
+      burstSecondsUntilFull !== null &&
+      burstCallsLeft < BURST_LOW_WATERMARK &&
+      burstSecondsUntilFull > 0
+    ) {
+      await this.onThrottle({ kind: "burst", seconds: burstSecondsUntilFull, remaining: burstCallsLeft });
     }
 
     const callsLeft = parseIntegerHeader(headers, "x-token-bucket-calls-left");
@@ -206,12 +251,43 @@ export class StackApiV3Client {
   }
 }
 
-function parseIntegerHeader(headers: Headers, name: string): number | null {
-  const value = headers.get(name);
+function getRetryDelaySeconds(headers: Headers, nowMs: number): number {
+  const durations = [
+    parseRetryAfter(headers.get("Retry-After"), nowMs),
+    parseNonNegativeInteger(headers.get("x-burst-throttle-seconds-until-full")),
+    parseNonNegativeInteger(headers.get("x-token-bucket-seconds-until-next-refill")),
+  ].filter((duration): duration is number => duration !== null);
+
+  return durations.length > 0 ? Math.max(...durations) : FALLBACK_RETRY_SECONDS;
+}
+
+function parseRetryAfter(value: string | null, nowMs: number): number | null {
+  const seconds = parseNonNegativeInteger(value);
+  if (seconds !== null) {
+    return seconds;
+  }
+
   if (value === null) {
     return null;
   }
 
-  const parsed = Number.parseInt(value, 10);
-  return Number.isNaN(parsed) ? null : parsed;
+  const retryDateMs = Date.parse(value);
+  if (Number.isNaN(retryDateMs)) {
+    return null;
+  }
+
+  return Math.max(0, Math.ceil((retryDateMs - nowMs) / 1_000));
+}
+
+function parseIntegerHeader(headers: Headers, name: string): number | null {
+  return parseNonNegativeInteger(headers.get(name));
+}
+
+function parseNonNegativeInteger(value: string | null): number | null {
+  if (value === null || !/^\d+$/.test(value.trim())) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
