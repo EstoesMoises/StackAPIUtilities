@@ -55,6 +55,16 @@ function createInput(client = createClient()): UserGroupSyncRunnerInput {
   };
 }
 
+function createCsvWithEmails(emails: string[]): string {
+  return [
+    "Director,Senior Manager,User Group Member,First Name,Last Name,Colleague ID,Email,Job Title",
+    ...emails.map(
+      (email, index) =>
+        `Pat Director,Ada Lovelace,Member ${index},Member,${index},${1000 + index},${email},Engineer`,
+    ),
+  ].join("\n");
+}
+
 describe("previewUserGroupSync", () => {
   it("previews creates and additions after resolving users by email", async () => {
     const client = createClient();
@@ -75,7 +85,7 @@ describe("previewUserGroupSync", () => {
     expect(client.getUserGroups).toHaveBeenCalledTimes(1);
   });
 
-  it("continues preview when one email lookup fails", async () => {
+  it("aborts preview when one email lookup fails", async () => {
     const client = createClient();
     vi.mocked(client.getUserByEmail).mockImplementation(async (email: string) => {
       if (email.toLowerCase() === "linus@example.com") {
@@ -86,17 +96,23 @@ describe("previewUserGroupSync", () => {
     });
     vi.mocked(client.getUserGroups).mockResolvedValue([]);
 
+    await expect(previewUserGroupSync(createInput(client))).rejects.toThrow("Stack lookup failed");
+    expect(client.getUserByEmail).toHaveBeenCalledWith("grace@example.com");
+    expect(client.getUserByEmail).toHaveBeenCalledWith("linus@example.com");
+    expect(client.getUserGroups).not.toHaveBeenCalled();
+  });
+
+  it("skips a row only when the email lookup confirms the user is missing", async () => {
+    const client = createClient();
+    vi.mocked(client.getUserByEmail).mockImplementation(async (email: string) =>
+      email.toLowerCase() === "linus@example.com"
+        ? null
+        : { id: 1, email, name: "Grace Hopper" },
+    );
+    vi.mocked(client.getUserGroups).mockResolvedValue([]);
+
     const preview = await previewUserGroupSync(createInput(client));
 
-    expect(preview.blockingErrors).toEqual([]);
-    expect(preview.groups).toEqual([
-      expect.objectContaining({
-        groupName: "Ada Lovelace VRM",
-        createGroup: true,
-        desiredUserIds: [1],
-        addUserIds: [1],
-      }),
-    ]);
     expect(preview.skippedRows).toEqual([
       {
         rowNumber: 3,
@@ -105,9 +121,64 @@ describe("previewUserGroupSync", () => {
         reason: "Email not found in Stack Enterprise",
       },
     ]);
-    expect(client.getUserByEmail).toHaveBeenCalledWith("grace@example.com");
-    expect(client.getUserByEmail).toHaveBeenCalledWith("linus@example.com");
-    expect(client.getUserGroups).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves unique emails in batches of 20 with a two-second pause between batches", async () => {
+    const emails = Array.from({ length: 41 }, (_, index) => `member${index}@example.com`);
+    const client = createClient();
+    let activeLookups = 0;
+    let maxActiveLookups = 0;
+    const callsAtWait: number[] = [];
+    const waitFn = vi.fn(async () => {
+      callsAtWait.push(vi.mocked(client.getUserByEmail).mock.calls.length);
+    });
+    vi.mocked(client.getUserByEmail).mockImplementation(async (email: string) => {
+      activeLookups += 1;
+      maxActiveLookups = Math.max(maxActiveLookups, activeLookups);
+      await Promise.resolve();
+      activeLookups -= 1;
+      return {
+        id: Number(email.match(/\d+/)?.[0] ?? 0) + 1,
+        email,
+      };
+    });
+    vi.mocked(client.getUserGroups).mockResolvedValue([]);
+
+    await previewUserGroupSync({
+      ...createInput(client),
+      csvText: createCsvWithEmails(emails),
+      waitFn,
+    });
+
+    expect(client.getUserByEmail).toHaveBeenCalledTimes(41);
+    expect(maxActiveLookups).toBe(20);
+    expect(waitFn).toHaveBeenCalledTimes(2);
+    expect(waitFn).toHaveBeenNthCalledWith(1, 2);
+    expect(waitFn).toHaveBeenNthCalledWith(2, 2);
+    expect(callsAtWait).toEqual([20, 40]);
+  });
+
+  it("deduplicates email lookups case-insensitively across batch boundaries", async () => {
+    const uniqueEmails = Array.from({ length: 21 }, (_, index) => `member${index}@example.com`);
+    const client = createClient();
+    const waitFn = vi.fn(async () => undefined);
+    vi.mocked(client.getUserByEmail).mockImplementation(async (email: string) => ({
+      id: Number(email.match(/\d+/)?.[0] ?? 0) + 1,
+      email,
+    }));
+    vi.mocked(client.getUserGroups).mockResolvedValue([]);
+
+    await previewUserGroupSync({
+      ...createInput(client),
+      csvText: createCsvWithEmails([...uniqueEmails, "MEMBER0@EXAMPLE.COM"]),
+      waitFn,
+    });
+
+    expect(client.getUserByEmail).toHaveBeenCalledTimes(21);
+    expect(client.getUserByEmail).toHaveBeenCalledWith("member0@example.com");
+    expect(client.getUserByEmail).not.toHaveBeenCalledWith("MEMBER0@EXAMPLE.COM");
+    expect(waitFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).toHaveBeenCalledWith(2);
   });
 });
 

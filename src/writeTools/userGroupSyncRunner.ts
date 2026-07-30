@@ -8,6 +8,13 @@ import {
   type UserGroupSyncPlan,
 } from "./userGroupSync";
 
+type WaitFn = (seconds: number) => Promise<void>;
+
+const USER_LOOKUP_BATCH_SIZE = 20;
+const USER_LOOKUP_BATCH_DELAY_SECONDS = 2;
+const waitSeconds: WaitFn = (seconds) =>
+  new Promise((resolve) => setTimeout(resolve, seconds * 1_000));
+
 export interface UserGroupSyncClientUser {
   id: number;
   email?: string | null;
@@ -33,6 +40,7 @@ export interface UserGroupSyncRunnerInput {
   groupNameTemplate: string;
   syncMode: UserGroupSyncMode;
   client: UserGroupSyncClient;
+  waitFn?: WaitFn;
 }
 
 export interface UserGroupSyncOperationResult {
@@ -57,7 +65,11 @@ export class UserGroupSyncInputError extends Error {
 
 export async function previewUserGroupSync(input: UserGroupSyncRunnerInput): Promise<UserGroupSyncPlan> {
   const rows = parseInputCsv(input.csvText);
-  const resolvedUsers = await resolveUsersByEmail(input.client, rows.map((row) => row.email));
+  const resolvedUsers = await resolveUsersByEmail(
+    input.client,
+    rows.map((row) => row.email),
+    input.waitFn ?? waitSeconds,
+  );
   const existingGroups = normalizeExistingGroups(await input.client.getUserGroups());
 
   return planUserGroupSync({
@@ -172,6 +184,7 @@ function parseInputCsv(csvText: string) {
 async function resolveUsersByEmail(
   client: UserGroupSyncClient,
   emails: string[],
+  waitFn: WaitFn,
 ): Promise<Record<string, ResolvedStackUser | null>> {
   const uniqueEmailsByKey = new Map<string, string>();
 
@@ -189,25 +202,29 @@ async function resolveUsersByEmail(
   }
 
   const resolvedUsers: Record<string, ResolvedStackUser | null> = {};
+  const emailEntries = [...uniqueEmailsByKey.entries()];
 
-  await Promise.all(
-    [...uniqueEmailsByKey.entries()].map(async ([emailKey, email]) => {
-      let user: UserGroupSyncClientUser | null;
-      try {
-        user = await client.getUserByEmail(email);
-      } catch {
-        user = null;
-      }
-      resolvedUsers[emailKey] =
-        user === null
-          ? null
-          : {
-              id: user.id,
-              email: user.email ?? email,
-              name: user.name,
-            };
-    }),
-  );
+  for (let start = 0; start < emailEntries.length; start += USER_LOOKUP_BATCH_SIZE) {
+    const batch = emailEntries.slice(start, start + USER_LOOKUP_BATCH_SIZE);
+
+    await Promise.all(
+      batch.map(async ([emailKey, email]) => {
+        const user = await client.getUserByEmail(email);
+        resolvedUsers[emailKey] =
+          user === null
+            ? null
+            : {
+                id: user.id,
+                email: user.email ?? email,
+                name: user.name,
+              };
+      }),
+    );
+
+    if (start + USER_LOOKUP_BATCH_SIZE < emailEntries.length) {
+      await waitFn(USER_LOOKUP_BATCH_DELAY_SECONDS);
+    }
+  }
 
   return resolvedUsers;
 }

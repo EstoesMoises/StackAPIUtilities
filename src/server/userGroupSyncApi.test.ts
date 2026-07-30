@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { StackApiError } from "../api/httpClient";
 import type { SessionCredentials } from "../domain/types";
 import type { UserGroupSyncClient } from "../writeTools/userGroupSyncRunner";
 import { handleUserGroupSyncRequest } from "./userGroupSyncApi";
@@ -67,6 +68,41 @@ describe("handleUserGroupSyncRequest", () => {
       }),
     });
     expect(createClientDependency).toHaveBeenCalledWith(credentials);
+  });
+
+  it("fails preview closed when an email lookup remains rate limited", async () => {
+    const client = createClient({
+      getUserByEmail: vi.fn().mockRejectedValue(
+        new StackApiError(
+          "Stack API v3 request failed with 429",
+          429,
+          "https://demo.stackenterprise.co/api/v3/users/by-email/grace%40example.com",
+          "rate limited",
+        ),
+      ),
+      getUserGroups: vi.fn(),
+    });
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials,
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient: () => client },
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Stack API v3 request failed with 429",
+    });
+    expect(client.getUserGroups).not.toHaveBeenCalled();
+    expect(client.createUserGroup).not.toHaveBeenCalled();
+    expect(client.addUserGroupMembers).not.toHaveBeenCalled();
+    expect(client.removeUserGroupMember).not.toHaveBeenCalled();
   });
 
   it("returns preview results with manual Enterprise access token credentials", async () => {
