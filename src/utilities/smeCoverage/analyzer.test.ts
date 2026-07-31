@@ -314,12 +314,93 @@ describe("analyzeSmeCoverage", () => {
     ]);
   });
 
-  it("sorts critical rows by unrounded ratio descending", () => {
-    const rows = coveredRows([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+  it.each([
+    {
+      name: "critical",
+      tier: "Critical under-coverage" as const,
+      demand: [
+        ...coveredRows([10, 20, 30, 40, 50, 60, 70, 80]).demand,
+        normalizedDemandRow("critical-ratio-100", 900),
+        normalizedDemandRow("critical-ratio-90", 990),
+      ],
+      smes: [
+        ...coveredRows([10, 20, 30, 40, 50, 60, 70, 80]).smes,
+        normalizedSmeRow("critical-ratio-100", 9),
+        normalizedSmeRow("critical-ratio-90", 11),
+      ],
+      expected: ["critical-ratio-100", "critical-ratio-90"],
+    },
+    {
+      name: "light",
+      tier: "Light coverage" as const,
+      demand: [
+        ...coveredRows([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20]).demand,
+        normalizedDemandRow("light-ratio-17", 850),
+        normalizedDemandRow("light-ratio-16", 960),
+        normalizedDemandRow("light-ratio-15", 900),
+      ],
+      smes: [
+        ...coveredRows([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20]).smes,
+        normalizedSmeRow("light-ratio-17", 50),
+        normalizedSmeRow("light-ratio-16", 60),
+        normalizedSmeRow("light-ratio-15", 60),
+      ],
+      expected: ["light-ratio-17", "light-ratio-16", "light-ratio-15"],
+    },
+    {
+      name: "not-classified",
+      tier: "Not classified" as const,
+      demand: [
+        normalizedDemandRow("not-classified-ratio-100", 100),
+        normalizedDemandRow("not-classified-ratio-50", 200),
+        normalizedDemandRow("not-classified-ratio-25", 300),
+      ],
+      smes: [
+        normalizedSmeRow("not-classified-ratio-100", 1),
+        normalizedSmeRow("not-classified-ratio-50", 4),
+        normalizedSmeRow("not-classified-ratio-25", 12),
+      ],
+      expected: [
+        "not-classified-ratio-100",
+        "not-classified-ratio-50",
+        "not-classified-ratio-25",
+      ],
+    },
+    {
+      name: "immediate",
+      tier: "Immediate gap" as const,
+      demand: [normalizedDemandRow("immediate-page-50", 50), normalizedDemandRow("immediate-page-40", 40, 99)],
+      smes: [normalizedSmeRow("immediate-page-50", 0), normalizedSmeRow("immediate-page-40", 0)],
+      expected: ["immediate-page-50", "immediate-page-40"],
+    },
+    {
+      name: "low-demand",
+      tier: "Low-demand uncovered" as const,
+      demand: [normalizedDemandRow("low-demand-page-20", 20, 0), normalizedDemandRow("low-demand-page-25", 25, 0)],
+      smes: [normalizedSmeRow("low-demand-page-20", 0), normalizedSmeRow("low-demand-page-25", 0)],
+      expected: ["low-demand-page-25", "low-demand-page-20"],
+    },
+    {
+      name: "adequate",
+      tier: "Adequate coverage" as const,
+      demand: [
+        normalizedDemandRow("adequate-ratio-high", 10),
+        normalizedDemandRow("adequate-page-high", 20),
+        normalizedDemandRow("light", 30),
+        normalizedDemandRow("critical", 40),
+      ],
+      smes: [
+        normalizedSmeRow("adequate-ratio-high", 1),
+        normalizedSmeRow("adequate-page-high", 4),
+        normalizedSmeRow("light", 1),
+        normalizedSmeRow("critical", 1),
+      ],
+      expected: ["adequate-page-high", "adequate-ratio-high"],
+    },
+  ])("uses the $name tier's canonical ordering", ({ tier, demand, smes, expected }) => {
+    const result = analyze(demand, smes);
 
-    const result = analyze(rows.demand, rows.smes);
-
-    expect(result.findings.criticalUnderCoverage.map((row) => row.tagName)).toEqual(["tag-10", "tag-9"]);
+    expect(result.evidence.filter((row) => row.coverageTier === tier).map((row) => row.tagName)).toEqual(expected);
   });
 
   it("uses page views, question count, and code-unit tag name to break equal covered ratios", () => {
