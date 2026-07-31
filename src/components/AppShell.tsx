@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 import { StackOverflowLogo } from "./StackOverflowLogo";
 
-export type AppPanel = "report" | "credentials" | "uploads" | "datasets" | "write-tools";
+export type AppPanel =
+  | "report"
+  | "utilities"
+  | "credentials"
+  | "uploads"
+  | "datasets"
+  | "write-tools";
 
 interface AppShellSummary {
   credentialsSaved: boolean;
@@ -17,7 +23,8 @@ interface AppShellProps {
 }
 
 const panelLabels: Record<AppPanel, string> = {
-  report: "Reports",
+  report: "Scripts",
+  utilities: "Utilities",
   credentials: "Credentials",
   uploads: "Uploads",
   datasets: "Datasets",

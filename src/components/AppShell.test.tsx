@@ -42,6 +42,13 @@ describe("AppShell", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Stack API Utilities" })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("navigation", { name: "Application panels" }))
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Scripts", "Utilities", "Credentials", "Uploads", "Datasets", "Write Tools"]);
+    expect(screen.getByRole("button", { name: "Scripts" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Utilities" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByText(/mostly untested and is not ready for production instances/i)).toBeInTheDocument();
     expect(screen.getByText(/reach out to Moises on Slack/i)).toBeInTheDocument();
     expect(screen.getByText("No credentials")).toBeInTheDocument();
@@ -160,7 +167,7 @@ describe("AppShell", () => {
 
     expect(await screen.findByText("1 dataset")).toBeInTheDocument();
     await saveBasicBusinessCredentials(user);
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
@@ -277,7 +284,7 @@ describe("AppShell", () => {
 
     expect(await screen.findByText("2 datasets")).toBeInTheDocument();
     await saveBasicBusinessCredentials(user);
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
@@ -332,7 +339,7 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
@@ -413,7 +420,7 @@ describe("AppShell", () => {
 
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("tab", { name: "Raw Table" }));
     expect(screen.queryByText("Ada")).not.toBeInTheDocument();
     await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
@@ -1031,7 +1038,7 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
@@ -1061,7 +1068,7 @@ describe("AppShell", () => {
       within(datasetsPanel).getByRole("button", { name: "Download users current dataset as JSON" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("tab", { name: "Raw Table" }));
 
     expect(screen.getByText("Ada")).toBeInTheDocument();
@@ -1106,7 +1113,7 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("radio", { name: "Deep audit" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
@@ -1139,7 +1146,7 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
@@ -1186,7 +1193,7 @@ describe("AppShell", () => {
     render(<App />);
 
     await saveBasicBusinessCredentials(user);
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
@@ -1220,7 +1227,7 @@ describe("AppShell", () => {
     render(<App />);
 
     await saveBasicBusinessCredentials(user);
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByLabelText("Enable comparison period"));
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -1248,7 +1255,7 @@ describe("AppShell", () => {
     render(<App />);
 
     await saveBasicBusinessCredentials(user);
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
@@ -1277,7 +1284,7 @@ describe("AppShell", () => {
     render(<App />);
 
     await saveBasicBusinessCredentials(user);
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
     expect(await screen.findByRole("progressbar", { name: "Tag Report progress" })).toBeInTheDocument();
 
@@ -1342,7 +1349,7 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
-    await user.click(screen.getByRole("button", { name: "Reports" }));
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByLabelText("Enable comparison period"));
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
 
