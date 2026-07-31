@@ -1,7 +1,8 @@
 import { getLiveDatasetClient, type LiveCollectorClients } from "../collectors/liveCollectors";
 import { planDatasetsForReports } from "../collectors/datasetPlanner";
 import { reportRegistry } from "../domain/reportRegistry";
-import type { InstanceType, ReportId, SessionCredentials } from "../domain/types";
+import { utilityRegistry } from "../domain/utilityRegistry";
+import type { InstanceType, ReportId, SessionCredentials, UtilityId } from "../domain/types";
 
 export interface NormalizedInstance {
   instanceType: InstanceType;
@@ -130,6 +131,31 @@ export function validateCredentialsForReport(
     if (credentialPlan.requiresOAuth) {
       messages.push(...validateEnterpriseV3OAuthCredentials(credentials, { now }).messages);
     }
+  }
+
+  return { valid: messages.length === 0, messages };
+}
+
+export function validateCredentialsForUtility(
+  utilityId: UtilityId,
+  credentials: SessionCredentials,
+  now: Date = new Date(),
+): ValidationResult {
+  const utility = utilityRegistry.find((candidate) => candidate.id === utilityId);
+  if (!utility) return { valid: false, messages: [`Unknown utility: ${utilityId}`] };
+
+  const messages: string[] = [];
+  if (!utility.supportedInstances.includes(credentials.instanceType)) {
+    messages.push(`${utility.title} is not available for the selected instance type.`);
+  } else if (credentials.instanceType === "basic-business") {
+    if (!credentials.pat?.trim()) {
+      messages.push("Personal access token is required for Basic/Business API calls.");
+    }
+  } else {
+    if (!credentials.apiKey?.trim()) {
+      messages.push("API key is required for Stack API v2.3 Enterprise calls.");
+    }
+    messages.push(...validateEnterpriseV3OAuthCredentials(credentials, { now }).messages);
   }
 
   return { valid: messages.length === 0, messages };

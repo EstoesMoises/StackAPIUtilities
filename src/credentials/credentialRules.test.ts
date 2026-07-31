@@ -1,11 +1,33 @@
 import { describe, expect, it } from "vitest";
 import type { ReportId, SessionCredentials } from "../domain/types";
-import { normalizeInstanceUrl, validateCredentialsForReport, validateEnterpriseV3OAuthCredentials } from "./credentialRules";
+import {
+  normalizeInstanceUrl,
+  validateCredentialsForReport,
+  validateCredentialsForUtility,
+  validateEnterpriseV3OAuthCredentials,
+} from "./credentialRules";
 
 const NOW = new Date("2026-07-04T12:00:00.000Z");
 const FUTURE_EXPIRY = "2026-07-05T00:00:00.000Z";
 const CONNECTION_REQUIRED_MESSAGE = "Enterprise access token is required for Stack API v3 calls.";
 const EXPIRY_MESSAGE = "Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.";
+
+function basicCredentials(overrides: Partial<SessionCredentials>): SessionCredentials {
+  return {
+    instanceType: "basic-business",
+    baseUrl: "https://stackoverflowteams.com/c/example-team",
+    ...overrides,
+  };
+}
+
+function enterpriseCredentials(overrides: Partial<SessionCredentials>): SessionCredentials {
+  return {
+    instanceType: "enterprise",
+    baseUrl: "https://demo.stackenterprise.co",
+    authSource: "manual-enterprise-token",
+    ...overrides,
+  };
+}
 
 describe("normalizeInstanceUrl", () => {
   it("normalizes Basic/Business team URLs into API roots and team slugs", () => {
@@ -164,6 +186,18 @@ describe("validateCredentialsForReport", () => {
     }, NOW);
 
     expect(result).toEqual({ valid: true, messages: [] });
+  });
+});
+
+describe("validateCredentialsForUtility", () => {
+  it.each([
+    ["basic PAT", basicCredentials({ pat: "pat" }), true],
+    ["basic missing PAT", basicCredentials({}), false],
+    ["enterprise mixed credentials", enterpriseCredentials({ apiKey: "key", accessToken: "token" }), true],
+    ["enterprise missing API key", enterpriseCredentials({ accessToken: "token" }), false],
+    ["enterprise missing v3 token", enterpriseCredentials({ apiKey: "key" }), false],
+  ])("%s", (_label, credentials, valid) => {
+    expect(validateCredentialsForUtility("sme-coverage-analyzer", credentials).valid).toBe(valid);
   });
 });
 
