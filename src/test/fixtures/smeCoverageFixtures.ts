@@ -217,6 +217,22 @@ export function partialSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
   };
 }
 
+export function warninglessPartialSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
+  const pack = completeSmeCoverageDecisionPack();
+  return {
+    ...pack,
+    snapshot: {
+      ...pack.snapshot,
+      completeness: "Partial",
+      maxPagesPerDataset: 5,
+      runPreset: "standard",
+    },
+    warnings: [],
+    overview: "The prepared Standard result is partial and its conclusions require qualification.",
+    assessment: "Review the prepared evidence and partial result context before assigning owners.",
+  };
+}
+
 export function emptySmeCoverageDecisionPack(): SmeCoverageDecisionPack {
   const pack = completeSmeCoverageDecisionPack();
   return {

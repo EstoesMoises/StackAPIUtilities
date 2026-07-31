@@ -80,7 +80,13 @@ export function SmeCoverageWorkspace({
           error={runState.error}
         />
       </section>
-      {decisionPack && <SmeCoverageDecisionPackView pack={decisionPack} onRunAgain={onRun} />}
+      {decisionPack && (
+        <SmeCoverageDecisionPackView
+          pack={decisionPack}
+          onRunAgain={onRun}
+          runPending={runState.status === "running"}
+        />
+      )}
     </div>
   );
 }

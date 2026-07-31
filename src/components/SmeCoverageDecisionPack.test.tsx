@@ -6,6 +6,7 @@ import {
   emptySmeCoverageDecisionPack,
   insufficientSampleSmeCoverageDecisionPack,
   partialSmeCoverageDecisionPack,
+  warninglessPartialSmeCoverageDecisionPack,
 } from "../test/fixtures/smeCoverageFixtures";
 import {
   downloadSmeCoverageEvidenceCsv,
@@ -69,6 +70,7 @@ describe("SmeCoverageDecisionPack", () => {
       <SmeCoverageDecisionPack pack={completeSmeCoverageDecisionPack()} onRunAgain={vi.fn()} />,
     );
     expect(screen.getByText("Complete", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Completeness warnings" })).not.toBeInTheDocument();
 
     rerender(<SmeCoverageDecisionPack pack={partialSmeCoverageDecisionPack()} onRunAgain={vi.fn()} />);
     expect(screen.getByText("Partial", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
@@ -76,6 +78,7 @@ describe("SmeCoverageDecisionPack", () => {
 
     rerender(<SmeCoverageDecisionPack pack={emptySmeCoverageDecisionPack()} onRunAgain={vi.fn()} />);
     expect(screen.getByText("Empty", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Completeness warnings" })).not.toBeInTheDocument();
     expect(screen.getByText(/no evidence rows were available/i)).toBeInTheDocument();
 
     rerender(
@@ -85,6 +88,22 @@ describe("SmeCoverageDecisionPack", () => {
       />,
     );
     expect(screen.getByRole("alert")).toHaveTextContent(/only one eligible covered active tag/i);
+  });
+
+  it("qualifies a prepared partial sample without source warnings before the executive summary", () => {
+    const pack = warninglessPartialSmeCoverageDecisionPack();
+    render(<SmeCoverageDecisionPack pack={pack} onRunAgain={vi.fn()} />);
+
+    const qualification = screen.getByRole("alert");
+    const summary = screen.getByRole("heading", { name: "Executive summary" });
+    expect(qualification).toHaveTextContent("partial sample");
+    expect(qualification).toHaveTextContent(/conclusions/i);
+    expect(
+      qualification.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(pack.warnings).toEqual([]);
+    expect(screen.getByText(pack.overview)).toBeInTheDocument();
+    expect(screen.getByText(pack.assessment)).toBeInTheDocument();
   });
 
   it("shows every prepared finding field, explicit unavailable values, and tier-specific empty states", async () => {
