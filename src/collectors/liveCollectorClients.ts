@@ -37,11 +37,9 @@ export function createLiveCollectorClients(
 function createV2Headers(credentials: SessionCredentials): HeadersInit {
   const headers: Record<string, string> = {};
 
-  if (credentials.apiKey) {
-    headers["X-API-Key"] = credentials.apiKey;
-  }
-
-  if (credentials.instanceType === "basic-business" && credentials.pat) {
+  if (credentials.instanceType === "enterprise") {
+    if (credentials.apiKey) headers["X-API-Key"] = credentials.apiKey;
+  } else if (credentials.pat) {
     headers["X-API-Access-Token"] = credentials.pat;
     headers.Authorization = `Bearer ${credentials.pat}`;
   }
