@@ -238,6 +238,22 @@ export function App() {
     setActivePanel("utilities");
   }
 
+  function changeActivePanel(panel: AppPanel) {
+    if (panel === "report") {
+      if (credentialContext.kind !== "report") {
+        clearActiveRunProgress();
+      }
+      setCredentialContext({ kind: "report", reportId: state.selectedReportId });
+    } else if (panel === "utilities") {
+      if (credentialContext.kind !== "utility") {
+        clearActiveRunProgress();
+      }
+      setCredentialContext({ kind: "utility", utilityId: state.selectedUtilityId });
+    }
+
+    setActivePanel(panel);
+  }
+
   function selectWriteTool(toolId: WriteToolId) {
     setSelectedWriteToolId(toolId);
     setActivePanel("write-tools");
@@ -530,7 +546,7 @@ export function App() {
   return (
     <AppShell
       activePanel={activePanel}
-      onPanelChange={setActivePanel}
+      onPanelChange={changeActivePanel}
       summary={{ credentialsSaved: state.credentials !== null, datasetCount }}
       sidebar={sidebar}
     >
