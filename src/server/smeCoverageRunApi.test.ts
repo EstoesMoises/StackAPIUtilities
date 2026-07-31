@@ -282,6 +282,62 @@ describe("handleSmeCoverageRunRequest", () => {
     }
   });
 
+  it("redacts the pre-run credential snapshot after a runner mutation attempt", async () => {
+    const submittedCredentials: SessionCredentials = {
+      ...credentialsWithEveryString,
+      oauthScopes: [...(credentialsWithEveryString.oauthScopes ?? []), "\t\t"],
+    };
+    const submittedValues = [
+      submittedCredentials.instanceType,
+      submittedCredentials.baseUrl,
+      submittedCredentials.apiKey,
+      submittedCredentials.accessToken,
+      submittedCredentials.pat,
+      submittedCredentials.authSource,
+      submittedCredentials.oauthClientId,
+      ...(submittedCredentials.oauthScopes ?? []),
+      submittedCredentials.accessTokenExpiresAt,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+    let runnerCredentialsFrozen = false;
+    let runnerScopesFrozen = false;
+    const runSmeCoverageAnalysis = vi.fn().mockImplementation((runnerCredentials: SessionCredentials) => {
+      runnerCredentialsFrozen = Object.isFrozen(runnerCredentials);
+      runnerScopesFrozen = Object.isFrozen(runnerCredentials.oauthScopes);
+
+      for (const mutate of [
+        () => { runnerCredentials.apiKey = ""; },
+        () => { runnerCredentials.accessToken = ""; },
+        () => { runnerCredentials.pat = ""; },
+        () => { runnerCredentials.oauthClientId = ""; },
+        () => { runnerCredentials.accessTokenExpiresAt = ""; },
+        () => { runnerCredentials.oauthScopes?.splice(0); },
+      ]) {
+        try {
+          mutate();
+        } catch {
+          // A hostile dependency may cast away readonly types; frozen values reject every mutation.
+        }
+      }
+
+      return Promise.reject(new SmeCoverageRunError("collection", submittedValues.join(" | "), "questions"));
+    });
+
+    const response = await handleSmeCoverageRunRequest(
+      { credentials: submittedCredentials },
+      { runSmeCoverageAnalysis },
+    );
+    const body = JSON.stringify(await responseBody(response));
+
+    expect(response.status).toBe(502);
+    expect(runnerCredentialsFrozen).toBe(true);
+    expect(runnerScopesFrozen).toBe(true);
+    expect(body).toContain("[REDACTED]");
+    for (const value of submittedValues) {
+      expect(body).not.toContain(value);
+    }
+    expect(body).not.toContain("\\t\\t");
+  });
+
   it("uses a generic message for unknown errors", async () => {
     const runSmeCoverageAnalysis = vi.fn().mockRejectedValue(new Error("enterprise-api-key-secret"));
 

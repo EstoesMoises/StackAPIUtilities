@@ -68,12 +68,14 @@ export async function handleSmeCoverageRunRequest(
     );
   }
 
+  const credentialStrings = snapshotCredentialStrings(request.credentials);
   try {
     const run = dependencies.runSmeCoverageAnalysis ?? runWithRunnerOptions;
-    const result = await run(request.credentials, settings);
+    const runnerCredentials = cloneAndFreezeCredentials(request.credentials);
+    const result = await run(runnerCredentials, settings);
     return jsonResponse({ ok: true, result }, 200);
   } catch (error) {
-    return errorResponse(error, request.credentials);
+    return errorResponse(error, credentialStrings);
   }
 }
 
@@ -96,7 +98,7 @@ function normalizeSettings(payload: SmeCoverageRunRequestPayload): ApiVolumeSett
   };
 }
 
-function errorResponse(error: unknown, credentials: SessionCredentials): Response {
+function errorResponse(error: unknown, credentialStrings: readonly string[]): Response {
   if (error instanceof SmeCoverageRunError) {
     const status = {
       validation: 400,
@@ -105,11 +107,11 @@ function errorResponse(error: unknown, credentials: SessionCredentials): Respons
       unexpected: 500,
     }[error.kind];
     const stage = typeof error.stage === "string" && error.stage.trim().length > 0
-      ? { stage: redactCredentialValues(error.stage, credentials) }
+      ? { stage: redactCredentialValues(error.stage, credentialStrings) }
       : {};
 
     return jsonResponse(
-      { ok: false, kind: error.kind, ...stage, error: redactCredentialValues(error.message, credentials) },
+      { ok: false, kind: error.kind, ...stage, error: redactCredentialValues(error.message, credentialStrings) },
       status,
     );
   }
@@ -233,7 +235,7 @@ function ownValue(value: Record<string, unknown>, key: string): unknown {
   return hasOwnProperty(value, key) ? value[key] : undefined;
 }
 
-function redactCredentialValues(message: string, credentials: SessionCredentials): string {
+function snapshotCredentialStrings(credentials: SessionCredentials): readonly string[] {
   const values = [
     credentials.instanceType,
     credentials.baseUrl,
@@ -245,10 +247,23 @@ function redactCredentialValues(message: string, credentials: SessionCredentials
     ...(credentials.oauthScopes ?? []),
     credentials.accessTokenExpiresAt,
   ]
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .sort((left, right) => right.length - left.length);
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
 
-  return [...new Set(values)].reduce(
+  return Object.freeze([...new Set(values)]);
+}
+
+function cloneAndFreezeCredentials(credentials: SessionCredentials): SessionCredentials {
+  const clonedScopes = credentials.oauthScopes ? Object.freeze([...credentials.oauthScopes]) : undefined;
+  return Object.freeze({
+    ...credentials,
+    ...(clonedScopes ? { oauthScopes: clonedScopes } : {}),
+  }) as SessionCredentials;
+}
+
+function redactCredentialValues(message: string, credentialStrings: readonly string[]): string {
+  return [...credentialStrings]
+    .sort((left, right) => right.length - left.length)
+    .reduce(
     (redacted, value) => redacted.split(value).join("[REDACTED]"),
     message,
   );
