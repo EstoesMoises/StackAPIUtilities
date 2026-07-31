@@ -75,3 +75,37 @@ export interface SmeCoverageEvidenceRow {
   demandQuality: DemandQuality;
   smeQuality: SmeQuality;
 }
+
+export interface SmeCoverageSummary {
+  tagsAnalyzed: number;
+  tagsWithSmes: number;
+  immediateGaps: number;
+  criticalUnderCoverage: number;
+  lightCoverage: number;
+  unknownRows: number;
+}
+
+export interface SmeCoverageMethodology {
+  activityQuestionMinimum: 1;
+  activityPageViewThresholdExclusive: 25;
+  activeTagMedianPageViews: number | null;
+  coveredActiveSampleSize: number;
+  p75PageViewsPerSme: number | null;
+  p90PageViewsPerSme: number | null;
+  percentileSampleSufficient: boolean;
+  ratioFormula: "pageViews / smeCount";
+  roundingRule: "Nearest whole page view for display; unrounded for calculation";
+}
+
+export interface SmeCoverageAnalysisResult {
+  evidence: readonly SmeCoverageEvidenceRow[];
+  summary: SmeCoverageSummary;
+  methodology: SmeCoverageMethodology;
+  findings: {
+    immediateGaps: readonly SmeCoverageEvidenceRow[];
+    criticalUnderCoverage: readonly SmeCoverageEvidenceRow[];
+    lightCoverage: readonly SmeCoverageEvidenceRow[];
+  };
+  sourceStatus: SmeCoverageSourceStatus;
+  warnings: readonly ReportWarning[];
+}
