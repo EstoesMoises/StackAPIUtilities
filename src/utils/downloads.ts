@@ -6,6 +6,13 @@ export function recordsToCsv(records: Record<string, unknown>[]): string {
   if (records.length === 0) return "";
 
   const headers = [...new Set(records.flatMap((record) => Object.keys(record)))];
+  return recordsToCsvWithHeaders(headers, records);
+}
+
+export function recordsToCsvWithHeaders(
+  headers: readonly string[],
+  records: readonly Record<string, unknown>[],
+): string {
   const lines = [
     headers.join(","),
     ...records.map((record) => headers.map((header) => escapeCsvValue(record[header])).join(",")),
@@ -17,7 +24,7 @@ export function recordsToCsv(records: Record<string, unknown>[]): string {
 function escapeCsvValue(value: unknown): string {
   const text = String(value ?? "");
 
-  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
 
   return text;
 }
