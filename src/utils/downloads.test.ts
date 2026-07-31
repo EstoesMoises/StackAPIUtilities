@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadTextFile, recordsToCsv, recordsToJson } from "./downloads";
+import { downloadTextFile, recordsToCsv, recordsToCsvWithHeaders, recordsToJson } from "./downloads";
 
 describe("downloads", () => {
   afterEach(() => {
@@ -18,6 +18,15 @@ describe("downloads", () => {
 
   it("serializes records to CSV using a stable union of keys", () => {
     expect(recordsToCsv([{ id: 1 }, { id: 2, name: "Harley Q." }])).toBe("id,name\n1,\n2,Harley Q.");
+  });
+
+  it("serializes fixed CSV headers for empty records and escapes RFC-style values", () => {
+    expect(
+      recordsToCsvWithHeaders(["name", "note", "missing"], [
+        { name: "Harley, Q.", note: 'Said "hello"\r\nthen left' },
+      ]),
+    ).toBe('name,note,missing\n"Harley, Q.","Said ""hello""\r\nthen left",');
+    expect(recordsToCsvWithHeaders(["name", "note"], [])).toBe("name,note");
   });
 
   it("revokes object URLs when click throws", () => {
