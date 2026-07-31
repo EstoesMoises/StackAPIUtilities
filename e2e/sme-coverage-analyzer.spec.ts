@@ -1,57 +1,69 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page, type Route } from "@playwright/test";
-import type { SmeCoverageDecisionPack, SmeCoverageEvidenceRow } from "../src/utilities/smeCoverage/model";
+import { analyzeSmeCoverage } from "../src/utilities/smeCoverage/analyzer";
+import { buildSmeCoverageDecisionPack } from "../src/utilities/smeCoverage/decisionPack";
+import type { SmeCoverageDecisionPack } from "../src/utilities/smeCoverage/model";
 import { parseSmeCoverageDecisionPack } from "../src/utilities/smeCoverage/persistence";
 import type { SmeCoverageRunResult } from "../src/utilities/smeCoverage/runner";
+import { normalizeTagDemand } from "../src/utilities/smeCoverage/tagDemand";
+import { normalizeTagSmeCounts } from "../src/utilities/smeCoverage/tagSmeCounts";
 
 const fixedPagination = { pageCount: 1, reachedMaxPages: false, hasMore: false } as const;
-
-const immediateGap = evidenceRow({
-  tagName: "zeta-runtime",
-  pageViews: 1_200,
-  questionCount: 4,
-  smeCount: 0,
-  coverageTier: "Immediate gap",
-  reason: "Active tag has no assigned SMEs.",
-  recommendedAction: "Assign or confirm at least one SME.",
-});
-
-const criticalGap = evidenceRow({
-  tagName: "echo",
-  pageViews: 1_000,
-  questionCount: 5,
-  smeCount: 1,
-  pageViewsPerSme: 1_000,
-  coveragePercentile: 100,
-  coverageTier: "Critical under-coverage",
-  reason: "Demand meets the active-tag median and the ratio meets or exceeds P90.",
-  recommendedAction: "Expand and validate SME ownership.",
-});
-
-const lightGap = evidenceRow({
-  tagName: "delta",
-  pageViews: 800,
-  questionCount: 4,
-  smeCount: 2,
-  pageViewsPerSme: 400,
-  coveragePercentile: 80,
-  coverageTier: "Light coverage",
-  reason: "Demand meets the active-tag median and the ratio is between P75 and P90.",
-  recommendedAction: "Review whether additional SMEs would improve resilience.",
-});
-
-const unknownCoverage = evidenceRow({
-  tagName: "unknown-source",
-  pageViews: 50,
-  questionCount: 1,
-  smeCount: null,
-  pageViewsPerSme: null,
-  coveragePercentile: null,
-  coverageTier: "Unknown",
-  reason: "Assigned-SME coverage is unavailable.",
-  recommendedAction: "Rerun or inspect the v3 tag source.",
-  smeQuality: "Unknown",
-});
+const mockedDatasets: SmeCoverageRunResult["datasets"] = [
+  {
+    datasetName: "tags",
+    records: [
+      { name: "zeta-runtime", count: 4 },
+      { name: "echo", count: 5 },
+      { name: "delta", count: 4 },
+      { name: "unknown-source", count: 1 },
+      { name: "charlie", count: 3 },
+      { name: "bravo", count: 2 },
+      { name: "alpha", count: 1 },
+    ],
+    pagination: fixedPagination,
+  },
+  {
+    datasetName: "questions",
+    records: [
+      { question_id: 1, tags: ["zeta-runtime"], view_count: 300 },
+      { question_id: 2, tags: ["zeta-runtime"], view_count: 300 },
+      { question_id: 3, tags: ["zeta-runtime"], view_count: 300 },
+      { question_id: 4, tags: ["zeta-runtime"], view_count: 300 },
+      { question_id: 5, tags: ["echo"], view_count: 200 },
+      { question_id: 6, tags: ["echo"], view_count: 200 },
+      { question_id: 7, tags: ["echo"], view_count: 200 },
+      { question_id: 8, tags: ["echo"], view_count: 200 },
+      { question_id: 9, tags: ["echo"], view_count: 200 },
+      { question_id: 10, tags: ["delta"], view_count: 200 },
+      { question_id: 11, tags: ["delta"], view_count: 200 },
+      { question_id: 12, tags: ["delta"], view_count: 200 },
+      { question_id: 13, tags: ["delta"], view_count: 200 },
+      { question_id: 14, tags: ["unknown-source"], view_count: 50 },
+      { question_id: 15, tags: ["charlie"], view_count: 100 },
+      { question_id: 16, tags: ["charlie"], view_count: 100 },
+      { question_id: 17, tags: ["charlie"], view_count: 100 },
+      { question_id: 18, tags: ["bravo"], view_count: 100 },
+      { question_id: 19, tags: ["bravo"], view_count: 100 },
+      { question_id: 20, tags: ["alpha"], view_count: 100 },
+    ],
+    pagination: fixedPagination,
+  },
+  {
+    datasetName: "tagSmeCounts",
+    records: [
+      { name: "zeta-runtime", subjectMatterExpertCount: 0 },
+      { name: "echo", subjectMatterExpertCount: 1 },
+      { name: "delta", subjectMatterExpertCount: 2 },
+      { name: "unknown-source", subjectMatterExpertCount: null },
+      { name: "charlie", subjectMatterExpertCount: 3 },
+      { name: "bravo", subjectMatterExpertCount: 4 },
+      { name: "alpha", subjectMatterExpertCount: 4 },
+    ],
+    pagination: fixedPagination,
+  },
+];
+const canonicalDecisionPack = deriveDecisionPack(mockedDatasets);
 
 const completeSmeCoverageRunResult: SmeCoverageRunResult = {
   utilityId: "sme-coverage-analyzer",
@@ -59,130 +71,14 @@ const completeSmeCoverageRunResult: SmeCoverageRunResult = {
   pageSize: 100,
   maxPagesPerDataset: 20,
   runPreset: "deep-audit",
-  datasets: [
-    {
-      datasetName: "tags",
-      records: [
-        { name: "zeta-runtime", count: 4 },
-        { name: "echo", count: 5 },
-        { name: "delta", count: 4 },
-        { name: "unknown-source", count: 1 },
-        { name: "charlie", count: 3 },
-        { name: "bravo", count: 2 },
-        { name: "alpha", count: 1 },
-      ],
-      pagination: fixedPagination,
-    },
-    {
-      datasetName: "questions",
-      records: [
-        { question_id: 1, tags: ["zeta-runtime"], view_count: 1_200 },
-        { question_id: 2, tags: ["echo"], view_count: 1_000 },
-        { question_id: 3, tags: ["delta"], view_count: 800 },
-        { question_id: 4, tags: ["unknown-source"], view_count: 50 },
-        { question_id: 5, tags: ["charlie"], view_count: 300 },
-        { question_id: 6, tags: ["bravo"], view_count: 200 },
-        { question_id: 7, tags: ["alpha"], view_count: 100 },
-      ],
-      pagination: fixedPagination,
-    },
-    {
-      datasetName: "tagSmeCounts",
-      records: [
-        { name: "zeta-runtime", subjectMatterExpertCount: 0 },
-        { name: "echo", subjectMatterExpertCount: 1 },
-        { name: "delta", subjectMatterExpertCount: 2 },
-        { name: "charlie", subjectMatterExpertCount: 3 },
-        { name: "bravo", subjectMatterExpertCount: 4 },
-        { name: "alpha", subjectMatterExpertCount: 4 },
-      ],
-      pagination: fixedPagination,
-    },
+  datasets: mockedDatasets,
+  messages: [
+    "Collected tags (7 records) for SME Coverage Analyzer.",
+    "Collected questions (20 records) for SME Coverage Analyzer.",
+    "Collected tagSmeCounts (7 records) for SME Coverage Analyzer.",
   ],
-  messages: ["Collected all-time demand and current assigned-SME coverage."],
-  warnings: [
-    {
-      utilityId: "sme-coverage-analyzer",
-      code: "sme-coverage.unknown-sme-coverage",
-      message: "Assigned-SME coverage is unavailable for 1 tag: `unknown-source`.",
-    },
-  ],
-  decisionPack: {
-    snapshot: {
-      instanceHost: "example.stackenterprise.co",
-      generatedAt: "2026-07-30T12:00:00.000Z",
-      scopeLabel: "All-time demand · Current SME coverage",
-      completeness: "Partial",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
-    },
-    warnings: [
-      {
-        utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.unknown-sme-coverage",
-        message: "Assigned-SME coverage is unavailable for 1 tag: `unknown-source`.",
-      },
-    ],
-    summary: {
-      tagsAnalyzed: 7,
-      tagsWithSmes: 5,
-      immediateGaps: 1,
-      criticalUnderCoverage: 1,
-      lightCoverage: 1,
-      unknownRows: 1,
-    },
-    overview:
-      "Current evidence identifies one immediate gap, one critical under-coverage gap, and one light-coverage tag.",
-    assessment:
-      "Prioritize `echo` for critical under-coverage and assign an SME to `zeta-runtime`.\n\nReview `delta` for additional coverage, and validate current assigned-SME coverage for `unknown-source` before drawing a conclusion.",
-    findings: {
-      immediateGaps: [immediateGap],
-      criticalUnderCoverage: [criticalGap],
-      lightCoverage: [lightGap],
-    },
-    methodology: {
-      activityQuestionMinimum: 1,
-      activityPageViewThresholdExclusive: 25,
-      activeTagMedianPageViews: 300,
-      coveredActiveSampleSize: 5,
-      p75PageViewsPerSme: 400,
-      p90PageViewsPerSme: 1_000,
-      percentileSampleSufficient: true,
-      ratioFormula: "pageViews / smeCount",
-      roundingRule: "Nearest whole page view for display; unrounded for calculation",
-    },
-    evidence: [
-      immediateGap,
-      criticalGap,
-      lightGap,
-      unknownCoverage,
-      evidenceRow({
-        tagName: "charlie",
-        pageViews: 300,
-        questionCount: 3,
-        smeCount: 3,
-        pageViewsPerSme: 100,
-        coveragePercentile: 60,
-      }),
-      evidenceRow({
-        tagName: "bravo",
-        pageViews: 200,
-        questionCount: 2,
-        smeCount: 4,
-        pageViewsPerSme: 50,
-        coveragePercentile: 40,
-      }),
-      evidenceRow({
-        tagName: "alpha",
-        pageViews: 100,
-        questionCount: 1,
-        smeCount: 4,
-        pageViewsPerSme: 25,
-        coveragePercentile: 20,
-      }),
-    ],
-  },
+  warnings: canonicalDecisionPack.warnings,
+  decisionPack: canonicalDecisionPack,
 };
 
 test("SME Coverage Analyzer runs self-contained and exports its canonical decision pack", async ({
@@ -195,6 +91,14 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
     releaseUtilityResponse = resolve;
   });
 
+  expect(completeSmeCoverageRunResult.decisionPack).toEqual(
+    deriveDecisionPack(completeSmeCoverageRunResult.datasets),
+  );
+  expect(completeSmeCoverageRunResult.messages).toEqual([
+    "Collected tags (7 records) for SME Coverage Analyzer.",
+    "Collected questions (20 records) for SME Coverage Analyzer.",
+    "Collected tagSmeCounts (7 records) for SME Coverage Analyzer.",
+  ]);
   expect(parseSmeCoverageDecisionPack(completeSmeCoverageRunResult.decisionPack)).not.toBeNull();
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await routeUtilityRun(page, async (route) => {
@@ -230,13 +134,35 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
       .getByLabel("Analysis snapshot")
       .getByText("All-time demand · Current SME coverage", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Immediate no-SME risks" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Highest-demand critical gaps" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Light SME coverage" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "zeta-runtime", exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("cell", { name: "echo", exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("cell", { name: "delta", exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("cell", { name: "unknown-source", exact: true })).toBeVisible();
+  await expect(
+    page.getByLabel("Analysis snapshot").getByText("stackoverflowteams.com", { exact: true }),
+  ).toBeVisible();
+  const immediateFindingRegion = page.getByRole("region", {
+    name: "Immediate no-SME risks",
+    exact: true,
+  });
+  const criticalFindingRegion = page.getByRole("region", {
+    name: "Highest-demand critical gaps",
+    exact: true,
+  });
+  const lightFindingRegion = page.getByRole("region", {
+    name: "Light SME coverage",
+    exact: true,
+  });
+  await expect(
+    immediateFindingRegion.getByRole("cell", { name: "zeta-runtime", exact: true }),
+  ).toBeVisible();
+  await expect(
+    criticalFindingRegion.getByRole("cell", { name: "echo", exact: true }),
+  ).toBeVisible();
+  await expect(
+    lightFindingRegion.getByRole("cell", { name: "delta", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "SME coverage evidence table" })
+      .getByRole("cell", { name: "unknown-source", exact: true }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Copy assessment" }).click();
   await expect(
@@ -250,7 +176,7 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   await page.getByRole("button", { name: "Download Markdown" }).click();
   const markdownDownload = await markdownDownloadPromise;
   expect(markdownDownload.suggestedFilename()).toBe(
-    "sme-coverage-decision-pack-example-stackenterprise-co-2026-07-30.md",
+    "sme-coverage-decision-pack-stackoverflowteams-com-2026-07-30.md",
   );
   const markdown = await readDownload(markdownDownload);
   expectInOrder(markdown, [
@@ -269,7 +195,7 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   await page.getByRole("button", { name: "Download CSV" }).click();
   const csvDownload = await csvDownloadPromise;
   expect(csvDownload.suggestedFilename()).toBe(
-    "sme-coverage-evidence-example-stackenterprise-co-2026-07-30.csv",
+    "sme-coverage-evidence-stackoverflowteams-com-2026-07-30.csv",
   );
   const csvLines = (await readDownload(csvDownload)).trimEnd().split("\n");
   expect(csvLines[0]).toBe(
@@ -331,26 +257,6 @@ test("375px navigation and complete evidence remain keyboard reachable", async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
 });
 
-function evidenceRow(
-  overrides: Partial<SmeCoverageEvidenceRow> & Pick<SmeCoverageEvidenceRow, "tagName" | "pageViews" | "questionCount" | "smeCount">,
-): SmeCoverageEvidenceRow {
-  return {
-    tagName: overrides.tagName,
-    pageViews: overrides.pageViews,
-    questionCount: overrides.questionCount,
-    questionCountBasis: "Complete question enumeration",
-    smeCount: overrides.smeCount,
-    pageViewsPerSme: overrides.pageViewsPerSme ?? null,
-    coveragePercentile: overrides.coveragePercentile ?? null,
-    coverageTier: "Adequate coverage",
-    reason: "The tag does not meet an under-coverage rule.",
-    recommendedAction: "Maintain current coverage.",
-    demandQuality: "Complete",
-    smeQuality: "Complete",
-    ...overrides,
-  };
-}
-
 async function routeUtilityRun(page: Page, handler: (route: Route) => Promise<void>) {
   await page.route("**/api/utilities/sme-coverage/run", handler);
 }
@@ -387,4 +293,47 @@ function expectInOrder(contents: string, headings: readonly string[]) {
     expect(index, `${heading} should follow the prior section`).toBeGreaterThan(previousIndex);
     previousIndex = index;
   }
+}
+
+function deriveDecisionPack(datasets: SmeCoverageRunResult["datasets"]): SmeCoverageDecisionPack {
+  const tags = getDataset(datasets, "tags");
+  const questions = getDataset(datasets, "questions");
+  const tagSmeCounts = getDataset(datasets, "tagSmeCounts");
+  const demand = normalizeTagDemand({ tags, questions });
+  const smeCounts = normalizeTagSmeCounts(tagSmeCounts);
+  const sourceStatus = {
+    tags: tags.pagination,
+    questions: questions.pagination,
+    tagSmeCounts: tagSmeCounts.pagination,
+  };
+  const analysis = analyzeSmeCoverage({
+    demand,
+    smeCounts,
+    sourceStatus,
+    settings: {
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+    },
+  });
+  return buildSmeCoverageDecisionPack({
+    analysis,
+    snapshot: {
+      instanceHost: "stackoverflowteams.com",
+      generatedAt: "2026-07-30T12:00:00.000Z",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+    },
+    sourceWarnings: [...demand.warnings, ...smeCounts.warnings],
+  });
+}
+
+function getDataset(
+  datasets: SmeCoverageRunResult["datasets"],
+  datasetName: SmeCoverageRunResult["datasets"][number]["datasetName"],
+) {
+  const dataset = datasets.find((candidate) => candidate.datasetName === datasetName);
+  if (!dataset) throw new Error(`Missing mocked ${datasetName} dataset.`);
+  return dataset;
 }
