@@ -7,6 +7,10 @@ import {
 } from "./datasetPersistence";
 import { createInitialSessionState } from "./sessionStore";
 import type { SmeCoverageDecisionPack } from "../utilities/smeCoverage/model";
+import {
+  buildSmeCoverageEvidenceCsv,
+  buildSmeCoverageMarkdown,
+} from "../utilities/smeCoverage/exports";
 
 describe("datasetPersistence", () => {
   it("creates a persistable snapshot without credentials or run queue state", () => {
@@ -460,6 +464,42 @@ describe("datasetPersistence", () => {
     });
     expect(serialized).not.toMatch(
       /"(?:credentials|apiKey|accessToken|pat|authSource|oauthClientId|oauthScopes|runQueue|progress)"/,
+    );
+  });
+
+  it("migrates a legacy configured-partial v2 utility pack through parse and hydration exports", () => {
+    const legacyPack = createLegacyConfiguredPartialUtilityPack();
+    const persisted = createVersion2SnapshotValue({
+      utilityOutputs: {
+        "sme-coverage-analyzer": {
+          utilityId: "sme-coverage-analyzer",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          decisionPack: legacyPack,
+        },
+      },
+    });
+
+    const parsed = parseDatasetSessionSnapshot(persisted);
+    const hydrated = hydrateDatasetSessionState(createInitialSessionState(), persisted);
+    const parsedPack = parsed?.utilityOutputs["sme-coverage-analyzer"]?.decisionPack;
+    const hydratedPack = hydrated.utilityOutputs["sme-coverage-analyzer"]?.decisionPack;
+
+    expect(parsed?.version).toBe(2);
+    expect(parsedPack).toEqual(hydratedPack);
+    expect(parsedPack?.warnings).toEqual([
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "sme-coverage.partial-sample",
+        message:
+          "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+      },
+    ]);
+    expect(Object.isFrozen(parsedPack)).toBe(true);
+    expect(buildSmeCoverageMarkdown(parsedPack!)).toContain(
+      "- sme-coverage.partial-sample: This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+    );
+    expect(buildSmeCoverageEvidenceCsv(parsedPack!).split("\n")[1]).toBe(
+      "python,100,1,Complete question enumeration,0,,,Immediate gap,Active tag has no assigned SMEs.,Assign or confirm at least one SME.,Complete,Complete,Partial,sme-coverage.partial-sample: This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
     );
   });
 
@@ -1000,6 +1040,58 @@ function createPersistedUtilityPack(): SmeCoverageDecisionPack {
       roundingRule: "Nearest whole page view for display; unrounded for calculation",
     },
     evidence: [],
+  };
+}
+
+function createLegacyConfiguredPartialUtilityPack(): SmeCoverageDecisionPack {
+  const row = {
+    tagName: "python",
+    pageViews: 100,
+    questionCount: 1,
+    questionCountBasis: "Complete question enumeration" as const,
+    smeCount: 0,
+    pageViewsPerSme: null,
+    coveragePercentile: null,
+    coverageTier: "Immediate gap" as const,
+    reason: "Active tag has no assigned SMEs.",
+    recommendedAction: "Assign or confirm at least one SME.",
+    demandQuality: "Complete" as const,
+    smeQuality: "Complete" as const,
+  };
+  return {
+    snapshot: {
+      instanceHost: "example.stackenterprise.co",
+      generatedAt: "2026-07-30T12:00:00.000Z",
+      scopeLabel: "All-time demand · Current SME coverage",
+      completeness: "Partial",
+      pageSize: 50,
+      maxPagesPerDataset: 1,
+      runPreset: "quick-sample",
+    },
+    warnings: [],
+    summary: {
+      tagsAnalyzed: 1,
+      tagsWithSmes: 0,
+      immediateGaps: 1,
+      criticalUnderCoverage: 0,
+      lightCoverage: 0,
+      unknownRows: 0,
+    },
+    overview: "This analysis is a partial sample.",
+    assessment: "This analysis is a partial sample.",
+    findings: { immediateGaps: [row], criticalUnderCoverage: [], lightCoverage: [] },
+    methodology: {
+      activityQuestionMinimum: 1,
+      activityPageViewThresholdExclusive: 25,
+      activeTagMedianPageViews: 100,
+      coveredActiveSampleSize: 0,
+      p75PageViewsPerSme: null,
+      p90PageViewsPerSme: null,
+      percentileSampleSufficient: false,
+      ratioFormula: "pageViews / smeCount",
+      roundingRule: "Nearest whole page view for display; unrounded for calculation",
+    },
+    evidence: [row],
   };
 }
 

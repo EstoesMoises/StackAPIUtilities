@@ -9,6 +9,13 @@ import type {
 } from "./model";
 import { buildSmeCoverageNarrative } from "./narrative";
 
+export const SME_COVERAGE_PARTIAL_SAMPLE_WARNING: Readonly<ReportWarning> = Object.freeze({
+  utilityId: "sme-coverage-analyzer",
+  code: "sme-coverage.partial-sample",
+  message:
+    "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+});
+
 export interface SmeCoverageSnapshotInput {
   instanceHost: string;
   generatedAt: string;
@@ -111,12 +118,7 @@ function buildCanonicalSamplingWarnings(
   const capped = Object.values(analysis.sourceStatus).some(isCapped);
   if (!analysis.sampling.configuredAsPartialSample && !capped) return [];
 
-  return [{
-    utilityId: "sme-coverage-analyzer",
-    code: "sme-coverage.partial-sample",
-    message:
-      "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
-  }];
+  return [SME_COVERAGE_PARTIAL_SAMPLE_WARNING];
 }
 
 function isCapped(source: SmeCoverageSourceStatus[keyof SmeCoverageSourceStatus]): boolean {

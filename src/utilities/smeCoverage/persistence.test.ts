@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { SmeCoverageDecisionPack } from "./model";
 import { parseSmeCoverageDecisionPack } from "./persistence";
 
+const canonicalPartialSampleWarning = {
+  utilityId: "sme-coverage-analyzer",
+  code: "sme-coverage.partial-sample",
+  message:
+    "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+} as const;
+
 describe("parseSmeCoverageDecisionPack", () => {
   it.each([
     ["complete", createDecisionPack()],
@@ -119,7 +126,7 @@ describe("parseSmeCoverageDecisionPack", () => {
     ["missing preset", { pageSize: 100, maxPagesPerDataset: 20 }],
     ["custom", { pageSize: 75, maxPagesPerDataset: 7 }],
     ["changed Deep", { pageSize: 50, maxPagesPerDataset: 20, runPreset: "deep-audit" }],
-  ])("requires Partial completeness and exact partial-sample narrative for %s configuration", (_label, settings) => {
+  ])("migrates a legacy %s configuration to one immutable canonical partial-sample warning", (_label, settings) => {
     const missingNarrative = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
     missingNarrative.snapshot = { ...missingNarrative.snapshot, ...settings };
     if (!("runPreset" in settings)) delete missingNarrative.snapshot.runPreset;
@@ -127,10 +134,80 @@ describe("parseSmeCoverageDecisionPack", () => {
 
     missingNarrative.overview += " This analysis is a partial sample.";
     missingNarrative.assessment += " This analysis is a partial sample.";
-    expect(parseSmeCoverageDecisionPack(missingNarrative)).not.toBeNull();
+    const parsed = parseSmeCoverageDecisionPack(missingNarrative);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.warnings.filter((warning) => warning.code === canonicalPartialSampleWarning.code)).toEqual([
+      canonicalPartialSampleWarning,
+    ]);
+    expect(Object.isFrozen(parsed?.warnings)).toBe(true);
+    expect(Object.isFrozen(parsed?.warnings.find((warning) => warning.code === canonicalPartialSampleWarning.code))).toBe(true);
 
     missingNarrative.snapshot.completeness = "Complete";
     expect(parseSmeCoverageDecisionPack(missingNarrative)).toBeNull();
+  });
+
+  it("normalizes and deduplicates a same-code legacy warning in source-to-sampling-to-analyzer order", () => {
+    const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
+    persisted.snapshot = {
+      ...persisted.snapshot,
+      pageSize: 100,
+      maxPagesPerDataset: 5,
+      runPreset: "standard",
+    };
+    persisted.overview += " This analysis is a partial sample.";
+    persisted.assessment += " This analysis is a partial sample.";
+    persisted.warnings = [
+      persisted.warnings[0],
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: canonicalPartialSampleWarning.code,
+        message: "Legacy sampling copy without the required phrase.",
+      },
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "sme-coverage.invalid-demand",
+        message: "Analyzer warning.",
+      },
+      canonicalPartialSampleWarning,
+    ];
+
+    const parsed = parseSmeCoverageDecisionPack(persisted);
+
+    expect(parsed?.warnings).toEqual([
+      persisted.warnings[0],
+      canonicalPartialSampleWarning,
+      persisted.warnings[2],
+    ]);
+  });
+
+  it("round-trips a current configured-partial pack without duplicating its canonical warning", () => {
+    const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
+    persisted.snapshot = {
+      ...persisted.snapshot,
+      pageSize: 100,
+      maxPagesPerDataset: 5,
+      runPreset: "standard",
+    };
+    persisted.overview += " This analysis is a partial sample.";
+    persisted.assessment += " This analysis is a partial sample.";
+    persisted.warnings = [persisted.warnings[0], canonicalPartialSampleWarning];
+
+    const firstParse = parseSmeCoverageDecisionPack(persisted);
+    const secondParse = parseSmeCoverageDecisionPack(firstParse);
+
+    expect(firstParse?.warnings).toEqual([persisted.warnings[0], canonicalPartialSampleWarning]);
+    expect(secondParse?.warnings).toEqual(firstParse?.warnings);
+    expect(
+      secondParse?.warnings.filter((warning) => warning.code === canonicalPartialSampleWarning.code),
+    ).toHaveLength(1);
+  });
+
+  it("does not add sampling warnings to structured Deep Complete or Empty packs", () => {
+    for (const pack of [createDecisionPack(), createEmptyPack()]) {
+      const parsed = parseSmeCoverageDecisionPack(pack);
+      expect(parsed).not.toBeNull();
+      expect(parsed?.warnings.filter((warning) => warning.code === canonicalPartialSampleWarning.code)).toEqual([]);
+    }
   });
 
   it("enforces empty-pack completeness and configured-partial narrative consistency", () => {
