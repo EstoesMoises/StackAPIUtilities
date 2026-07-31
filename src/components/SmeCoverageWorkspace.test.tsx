@@ -5,6 +5,11 @@ import { completeSmeCoverageDecisionPack } from "../test/fixtures/smeCoverageFix
 import { DEFAULT_SME_COVERAGE_SETTINGS } from "../utilities/smeCoverage/settings";
 import { SmeCoverageWorkspace } from "./SmeCoverageWorkspace";
 
+vi.mock("../utils/smeCoverageDownloads", () => ({
+  downloadSmeCoverageEvidenceCsv: vi.fn(),
+  downloadSmeCoverageMarkdown: vi.fn(),
+}));
+
 describe("SmeCoverageWorkspace", () => {
   it("presents a read-only all-time utility without Script, upload, or date prerequisites", () => {
     render(
@@ -73,5 +78,37 @@ describe("SmeCoverageWorkspace", () => {
     );
     expect(screen.getByRole("button", { name: "Run SME coverage analysis" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Run again" })).toBeEnabled();
+  });
+
+  it("resets copy and download feedback when a new prepared pack replaces the prior result", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    const firstPack = completeSmeCoverageDecisionPack();
+    const secondPack = {
+      ...completeSmeCoverageDecisionPack(),
+      snapshot: {
+        ...completeSmeCoverageDecisionPack().snapshot,
+        generatedAt: "2026-07-30T13:00:00.000Z",
+      },
+      assessment: "A newly prepared assessment.",
+    };
+    const props = {
+      settings: DEFAULT_SME_COVERAGE_SETTINGS,
+      onSettingsChange: vi.fn(),
+      onRun: vi.fn(),
+      runState: { status: "succeeded" as const },
+    };
+    const { rerender } = render(<SmeCoverageWorkspace {...props} decisionPack={firstPack} />);
+
+    await user.click(screen.getByRole("button", { name: "Copy assessment" }));
+    await user.click(screen.getByRole("button", { name: "Download Markdown" }));
+    expect(screen.getByText("Assessment copied to the clipboard.")).toBeInTheDocument();
+    expect(screen.getByText("Markdown download started.")).toBeInTheDocument();
+
+    rerender(<SmeCoverageWorkspace {...props} decisionPack={secondPack} />);
+
+    expect(screen.getByText("A newly prepared assessment.")).toBeInTheDocument();
+    expect(screen.queryByText("Assessment copied to the clipboard.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Markdown download started.")).not.toBeInTheDocument();
   });
 });

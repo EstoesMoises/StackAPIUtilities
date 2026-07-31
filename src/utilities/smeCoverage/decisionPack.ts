@@ -51,7 +51,11 @@ export function buildSmeCoverageDecisionPack({
 
   return Object.freeze({
     snapshot: packSnapshot,
-    warnings: copyWarnings(sourceWarnings, analysis.warnings),
+    warnings: copyWarnings(
+      sourceWarnings,
+      buildCanonicalSamplingWarnings(analysis),
+      analysis.warnings,
+    ),
     summary: Object.freeze({ ...analysis.summary }),
     overview: narrative.overview,
     assessment: narrative.assessment,
@@ -88,18 +92,31 @@ function copyFindingRows(
 }
 
 function copyWarnings(
-  sourceWarnings: readonly ReportWarning[],
-  analysisWarnings: readonly ReportWarning[],
+  ...warningGroups: readonly (readonly ReportWarning[])[]
 ): readonly ReportWarning[] {
   const seen = new Set<string>();
   const warnings: ReportWarning[] = [];
-  for (const warning of [...sourceWarnings, ...analysisWarnings]) {
+  for (const warning of warningGroups.flat()) {
     const key = `${warning.code}\u0000${warning.message}`;
     if (seen.has(key)) continue;
     seen.add(key);
     warnings.push(Object.freeze({ ...warning }));
   }
   return Object.freeze(warnings);
+}
+
+function buildCanonicalSamplingWarnings(
+  analysis: SmeCoverageAnalysisResult,
+): readonly ReportWarning[] {
+  const capped = Object.values(analysis.sourceStatus).some(isCapped);
+  if (!analysis.sampling.configuredAsPartialSample && !capped) return [];
+
+  return [{
+    utilityId: "sme-coverage-analyzer",
+    code: "sme-coverage.partial-sample",
+    message:
+      "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+  }];
 }
 
 function isCapped(source: SmeCoverageSourceStatus[keyof SmeCoverageSourceStatus]): boolean {

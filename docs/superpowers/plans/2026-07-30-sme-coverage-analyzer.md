@@ -1069,12 +1069,15 @@ git commit -m "feat: compose SME coverage decision pack"
 Assert this fixed CSV header:
 
 ```text
-tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality
+tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality,result_completeness,completeness_warnings
 ```
 
 Assert canonical rows remain in `pack.evidence` order; full-precision ratios are
 serialized; `null` page views, question counts, SMEs, ratios, and percentiles
-become empty cells. An empty pack still emits the header.
+become empty cells. `result_completeness` repeats the prepared snapshot
+completeness on every row. `completeness_warnings` joins canonical prepared
+warnings in order as `code: message` entries separated by ` | `. An empty pack
+still emits the full header.
 
 Assert Markdown section order:
 

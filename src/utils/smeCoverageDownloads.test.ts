@@ -28,6 +28,21 @@ describe("SME coverage downloads", () => {
     });
   });
 
+  it("replaces underscores in instance hosts with hyphens", () => {
+    const pack = downloadPack();
+    const underscoredHostPack = {
+      ...pack,
+      snapshot: { ...pack.snapshot, instanceHost: "example_stack.enterprise_co" },
+    };
+
+    expect(buildSmeCoverageMarkdownDownload(underscoredHostPack).fileName).toBe(
+      "sme-coverage-decision-pack-example-stack-enterprise-co-2026-07-30.md",
+    );
+    expect(buildSmeCoverageCsvDownload(underscoredHostPack).fileName).toBe(
+      "sme-coverage-evidence-example-stack-enterprise-co-2026-07-30.csv",
+    );
+  });
+
   it("downloads the exact descriptors through the shared text-file seam", () => {
     const pack = downloadPack();
     const markdown = buildSmeCoverageMarkdownDownload(pack);

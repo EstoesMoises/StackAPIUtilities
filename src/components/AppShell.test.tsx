@@ -138,6 +138,35 @@ describe("AppShell", () => {
     });
   });
 
+  it("binds User Group Sync credential ownership after Utilities -> Write Tools navigation", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=write-tool" }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Utilities" }));
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+
+    expect(screen.getByText("User Group Sync credential notes")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      baseUrl: "https://demo.stackenterprise.co",
+      clientId: "client-123",
+      scopes: ["write_access"],
+      includeNoExpiry: false,
+    });
+  });
+
   it("invalidates a pending utility run when direct navigation crosses to Scripts", async () => {
     const user = userEvent.setup();
     const pendingRun = createDeferred<Response>();
@@ -169,6 +198,37 @@ describe("AppShell", () => {
     expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
     expect(screen.queryByText(stalePack.overview)).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar", { name: "SME Coverage Analyzer progress" })).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+  });
+
+  it("invalidates a pending utility run when direct navigation crosses to Write Tools", async () => {
+    const user = userEvent.setup();
+    const pendingRun = createDeferred<Response>();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+    const stalePack = {
+      ...completeSmeCoverageDecisionPack(),
+      overview: "This utility result must not commit after switching to Write Tools.",
+    };
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    expect(screen.getByRole("heading", { name: "User Group Sync" })).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar", { name: "SME Coverage Analyzer progress" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      pendingRun.resolve(jsonResponse(makeSmeCoverageRunBody(stalePack, "stale")));
+      await pendingRun.promise;
+    });
+
+    expect(screen.getByRole("button", { name: "Write Tools" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "User Group Sync" })).toBeInTheDocument();
+    expect(screen.queryByText(stalePack.overview)).not.toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
   });
 

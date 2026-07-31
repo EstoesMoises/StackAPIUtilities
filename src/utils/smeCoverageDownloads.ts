@@ -41,5 +41,5 @@ function buildFileSuffix(pack: SmeCoverageDecisionPack): string {
 }
 
 function sanitizeFileNamePart(value: string): string {
-  return value.trim().replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-|-$/g, "") || "report";
+  return value.trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "") || "report";
 }

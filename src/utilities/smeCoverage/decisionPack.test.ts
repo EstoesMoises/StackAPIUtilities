@@ -9,6 +9,7 @@ import {
 } from "../../test/fixtures/smeCoverageFixtures";
 import { analyzeSmeCoverage } from "./analyzer";
 import { buildSmeCoverageDecisionPack } from "./decisionPack";
+import { buildSmeCoverageMarkdown } from "./exports";
 import type { SmeCoverageAnalysisResult, SmeCoverageSourceStatus } from "./model";
 
 const snapshot = {
@@ -84,6 +85,11 @@ describe("buildSmeCoverageDecisionPack", () => {
       });
 
       expect(pack.snapshot.completeness).toBe("Partial");
+      expect(pack.warnings).toContainEqual({
+        utilityId: "sme-coverage-analyzer",
+        code: "sme-coverage.partial-sample",
+        message: "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+      });
     },
   );
 
@@ -91,7 +97,7 @@ describe("buildSmeCoverageDecisionPack", () => {
     ["Quick sample", { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" }],
     ["Standard", { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" }],
     ["custom", { pageSize: 75, maxPagesPerDataset: 7 }],
-  ] as const)("marks a non-capped %s run Partial from analysis sampling metadata", (_label, settings) => {
+  ] as const)("canonically qualifies a non-capped %s run as a partial sample", (_label, settings) => {
     const analysis = analyze(
       narrativeDemandRows,
       narrativeSmeRows,
@@ -102,6 +108,16 @@ describe("buildSmeCoverageDecisionPack", () => {
     const pack = buildSmeCoverageDecisionPack({ analysis, snapshot, sourceWarnings: [] });
 
     expect(pack.snapshot.completeness).toBe("Partial");
+    expect(pack.warnings).toContainEqual({
+      utilityId: "sme-coverage-analyzer",
+      code: "sme-coverage.partial-sample",
+      message: "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+    });
+    expect(pack.overview).toContain("partial sample");
+    expect(pack.assessment).toContain("partial sample");
+    expect(buildSmeCoverageMarkdown(pack)).toContain(
+      "- sme-coverage.partial-sample: This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+    );
   });
 
   it.each([

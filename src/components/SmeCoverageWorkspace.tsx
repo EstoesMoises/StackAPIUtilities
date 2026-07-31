@@ -82,6 +82,7 @@ export function SmeCoverageWorkspace({
       </section>
       {decisionPack && (
         <SmeCoverageDecisionPackView
+          key={`${decisionPack.snapshot.instanceHost}\u0000${decisionPack.snapshot.generatedAt}`}
           pack={decisionPack}
           onRunAgain={onRun}
           runPending={runState.status === "running"}

@@ -199,10 +199,10 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   );
   const csvLines = (await readDownload(csvDownload)).trimEnd().split("\n");
   expect(csvLines[0]).toBe(
-    "tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality",
+    "tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality,result_completeness,completeness_warnings",
   );
   expect(csvLines[1]).toBe(
-    "zeta-runtime,1200,4,Complete question enumeration,0,,,Immediate gap,Active tag has no assigned SMEs.,Assign or confirm at least one SME.,Complete,Complete",
+    "zeta-runtime,1200,4,Complete question enumeration,0,,,Immediate gap,Active tag has no assigned SMEs.,Assign or confirm at least one SME.,Complete,Complete,Partial,sme-coverage.unknown-sme-coverage: Assigned-SME coverage is unavailable for 1 tag: `unknown-source`.",
   );
   const unknownCells = csvLines.find((line) => line.startsWith("unknown-source,"))?.split(",");
   expect(unknownCells).toEqual([
@@ -218,6 +218,8 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
     "Rerun or inspect the v3 tag source.",
     "Complete",
     "Unknown",
+    "Partial",
+    "sme-coverage.unknown-sme-coverage: Assigned-SME coverage is unavailable for 1 tag: `unknown-source`.",
   ]);
   expect(reportRouteCalls).toBe(0);
 });

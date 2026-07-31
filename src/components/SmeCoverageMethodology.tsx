@@ -1,4 +1,5 @@
 import type { SmeCoverageCompleteness, SmeCoverageMethodology as Methodology } from "../utilities/smeCoverage/model";
+import { formatDisplayedRatio } from "../utilities/smeCoverage/narrative";
 
 interface SmeCoverageMethodologyProps {
   methodology: Methodology;
@@ -18,8 +19,8 @@ export function SmeCoverageMethodology({ methodology, completeness }: SmeCoverag
           <MethodRow label="Coverage ratio" value={methodology.ratioFormula} />
           <MethodRow label="Active-tag median page views" value={formatMethodValue(methodology.activeTagMedianPageViews)} />
           <MethodRow label="Eligible covered active-tag sample size" value={methodology.coveredActiveSampleSize.toLocaleString("en-US")} />
-          <MethodRow label="P75 page views per SME" value={formatMethodValue(methodology.p75PageViewsPerSme)} />
-          <MethodRow label="P90 page views per SME" value={formatMethodValue(methodology.p90PageViewsPerSme)} />
+          <MethodRow label="P75 page views per SME" value={formatThreshold(methodology.p75PageViewsPerSme)} />
+          <MethodRow label="P90 page views per SME" value={formatThreshold(methodology.p90PageViewsPerSme)} />
           <MethodRow label="Display rounding" value={methodology.roundingRule} />
           <MethodRow label="Result completeness" value={completeness} />
         </dl>
@@ -53,4 +54,8 @@ function formatMethodValue(value: number | null): string {
   return value === null
     ? "Not calculated"
     : value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function formatThreshold(value: number | null): string {
+  return value === null ? "Not calculated" : formatDisplayedRatio(value);
 }

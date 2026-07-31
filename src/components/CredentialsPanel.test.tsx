@@ -39,6 +39,28 @@ describe("CredentialsPanel", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).scopes).not.toContain("write_access");
   });
 
+  it("starts User Group Sync Enterprise OAuth with exactly write_access", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=write-tool" }),
+    );
+
+    renderCredentialsPanel({ workflow: { kind: "write-tool", writeToolId: "user-group-sync" } });
+
+    expect(screen.getByText("User Group Sync credential notes")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      scopes: ["write_access"],
+    });
+  });
+
   it("shows PAT credentials for Basic/Business and hides Enterprise OAuth controls", () => {
     renderCredentialsPanel();
 
@@ -663,7 +685,8 @@ function renderCredentialsPanel({
   onSave?: (credentials: SessionCredentials) => void;
   workflow?:
     | { kind: "report"; reportId: "tag-report" }
-    | { kind: "utility"; utilityId: "sme-coverage-analyzer" };
+    | { kind: "utility"; utilityId: "sme-coverage-analyzer" }
+    | { kind: "write-tool"; writeToolId: "user-group-sync" };
 } = {}) {
   return render(
     <CredentialsPanel

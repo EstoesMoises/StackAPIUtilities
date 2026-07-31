@@ -14,12 +14,14 @@ export const SME_COVERAGE_EVIDENCE_CSV_HEADERS = [
   "recommended_action",
   "demand_quality",
   "sme_quality",
+  "result_completeness",
+  "completeness_warnings",
 ] as const;
 
 export function buildSmeCoverageEvidenceCsv(pack: SmeCoverageDecisionPack): string {
   return recordsToCsvWithHeaders(
     SME_COVERAGE_EVIDENCE_CSV_HEADERS,
-    pack.evidence.map(toCsvRecord),
+    pack.evidence.map((row) => toCsvRecord(row, pack)),
   );
 }
 
@@ -83,7 +85,10 @@ export function buildSmeCoverageMarkdown(pack: SmeCoverageDecisionPack): string 
   ].join("\n");
 }
 
-function toCsvRecord(row: SmeCoverageEvidenceRow): Record<(typeof SME_COVERAGE_EVIDENCE_CSV_HEADERS)[number], unknown> {
+function toCsvRecord(
+  row: SmeCoverageEvidenceRow,
+  pack: SmeCoverageDecisionPack,
+): Record<(typeof SME_COVERAGE_EVIDENCE_CSV_HEADERS)[number], unknown> {
   return {
     tag_name: row.tagName,
     page_views: row.pageViews,
@@ -97,6 +102,10 @@ function toCsvRecord(row: SmeCoverageEvidenceRow): Record<(typeof SME_COVERAGE_E
     recommended_action: row.recommendedAction,
     demand_quality: row.demandQuality,
     sme_quality: row.smeQuality,
+    result_completeness: pack.snapshot.completeness,
+    completeness_warnings: pack.warnings
+      .map((warning) => `${warning.code}: ${warning.message}`)
+      .join(" | "),
   };
 }
 
@@ -135,5 +144,5 @@ function displayNumber(value: number | null): string {
 }
 
 function displayPercentile(value: number | null): string {
-  return value === null ? "Unavailable" : `${Math.round(value * 100)}%`;
+  return value === null ? "Unavailable" : `${Math.round(value)}%`;
 }

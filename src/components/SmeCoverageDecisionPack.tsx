@@ -34,8 +34,6 @@ export function SmeCoverageDecisionPack({
   runPending = false,
 }: SmeCoverageDecisionPackProps) {
   const [downloadFeedback, setDownloadFeedback] = useState<DownloadFeedback>({ state: "idle" });
-  const needsPartialQualification =
-    pack.snapshot.completeness === "Partial" && pack.warnings.length === 0;
 
   function startDownload(format: "Markdown" | "CSV") {
     try {
@@ -62,7 +60,7 @@ export function SmeCoverageDecisionPack({
         </span>
       </div>
 
-      {(pack.warnings.length > 0 || needsPartialQualification) && (
+      {pack.warnings.length > 0 && (
         <section className="sme-warning-stack" role="region" aria-labelledby="sme-warnings-heading">
           <h3 id="sme-warnings-heading">Completeness warnings</h3>
           {pack.warnings.map((warning) => (
@@ -70,12 +68,6 @@ export function SmeCoverageDecisionPack({
               {warning.message}
             </p>
           ))}
-          {needsPartialQualification && (
-            <p className="s-notice s-notice__warning" role="alert">
-              This decision pack is a partial sample. Qualify its conclusions with that
-              limitation before acting.
-            </p>
-          )}
         </section>
       )}
 

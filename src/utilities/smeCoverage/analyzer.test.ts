@@ -636,6 +636,24 @@ describe("analyzeSmeCoverage", () => {
     ]);
   });
 
+  it("lists all five affected tag names in sorted code-unit order", () => {
+    const invalidDemand = ["echo", "delta", "charlie", "bravo", "alpha"].map((tag) =>
+      normalizedDemandRow(tag, null),
+    );
+
+    const result = analyze(
+      invalidDemand,
+      invalidDemand.map((row) => normalizedSmeRow(row.tagNames[0], 1)),
+    );
+
+    expect(result.warnings[0]).toEqual({
+      utilityId: "sme-coverage-analyzer",
+      code: "sme-coverage.invalid-demand",
+      message:
+        "Demand metrics are unavailable or invalid for 5 tags: `alpha`, `bravo`, `charlie`, `delta`, `echo`.",
+    });
+  });
+
   it("does not mutate normalized source arrays while sorting canonical evidence", () => {
     const demandRows = [normalizedDemandRow("alpha", 10), normalizedDemandRow("bravo", 100)];
     const smeRows = [normalizedSmeRow("alpha", 1), normalizedSmeRow("bravo", 0)];

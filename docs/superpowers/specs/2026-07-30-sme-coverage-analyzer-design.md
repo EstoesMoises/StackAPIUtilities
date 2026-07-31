@@ -439,7 +439,7 @@ A searchable and sortable evidence table contains every tag, including adequate,
 - `Download evidence CSV`
 - `Run again`
 
-The Markdown decision pack contains snapshot metadata, completeness warnings, executive summary, copy-ready assessment, prioritized findings, and methodology. The CSV contains the complete evidence rows in canonical pack order. Interactive table search and sorting never change the CSV contents or order.
+The Markdown decision pack contains snapshot metadata, completeness warnings, executive summary, copy-ready assessment, prioritized findings, and methodology. The CSV contains the complete evidence rows in canonical pack order. Its fixed schema is `tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality,result_completeness,completeness_warnings`. `result_completeness` repeats the prepared snapshot completeness on every evidence row. `completeness_warnings` joins the canonical prepared warnings in order as `code: message` entries separated by ` | `, so configured or capped samples carry the literal `partial sample` qualification in every row. Interactive table search and sorting never change the CSV contents or order.
 
 ## Architecture
 
