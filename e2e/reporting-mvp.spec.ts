@@ -20,7 +20,7 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
 
   await page.getByRole("button", { name: "Datasets" }).click();
   await expect(page.getByRole("heading", { name: "Datasets" })).toBeVisible();
-  await expect(page.getByText("No datasets loaded in this browser session.")).toBeVisible();
+  await expect(page.getByText("No datasets loaded or stored in this browser.")).toBeVisible();
 });
 
 test("Tag Report exposes guided preset details", async ({ page }) => {
