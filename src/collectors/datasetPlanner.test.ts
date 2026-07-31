@@ -63,7 +63,7 @@ describe("collectDataset", () => {
       records: [{ id: "community" }],
       pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
     });
-    expect(clients.v3.getPagedResult).toHaveBeenCalledWith("/communities", { pagesize: "100" });
+    expect(clients.v3.getPagedResult).toHaveBeenCalledWith("/communities", { pageSize: "100" });
   });
 
   it("collects answer and comment export datasets through v2 endpoints", async () => {

@@ -1,7 +1,5 @@
-import { StackApiV2Client } from "../api/stackApiV2";
-import { StackApiV3Client } from "../api/stackApiV3";
 import type { FetchLike, ThrottleNotice } from "../api/httpClient";
-import { normalizeInstanceUrl, validateCredentialsForReport } from "../credentials/credentialRules";
+import { validateCredentialsForReport } from "../credentials/credentialRules";
 import { getReportRunPreset, getReportRunPresetForSettings } from "../domain/reportRunPresets";
 import { DEFAULT_REPORT_RUN_SCOPE } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
@@ -16,7 +14,8 @@ import type {
 } from "../domain/types";
 import { buildInteractionEdgesFromLiveContent } from "../reports/interactions";
 import { planDatasetsForReports } from "./datasetPlanner";
-import { collectDataset, getUnsupportedLiveDatasets, type LiveCollectorClients } from "./liveCollectors";
+import { createLiveCollectorClients } from "./liveCollectorClients";
+import { collectDataset, getUnsupportedLiveDatasets } from "./liveCollectors";
 
 export interface LiveReportDataset {
   datasetName: DatasetName;
@@ -163,46 +162,6 @@ function formatDatasetMessage(
   const verb = reportId === "interactions" && dataset.datasetName === "interactions" ? "Built" : "Collected";
 
   return `${verb} ${dataset.datasetName} (${formatRecordCount(dataset.records.length)}) for ${reportTitle}.`;
-}
-
-function createLiveCollectorClients(
-  credentials: SessionCredentials,
-  options: LiveReportRunOptions,
-): LiveCollectorClients {
-  const instance = normalizeInstanceUrl(credentials.baseUrl);
-  const token = credentials.instanceType === "basic-business" ? credentials.pat ?? "" : credentials.accessToken ?? "";
-
-  return {
-    v2: new StackApiV2Client({
-      apiV2Url: instance.apiV2Url,
-      teamSlug: instance.teamSlug,
-      headers: createV2Headers(credentials),
-      fetchFn: options.fetchFn,
-      onThrottle: options.onThrottle,
-    }),
-    v3: new StackApiV3Client({
-      apiV3Url: instance.apiV3Url,
-      token,
-      fetchFn: options.fetchFn,
-      onThrottle: options.onThrottle,
-    }),
-  };
-}
-
-function createV2Headers(credentials: SessionCredentials): HeadersInit {
-  const headers: Record<string, string> = {};
-
-  if (credentials.apiKey) {
-    headers["X-API-Key"] = credentials.apiKey;
-  }
-
-  if (credentials.instanceType === "basic-business" && credentials.pat) {
-    const token = credentials.pat;
-    headers["X-API-Access-Token"] = token;
-    headers.Authorization = `Bearer ${credentials.pat}`;
-  }
-
-  return headers;
 }
 
 function toRecordList(records: unknown[]): Record<string, unknown>[] {

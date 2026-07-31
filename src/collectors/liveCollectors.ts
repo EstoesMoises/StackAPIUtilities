@@ -56,6 +56,7 @@ const liveDatasetEndpoints: Partial<Record<DatasetName, LiveDatasetEndpoint>> = 
   articles: { client: "v2", path: "/articles" },
   communities: { client: "v3", path: "/communities" },
   userGroups: { client: "v3", path: "/user-groups" },
+  tagSmeCounts: { client: "v3", path: "/tags" },
 };
 
 const dependentLiveDatasets = new Set<DatasetName>(["tagSmes", "reputationHistory"]);
@@ -109,7 +110,7 @@ export async function collectDataset(
   return collectPagedResult(
     clients[endpoint.client],
     endpoint.path,
-    buildDatasetQuery(context, endpoint.client === "v2"),
+    buildDatasetQuery(context, endpoint.client, endpoint.client === "v2"),
     context,
   );
 }
@@ -126,7 +127,7 @@ async function collectTagSmes(
     const tagScores = await collectPagedResult(
       clients.v2,
       `/tags/${encodeURIComponent(tagName)}/top-answerers/all_time`,
-      buildDatasetQuery(context, false),
+      buildDatasetQuery(context, "v2", false),
       context,
     );
 
@@ -150,7 +151,7 @@ async function collectReputationHistory(
     const reputationEvents = await collectPagedResult(
       clients.v2,
       `/users/${userIdBatch.join(";")}/reputation-history`,
-      buildDatasetQuery(context, true),
+      buildDatasetQuery(context, "v2", true),
       context,
     );
 
@@ -183,10 +184,12 @@ async function collectPagedResult(
 
 function buildDatasetQuery(
   context: LiveCollectorContext,
+  client: keyof LiveCollectorClients,
   includeDateScope: boolean,
 ): Record<string, string> {
+  const pageSizeKey = client === "v2" ? "pagesize" : "pageSize";
   const query: Record<string, string> = {
-    pagesize: String(context.pageSize ?? 100),
+    [pageSizeKey]: String(context.pageSize ?? 100),
   };
 
   if (!includeDateScope) {
