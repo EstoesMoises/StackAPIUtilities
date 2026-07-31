@@ -11,6 +11,14 @@ const credentials: SessionCredentials = {
   authSource: "manual-enterprise-token",
 };
 
+const credentialsWithEveryString: SessionCredentials = {
+  ...credentials,
+  pat: "personal-access-token-secret",
+  oauthClientId: "oauth-client-id-secret",
+  oauthScopes: ["scope-one-secret", "scope-two-secret"],
+  accessTokenExpiresAt: "2027-07-31T00:00:00.000Z",
+};
+
 const result: SmeCoverageRunResult = {
   utilityId: "sme-coverage-analyzer",
   utilityTitle: "SME Coverage Analyzer",
@@ -243,5 +251,100 @@ describe("handleSmeCoverageRunRequest", () => {
     expect(body).not.toContain("enterprise-api-key-secret");
     expect(body).not.toContain("enterprise-access-token-secret");
     expect(body).not.toContain("credentials");
+  });
+
+  it("redacts every submitted credential string from mapped runner errors", async () => {
+    const submittedValues = [
+      credentialsWithEveryString.instanceType,
+      credentialsWithEveryString.baseUrl,
+      credentialsWithEveryString.apiKey,
+      credentialsWithEveryString.accessToken,
+      credentialsWithEveryString.pat,
+      credentialsWithEveryString.authSource,
+      credentialsWithEveryString.oauthClientId,
+      ...(credentialsWithEveryString.oauthScopes ?? []),
+      credentialsWithEveryString.accessTokenExpiresAt,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+    const runSmeCoverageAnalysis = vi.fn().mockRejectedValue(
+      new SmeCoverageRunError("collection", submittedValues.join(" | "), "questions"),
+    );
+
+    const response = await handleSmeCoverageRunRequest(
+      { credentials: credentialsWithEveryString },
+      { runSmeCoverageAnalysis },
+    );
+    const body = JSON.stringify(await responseBody(response));
+
+    expect(response.status).toBe(502);
+    expect(body).toContain("[REDACTED]");
+    for (const value of submittedValues) {
+      expect(body).not.toContain(value);
+    }
+  });
+
+  it("uses a generic message for unknown errors", async () => {
+    const runSmeCoverageAnalysis = vi.fn().mockRejectedValue(new Error("enterprise-api-key-secret"));
+
+    const response = await handleSmeCoverageRunRequest({ credentials }, { runSmeCoverageAnalysis });
+
+    expect(response.status).toBe(500);
+    await expect(responseBody(response)).resolves.toEqual({
+      ok: false,
+      kind: "unexpected",
+      error: "SME Coverage Analyzer failed unexpectedly.",
+    });
+  });
+
+  it("rejects inherited credentials before running", async () => {
+    const runSmeCoverageAnalysis = vi.fn();
+    const payload = Object.create({ credentials });
+
+    const response = await handleSmeCoverageRunRequest(payload, { runSmeCoverageAnalysis });
+
+    expect(response.status).toBe(400);
+    expect(runSmeCoverageAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("rejects credentials with inherited required fields before running", async () => {
+    const runSmeCoverageAnalysis = vi.fn();
+    const inheritedCredentials = Object.create(credentials);
+
+    const response = await handleSmeCoverageRunRequest(
+      { credentials: inheritedCredentials },
+      { runSmeCoverageAnalysis },
+    );
+
+    expect(response.status).toBe(400);
+    expect(runSmeCoverageAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("does not use inherited optional payload fields", async () => {
+    const runSmeCoverageAnalysis = vi.fn().mockResolvedValue(result);
+    const payload = Object.assign(Object.create({ pageSize: 50, maxPagesPerDataset: 1 }), { credentials });
+
+    const response = await handleSmeCoverageRunRequest(payload, { runSmeCoverageAnalysis });
+
+    expect(response.status).toBe(200);
+    expect(runSmeCoverageAnalysis).toHaveBeenCalledWith(credentials, {
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+    });
+  });
+
+  it.each([
+    ["a non-enumerable unapproved property", () => {
+      const payload = { credentials };
+      Object.defineProperty(payload, "hidden", { value: true });
+      return payload;
+    }],
+    ["a symbol property", () => ({ credentials, [Symbol("hidden")]: true })],
+  ])("rejects %s before running", async (_label, createPayload) => {
+    const runSmeCoverageAnalysis = vi.fn();
+
+    const response = await handleSmeCoverageRunRequest(createPayload(), { runSmeCoverageAnalysis });
+
+    expect(response.status).toBe(400);
+    expect(runSmeCoverageAnalysis).not.toHaveBeenCalled();
   });
 });
