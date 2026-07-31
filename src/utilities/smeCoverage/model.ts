@@ -1,4 +1,4 @@
-import type { ReportWarning } from "../../domain/types";
+import type { ReportRunPresetId, ReportWarning } from "../../domain/types";
 
 export type QuestionCountBasis =
   | "Complete question enumeration"
@@ -108,4 +108,27 @@ export interface SmeCoverageAnalysisResult {
   };
   sourceStatus: SmeCoverageSourceStatus;
   warnings: readonly ReportWarning[];
+}
+
+export type SmeCoverageCompleteness = "Complete" | "Partial" | "Empty";
+
+export interface SmeCoverageSnapshot {
+  readonly instanceHost: string;
+  readonly generatedAt: string;
+  readonly scopeLabel: "All-time demand · Current SME coverage";
+  readonly completeness: SmeCoverageCompleteness;
+  readonly pageSize: number;
+  readonly maxPagesPerDataset: number;
+  readonly runPreset?: ReportRunPresetId;
+}
+
+export interface SmeCoverageDecisionPack {
+  readonly snapshot: SmeCoverageSnapshot;
+  readonly warnings: readonly ReportWarning[];
+  readonly summary: SmeCoverageSummary;
+  readonly overview: string;
+  readonly assessment: string;
+  readonly findings: SmeCoverageAnalysisResult["findings"];
+  readonly methodology: SmeCoverageMethodology;
+  readonly evidence: readonly SmeCoverageEvidenceRow[];
 }
