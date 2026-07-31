@@ -9,11 +9,13 @@ export const SME_COVERAGE_RUN_STAGES = [
   "Render decision pack",
 ] as const;
 
+export type SmeCoverageRunStage = (typeof SME_COVERAGE_RUN_STAGES)[number];
+
 type SmeCoverageRunStatus = "idle" | "running" | "succeeded" | "failed";
 
 interface SmeCoverageRunProgressProps {
   status: SmeCoverageRunStatus;
-  failedStage?: string;
+  failedStage?: SmeCoverageRunStage;
   error?: string;
 }
 
@@ -24,6 +26,12 @@ export function SmeCoverageRunProgress({
 }: SmeCoverageRunProgressProps) {
   const succeeded = status === "succeeded";
   const progressText = getProgressText(status);
+  const resolvedFailedStage =
+    status === "failed" && isSmeCoverageRunStage(failedStage) ? failedStage : undefined;
+  const fallbackFailedStage =
+    status === "failed" && !resolvedFailedStage
+      ? getFallbackFailedStage(failedStage)
+      : undefined;
 
   return (
     <section
@@ -41,7 +49,7 @@ export function SmeCoverageRunProgress({
           {getStatusLabel(status)}
         </span>
       </div>
-      <p className="sme-run-progress-copy">{getProgressCopy(status, failedStage)}</p>
+      <p className="sme-run-progress-copy">{getProgressCopy(status, resolvedFailedStage)}</p>
       <div
         className="sme-run-progressbar"
         role="progressbar"
@@ -55,7 +63,7 @@ export function SmeCoverageRunProgress({
       </div>
       <ol className="sme-run-stage-list">
         {SME_COVERAGE_RUN_STAGES.map((stage) => {
-          const stageStatus = getStageStatus(status, stage, failedStage);
+          const stageStatus = getStageStatus(status, stage, resolvedFailedStage);
           return (
             <li className={`sme-run-stage sme-run-stage__${stageStatus.kind}`} key={stage}>
               <span>{stage}</span>
@@ -63,10 +71,16 @@ export function SmeCoverageRunProgress({
             </li>
           );
         })}
+        {fallbackFailedStage && (
+          <li className="sme-run-stage sme-run-stage__failed">
+            <span>{fallbackFailedStage}</span>
+            <strong>Failed</strong>
+          </li>
+        )}
       </ol>
-      {status === "failed" && error && (
+      {status === "failed" && (
         <div className="s-notice s-notice__danger sme-run-progress-error" role="alert">
-          {error}
+          {getFailureError(error)}
         </div>
       )}
     </section>
@@ -112,7 +126,7 @@ function getProgressText(status: SmeCoverageRunStatus): string {
   }
 }
 
-function getProgressCopy(status: SmeCoverageRunStatus, failedStage?: string): string {
+function getProgressCopy(status: SmeCoverageRunStatus, failedStage?: SmeCoverageRunStage): string {
   switch (status) {
     case "idle":
       return "The stages below run on the server after you start the utility.";
@@ -129,8 +143,8 @@ function getProgressCopy(status: SmeCoverageRunStatus, failedStage?: string): st
 
 function getStageStatus(
   status: SmeCoverageRunStatus,
-  stage: string,
-  failedStage?: string,
+  stage: SmeCoverageRunStage,
+  failedStage?: SmeCoverageRunStage,
 ): { kind: "awaiting" | "complete" | "failed" | "not-run"; label: string } {
   if (status === "succeeded") {
     return { kind: "complete", label: "Complete" };
@@ -145,4 +159,25 @@ function getStageStatus(
     return { kind: "awaiting", label: "Awaiting server result" };
   }
   return { kind: "not-run", label: "Not started" };
+}
+
+function isSmeCoverageRunStage(value: unknown): value is SmeCoverageRunStage {
+  return (
+    typeof value === "string" &&
+    (SME_COVERAGE_RUN_STAGES as readonly string[]).includes(value)
+  );
+}
+
+function getFallbackFailedStage(value: unknown): string {
+  if (typeof value === "string" && value.trim() !== "") {
+    return `Server-reported stage: ${value}`;
+  }
+  return "Failed stage was not reported by the server";
+}
+
+function getFailureError(error: unknown): string {
+  if (typeof error === "string" && error.trim() !== "") {
+    return error;
+  }
+  return "The utility could not complete. Review the failed stage, confirm credentials and instance access, then retry.";
 }

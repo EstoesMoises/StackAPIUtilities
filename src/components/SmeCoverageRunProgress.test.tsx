@@ -1,6 +1,9 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { SmeCoverageRunProgress } from "./SmeCoverageRunProgress";
+import {
+  SmeCoverageRunProgress,
+  type SmeCoverageRunStage,
+} from "./SmeCoverageRunProgress";
 
 const stageLabels = [
   "Validate credentials and instance support",
@@ -70,5 +73,33 @@ describe("SmeCoverageRunProgress", () => {
       "Confirm the credential can read assigned SMEs, then retry the utility.",
     );
     expect(screen.queryByText("Complete")).not.toBeInTheDocument();
+  });
+
+  it("renders an actionable alert and identified fallback when failure details are missing", () => {
+    render(<SmeCoverageRunProgress status="failed" />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The utility could not complete. Review the failed stage, confirm credentials and instance access, then retry.",
+    );
+    const fallbackStage = screen
+      .getAllByRole("listitem")
+      .find((stage) => stage.textContent?.includes("Failed stage was not reported by the server"));
+    expect(fallbackStage).toBeDefined();
+    expect(within(fallbackStage!).getByText("Failed")).toBeInTheDocument();
+  });
+
+  it("identifies a defensive fallback for a runtime-invalid failed stage", () => {
+    const runtimeInvalidStage = "Resolve undocumented server stage" as SmeCoverageRunStage;
+
+    render(<SmeCoverageRunProgress status="failed" failedStage={runtimeInvalidStage} />);
+
+    const fallbackStage = screen
+      .getAllByRole("listitem")
+      .find((stage) =>
+        stage.textContent?.includes("Server-reported stage: Resolve undocumented server stage"),
+      );
+    expect(fallbackStage).toBeDefined();
+    expect(within(fallbackStage!).getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 });

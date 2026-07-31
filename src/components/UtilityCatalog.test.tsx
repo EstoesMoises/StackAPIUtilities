@@ -18,6 +18,13 @@ describe("UtilityCatalog", () => {
     expect(screen.getByRole("heading", { name: "Utility Catalog" })).toBeInTheDocument();
     const utility = screen.getByRole("button", { name: "SME Coverage Analyzer" });
     expect(utility).toHaveAttribute("aria-pressed", "true");
+    expect(utility).not.toHaveAttribute("aria-label");
+    expect(utility).toHaveAttribute("aria-labelledby");
+    expect(utility).toHaveAttribute("aria-describedby");
+    expect(utility).toHaveAccessibleName("SME Coverage Analyzer");
+    expect(utility).toHaveAccessibleDescription(
+      "All-time demand · Current SME coverage Read-only Find tags where knowledge demand is not matched by enough SME coverage.",
+    );
     expect(within(utility).getByText("SME Coverage Analyzer")).toBeInTheDocument();
     expect(within(utility).getByText("All-time demand · Current SME coverage")).toBeInTheDocument();
     expect(within(utility).getByText("Read-only")).toBeInTheDocument();
