@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ApiVolumeSettingsValue } from "../../domain/types";
 import {
   completeSmeCoverageSourceStatus,
   narrativeDemandRows,
@@ -18,12 +19,43 @@ function analyze(
   demandRows = narrativeDemandRows,
   smeRows = narrativeSmeRows,
   sourceStatus: SmeCoverageSourceStatus = completeSmeCoverageSourceStatus,
+  settings?: ApiVolumeSettingsValue,
 ): SmeCoverageAnalysisResult {
   return analyzeSmeCoverage({
     demand: { rows: demandRows, warnings: [] },
     smeCounts: { rows: smeRows, warnings: [] },
     sourceStatus,
+    settings,
   });
+}
+
+interface RenderedRatioPair {
+  tagName: string;
+  displayedRatio: string;
+}
+
+function renderedRatioPairs(assessment: string): RenderedRatioPair[] {
+  return [...assessment.matchAll(/`([^`]+)` \(([\d,]+) (?:collected-sample )?page views per SME\)/g)].map(
+    (match) => ({ tagName: match[1], displayedRatio: match[2] }),
+  );
+}
+
+function matchRenderedPairsToCanonicalRows(
+  pairs: readonly RenderedRatioPair[],
+  rows: readonly SmeCoverageEvidenceRow[],
+): readonly SmeCoverageEvidenceRow[] | null {
+  const matched: SmeCoverageEvidenceRow[] = [];
+  for (const pair of pairs) {
+    const row = rows.find(
+      (candidate) =>
+        candidate.tagName === pair.tagName &&
+        candidate.pageViewsPerSme !== null &&
+        formatDisplayedRatio(candidate.pageViewsPerSme) === pair.displayedRatio,
+    );
+    if (!row) return null;
+    matched.push(row);
+  }
+  return matched;
 }
 
 function capped(source: keyof SmeCoverageSourceStatus): SmeCoverageSourceStatus {
@@ -49,18 +81,32 @@ describe("buildSmeCoverageNarrative", () => {
       ...analysis.findings.lightCoverage.slice(0, 10),
     ];
     const namedTags = [...narrative.assessment.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-    const displayedRatios = [...narrative.assessment.matchAll(/([\d,]+) page views per SME/g)].map(
-      (match) => match[1],
-    );
+    const pairs = renderedRatioPairs(narrative.assessment);
+    const matchedRows = matchRenderedPairsToCanonicalRows(pairs, selected);
 
     expect(namedTags.every((tagName) => selected.some((row) => row.tagName === tagName))).toBe(true);
-    expect(
-      displayedRatios.every((ratio) =>
-        selected.some(
-          (row) => row.pageViewsPerSme !== null && formatDisplayedRatio(row.pageViewsPerSme) === ratio,
-        ),
-      ),
-    ).toBe(true);
+    expect(matchedRows).not.toBeNull();
+    expect(matchedRows).toHaveLength(pairs.length);
+    for (const row of matchedRows ?? []) expect(analysis.evidence).toContain(row);
+
+    const swappedPairs = pairs.map((pair, index) => ({
+      ...pair,
+      displayedRatio: pairs[(index + 1) % pairs.length].displayedRatio,
+    }));
+    expect(matchRenderedPairsToCanonicalRows(swappedPairs, selected)).toBeNull();
+  });
+
+  it.each([
+    ["Quick sample", { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" }],
+    ["Standard", { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" }],
+    ["custom", { pageSize: 75, maxPagesPerDataset: 7 }],
+  ] as const)("labels a non-capped %s run as a partial sample", (_label, settings) => {
+    const narrative = buildSmeCoverageNarrative(
+      analyze(narrativeDemandRows, narrativeSmeRows, completeSmeCoverageSourceStatus, settings),
+    );
+
+    expect(narrative.overview).toContain("partial sample");
+    expect(narrative.assessment).toContain("partial sample");
   });
 
   it("limits each finding paragraph to the first ten canonical rows", () => {
@@ -104,8 +150,12 @@ describe("buildSmeCoverageNarrative", () => {
     (source) => {
       const narrative = buildSmeCoverageNarrative(analyze(narrativeDemandRows, narrativeSmeRows, capped(source)));
 
-      expect(narrative.overview).toMatch(/collected source sample/i);
-      expect(narrative.assessment).toMatch(/collected source sample/i);
+      expect(narrative.overview).toContain("partial sample");
+      expect(narrative.assessment).toContain("partial sample");
+      expect(narrative.overview).toMatch(/partial collected-source sample/i);
+      expect(narrative.assessment).toMatch(/partial collected-source sample/i);
+      expect(narrative.overview).toMatch(/complete all-time question enumeration and page views/i);
+      expect(narrative.assessment).toMatch(/complete all-time question enumeration and page views/i);
       expect(narrative.assessment).not.toMatch(/collected-sample page views/i);
     },
   );
@@ -124,9 +174,9 @@ describe("buildSmeCoverageNarrative", () => {
     const narrative = buildSmeCoverageNarrative(analysis);
 
     expect(narrative.overview).toMatch(/partial sample/i);
-    expect(narrative.overview).toMatch(/collected source sample/i);
+    expect(narrative.overview).toMatch(/partial collected-source sample/i);
     expect(narrative.assessment).toMatch(/collected-sample page views/i);
-    expect(narrative.assessment).toMatch(/collected source sample/i);
+    expect(narrative.assessment).toMatch(/partial collected-source sample/i);
   });
 
   it("keeps an immediate gap and always states the three-row classification limitation", () => {
@@ -211,7 +261,7 @@ describe("buildSmeCoverageNarrative", () => {
     const narrative = buildSmeCoverageNarrative(analysis);
 
     expect(narrative.assessment).toMatch(/no priority coverage gaps/i);
-    expect(narrative.assessment).toMatch(/collected source sample/i);
+    expect(narrative.assessment).toMatch(/partial collected-source sample/i);
   });
 
   it("keeps unknown-only rows out of claims and reports only the sample limitation", () => {

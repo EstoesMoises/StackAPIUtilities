@@ -15,13 +15,15 @@ export function formatDisplayedRatio(value: number): string {
 
 export function buildSmeCoverageNarrative(analysis: SmeCoverageAnalysisResult): SmeCoverageNarrative {
   const questionSampleCapped = isCapped(analysis.sourceStatus.questions);
-  const collectedSourceSample =
+  const sourceSampleCapped =
     isCapped(analysis.sourceStatus.tags) || isCapped(analysis.sourceStatus.tagSmeCounts);
+  const sampleNotes = buildSampleNotes(
+    analysis.sampling.configuredAsPartialSample,
+    questionSampleCapped,
+    sourceSampleCapped,
+  );
 
   if (analysis.evidence.length === 0) {
-    const sampleNotes: string[] = [];
-    if (questionSampleCapped) sampleNotes.push("The question source is a partial sample.");
-    if (collectedSourceSample) sampleNotes.push("The result covers a collected source sample.");
     const sampleNote = sampleNotes.length > 0 ? ` ${sampleNotes.join(" ")}` : "";
     return {
       overview: `No tags were available for SME coverage analysis.${sampleNote}`,
@@ -33,7 +35,7 @@ export function buildSmeCoverageNarrative(analysis: SmeCoverageAnalysisResult): 
   if (paragraphs.length === 0 && analysis.methodology.percentileSampleSufficient) {
     paragraphs.push("No priority coverage gaps were found in the analyzed evidence.");
   }
-  const sampleNote = assessmentSampleNote(questionSampleCapped, collectedSourceSample);
+  const sampleNote = sampleNotes.join(" ");
   if (sampleNote) appendSentence(paragraphs, sampleNote);
 
   if (!analysis.methodology.percentileSampleSufficient) {
@@ -44,7 +46,7 @@ export function buildSmeCoverageNarrative(analysis: SmeCoverageAnalysisResult): 
   }
 
   return {
-    overview: buildOverview(analysis, questionSampleCapped, collectedSourceSample),
+    overview: buildOverview(analysis, sampleNotes),
     assessment: paragraphs.join("\n\n"),
   };
 }
@@ -80,12 +82,8 @@ function buildFindingParagraphs(
 
 function buildOverview(
   analysis: SmeCoverageAnalysisResult,
-  questionSampleCapped: boolean,
-  collectedSourceSample: boolean,
+  sampleNotes: readonly string[],
 ): string {
-  const sampleNotes: string[] = [];
-  if (questionSampleCapped) sampleNotes.push("This analysis uses a partial sample of collected questions.");
-  if (collectedSourceSample) sampleNotes.push("This analysis covers a collected source sample.");
   const samplePrefix = sampleNotes.length > 0 ? `${sampleNotes.join(" ")} ` : "";
   const immediateCount = analysis.findings.immediateGaps.length;
   const criticalCount = analysis.findings.criticalUnderCoverage.length;
@@ -110,17 +108,30 @@ function buildOverview(
   return `${samplePrefix}${finding}${limitation}`;
 }
 
-function assessmentSampleNote(questionSampleCapped: boolean, collectedSourceSample: boolean): string {
+function buildSampleNotes(
+  configuredAsPartialSample: boolean,
+  questionSampleCapped: boolean,
+  sourceSampleCapped: boolean,
+): string[] {
   const notes: string[] = [];
+  if (configuredAsPartialSample || questionSampleCapped || sourceSampleCapped) {
+    notes.push("This analysis is a partial sample.");
+  }
+  if (configuredAsPartialSample) {
+    notes.push("The configured API volume settings are not the Deep audit defaults.");
+  }
   if (questionSampleCapped) {
     notes.push("Demand conclusions use collected-sample page views from a partial sample.");
   }
-  if (collectedSourceSample) {
-    notes.push(
-      "These conclusions cover a collected source sample; page-view enumeration remains labeled by its evidence basis.",
-    );
+  if (sourceSampleCapped) {
+    notes.push("Tag or assigned-SME conclusions cover a partial collected-source sample.");
+    if (!questionSampleCapped) {
+      notes.push(
+        "Complete all-time question enumeration and page views remain complete for evidence rows with Complete demand quality.",
+      );
+    }
   }
-  return notes.join(" ");
+  return notes;
 }
 
 function appendSentence(paragraphs: string[], sentence: string): void {
