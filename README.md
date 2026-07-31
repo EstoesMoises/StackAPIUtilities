@@ -1,10 +1,11 @@
 # Stack API Utilities
 
-Next.js app for Stack Overflow for Teams reporting utilities.
+Next.js app for Stack Overflow for Teams and Stack Enterprise API workflows.
 
-## MVP Scope
+## Product Areas
 
-The reporting MVP focuses on browser-ready read-only reports:
+Scripts produce reusable datasets and report outputs. The current browser-ready,
+read-only Scripts are:
 
 - Tag Report
 - API User Report
@@ -13,15 +14,41 @@ The reporting MVP focuses on browser-ready read-only reports:
 - Community Members
 - Data Export
 
-Uploaded report outputs are parsed locally in the browser and rendered as dashboards plus raw tables. Credentials are session-only and are not persisted in browser storage. Loaded datasets are stored locally in this browser by default so report runs and uploads can survive refreshes, tab closes, and browser restarts until the user removes individual datasets or flushes all stored datasets from the Datasets panel.
+Utilities answer defined operational questions directly from API data. The SME
+Coverage Analyzer produces an evidence-first decision pack for the question:
+where is all-time knowledge demand not matched by current assigned-SME coverage?
+It is self-contained and read-only; it does not require a prior Script run or an
+uploaded report.
 
-Live API execution runs through the same-origin Next.js route at `/api/reports/run`, which lets the server call Stack Enterprise or Teams APIs without browser CORS blocking credential headers. Reports that still need unsupported live datasets stop before fetching and direct users to upload existing CSV or JSON outputs.
+The analyzer's three-source pipeline collects all-time v2 tags and questions plus
+v3 tags. Only the v3 `subjectMatterExpertCount` field represents assigned-SME
+coverage. V2 top answerers are never used as the assigned-SME denominator. Deep
+audit is the default collection setting; Quick, Standard, and custom capped runs
+are partial samples and label their conclusions accordingly.
+
+Uploaded Script outputs are parsed locally in the browser and rendered as
+dashboards plus raw tables. Script datasets, Utility decision packs, and Utility
+supporting datasets are stored browser-locally by default so they can survive
+refreshes, tab closes, and browser restarts until the user removes individual
+datasets or flushes all stored datasets from the Datasets panel. Credentials
+remain in memory only and are never included in persisted or exported results.
+
+Live Script execution uses the same-origin Next.js route at `/api/reports/run`.
+SME Coverage Analyzer execution uses the same-origin route at
+`/api/utilities/sme-coverage/run`. These routes let the server call Stack
+Enterprise or Teams APIs without browser CORS blocking credential headers.
+Scripts that still need unsupported live datasets stop before fetching and
+direct users to upload existing CSV or JSON outputs.
 
 ## Credentials
 
-Credentials are session-only; the app does not persist access tokens, API keys, PATs, OAuth client IDs, or OAuth state in browser storage.
+Credentials are session-only and memory-only; the app does not persist access
+tokens, API keys, PATs, OAuth client IDs, OAuth metadata, or OAuth state in
+browser storage.
 
-Loaded report datasets are stored locally in this browser by default. Use the Datasets panel to remove individual datasets or flush all stored datasets.
+Loaded Script datasets and Utility supporting datasets and decision packs are
+stored locally in this browser by default. Use the Datasets panel to remove
+individual datasets or flush all stored datasets.
 
 The shared credentials screen supports three authentication lanes:
 
