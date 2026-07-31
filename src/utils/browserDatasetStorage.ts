@@ -1,4 +1,7 @@
-import type { PersistedDatasetSessionSnapshot } from "../domain/datasetPersistence";
+import {
+  parseDatasetSessionSnapshot,
+  type PersistedDatasetSessionSnapshot,
+} from "../domain/datasetPersistence";
 
 const DATABASE_NAME = "stack-api-utilities";
 const DATABASE_VERSION = 1;
@@ -14,10 +17,10 @@ export async function loadPersistedDatasetSession(): Promise<PersistedDatasetSes
 
   try {
     const store = database.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME);
-    const snapshot = await requestToPromise<PersistedDatasetSessionSnapshot | undefined>(
+    const snapshot = await requestToPromise<unknown>(
       store.get(SNAPSHOT_KEY),
     );
-    return snapshot ?? null;
+    return parseDatasetSessionSnapshot(snapshot);
   } finally {
     database.close();
   }

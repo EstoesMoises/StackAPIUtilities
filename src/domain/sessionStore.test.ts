@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { SmeCoverageDecisionPack } from "../utilities/smeCoverage/model";
 import { createInitialSessionState, sessionReducer } from "./sessionStore";
 
 function createStorageShim(): Storage {
@@ -36,12 +37,128 @@ describe("sessionStore", () => {
       credentials: null,
       selectedReportId: "tag-report",
       selectedReportIds: ["tag-report"],
+      selectedUtilityId: "sme-coverage-analyzer",
       datasets: {},
       reportOutputs: {},
       reportRunSnapshots: [],
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
       warnings: [],
       runQueue: [],
     });
+  });
+
+  it("selects the active utility", () => {
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "utility/select",
+      utilityId: "sme-coverage-analyzer",
+    } as never);
+
+    expect(state.selectedUtilityId).toBe("sme-coverage-analyzer");
+  });
+
+  it("stores every utility source dataset, provenance, snapshot metadata, and active pack", () => {
+    const pack = createUtilityDecisionPack();
+    const warning = {
+      utilityId: "sme-coverage-analyzer" as const,
+      code: "coverage.partial-sample",
+      message: "The approved sample may be partial.",
+    };
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "utility/loaded",
+      result: {
+        utilityId: "sme-coverage-analyzer",
+        utilityTitle: "SME Coverage Analyzer",
+        pageSize: 100,
+        maxPagesPerDataset: 20,
+        runPreset: "deep-audit",
+        datasets: [
+          { datasetName: "tags", records: [{ name: "python" }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+          { datasetName: "questions", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+          { datasetName: "tagSmeCounts", records: [{ tagName: "python", count: 0 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+        ],
+        messages: [],
+        warnings: [warning],
+        decisionPack: pack,
+      },
+    } as never);
+
+    expect(Object.values(state.datasets).map((dataset) => dataset.name)).toEqual([
+      "tags",
+      "questions",
+      "tagSmeCounts",
+    ]);
+    expect(Object.values(state.datasets).every(
+      (dataset) => dataset.utilityId === "sme-coverage-analyzer",
+    )).toBe(true);
+    expect(Object.values(state.datasets)[0]).toMatchObject({
+      pageCount: 1,
+      reachedMaxPages: false,
+      hasMore: false,
+    });
+    expect(state.utilityOutputs["sme-coverage-analyzer"]?.decisionPack).toEqual(pack);
+    expect(state.utilityRunSnapshots[0]).toMatchObject({
+      utilityId: "sme-coverage-analyzer",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+      warnings: [warning],
+    });
+    expect(state.warnings).toEqual([warning]);
+  });
+
+  it("replaces the active utility pack on rerun while retaining all source snapshots", () => {
+    const firstPack = createUtilityDecisionPack();
+    const secondPack = { ...createUtilityDecisionPack("Partial"), assessment: "Second run." };
+    const first = sessionReducer(createInitialSessionState(), createUtilityLoadedAction(firstPack) as never);
+    const second = sessionReducer(first, createUtilityLoadedAction(secondPack) as never);
+
+    expect(Object.values(second.datasets)).toHaveLength(6);
+    expect(second.utilityRunSnapshots).toHaveLength(2);
+    expect(second.utilityOutputs["sme-coverage-analyzer"]?.decisionPack).toEqual(secondPack);
+  });
+
+  it("keeps rerun snapshot ids unique after an earlier utility snapshot is removed", () => {
+    const first = sessionReducer(
+      createInitialSessionState(),
+      createUtilityLoadedAction(createUtilityDecisionPack()) as never,
+    );
+    const second = sessionReducer(first, createUtilityLoadedAction(createUtilityDecisionPack()) as never);
+    const firstSnapshotId = first.utilityRunSnapshots[0]!.id;
+    const withoutFirst = Object.values(first.datasets).reduce(
+      (state, dataset) => sessionReducer(state, { type: "dataset/remove", datasetId: dataset.id }),
+      second,
+    );
+
+    expect(withoutFirst.utilityRunSnapshots.map((snapshot) => snapshot.id)).not.toContain(firstSnapshotId);
+    const rerun = sessionReducer(withoutFirst, createUtilityLoadedAction(createUtilityDecisionPack()) as never);
+    expect(new Set(rerun.utilityRunSnapshots.map((snapshot) => snapshot.id)).size).toBe(2);
+    expect(Object.values(rerun.datasets)).toHaveLength(6);
+  });
+
+  it("prunes utility dataset provenance and empty snapshots but keeps the self-contained active pack", () => {
+    const pack = createUtilityDecisionPack();
+    const loaded = sessionReducer(createInitialSessionState(), createUtilityLoadedAction(pack) as never);
+    const snapshotId = loaded.utilityRunSnapshots[0]?.id;
+    const snapshotDatasets = Object.values(loaded.datasets).filter((dataset) => dataset.snapshotId === snapshotId);
+    const partiallyRemoved = sessionReducer(loaded, { type: "dataset/remove", datasetId: snapshotDatasets[0]!.id });
+
+    expect(partiallyRemoved.utilityRunSnapshots[0]?.datasetIds).toHaveLength(2);
+
+    const fullyRemoved = snapshotDatasets.slice(1).reduce(
+      (state, dataset) => sessionReducer(state, { type: "dataset/remove", datasetId: dataset.id }),
+      partiallyRemoved,
+    );
+    expect(fullyRemoved.utilityRunSnapshots).toEqual([]);
+    expect(fullyRemoved.utilityOutputs["sme-coverage-analyzer"]?.decisionPack).toEqual(pack);
+  });
+
+  it.each(["datasets/flush", "session/reset"] as const)("clears utility data on %s", (type) => {
+    const loaded = sessionReducer(createInitialSessionState(), createUtilityLoadedAction(createUtilityDecisionPack()) as never);
+    const cleared = sessionReducer(loaded, { type });
+
+    expect(cleared.utilityOutputs).toEqual({});
+    expect(cleared.utilityRunSnapshots).toEqual([]);
   });
 
   it("stores credentials only in memory state", () => {
@@ -827,3 +944,64 @@ describe("sessionStore", () => {
     expect(flushed.warnings).toEqual([]);
   });
 });
+
+function createUtilityLoadedAction(decisionPack: SmeCoverageDecisionPack) {
+  return {
+    type: "utility/loaded",
+    result: {
+      utilityId: "sme-coverage-analyzer",
+      utilityTitle: "SME Coverage Analyzer",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+      datasets: [
+        { datasetName: "tags", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "questions", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "tagSmeCounts", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+      ],
+      messages: [],
+      warnings: [],
+      decisionPack,
+    },
+  };
+}
+
+function createUtilityDecisionPack(
+  completeness: "Complete" | "Partial" | "Empty" = "Empty",
+): SmeCoverageDecisionPack {
+  return {
+    snapshot: {
+      instanceHost: "example.stackenterprise.co",
+      generatedAt: "2026-07-30T12:00:00.000Z",
+      scopeLabel: "All-time demand · Current SME coverage",
+      completeness,
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+    },
+    warnings: [],
+    summary: {
+      tagsAnalyzed: 0,
+      tagsWithSmes: 0,
+      immediateGaps: 0,
+      criticalUnderCoverage: 0,
+      lightCoverage: 0,
+      unknownRows: 0,
+    },
+    overview: "No tags were available.",
+    assessment: "No assessment can be made.",
+    findings: { immediateGaps: [], criticalUnderCoverage: [], lightCoverage: [] },
+    methodology: {
+      activityQuestionMinimum: 1,
+      activityPageViewThresholdExclusive: 25,
+      activeTagMedianPageViews: null,
+      coveredActiveSampleSize: 0,
+      p75PageViewsPerSme: null,
+      p90PageViewsPerSme: null,
+      percentileSampleSufficient: false,
+      ratioFormula: "pageViews / smeCount",
+      roundingRule: "Nearest whole page view for display; unrounded for calculation",
+    },
+    evidence: [],
+  };
+}

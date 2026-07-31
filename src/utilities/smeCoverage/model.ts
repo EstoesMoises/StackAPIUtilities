@@ -140,3 +140,9 @@ export interface SmeCoverageDecisionPack {
   readonly methodology: SmeCoverageMethodology;
   readonly evidence: readonly SmeCoverageEvidenceRow[];
 }
+
+export interface SmeCoverageStoredOutput {
+  utilityId: "sme-coverage-analyzer";
+  loadedAt: string;
+  decisionPack: SmeCoverageDecisionPack;
+}
