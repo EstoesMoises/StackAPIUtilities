@@ -29,6 +29,12 @@ export async function loadPersistedDatasetSession(): Promise<PersistedDatasetSes
 export async function savePersistedDatasetSession(
   snapshot: PersistedDatasetSessionSnapshot,
 ): Promise<void> {
+  const sanitizedSnapshot = parseDatasetSessionSnapshot(snapshot);
+
+  if (!sanitizedSnapshot) {
+    return;
+  }
+
   const database = await openDatabase();
 
   if (!database) {
@@ -40,7 +46,7 @@ export async function savePersistedDatasetSession(
     const store = transaction.objectStore(STORE_NAME);
 
     await Promise.all([
-      requestToPromise(store.put(snapshot, SNAPSHOT_KEY)),
+      requestToPromise(store.put(sanitizedSnapshot, SNAPSHOT_KEY)),
       transactionToPromise(transaction),
     ]);
   } finally {

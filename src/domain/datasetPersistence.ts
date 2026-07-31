@@ -50,6 +50,25 @@ const knownReportIds = new Set<ReportId>(reportRegistry.map((report) => report.i
 const runPeriodRoles = new Set<RunPeriodRole>(["current", "comparison"]);
 const reportRunPresetIds = new Set<ReportRunPresetId>(["quick-sample", "standard", "deep-audit"]);
 const knownUtilityIds = new Set<UtilityId>(["sme-coverage-analyzer"]);
+const prohibitedPersistedKeys = new Set([
+  "credentials",
+  "apiKey",
+  "accessToken",
+  "token",
+  "refreshToken",
+  "idToken",
+  "oauthToken",
+  "pat",
+  "authSource",
+  "oauthClientId",
+  "clientSecret",
+  "oauthScopes",
+  "accessTokenExpiresAt",
+  "runQueue",
+  "requestPayload",
+  "runProgress",
+]);
+const omittedJsonValue = Symbol("omitted-json-value");
 
 export function createDatasetSessionSnapshot(state: SessionState): PersistedDatasetSessionSnapshot {
   const datasets = parseDatasetRecord(state.datasets, true) ?? {};
@@ -224,7 +243,16 @@ function parseUtilityRunSnapshots(
   datasets: Record<string, SessionDataset>,
 ): UtilityRunSnapshot[] {
   if (!Array.isArray(value)) return [];
+  const idCounts = new Map<string, number>();
+  for (const candidate of value) {
+    if (isRecord(candidate) && typeof candidate.id === "string" && candidate.id.length > 0) {
+      idCounts.set(candidate.id, (idCounts.get(candidate.id) ?? 0) + 1);
+    }
+  }
   return value.flatMap((candidate) => {
+    if (isRecord(candidate) && typeof candidate.id === "string" && (idCounts.get(candidate.id) ?? 0) > 1) {
+      return [];
+    }
     const snapshot = parseUtilityRunSnapshot(candidate, datasets);
     return snapshot ? [snapshot] : [];
   });
@@ -237,15 +265,19 @@ function parseUtilityRunSnapshot(
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
+    value.id.length === 0 ||
     !isKnownUtilityId(value.utilityId) ||
     !isNonnegativeInteger(value.pageSize) ||
     !isNonnegativeInteger(value.maxPagesPerDataset) ||
     (typeof value.runPreset !== "undefined" && !isReportRunPresetId(value.runPreset)) ||
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
+    value.datasetIds.length === 0 ||
+    new Set(value.datasetIds).size !== value.datasetIds.length ||
     !value.datasetIds.every(
       (datasetId) =>
         typeof datasetId === "string" &&
+        datasetId.length > 0 &&
         hasOwn(datasets, datasetId) &&
         datasets[datasetId]?.utilityId === value.utilityId &&
         datasets[datasetId]?.snapshotId === value.id,
@@ -310,7 +342,7 @@ function parseSessionDataset(value: unknown, allowUtility: boolean): SessionData
   const dataset: SessionDataset = {
     id: value.id,
     name: value.name,
-    records: [...value.records],
+    records: sanitizeDatasetRecords(value.records),
     loadedAt: value.loadedAt,
     source: value.source,
   };
@@ -355,10 +387,10 @@ function parseReportOutput(value: unknown): ReportOutput | null {
     !isKnownReportId(value.reportId) ||
     !isDatasetName(value.datasetName) ||
     typeof value.fileName !== "string" ||
-    !isRecordArray(value.records) ||
+    !Array.isArray(value.records) ||
     typeof value.loadedAt !== "string" ||
     (value.source !== "live-api" && value.source !== "upload") ||
-    (typeof value.comparisonRecords !== "undefined" && !isRecordArray(value.comparisonRecords)) ||
+    (typeof value.comparisonRecords !== "undefined" && !Array.isArray(value.comparisonRecords)) ||
     (typeof value.currentSnapshotId !== "undefined" && typeof value.currentSnapshotId !== "string") ||
     (typeof value.comparisonSnapshotId !== "undefined" && typeof value.comparisonSnapshotId !== "string") ||
     (typeof value.warnings !== "undefined" && !Array.isArray(value.warnings))
@@ -368,8 +400,13 @@ function parseReportOutput(value: unknown): ReportOutput | null {
 
   const currentScope = parseOptionalPeriodScope(value.currentScope);
   const comparisonScope = parseOptionalPeriodScope(value.comparisonScope);
+  const records = sanitizeRecordArray(value.records);
+  const comparisonRecords =
+    typeof value.comparisonRecords === "undefined"
+      ? undefined
+      : sanitizeRecordArray(value.comparisonRecords);
 
-  if (currentScope === null || comparisonScope === null) {
+  if (currentScope === null || comparisonScope === null || !records || comparisonRecords === null) {
     return null;
   }
 
@@ -377,13 +414,13 @@ function parseReportOutput(value: unknown): ReportOutput | null {
     reportId: value.reportId,
     datasetName: value.datasetName,
     fileName: value.fileName,
-    records: value.records,
+    records,
     loadedAt: value.loadedAt,
     source: value.source,
   };
 
-  if (isRecordArray(value.comparisonRecords)) {
-    output.comparisonRecords = value.comparisonRecords;
+  if (comparisonRecords) {
+    output.comparisonRecords = comparisonRecords;
   }
   if (currentScope) {
     output.currentScope = currentScope;
@@ -578,12 +615,67 @@ function normalizeSelectedReportIds(selectedReportId: ReportId, reportIds: reado
   return normalized;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function sanitizeDatasetRecords(records: readonly unknown[]): unknown[] {
+  const sanitized: unknown[] = [];
+  for (const record of records) {
+    const value = sanitizeJsonValue(record, new Set<object>());
+    if (value !== omittedJsonValue) sanitized.push(value);
+  }
+  return sanitized;
 }
 
-function isRecordArray(value: unknown): value is Record<string, unknown>[] {
-  return Array.isArray(value) && value.every(isRecord);
+function sanitizeRecordArray(records: readonly unknown[]): Record<string, unknown>[] | null {
+  const sanitized: Record<string, unknown>[] = [];
+  for (const record of records) {
+    if (!isPlainRecord(record)) return null;
+    const value = sanitizeJsonValue(record, new Set<object>());
+    if (value === omittedJsonValue || !isRecord(value)) return null;
+    sanitized.push(value);
+  }
+  return sanitized;
+}
+
+function sanitizeJsonValue(
+  value: unknown,
+  ancestors: Set<object>,
+): unknown | typeof omittedJsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : omittedJsonValue;
+
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) return omittedJsonValue;
+    ancestors.add(value);
+    const sanitized: unknown[] = [];
+    for (const item of value) {
+      const parsedItem = sanitizeJsonValue(item, ancestors);
+      if (parsedItem !== omittedJsonValue) sanitized.push(parsedItem);
+    }
+    ancestors.delete(value);
+    return sanitized;
+  }
+
+  if (!isPlainRecord(value) || ancestors.has(value)) return omittedJsonValue;
+  ancestors.add(value);
+  const sanitized: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    if (!isSafeObjectKey(key) || prohibitedPersistedKeys.has(key)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor)) continue;
+    const parsedValue = sanitizeJsonValue(descriptor.value, ancestors);
+    if (parsedValue !== omittedJsonValue) sanitized[key] = parsedValue;
+  }
+  ancestors.delete(value);
+  return sanitized;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isSafeObjectKey(value: string): boolean {

@@ -70,7 +70,8 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
     !findingListMatchesEvidenceTier(immediateGaps, evidence, "Immediate gap") ||
     !findingListMatchesEvidenceTier(criticalUnderCoverage, evidence, "Critical under-coverage") ||
     !findingListMatchesEvidenceTier(lightCoverage, evidence, "Light coverage") ||
-    !summaryMatchesEvidence(summary, evidence)
+    !summaryMatchesEvidence(summary, evidence) ||
+    !isCoherentDecisionPack(snapshot, methodology, evidence, value.overview, value.assessment)
   ) {
     return null;
   }
@@ -299,6 +300,157 @@ function sameEvidenceRow(left: SmeCoverageEvidenceRow, right: SmeCoverageEvidenc
     left.demandQuality === right.demandQuality &&
     left.smeQuality === right.smeQuality
   );
+}
+
+function isCoherentDecisionPack(
+  snapshot: SmeCoverageSnapshot,
+  methodology: SmeCoverageMethodology,
+  evidence: readonly SmeCoverageEvidenceRow[],
+  overview: string,
+  assessment: string,
+): boolean {
+  const activePageViews = evidence
+    .filter(isActiveEvidenceRow)
+    .map((row) => row.pageViews as number);
+  const eligibleCoveredRows = evidence.filter(isEligibleCoveredActiveRow);
+  const sampleRatios = eligibleCoveredRows.map((row) => row.pageViewsPerSme as number);
+  const percentileSampleSufficient = sampleRatios.length >= 4;
+  const p75PageViewsPerSme = nearestRank(sampleRatios, 0.75);
+  const p90PageViewsPerSme = nearestRank(sampleRatios, 0.9);
+
+  if (
+    methodology.coveredActiveSampleSize !== sampleRatios.length ||
+    methodology.percentileSampleSufficient !== percentileSampleSufficient ||
+    methodology.activeTagMedianPageViews !== conventionalMedian(activePageViews) ||
+    methodology.p75PageViewsPerSme !== p75PageViewsPerSme ||
+    methodology.p90PageViewsPerSme !== p90PageViewsPerSme
+  ) {
+    return false;
+  }
+
+  for (const row of evidence) {
+    const expectedRatio =
+      row.smeCount !== null && row.smeCount >= 1 && row.pageViews !== null
+        ? row.pageViews / row.smeCount
+        : null;
+    if (row.pageViewsPerSme !== expectedRatio) return false;
+
+    const expectedPercentile =
+      percentileSampleSufficient && isEligibleCoveredActiveRow(row) && row.pageViewsPerSme !== null
+        ? (sampleRatios.filter((ratio) => ratio <= row.pageViewsPerSme!).length / sampleRatios.length) * 100
+        : null;
+    if (row.coveragePercentile !== expectedPercentile) return false;
+
+    const expectedTier = classifyCoverageTier(
+      row,
+      percentileSampleSufficient,
+      methodology.activeTagMedianPageViews,
+      p75PageViewsPerSme,
+      p90PageViewsPerSme,
+    );
+    if (row.coverageTier !== expectedTier) return false;
+  }
+
+  const configuredAsPartialSample =
+    snapshot.runPreset !== "deep-audit" ||
+    snapshot.pageSize !== 100 ||
+    snapshot.maxPagesPerDataset !== 20;
+  if (configuredAsPartialSample) {
+    return (
+      snapshot.completeness === "Partial" &&
+      overview.includes("partial sample") &&
+      assessment.includes("partial sample")
+    );
+  }
+
+  if (evidence.length === 0) return snapshot.completeness !== "Complete";
+  if (snapshot.completeness === "Empty") return false;
+  if (snapshot.completeness === "Complete") {
+    return (
+      percentileSampleSufficient &&
+      evidence.every((row) => row.demandQuality === "Complete" && row.smeQuality === "Complete")
+    );
+  }
+  return true;
+}
+
+function isActiveEvidenceRow(row: SmeCoverageEvidenceRow): boolean {
+  return (
+    row.questionCount !== null &&
+    row.pageViews !== null &&
+    (row.questionCount >= 1 || row.pageViews > 25)
+  );
+}
+
+function isEligibleCoveredActiveRow(row: SmeCoverageEvidenceRow): boolean {
+  return (
+    isActiveEvidenceRow(row) &&
+    row.demandQuality !== "Invalid" &&
+    row.smeQuality === "Complete" &&
+    row.smeCount !== null &&
+    row.smeCount >= 1 &&
+    row.pageViewsPerSme !== null
+  );
+}
+
+function classifyCoverageTier(
+  row: SmeCoverageEvidenceRow,
+  percentileSampleSufficient: boolean,
+  activeTagMedianPageViews: number | null,
+  p75PageViewsPerSme: number | null,
+  p90PageViewsPerSme: number | null,
+): CoverageTier {
+  if (row.demandQuality === "Invalid" || row.smeQuality === "Unknown") return "Unknown";
+  if (row.smeCount === 0 && isActiveEvidenceRow(row)) return "Immediate gap";
+  if (row.smeCount === 0 && row.questionCount === 0 && row.pageViews !== null && row.pageViews <= 25) {
+    return "Low-demand uncovered";
+  }
+  if (row.smeCount !== null && row.smeCount >= 1 && !percentileSampleSufficient) {
+    return "Not classified";
+  }
+  if (
+    row.smeCount !== null &&
+    row.smeCount >= 1 &&
+    row.pageViews !== null &&
+    activeTagMedianPageViews !== null &&
+    row.pageViews >= activeTagMedianPageViews &&
+    row.pageViewsPerSme !== null &&
+    p90PageViewsPerSme !== null &&
+    row.pageViewsPerSme >= p90PageViewsPerSme
+  ) {
+    return "Critical under-coverage";
+  }
+  if (
+    row.smeCount !== null &&
+    row.smeCount >= 1 &&
+    row.pageViews !== null &&
+    activeTagMedianPageViews !== null &&
+    row.pageViews >= activeTagMedianPageViews &&
+    row.pageViewsPerSme !== null &&
+    p75PageViewsPerSme !== null &&
+    p90PageViewsPerSme !== null &&
+    row.pageViewsPerSme >= p75PageViewsPerSme &&
+    row.pageViewsPerSme < p90PageViewsPerSme
+  ) {
+    return "Light coverage";
+  }
+  return "Adequate coverage";
+}
+
+function nearestRank(values: readonly number[], percentile: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const rank = Math.min(sorted.length, Math.max(1, Math.ceil(percentile * sorted.length)));
+  return sorted[rank - 1] ?? null;
+}
+
+function conventionalMedian(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[middle] ?? null
+    : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
