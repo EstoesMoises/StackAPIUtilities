@@ -52,6 +52,33 @@ describe("browserDatasetStorage", () => {
     expect(loadedSnapshot).toEqual(snapshot);
   });
 
+  it("normalizes a stored version 1 snapshot through the persistence parser", async () => {
+    const fakeIndexedDB = installFakeIndexedDB({ existingStores: ["dataset-session"] });
+    fakeIndexedDB.records.set("latest", {
+      version: 1,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      datasets: {},
+      reportOutputs: {},
+      reportRunSnapshots: [],
+      warnings: [],
+    });
+
+    await expect(loadPersistedDatasetSession()).resolves.toMatchObject({
+      version: 2,
+      selectedUtilityId: "sme-coverage-analyzer",
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
+    });
+  });
+
+  it("returns null when the stored value is malformed", async () => {
+    const fakeIndexedDB = installFakeIndexedDB({ existingStores: ["dataset-session"] });
+    fakeIndexedDB.records.set("latest", { version: 2, credentials: { pat: "secret" } });
+
+    await expect(loadPersistedDatasetSession()).resolves.toBeNull();
+  });
+
   it("clears the latest snapshot with the fixed key", async () => {
     const fakeIndexedDB = installFakeIndexedDB({ existingStores: ["dataset-session"] });
     fakeIndexedDB.records.set("latest", createSnapshot());
@@ -100,12 +127,15 @@ describe("browserDatasetStorage", () => {
 
 function createSnapshot(): PersistedDatasetSessionSnapshot {
   return {
-    version: 1,
+    version: 2,
     selectedReportId: "tag-report",
     selectedReportIds: ["tag-report"],
+    selectedUtilityId: "sme-coverage-analyzer",
     datasets: {},
     reportOutputs: {},
     reportRunSnapshots: [],
+    utilityOutputs: {},
+    utilityRunSnapshots: [],
     warnings: [],
   };
 }

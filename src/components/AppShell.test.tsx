@@ -54,9 +54,12 @@ describe("AppShell", () => {
   it("hydrates persisted browser datasets without credentials", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 1,
+      version: 2,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
       datasets: {
         "dataset-1": {
           id: "dataset-1",
@@ -117,9 +120,12 @@ describe("AppShell", () => {
       jsonResponse(makeTagReportRunBody("Collected restored-preset tags for Tag Report.")),
     );
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 1,
+      version: 2,
       selectedReportId: "tag-report",
       selectedReportIds: ["tag-report"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
       datasets: {
         "dataset-1": {
           id: "dataset-1",
@@ -195,9 +201,12 @@ describe("AppShell", () => {
       });
     });
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 1,
+      version: 2,
       selectedReportId: "tag-report",
       selectedReportIds: ["tag-report"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
       datasets: {
         "current-tags": {
           id: "current-tags",
@@ -332,9 +341,12 @@ describe("AppShell", () => {
     const saveCalls = savePersistedDatasetSessionMock.mock.calls;
     const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0] as unknown as Record<string, unknown>;
     expect(savedSnapshot).toMatchObject({
-      version: 1,
+      version: 2,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
     });
     expect(savedSnapshot).not.toHaveProperty("credentials");
     expect(savedSnapshot).not.toHaveProperty("runQueue");
@@ -343,9 +355,12 @@ describe("AppShell", () => {
   it("flushes current and persisted datasets in bulk", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 1,
+      version: 2,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
       datasets: {
         "dataset-1": {
           id: "dataset-1",
@@ -469,9 +484,12 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 1,
+        version: 2,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
+        selectedUtilityId: "sme-coverage-analyzer",
+        utilityOutputs: {},
+        utilityRunSnapshots: [],
         datasets: {
           "stale-dataset": {
             id: "stale-dataset",
@@ -541,9 +559,12 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 1,
+        version: 2,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
+        selectedUtilityId: "sme-coverage-analyzer",
+        utilityOutputs: {},
+        utilityRunSnapshots: [],
         datasets: {
           "stale-dataset": {
             id: "stale-dataset",
@@ -613,9 +634,12 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 1,
+        version: 2,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
+        selectedUtilityId: "sme-coverage-analyzer",
+        utilityOutputs: {},
+        utilityRunSnapshots: [],
         datasets: {
           "stale-dataset": {
             id: "stale-dataset",
@@ -678,9 +702,12 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 1,
+        version: 2,
         selectedReportId: "data-export",
         selectedReportIds: ["data-export"],
+        selectedUtilityId: "sme-coverage-analyzer",
+        utilityOutputs: {},
+        utilityRunSnapshots: [],
         datasets: {
           "dataset-1": {
             id: "dataset-1",
@@ -739,9 +766,12 @@ describe("AppShell", () => {
   it("does not persist removed report output records when another dataset remains", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 1,
+      version: 2,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
       datasets: {
         "dataset-users": {
           id: "dataset-users",

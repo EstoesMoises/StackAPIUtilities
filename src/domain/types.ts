@@ -1,3 +1,5 @@
+import type { SmeCoverageStoredOutput } from "../utilities/smeCoverage/model";
+
 export type InstanceType = "basic-business" | "enterprise";
 
 export type ReportPhase = "mvp" | "later";
@@ -105,6 +107,7 @@ export interface SessionDataset {
   id: string;
   snapshotId?: string;
   reportId?: ReportId;
+  utilityId?: UtilityId;
   name: DatasetName;
   records: unknown[];
   loadedAt: string;
@@ -113,6 +116,9 @@ export interface SessionDataset {
   scope?: PeriodScope;
   warnings?: ReportWarning[];
   fileName?: string;
+  pageCount?: number;
+  reachedMaxPages?: boolean;
+  hasMore?: boolean;
 }
 
 export interface ReportRunSnapshot {
@@ -120,6 +126,17 @@ export interface ReportRunSnapshot {
   reportId: ReportId;
   periodRole: RunPeriodRole;
   scope: PeriodScope;
+  pageSize: number;
+  maxPagesPerDataset: number;
+  runPreset?: ReportRunPresetId;
+  loadedAt: string;
+  datasetIds: string[];
+  warnings: ReportWarning[];
+}
+
+export interface UtilityRunSnapshot {
+  id: string;
+  utilityId: UtilityId;
   pageSize: number;
   maxPagesPerDataset: number;
   runPreset?: ReportRunPresetId;
@@ -162,9 +179,12 @@ export interface SessionState {
   credentials: SessionCredentials | null;
   selectedReportId: ReportId;
   selectedReportIds: readonly ReportId[];
+  selectedUtilityId: UtilityId;
   datasets: Record<string, SessionDataset>;
   reportOutputs: Partial<Record<ReportId, ReportOutput>>;
   reportRunSnapshots: ReportRunSnapshot[];
+  utilityOutputs: Partial<Record<UtilityId, SmeCoverageStoredOutput>>;
+  utilityRunSnapshots: UtilityRunSnapshot[];
   warnings: ReportWarning[];
   runQueue: RunQueueItem[];
 }

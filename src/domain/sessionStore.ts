@@ -10,8 +10,10 @@ import type {
   SessionCredentials,
   SessionDataset,
   SessionState,
+  UtilityId,
 } from "./types";
 import { buildTagHealthRowsFromLiveRecords } from "../reports/tagReport";
+import type { SmeCoverageRunResult } from "../utilities/smeCoverage/runner";
 
 interface LiveDatasetPayload {
   datasetName: DatasetName;
@@ -22,7 +24,9 @@ type SessionAction =
   | { type: "credentials/set"; credentials: SessionCredentials }
   | { type: "report/select"; reportId: ReportId }
   | { type: "reports/selectMany"; reportIds: ReportId[] }
+  | { type: "utility/select"; utilityId: UtilityId }
   | { type: "dataset/set"; datasetName: DatasetName; records: unknown[] }
+  | { type: "utility/loaded"; result: SmeCoverageRunResult }
   | {
       type: "live/loaded";
       reportId: ReportId;
@@ -55,9 +59,12 @@ export function createInitialSessionState(): SessionState {
     credentials: null,
     selectedReportId: "tag-report",
     selectedReportIds: ["tag-report"],
+    selectedUtilityId: "sme-coverage-analyzer",
     datasets: {},
     reportOutputs: {},
     reportRunSnapshots: [],
+    utilityOutputs: {},
+    utilityRunSnapshots: [],
     warnings: [],
     runQueue: [],
   };
@@ -79,6 +86,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         selectedReportId: action.reportIds[0] ?? state.selectedReportId,
         selectedReportIds: action.reportIds,
       };
+    case "utility/select":
+      return { ...state, selectedUtilityId: action.utilityId };
     case "dataset/set":
       return storeUploadedDataset(state, action.datasetName, action.records);
     case "import/loaded": {
@@ -213,6 +222,63 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         warnings: [...state.warnings, ...action.warnings],
       };
     }
+    case "utility/loaded": {
+      const { result } = action;
+      const loadedAt = new Date().toISOString();
+      const snapshotId = createUtilitySnapshotId(state, result.utilityId, loadedAt);
+      const liveDatasets: Record<string, SessionDataset> = {};
+      const datasetIds: string[] = [];
+      const requiredDatasetNames = ["tags", "questions", "tagSmeCounts"] as const;
+
+      requiredDatasetNames.forEach((datasetName, index) => {
+        const source = result.datasets.find((dataset) => dataset.datasetName === datasetName);
+        const datasetId = createDatasetId(snapshotId, datasetName, String(index));
+        const pagination = source?.pagination ?? { pageCount: 0, reachedMaxPages: false, hasMore: false };
+        datasetIds.push(datasetId);
+        liveDatasets[datasetId] = {
+          id: datasetId,
+          snapshotId,
+          utilityId: result.utilityId,
+          name: datasetName,
+          records: [...(source?.records ?? [])],
+          loadedAt,
+          source: "live-api",
+          warnings: result.warnings.map((warning) => ({ ...warning })),
+          pageCount: pagination.pageCount,
+          reachedMaxPages: pagination.reachedMaxPages,
+          hasMore: pagination.hasMore,
+        };
+      });
+
+      const warnings = result.warnings.map((warning) => ({ ...warning }));
+      return {
+        ...state,
+        selectedUtilityId: result.utilityId,
+        datasets: { ...state.datasets, ...liveDatasets },
+        utilityOutputs: {
+          ...state.utilityOutputs,
+          [result.utilityId]: {
+            utilityId: result.utilityId,
+            loadedAt,
+            decisionPack: result.decisionPack,
+          },
+        },
+        utilityRunSnapshots: [
+          ...state.utilityRunSnapshots,
+          {
+            id: snapshotId,
+            utilityId: result.utilityId,
+            pageSize: result.pageSize,
+            maxPagesPerDataset: result.maxPagesPerDataset,
+            ...(result.runPreset ? { runPreset: result.runPreset } : {}),
+            loadedAt,
+            datasetIds,
+            warnings,
+          },
+        ],
+        warnings: [...state.warnings, ...warnings],
+      };
+    }
     case "dataset/remove": {
       const { [action.datasetId]: removedDataset, ...remainingDatasets } = state.datasets;
 
@@ -221,6 +287,12 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       }
 
       const reportRunSnapshots = state.reportRunSnapshots
+        .map((snapshot) => ({
+          ...snapshot,
+          datasetIds: snapshot.datasetIds.filter((datasetId) => datasetId !== action.datasetId),
+        }))
+        .filter((snapshot) => snapshot.datasetIds.length > 0);
+      const utilityRunSnapshots = state.utilityRunSnapshots
         .map((snapshot) => ({
           ...snapshot,
           datasetIds: snapshot.datasetIds.filter((datasetId) => datasetId !== action.datasetId),
@@ -237,7 +309,13 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           remainingDatasets,
         ),
         reportRunSnapshots,
-        warnings: pruneWarningsForRemainingDatasetState(state.warnings, remainingDatasets, reportRunSnapshots),
+        utilityRunSnapshots,
+        warnings: pruneWarningsForRemainingDatasetState(
+          state.warnings,
+          remainingDatasets,
+          reportRunSnapshots,
+          utilityRunSnapshots,
+        ),
       };
     }
     case "session/hydratePersistentDatasets": {
@@ -259,6 +337,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         datasets: {},
         reportOutputs: {},
         reportRunSnapshots: [],
+        utilityOutputs: {},
+        utilityRunSnapshots: [],
         warnings: [],
       };
     case "session/reset":
@@ -425,6 +505,7 @@ function pruneWarningsForRemainingDatasetState(
   warnings: ReportWarning[],
   datasets: Record<string, SessionDataset>,
   reportRunSnapshots: SessionState["reportRunSnapshots"],
+  utilityRunSnapshots: SessionState["utilityRunSnapshots"],
 ): ReportWarning[] {
   if (warnings.length === 0) {
     return warnings;
@@ -433,6 +514,7 @@ function pruneWarningsForRemainingDatasetState(
   const remainingWarnings = [
     ...Object.values(datasets).flatMap((dataset) => dataset.warnings ?? []),
     ...reportRunSnapshots.flatMap((snapshot) => snapshot.warnings),
+    ...utilityRunSnapshots.flatMap((snapshot) => snapshot.warnings),
   ];
 
   if (remainingWarnings.length === 0) {
@@ -445,7 +527,12 @@ function pruneWarningsForRemainingDatasetState(
 }
 
 function isSameWarning(left: ReportWarning, right: ReportWarning): boolean {
-  return left.reportId === right.reportId && left.code === right.code && left.message === right.message;
+  return (
+    left.reportId === right.reportId &&
+    left.utilityId === right.utilityId &&
+    left.code === right.code &&
+    left.message === right.message
+  );
 }
 
 function storeUploadedDataset(
@@ -475,6 +562,21 @@ function createSnapshotId(reportId: ReportId, periodRole: RunPeriodRole, loadedA
   return createDatasetId("snapshot", reportId, periodRole, loadedAt);
 }
 
+function createUtilitySnapshotId(state: SessionState, utilityId: UtilityId, loadedAt: string): string {
+  let suffix = state.utilityRunSnapshots.length;
+  let candidate = createDatasetId("utility-snapshot", utilityId, loadedAt, String(suffix));
+  const existingSnapshotIds = new Set([
+    ...state.utilityRunSnapshots.map((snapshot) => snapshot.id),
+    ...Object.values(state.datasets).flatMap((dataset) => dataset.snapshotId ? [dataset.snapshotId] : []),
+  ]);
+
+  while (existingSnapshotIds.has(candidate)) {
+    suffix += 1;
+    candidate = createDatasetId("utility-snapshot", utilityId, loadedAt, String(suffix));
+  }
+  return candidate;
+}
+
 function createDatasetId(...parts: string[]): string {
   return parts.join("__");
 }
@@ -500,7 +602,7 @@ function dedupeWarnings(warnings: ReportWarning[]): ReportWarning[] {
   const uniqueWarnings: ReportWarning[] = [];
 
   for (const warning of warnings) {
-    const key = [warning.reportId ?? "", warning.code, warning.message].join("\u0000");
+    const key = [warning.reportId ?? "", warning.utilityId ?? "", warning.code, warning.message].join("\u0000");
 
     if (seen.has(key)) {
       continue;

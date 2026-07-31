@@ -6,6 +6,7 @@ import {
   parseDatasetSessionSnapshot,
 } from "./datasetPersistence";
 import { createInitialSessionState } from "./sessionStore";
+import type { SmeCoverageDecisionPack } from "../utilities/smeCoverage/model";
 
 describe("datasetPersistence", () => {
   it("creates a persistable snapshot without credentials or run queue state", () => {
@@ -70,12 +71,15 @@ describe("datasetPersistence", () => {
     const snapshot = createDatasetSessionSnapshot(state);
 
     expect(snapshot).toEqual({
-      version: 1,
+      version: 2,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
+      selectedUtilityId: "sme-coverage-analyzer",
       datasets: state.datasets,
       reportOutputs: state.reportOutputs,
       reportRunSnapshots: state.reportRunSnapshots,
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
       warnings: state.warnings,
     });
     expect(snapshot).not.toHaveProperty("credentials");
@@ -240,6 +244,182 @@ describe("datasetPersistence", () => {
     expect(hydrated.selectedReportId).toBe("inactive-users");
     expect(hydrated.selectedReportIds).toEqual(["inactive-users"]);
     expect(hydrated.datasets["dataset-1"]?.records).toEqual([{ user_id: 1 }]);
+    expect(hydrated.selectedUtilityId).toBe("sme-coverage-analyzer");
+    expect(hydrated.utilityOutputs).toEqual({});
+    expect(hydrated.utilityRunSnapshots).toEqual([]);
+  });
+
+  it("migrates a valid report-only version 1 snapshot to normalized version 2 utility defaults", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 1,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      datasets: {},
+      reportOutputs: {},
+      reportRunSnapshots: [],
+      warnings: [],
+    });
+
+    expect(parsed).toMatchObject({
+      version: 2,
+      selectedUtilityId: "sme-coverage-analyzer",
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
+    });
+  });
+
+  it("persists and restores utility output and provenance without memory-only secrets", () => {
+    const pack = createPersistedUtilityPack();
+    const state = {
+      ...createInitialSessionState(),
+      credentials: {
+        instanceType: "enterprise",
+        baseUrl: "https://example.stackenterprise.co",
+        apiKey: "secret-api-key",
+        accessToken: "secret-access-token",
+        pat: "secret-pat",
+        authSource: "oauth-pkce",
+        oauthClientId: "secret-client",
+        oauthScopes: ["secret-scope"],
+      },
+      datasets: {
+        "utility-dataset": {
+          id: "utility-dataset",
+          snapshotId: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          name: "tagSmeCounts",
+          records: [{ tagName: "python", count: 0 }],
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          source: "live-api",
+          pageCount: 1,
+          reachedMaxPages: false,
+          hasMore: false,
+        },
+      },
+      utilityOutputs: {
+        "sme-coverage-analyzer": {
+          utilityId: "sme-coverage-analyzer",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          decisionPack: pack,
+          credentials: { accessToken: "nested-output-token" },
+          runQueue: [{ id: "nested-output-run" }],
+        },
+      },
+      utilityRunSnapshots: [
+        {
+          id: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          datasetIds: ["utility-dataset"],
+          warnings: [],
+          progress: { stage: "secret-progress" },
+        },
+      ],
+      runQueue: [{ id: "secret-run", reportId: "tag-report", status: "running", message: "secret" }],
+    } as unknown as SessionState;
+
+    const snapshot = createDatasetSessionSnapshot(state);
+    const restored = parseDatasetSessionSnapshot(snapshot);
+    const serialized = JSON.stringify(snapshot);
+
+    expect(snapshot.version).toBe(2);
+    expect(restored?.utilityOutputs["sme-coverage-analyzer"]?.decisionPack).toEqual(pack);
+    expect(restored?.utilityRunSnapshots[0]).toMatchObject({
+      id: "utility-snapshot",
+      datasetIds: ["utility-dataset"],
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+    });
+    expect(serialized).not.toMatch(
+      /"(?:credentials|apiKey|accessToken|pat|authSource|oauthClientId|oauthScopes|runQueue|progress)"/,
+    );
+  });
+
+  it("drops malformed v2 utility state while retaining valid legacy datasets", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 2,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      datasets: {
+        legacy: {
+          id: "legacy",
+          name: "tags",
+          records: [{ name: "python" }],
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          source: "upload",
+        },
+      },
+      reportOutputs: {},
+      reportRunSnapshots: [],
+      utilityOutputs: {
+        "sme-coverage-analyzer": {
+          utilityId: "sme-coverage-analyzer",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          decisionPack: { malformed: true },
+        },
+      },
+      utilityRunSnapshots: [{ malformed: true }],
+      warnings: [],
+    });
+
+    expect(parsed?.datasets.legacy?.records).toEqual([{ name: "python" }]);
+    expect(parsed?.utilityOutputs).toEqual({});
+    expect(parsed?.utilityRunSnapshots).toEqual([]);
+  });
+
+  it("rejects a dataset that claims both report and utility provenance", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 2,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      datasets: {
+        conflicting: {
+          id: "conflicting",
+          reportId: "tag-report",
+          utilityId: "sme-coverage-analyzer",
+          name: "tags",
+          records: [],
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          source: "live-api",
+        },
+      },
+      reportOutputs: {},
+      reportRunSnapshots: [],
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
+      warnings: [],
+    });
+
+    expect(parsed).toBeNull();
+  });
+
+  it("drops warnings that claim both report and utility ownership", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 2,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      datasets: {},
+      reportOutputs: {},
+      reportRunSnapshots: [],
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
+      warnings: [
+        {
+          reportId: "tag-report",
+          utilityId: "sme-coverage-analyzer",
+          code: "conflicting-owner",
+          message: "Invalid warning.",
+        },
+      ],
+    });
+
+    expect(parsed?.warnings).toEqual([]);
   });
 
   it("returns null for invalid persisted snapshot shapes", () => {
@@ -639,3 +819,41 @@ describe("datasetPersistence", () => {
     expect(parsed?.selectedReportIds).toEqual(["tag-report", "inactive-users"]);
   });
 });
+
+function createPersistedUtilityPack(): SmeCoverageDecisionPack {
+  return {
+    snapshot: {
+      instanceHost: "example.stackenterprise.co",
+      generatedAt: "2026-07-30T12:00:00.000Z",
+      scopeLabel: "All-time demand · Current SME coverage",
+      completeness: "Empty",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+    },
+    warnings: [],
+    summary: {
+      tagsAnalyzed: 0,
+      tagsWithSmes: 0,
+      immediateGaps: 0,
+      criticalUnderCoverage: 0,
+      lightCoverage: 0,
+      unknownRows: 0,
+    },
+    overview: "No tags were available.",
+    assessment: "No assessment can be made.",
+    findings: { immediateGaps: [], criticalUnderCoverage: [], lightCoverage: [] },
+    methodology: {
+      activityQuestionMinimum: 1,
+      activityPageViewThresholdExclusive: 25,
+      activeTagMedianPageViews: null,
+      coveredActiveSampleSize: 0,
+      p75PageViewsPerSme: null,
+      p90PageViewsPerSme: null,
+      percentileSampleSufficient: false,
+      ratioFormula: "pageViews / smeCount",
+      roundingRule: "Nearest whole page view for display; unrounded for calculation",
+    },
+    evidence: [],
+  };
+}
