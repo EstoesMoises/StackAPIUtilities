@@ -2,6 +2,8 @@ import type {
   CollectedSource,
   NormalizedTagDemandRow,
   NormalizedTagSmeRow,
+  SmeCoverageDecisionPack,
+  SmeCoverageEvidenceRow,
   SmeCoverageSourceStatus,
   SourcePagination,
 } from "../../utilities/smeCoverage/model";
@@ -83,5 +85,176 @@ export function normalizedSmeRow(
     smeCount,
     smeQuality: smeCount === null ? "Unknown" : "Complete",
     ...overrides,
+  };
+}
+
+const immediateGap: SmeCoverageEvidenceRow = {
+  tagName: "zeta-runtime",
+  pageViews: 12_345.6,
+  questionCount: 12,
+  questionCountBasis: "Complete question enumeration",
+  smeCount: 0,
+  pageViewsPerSme: null,
+  coveragePercentile: null,
+  coverageTier: "Immediate gap",
+  reason: "Active demand has no SME coverage.",
+  recommendedAction: "Assign and confirm at least one SME.",
+  demandQuality: "Complete",
+  smeQuality: "Complete",
+};
+
+const criticalGap: SmeCoverageEvidenceRow = {
+  tagName: "Alpha-platform",
+  pageViews: 3_000,
+  questionCount: 8,
+  questionCountBasis: "All-time tag total",
+  smeCount: 1,
+  pageViewsPerSme: 3_000.49,
+  coveragePercentile: 0.92,
+  coverageTier: "Critical under-coverage",
+  reason: "Ratio is at or above the prepared P90 threshold.",
+  recommendedAction: "Expand and validate SME ownership.",
+  demandQuality: "Complete",
+  smeQuality: "Complete",
+};
+
+const lightGap: SmeCoverageEvidenceRow = {
+  tagName: "beta-data",
+  pageViews: 2_500,
+  questionCount: 7,
+  questionCountBasis: "Partial question sample",
+  smeCount: 2,
+  pageViewsPerSme: 1_250.4,
+  coveragePercentile: 0.8,
+  coverageTier: "Light coverage",
+  reason: "Ratio is at or above the prepared P75 threshold.",
+  recommendedAction: "Review resilience and add an SME if needed.",
+  demandQuality: "Partial sample",
+  smeQuality: "Complete",
+};
+
+const unknownCoverage: SmeCoverageEvidenceRow = {
+  tagName: "unknown-source",
+  pageViews: null,
+  questionCount: null,
+  questionCountBasis: "Unavailable",
+  smeCount: null,
+  pageViewsPerSme: null,
+  coveragePercentile: null,
+  coverageTier: "Unknown",
+  reason: "Demand and assigned-SME coverage are unavailable.",
+  recommendedAction: "Validate both API sources, then rerun.",
+  demandQuality: "Invalid",
+  smeQuality: "Unknown",
+};
+
+export function completeSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
+  return {
+    snapshot: {
+      instanceHost: "example.stackenterprise.co",
+      generatedAt: "2026-07-30T12:00:00.000Z",
+      scopeLabel: "All-time demand · Current SME coverage",
+      completeness: "Complete",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+    },
+    warnings: [],
+    summary: {
+      tagsAnalyzed: 4,
+      tagsWithSmes: 2,
+      immediateGaps: 1,
+      criticalUnderCoverage: 1,
+      lightCoverage: 1,
+      unknownRows: 1,
+    },
+    overview: "Four prepared evidence rows include three priority coverage findings.",
+    assessment:
+      "Prioritize `zeta-runtime` and `Alpha-platform`.\n\nValidate `unknown-source` before drawing a complete conclusion.",
+    findings: {
+      immediateGaps: [immediateGap],
+      criticalUnderCoverage: [criticalGap],
+      lightCoverage: [lightGap],
+    },
+    methodology: {
+      activityQuestionMinimum: 1,
+      activityPageViewThresholdExclusive: 25,
+      activeTagMedianPageViews: 2_750,
+      coveredActiveSampleSize: 12,
+      p75PageViewsPerSme: 1_250.4,
+      p90PageViewsPerSme: 3_000.49,
+      percentileSampleSufficient: true,
+      ratioFormula: "pageViews / smeCount",
+      roundingRule: "Nearest whole page view for display; unrounded for calculation",
+    },
+    evidence: [immediateGap, criticalGap, lightGap, unknownCoverage],
+  };
+}
+
+export function partialSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
+  const pack = completeSmeCoverageDecisionPack();
+  return {
+    ...pack,
+    snapshot: {
+      ...pack.snapshot,
+      completeness: "Partial",
+      maxPagesPerDataset: 5,
+      runPreset: "standard",
+    },
+    warnings: [
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "questions.partial",
+        message: "Question evidence reached the configured collection cap.",
+      },
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "smes.partial",
+        message: "Assigned-SME coverage may be incomplete for unmatched tags.",
+      },
+    ],
+    overview: "This prepared result is partial; interpret priority findings with the warnings above.",
+  };
+}
+
+export function emptySmeCoverageDecisionPack(): SmeCoverageDecisionPack {
+  const pack = completeSmeCoverageDecisionPack();
+  return {
+    ...pack,
+    snapshot: { ...pack.snapshot, completeness: "Empty" },
+    summary: {
+      tagsAnalyzed: 0,
+      tagsWithSmes: 0,
+      immediateGaps: 0,
+      criticalUnderCoverage: 0,
+      lightCoverage: 0,
+      unknownRows: 0,
+    },
+    overview: "No tags were available for SME coverage analysis.",
+    assessment: "No evidence rows were available, so no coverage conclusion was produced.",
+    findings: { immediateGaps: [], criticalUnderCoverage: [], lightCoverage: [] },
+    evidence: [],
+  };
+}
+
+export function insufficientSampleSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
+  const pack = completeSmeCoverageDecisionPack();
+  return {
+    ...pack,
+    snapshot: { ...pack.snapshot, completeness: "Partial" },
+    warnings: [
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "percentiles.insufficient-sample",
+        message: "Only one eligible covered active tag was available; relative tiers were not classified.",
+      },
+    ],
+    methodology: {
+      ...pack.methodology,
+      coveredActiveSampleSize: 1,
+      p75PageViewsPerSme: null,
+      p90PageViewsPerSme: null,
+      percentileSampleSufficient: false,
+    },
   };
 }
