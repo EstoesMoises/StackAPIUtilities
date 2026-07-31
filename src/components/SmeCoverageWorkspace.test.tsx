@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { completeSmeCoverageDecisionPack } from "../test/fixtures/smeCoverageFixtures";
 import { DEFAULT_SME_COVERAGE_SETTINGS } from "../utilities/smeCoverage/settings";
 import { SmeCoverageWorkspace } from "./SmeCoverageWorkspace";
 
@@ -30,17 +31,24 @@ describe("SmeCoverageWorkspace", () => {
   it("disables only a pending run and sends both primary and rerun actions to the same callback", async () => {
     const user = userEvent.setup();
     const onRun = vi.fn();
+    const decisionPack = completeSmeCoverageDecisionPack();
     const { rerender } = render(
       <SmeCoverageWorkspace
         settings={DEFAULT_SME_COVERAGE_SETTINGS}
         onSettingsChange={vi.fn()}
         onRun={onRun}
         runState={{ status: "idle" }}
+        decisionPack={decisionPack}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
-    expect(onRun).toHaveBeenCalledTimes(1);
+    const primaryRun = screen.getByRole("button", { name: "Run SME coverage analysis" });
+    const rerun = screen.getByRole("button", { name: "Run again" });
+    expect(primaryRun).toBeEnabled();
+    expect(rerun).toBeEnabled();
+    await user.click(primaryRun);
+    await user.click(rerun);
+    expect(onRun).toHaveBeenCalledTimes(2);
 
     rerender(
       <SmeCoverageWorkspace
@@ -48,8 +56,22 @@ describe("SmeCoverageWorkspace", () => {
         onSettingsChange={vi.fn()}
         onRun={onRun}
         runState={{ status: "running" }}
+        decisionPack={decisionPack}
       />,
     );
     expect(screen.getByRole("button", { name: "Run SME coverage analysis" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run again" })).toBeDisabled();
+
+    rerender(
+      <SmeCoverageWorkspace
+        settings={DEFAULT_SME_COVERAGE_SETTINGS}
+        onSettingsChange={vi.fn()}
+        onRun={onRun}
+        runState={{ status: "succeeded" }}
+        decisionPack={decisionPack}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Run SME coverage analysis" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Run again" })).toBeEnabled();
   });
 });

@@ -12,6 +12,7 @@ import { SmeCoverageMethodology } from "./SmeCoverageMethodology";
 interface SmeCoverageDecisionPackProps {
   pack: DecisionPack;
   onRunAgain: () => void;
+  runPending?: boolean;
 }
 
 type DownloadFeedback =
@@ -27,8 +28,14 @@ const summaryMetrics = [
   ["Light-coverage tags", "lightCoverage"],
 ] as const;
 
-export function SmeCoverageDecisionPack({ pack, onRunAgain }: SmeCoverageDecisionPackProps) {
+export function SmeCoverageDecisionPack({
+  pack,
+  onRunAgain,
+  runPending = false,
+}: SmeCoverageDecisionPackProps) {
   const [downloadFeedback, setDownloadFeedback] = useState<DownloadFeedback>({ state: "idle" });
+  const needsPartialQualification =
+    pack.snapshot.completeness === "Partial" && pack.warnings.length === 0;
 
   function startDownload(format: "Markdown" | "CSV") {
     try {
@@ -55,7 +62,7 @@ export function SmeCoverageDecisionPack({ pack, onRunAgain }: SmeCoverageDecisio
         </span>
       </div>
 
-      {pack.warnings.length > 0 && (
+      {(pack.warnings.length > 0 || needsPartialQualification) && (
         <section className="sme-warning-stack" role="region" aria-labelledby="sme-warnings-heading">
           <h3 id="sme-warnings-heading">Completeness warnings</h3>
           {pack.warnings.map((warning) => (
@@ -63,6 +70,12 @@ export function SmeCoverageDecisionPack({ pack, onRunAgain }: SmeCoverageDecisio
               {warning.message}
             </p>
           ))}
+          {needsPartialQualification && (
+            <p className="s-notice s-notice__warning" role="alert">
+              This decision pack is a partial sample. Qualify its conclusions with that
+              limitation before acting.
+            </p>
+          )}
         </section>
       )}
 
@@ -107,7 +120,12 @@ export function SmeCoverageDecisionPack({ pack, onRunAgain }: SmeCoverageDecisio
         <button className="s-btn s-btn__outlined" type="button" onClick={() => startDownload("CSV")}>
           Download CSV
         </button>
-        <button className="s-btn s-btn__filled" type="button" onClick={onRunAgain}>
+        <button
+          className="s-btn s-btn__filled"
+          type="button"
+          disabled={runPending}
+          onClick={onRunAgain}
+        >
           Run again
         </button>
       </div>
