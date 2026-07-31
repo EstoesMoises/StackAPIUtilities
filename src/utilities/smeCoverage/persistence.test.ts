@@ -67,6 +67,95 @@ describe("parseSmeCoverageDecisionPack", () => {
     expect(parsed?.findings.criticalUnderCoverage[0]).toBe(parsed?.evidence[1]);
     expect(parsed?.findings.lightCoverage[0]).toBe(parsed?.evidence[2]);
   });
+
+  it.each([
+    ["sample sufficiency", (pack: Record<string, any>) => { pack.methodology.coveredActiveSampleSize = 3; }],
+    ["covered sample count", (pack: Record<string, any>) => { pack.methodology.coveredActiveSampleSize = 5; }],
+    ["active median", (pack: Record<string, any>) => { pack.methodology.activeTagMedianPageViews = 301; }],
+    ["nearest-rank p75", (pack: Record<string, any>) => { pack.methodology.p75PageViewsPerSme = 151; }],
+    ["covered row ratio", (pack: Record<string, any>) => {
+      pack.evidence[1].pageViewsPerSme = 399;
+    }],
+    ["covered row percentile", (pack: Record<string, any>) => {
+      pack.evidence[1].coveragePercentile = 99;
+    }],
+    ["sufficient-sample threshold null", (pack: Record<string, any>) => {
+      pack.methodology.p90PageViewsPerSme = null;
+    }],
+  ])("rejects analyzer-incoherent %s", (_label, mutate) => {
+    const persisted = structuredClone(createDecisionPack()) as Record<string, any>;
+    mutate(persisted);
+
+    expect(parseSmeCoverageDecisionPack(persisted)).toBeNull();
+  });
+
+  it("rejects small samples that claim sufficient percentiles, suppress thresholds, or classify covered rows", () => {
+    const sufficient = structuredClone(createSmallSamplePack()) as Record<string, any>;
+    sufficient.methodology.percentileSampleSufficient = true;
+    expect(parseSmeCoverageDecisionPack(sufficient)).toBeNull();
+
+    const missingThresholds = structuredClone(createSmallSamplePack()) as Record<string, any>;
+    missingThresholds.methodology.p75PageViewsPerSme = null;
+    missingThresholds.methodology.p90PageViewsPerSme = null;
+    expect(parseSmeCoverageDecisionPack(missingThresholds)).toBeNull();
+
+    const classified = structuredClone(createSmallSamplePack()) as Record<string, any>;
+    classified.evidence[1].coverageTier = "Critical under-coverage";
+    classified.findings.criticalUnderCoverage = [classified.evidence[1]];
+    classified.summary.criticalUnderCoverage = 1;
+    expect(parseSmeCoverageDecisionPack(classified)).toBeNull();
+  });
+
+  it("requires zero-sample thresholds to be null", () => {
+    const persisted = structuredClone(createEmptyPack()) as Record<string, any>;
+    persisted.methodology.p75PageViewsPerSme = 0;
+
+    expect(parseSmeCoverageDecisionPack(persisted)).toBeNull();
+  });
+
+  it.each([
+    ["Quick", { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" }],
+    ["Standard", { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" }],
+    ["missing preset", { pageSize: 100, maxPagesPerDataset: 20 }],
+    ["custom", { pageSize: 75, maxPagesPerDataset: 7 }],
+    ["changed Deep", { pageSize: 50, maxPagesPerDataset: 20, runPreset: "deep-audit" }],
+  ])("requires Partial completeness and exact partial-sample narrative for %s configuration", (_label, settings) => {
+    const missingNarrative = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
+    missingNarrative.snapshot = { ...missingNarrative.snapshot, ...settings };
+    if (!("runPreset" in settings)) delete missingNarrative.snapshot.runPreset;
+    expect(parseSmeCoverageDecisionPack(missingNarrative)).toBeNull();
+
+    missingNarrative.overview += " This analysis is a partial sample.";
+    missingNarrative.assessment += " This analysis is a partial sample.";
+    expect(parseSmeCoverageDecisionPack(missingNarrative)).not.toBeNull();
+
+    missingNarrative.snapshot.completeness = "Complete";
+    expect(parseSmeCoverageDecisionPack(missingNarrative)).toBeNull();
+  });
+
+  it("enforces empty-pack completeness and configured-partial narrative consistency", () => {
+    const completeEmpty = structuredClone(createEmptyPack()) as Record<string, any>;
+    completeEmpty.snapshot.completeness = "Complete";
+    expect(parseSmeCoverageDecisionPack(completeEmpty)).toBeNull();
+
+    const nonemptyMarkedEmpty = structuredClone(createDecisionPack()) as Record<string, any>;
+    nonemptyMarkedEmpty.snapshot.completeness = "Empty";
+    expect(parseSmeCoverageDecisionPack(nonemptyMarkedEmpty)).toBeNull();
+
+    const partialEmpty = structuredClone(createEmptyPack()) as Record<string, any>;
+    partialEmpty.snapshot = {
+      ...partialEmpty.snapshot,
+      completeness: "Partial",
+      pageSize: 50,
+      maxPagesPerDataset: 1,
+      runPreset: "quick-sample",
+    };
+    expect(parseSmeCoverageDecisionPack(partialEmpty)).toBeNull();
+
+    partialEmpty.overview += " This analysis is a partial sample.";
+    partialEmpty.assessment += " This analysis is a partial sample.";
+    expect(parseSmeCoverageDecisionPack(partialEmpty)).not.toBeNull();
+  });
 });
 
 export function createDecisionPack(
@@ -93,7 +182,7 @@ export function createDecisionPack(
     questionCountBasis: "All-time tag total" as const,
     smeCount: 1,
     pageViewsPerSme: 400,
-    coveragePercentile: 90,
+    coveragePercentile: 100,
     coverageTier: "Critical under-coverage" as const,
     reason: "Demand per SME is at or above p90.",
     recommendedAction: "Add SME capacity.",
@@ -114,6 +203,28 @@ export function createDecisionPack(
     demandQuality: "Complete" as const,
     smeQuality: "Complete" as const,
   };
+  const adequate = {
+    tagName: "node.js",
+    pageViews: 200,
+    questionCount: 4,
+    questionCountBasis: "Complete question enumeration" as const,
+    smeCount: 2,
+    pageViewsPerSme: 100,
+    coveragePercentile: 50,
+    coverageTier: "Adequate coverage" as const,
+    reason: "Coverage is adequate relative to observed demand.",
+    recommendedAction: "Maintain coverage.",
+    demandQuality: "Complete" as const,
+    smeQuality: "Complete" as const,
+  };
+  const adequateLow = {
+    ...adequate,
+    tagName: "css",
+    pageViews: 100,
+    questionCount: 2,
+    pageViewsPerSme: 50,
+    coveragePercentile: 25,
+  };
 
   return {
     snapshot: {
@@ -128,13 +239,13 @@ export function createDecisionPack(
     warnings: [
       {
         utilityId: "sme-coverage-analyzer",
-        code: "coverage.partial-sample",
-        message: "The approved sample may be partial.",
+        code: "coverage.source-notice",
+        message: "Source data was normalized.",
       },
     ],
     summary: {
-      tagsAnalyzed: 3,
-      tagsWithSmes: 2,
+      tagsAnalyzed: 5,
+      tagsWithSmes: 4,
       immediateGaps: 1,
       criticalUnderCoverage: 1,
       lightCoverage: 1,
@@ -151,28 +262,52 @@ export function createDecisionPack(
       activityQuestionMinimum: 1,
       activityPageViewThresholdExclusive: 25,
       activeTagMedianPageViews: 300,
-      coveredActiveSampleSize: 2,
+      coveredActiveSampleSize: 4,
       p75PageViewsPerSme: 150,
       p90PageViewsPerSme: 400,
       percentileSampleSufficient: true,
       ratioFormula: "pageViews / smeCount",
       roundingRule: "Nearest whole page view for display; unrounded for calculation",
     },
-    evidence: [immediateGap, critical, light],
+    evidence: [immediateGap, critical, light, adequate, adequateLow],
   };
 }
 
 function createSmallSamplePack(): SmeCoverageDecisionPack {
   const pack = createDecisionPack({ completeness: "Partial" });
+  const immediateGap = pack.evidence[0]!;
+  const firstCovered = {
+    ...pack.evidence[1]!,
+    coveragePercentile: null,
+    coverageTier: "Not classified" as const,
+    reason: "Relative risk is not classified for a small sample.",
+  };
+  const secondCovered = {
+    ...pack.evidence[2]!,
+    coveragePercentile: null,
+    coverageTier: "Not classified" as const,
+    reason: "Relative risk is not classified for a small sample.",
+  };
   return {
     ...pack,
+    summary: {
+      tagsAnalyzed: 3,
+      tagsWithSmes: 2,
+      immediateGaps: 1,
+      criticalUnderCoverage: 0,
+      lightCoverage: 0,
+      unknownRows: 0,
+    },
+    findings: { immediateGaps: [immediateGap], criticalUnderCoverage: [], lightCoverage: [] },
     methodology: {
       ...pack.methodology,
+      activeTagMedianPageViews: 400,
       coveredActiveSampleSize: 2,
-      p75PageViewsPerSme: null,
-      p90PageViewsPerSme: null,
+      p75PageViewsPerSme: 400,
+      p90PageViewsPerSme: 400,
       percentileSampleSufficient: false,
     },
+    evidence: [immediateGap, firstCovered, secondCovered],
   };
 }
 

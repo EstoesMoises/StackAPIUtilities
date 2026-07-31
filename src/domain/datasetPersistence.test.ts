@@ -201,6 +201,94 @@ describe("datasetPersistence", () => {
     });
   });
 
+  it("recursively strips prohibited fields from dataset and report records during snapshot creation", () => {
+    const loadedAt = "2026-07-30T12:00:00.000Z";
+    const unsafeRecord = {
+      safe: "keep",
+      nested: {
+        credentials: { pat: "secret" },
+        children: [
+          { safeNumber: 1, apiKey: "secret" },
+          { safeText: "ok", accessToken: "secret" },
+          { safeBoolean: true, token: "secret", refreshToken: "secret" },
+        ],
+        requestPayload: { secret: true },
+      },
+      oauthClientId: "secret-client",
+      runProgress: { stage: "secret-stage" },
+    };
+    const state = {
+      ...createInitialSessionState(),
+      datasets: {
+        upload: {
+          id: "upload",
+          reportId: "tag-report",
+          name: "tags",
+          records: [unsafeRecord],
+          loadedAt,
+          source: "upload",
+          fileName: "tags.json",
+        },
+      },
+      reportOutputs: {
+        "tag-report": {
+          reportId: "tag-report",
+          datasetName: "tags",
+          fileName: "tags.json",
+          records: [unsafeRecord],
+          comparisonRecords: [{ safe: "comparison", oauthScopes: ["secret"] }],
+          loadedAt,
+          source: "upload",
+        },
+      },
+    } as unknown as SessionState;
+
+    const snapshot = createDatasetSessionSnapshot(state);
+    const expected = {
+      safe: "keep",
+      nested: {
+        children: [{ safeNumber: 1 }, { safeText: "ok" }, { safeBoolean: true }],
+      },
+    };
+
+    expect(snapshot.datasets.upload?.records).toEqual([expected]);
+    expect(snapshot.reportOutputs["tag-report"]?.records).toEqual([expected]);
+    expect(snapshot.reportOutputs["tag-report"]?.comparisonRecords).toEqual([{ safe: "comparison" }]);
+    expect(JSON.stringify(snapshot)).not.toMatch(
+      /"(?:credentials|apiKey|accessToken|pat|token|refreshToken|authSource|oauthClientId|oauthScopes|accessTokenExpiresAt|runQueue|requestPayload|runProgress)"/,
+    );
+  });
+
+  it("recursively strips prohibited fields when parsing stored records and safely omits cycles", () => {
+    const cycle: Record<string, unknown> = { safe: "cycle-root" };
+    cycle.self = cycle;
+    const value = createVersion2SnapshotValue({
+      datasets: {
+        stored: {
+          id: "stored",
+          name: "tags",
+          records: [
+            {
+              safe: "keep",
+              nested: [{ pat: "secret", safe: 1 }, { requestPayload: { token: "secret" }, safe: 2 }],
+              authSource: "secret-source",
+            },
+            cycle,
+          ],
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          source: "upload",
+        },
+      },
+    });
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.datasets.stored?.records).toEqual([
+      { safe: "keep", nested: [{ safe: 1 }, { safe: 2 }] },
+      { safe: "cycle-root" },
+    ]);
+  });
+
   it("hydrates valid persisted dataset state while preserving memory-only credentials", () => {
     const baseState: SessionState = {
       ...createInitialSessionState(),
@@ -369,6 +457,26 @@ describe("datasetPersistence", () => {
     expect(parsed?.datasets.legacy?.records).toEqual([{ name: "python" }]);
     expect(parsed?.utilityOutputs).toEqual({});
     expect(parsed?.utilityRunSnapshots).toEqual([]);
+  });
+
+  it.each([
+    ["empty snapshot id", [{ id: "", datasetIds: ["utility-dataset"] }]],
+    ["empty dataset list", [{ id: "utility-snapshot", datasetIds: [] }]],
+    ["empty dataset id", [{ id: "utility-snapshot", datasetIds: [""] }]],
+    ["duplicate dataset reference", [{ id: "utility-snapshot", datasetIds: ["utility-dataset", "utility-dataset"] }]],
+  ])("drops utility provenance with %s", (_label, overrides) => {
+    const value = createUtilitySnapshotValue(
+      overrides.map((override) => ({ ...createUtilityRunSnapshotValue(), ...override })),
+    );
+
+    expect(parseDatasetSessionSnapshot(value)?.utilityRunSnapshots).toEqual([]);
+  });
+
+  it("rejects every utility provenance entry sharing a duplicate snapshot id", () => {
+    const snapshot = createUtilityRunSnapshotValue();
+    const value = createUtilitySnapshotValue([snapshot, { ...snapshot }]);
+
+    expect(parseDatasetSessionSnapshot(value)?.utilityRunSnapshots).toEqual([]);
   });
 
   it("rejects a dataset that claims both report and utility provenance", () => {
@@ -855,5 +963,53 @@ function createPersistedUtilityPack(): SmeCoverageDecisionPack {
       roundingRule: "Nearest whole page view for display; unrounded for calculation",
     },
     evidence: [],
+  };
+}
+
+function createVersion2SnapshotValue(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    version: 2,
+    selectedReportId: "tag-report",
+    selectedReportIds: ["tag-report"],
+    selectedUtilityId: "sme-coverage-analyzer",
+    datasets: {},
+    reportOutputs: {},
+    reportRunSnapshots: [],
+    utilityOutputs: {},
+    utilityRunSnapshots: [],
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function createUtilitySnapshotValue(
+  utilityRunSnapshots: Record<string, unknown>[],
+): Record<string, unknown> {
+  return createVersion2SnapshotValue({
+    datasets: {
+      "utility-dataset": {
+        id: "utility-dataset",
+        snapshotId: "utility-snapshot",
+        utilityId: "sme-coverage-analyzer",
+        name: "tags",
+        records: [],
+        loadedAt: "2026-07-30T12:00:00.000Z",
+        source: "live-api",
+      },
+    },
+    utilityRunSnapshots,
+  });
+}
+
+function createUtilityRunSnapshotValue(): Record<string, unknown> {
+  return {
+    id: "utility-snapshot",
+    utilityId: "sme-coverage-analyzer",
+    pageSize: 100,
+    maxPagesPerDataset: 20,
+    runPreset: "deep-audit",
+    loadedAt: "2026-07-30T12:00:00.000Z",
+    datasetIds: ["utility-dataset"],
+    warnings: [],
   };
 }

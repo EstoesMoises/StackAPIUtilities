@@ -52,6 +52,42 @@ describe("browserDatasetStorage", () => {
     expect(loadedSnapshot).toEqual(snapshot);
   });
 
+  it("sanitizes prohibited fields recursively before writing a snapshot", async () => {
+    const fakeIndexedDB = installFakeIndexedDB({ existingStores: ["dataset-session"] });
+    const snapshot = {
+      ...createSnapshot(),
+      datasets: {
+        unsafe: {
+          id: "unsafe",
+          name: "tags",
+          records: [
+            {
+              safe: "keep",
+              nested: [{ safe: 1, accessToken: "secret" }],
+              requestPayload: { apiKey: "secret" },
+              runProgress: { stage: "secret" },
+            },
+          ],
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          source: "upload",
+        },
+      },
+    } as unknown as PersistedDatasetSessionSnapshot;
+
+    await savePersistedDatasetSession(snapshot);
+
+    expect(fakeIndexedDB.records.get("latest")).toMatchObject({
+      datasets: {
+        unsafe: {
+          records: [{ safe: "keep", nested: [{ safe: 1 }] }],
+        },
+      },
+    });
+    expect(JSON.stringify(fakeIndexedDB.records.get("latest"))).not.toMatch(
+      /"(?:accessToken|apiKey|requestPayload|runProgress)"/,
+    );
+  });
+
   it("normalizes a stored version 1 snapshot through the persistence parser", async () => {
     const fakeIndexedDB = installFakeIndexedDB({ existingStores: ["dataset-session"] });
     fakeIndexedDB.records.set("latest", {
