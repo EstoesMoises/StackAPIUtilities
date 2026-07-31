@@ -61,8 +61,33 @@ describe("normalizeTagDemand", () => {
       ]),
     });
 
-    expect(byTag(result.rows, "piper").demandQuality).toBe("Invalid");
-    expect(byTag(result.rows, "kafka").demandQuality).toBe("Invalid");
+    expect(byTag(result.rows, "piper")).toMatchObject({
+      pageViews: null,
+      questionCount: null,
+      demandQuality: "Invalid",
+    });
+    expect(byTag(result.rows, "kafka")).toMatchObject({
+      pageViews: null,
+      questionCount: null,
+      demandQuality: "Invalid",
+    });
+  });
+
+  it("invalidates aggregate page views that overflow a finite number", () => {
+    const result = normalizeTagDemand({
+      tags: collected([{ name: "piper" }]),
+      questions: collected([
+        { question_id: 1, tags: ["piper"], view_count: Number.MAX_VALUE },
+        { question_id: 2, tags: ["piper"], view_count: Number.MAX_VALUE },
+      ]),
+    });
+
+    expect(byTag(result.rows, "piper")).toMatchObject({
+      pageViews: null,
+      questionCount: null,
+      demandQuality: "Invalid",
+    });
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: "sme-coverage.non-finite-page-views" }));
   });
 
   it("contributes a valid question once to each distinct canonical tag and ignores tag page views", () => {
