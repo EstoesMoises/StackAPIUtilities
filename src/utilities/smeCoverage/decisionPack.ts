@@ -63,12 +63,20 @@ export function buildSmeCoverageDecisionPack({
 
 function determineCompleteness(analysis: SmeCoverageAnalysisResult): SmeCoverageCompleteness {
   const capped = Object.values(analysis.sourceStatus).some(isCapped);
-  if (analysis.evidence.length === 0) return capped ? "Partial" : "Empty";
+  const configuredAsPartialSample = analysis.sampling.configuredAsPartialSample;
+  if (analysis.evidence.length === 0) return capped || configuredAsPartialSample ? "Partial" : "Empty";
 
   const incompleteRow = analysis.evidence.some(
     (row) => row.demandQuality !== "Complete" || row.smeQuality !== "Complete",
   );
-  if (capped || incompleteRow || !analysis.methodology.percentileSampleSufficient) return "Partial";
+  if (
+    capped ||
+    configuredAsPartialSample ||
+    incompleteRow ||
+    !analysis.methodology.percentileSampleSufficient
+  ) {
+    return "Partial";
+  }
   return "Complete";
 }
 

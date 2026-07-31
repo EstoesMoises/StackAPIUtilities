@@ -35,6 +35,13 @@ export interface SmeCoverageSourceStatus {
   tagSmeCounts: SourcePagination;
 }
 
+export interface SmeCoverageSamplingMetadata {
+  readonly pageSize: number;
+  readonly maxPagesPerDataset: number;
+  readonly runPreset?: ReportRunPresetId;
+  readonly configuredAsPartialSample: boolean;
+}
+
 export interface NormalizedTagDemandRow {
   key: string;
   tagNames: readonly string[];
@@ -107,6 +114,7 @@ export interface SmeCoverageAnalysisResult {
     lightCoverage: readonly SmeCoverageEvidenceRow[];
   };
   sourceStatus: SmeCoverageSourceStatus;
+  sampling: SmeCoverageSamplingMetadata;
   warnings: readonly ReportWarning[];
 }
 

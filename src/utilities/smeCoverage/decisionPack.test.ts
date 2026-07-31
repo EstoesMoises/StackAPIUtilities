@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ReportWarning } from "../../domain/types";
+import type { ApiVolumeSettingsValue, ReportWarning } from "../../domain/types";
 import {
   completeSmeCoverageSourceStatus,
   narrativeDemandRows,
@@ -23,11 +23,13 @@ function analyze(
   demandRows = narrativeDemandRows,
   smeRows = narrativeSmeRows,
   sourceStatus: SmeCoverageSourceStatus = completeSmeCoverageSourceStatus,
+  settings?: ApiVolumeSettingsValue,
 ): SmeCoverageAnalysisResult {
   return analyzeSmeCoverage({
     demand: { rows: demandRows, warnings: [] },
     smeCounts: { rows: smeRows, warnings: [] },
     sourceStatus,
+    settings,
   });
 }
 
@@ -86,6 +88,23 @@ describe("buildSmeCoverageDecisionPack", () => {
   );
 
   it.each([
+    ["Quick sample", { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" }],
+    ["Standard", { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" }],
+    ["custom", { pageSize: 75, maxPagesPerDataset: 7 }],
+  ] as const)("marks a non-capped %s run Partial from analysis sampling metadata", (_label, settings) => {
+    const analysis = analyze(
+      narrativeDemandRows,
+      narrativeSmeRows,
+      completeSmeCoverageSourceStatus,
+      settings,
+    );
+
+    const pack = buildSmeCoverageDecisionPack({ analysis, snapshot, sourceWarnings: [] });
+
+    expect(pack.snapshot.completeness).toBe("Partial");
+  });
+
+  it.each([
     {
       label: "invalid demand",
       analysis: () => analyze([normalizedDemandRow("invalid", null)], [normalizedSmeRow("invalid", 1)]),
@@ -126,6 +145,23 @@ describe("buildSmeCoverageDecisionPack", () => {
     });
 
     expect(pack.snapshot.completeness).toBe("Partial");
+  });
+
+  it("marks zero evidence from a configured partial run Partial instead of Empty", () => {
+    const pack = buildSmeCoverageDecisionPack({
+      analysis: analyze(
+        [],
+        [],
+        completeSmeCoverageSourceStatus,
+        { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" },
+      ),
+      snapshot,
+      sourceWarnings: [],
+    });
+
+    expect(pack.snapshot.completeness).toBe("Partial");
+    expect(pack.overview).toContain("partial sample");
+    expect(pack.assessment).toContain("partial sample");
   });
 
   it("deduplicates source warnings before analysis warnings in stable source order", () => {
