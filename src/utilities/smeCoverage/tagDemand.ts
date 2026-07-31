@@ -99,6 +99,19 @@ export function normalizeTagDemand({
     }
   }
 
+  const nonFinitePageViewKeys = [...byKey.values()]
+    .filter((accumulator) => !Number.isFinite(accumulator.pageViews))
+    .map((accumulator) => accumulator.key)
+    .sort(compareCodeUnits);
+  if (nonFinitePageViewKeys.length > 0) {
+    for (const key of nonFinitePageViewKeys) invalidKeys.add(key);
+    warnings.push({
+      utilityId: "sme-coverage-analyzer",
+      code: "sme-coverage.non-finite-page-views",
+      message: `Invalidated non-finite aggregate page views for ${nonFinitePageViewKeys.length} tag${pluralSuffix(nonFinitePageViewKeys.length)}.`,
+    });
+  }
+
   if (invalidQuestionRecords > 0) {
     const affectedTags = [...invalidKeys].sort(compareCodeUnits);
     warnings.push({
