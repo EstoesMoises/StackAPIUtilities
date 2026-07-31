@@ -3,7 +3,7 @@ import type { SmeCoverageDecisionPack } from "./model";
 import { buildSmeCoverageEvidenceCsv, buildSmeCoverageMarkdown } from "./exports";
 
 const csvHeader =
-  "tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality";
+  "tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality,result_completeness,completeness_warnings";
 
 describe("SME coverage exports", () => {
   it("serializes canonical evidence rows in fixed CSV columns without rounding ratios", () => {
@@ -12,8 +12,8 @@ describe("SME coverage exports", () => {
     expect(csv).toBe(
       [
         csvHeader,
-        'first-tag,1234.567,9,Partial question sample,1,1234.567,0.9,Critical under-coverage,"Demand, sample-based","Assign ""one"" SME",Partial sample,Complete',
-        "second-tag,,,Unavailable,,,,Unknown,Unavailable,Validate source data,Invalid,Unknown",
+        'first-tag,1234.567,9,Partial question sample,1,1234.567,80,Critical under-coverage,"Demand, sample-based","Assign ""one"" SME",Partial sample,Complete,Partial,questions.partial: This analysis is a partial sample.',
+        "second-tag,,,Unavailable,,,,Unknown,Unavailable,Validate source data,Invalid,Unknown,Partial,questions.partial: This analysis is a partial sample.",
       ].join("\n"),
     );
   });
@@ -44,6 +44,8 @@ describe("SME coverage exports", () => {
     expect(markdown).toContain("- Tags analyzed: 2");
     expect(markdown).toContain("Question-count basis: Partial question sample");
     expect(markdown).toContain("Page views per SME: 1,235");
+    expect(markdown).toContain("Coverage percentile: 80%");
+    expect(markdown).not.toContain("Coverage percentile: 8,000%");
     expect(markdown).not.toContain("Page views per SME: 1234.567");
     expect(markdown).toContain("No immediate no-SME risks are listed in this decision pack.");
     expect(markdown).toContain("No light SME coverage risks are listed in this decision pack.");
@@ -96,7 +98,7 @@ function partialPack(): SmeCoverageDecisionPack {
           questionCountBasis: "Partial question sample",
           smeCount: 1,
           pageViewsPerSme: 1234.567,
-          coveragePercentile: 0.9,
+          coveragePercentile: 80,
           coverageTier: "Critical under-coverage",
           reason: "Demand, sample-based",
           recommendedAction: 'Assign "one" SME',
@@ -125,7 +127,7 @@ function partialPack(): SmeCoverageDecisionPack {
         questionCountBasis: "Partial question sample",
         smeCount: 1,
         pageViewsPerSme: 1234.567,
-        coveragePercentile: 0.9,
+        coveragePercentile: 80,
         coverageTier: "Critical under-coverage",
         reason: "Demand, sample-based",
         recommendedAction: 'Assign "one" SME',

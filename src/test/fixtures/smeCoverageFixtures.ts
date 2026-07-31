@@ -110,7 +110,7 @@ const criticalGap: SmeCoverageEvidenceRow = {
   questionCountBasis: "All-time tag total",
   smeCount: 1,
   pageViewsPerSme: 3_000.49,
-  coveragePercentile: 0.92,
+  coveragePercentile: 100,
   coverageTier: "Critical under-coverage",
   reason: "Ratio is at or above the prepared P90 threshold.",
   recommendedAction: "Expand and validate SME ownership.",
@@ -125,7 +125,7 @@ const lightGap: SmeCoverageEvidenceRow = {
   questionCountBasis: "Partial question sample",
   smeCount: 2,
   pageViewsPerSme: 1_250.4,
-  coveragePercentile: 0.8,
+  coveragePercentile: 80,
   coverageTier: "Light coverage",
   reason: "Ratio is at or above the prepared P75 threshold.",
   recommendedAction: "Review resilience and add an SME if needed.",
@@ -202,6 +202,11 @@ export function partialSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
       runPreset: "standard",
     },
     warnings: [
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "sme-coverage.partial-sample",
+        message: "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+      },
       {
         utilityId: "sme-coverage-analyzer",
         code: "questions.partial",

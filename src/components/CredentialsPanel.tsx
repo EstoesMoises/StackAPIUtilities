@@ -2,10 +2,12 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { reportRegistry } from "../domain/reportRegistry";
 import { utilityRegistry } from "../domain/utilityRegistry";
 import type { InstanceType, ReportId, SessionCredentials, UtilityId } from "../domain/types";
+import { writeTools, type WriteToolId } from "./WriteToolsCatalog";
 
 export type CredentialWorkflow =
   | { kind: "report"; reportId: ReportId }
-  | { kind: "utility"; utilityId: UtilityId };
+  | { kind: "utility"; utilityId: UtilityId }
+  | { kind: "write-tool"; writeToolId: WriteToolId };
 
 interface CredentialsPanelProps {
   workflow: CredentialWorkflow;
@@ -57,10 +59,19 @@ const credentialLabels: Record<string, string> = {
 };
 
 export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsPanelProps) {
+  const writeTool = workflow.kind === "write-tool"
+    ? writeTools.find((candidate) => candidate.id === workflow.writeToolId)!
+    : null;
   const metadata = workflow.kind === "utility"
     ? utilityRegistry.find((candidate) => candidate.id === workflow.utilityId)!
-    : reportRegistry.find((candidate) => candidate.id === workflow.reportId)!;
-  const oauthScopes = workflow.kind === "utility" ? [] : ["write_access"];
+    : workflow.kind === "write-tool"
+      ? writeTool!
+      : reportRegistry.find((candidate) => candidate.id === workflow.reportId)!;
+  const oauthScopes = workflow.kind === "utility"
+    ? []
+    : workflow.kind === "write-tool"
+      ? [...writeTool!.oauthScopes]
+      : ["write_access"];
   const [draft, setDraft] = useState<CredentialsDraft>({
     instanceType: credentials?.instanceType ?? "basic-business",
     baseUrl: credentials?.baseUrl ?? "",
@@ -288,7 +299,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       </p>
       <div className="credential-notes" role="note">
         <p className="scope-label">
-          Scope notes for selected {workflow.kind === "utility" ? "utility" : "report"}
+          Scope notes for selected {workflow.kind === "utility" ? "utility" : workflow.kind === "write-tool" ? "write tool" : "report"}
         </p>
         <h3 className="fs-body2 mb8">{metadata.title} credential notes</h3>
         <ul className="m0">

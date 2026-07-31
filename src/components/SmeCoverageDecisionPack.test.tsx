@@ -34,6 +34,7 @@ describe("SmeCoverageDecisionPack", () => {
       warningStack.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(within(warningStack).getAllByRole("alert")).toHaveLength(pack.warnings.length);
+    expect(within(warningStack).getByText(/partial sample/i)).toBeInTheDocument();
 
     expect(screen.getByText("example.stackenterprise.co")).toBeInTheDocument();
     expect(screen.getByText("2026-07-30T12:00:00.000Z")).toBeInTheDocument();
@@ -90,18 +91,13 @@ describe("SmeCoverageDecisionPack", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/only one eligible covered active tag/i);
   });
 
-  it("qualifies a prepared partial sample without source warnings before the executive summary", () => {
+  it("renders prepared warnings only and does not synthesize qualification copy", () => {
     const pack = warninglessPartialSmeCoverageDecisionPack();
     render(<SmeCoverageDecisionPack pack={pack} onRunAgain={vi.fn()} />);
 
-    const qualification = screen.getByRole("alert");
-    const summary = screen.getByRole("heading", { name: "Executive summary" });
-    expect(qualification).toHaveTextContent("partial sample");
-    expect(qualification).toHaveTextContent(/conclusions/i);
-    expect(
-      qualification.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
     expect(pack.warnings).toEqual([]);
+    expect(screen.queryByRole("region", { name: "Completeness warnings" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/qualify its conclusions/i)).not.toBeInTheDocument();
     expect(screen.getByText(pack.overview)).toBeInTheDocument();
     expect(screen.getByText(pack.assessment)).toBeInTheDocument();
   });
@@ -143,8 +139,10 @@ describe("SmeCoverageDecisionPack", () => {
     expect(within(methodology).getByText("pageViews / smeCount")).toBeInTheDocument();
     expect(within(methodology).getByText("2,750")).toBeInTheDocument();
     expect(within(methodology).getByText("12")).toBeInTheDocument();
-    expect(within(methodology).getByText("1,250.4")).toBeInTheDocument();
-    expect(within(methodology).getByText("3,000.49")).toBeInTheDocument();
+    expect(within(methodology).getByText("1,250")).toBeInTheDocument();
+    expect(within(methodology).getByText("3,000")).toBeInTheDocument();
+    expect(within(methodology).queryByText("1,250.4")).not.toBeInTheDocument();
+    expect(within(methodology).queryByText("3,000.49")).not.toBeInTheDocument();
     expect(within(methodology).getByText(/nearest-rank/i)).toBeInTheDocument();
     expect(within(methodology).getByText(/empirical-percentile/i)).toBeInTheDocument();
     expect(within(methodology).getByText(/nearest whole page view for display; unrounded for calculation/i)).toBeInTheDocument();

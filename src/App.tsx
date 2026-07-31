@@ -249,12 +249,24 @@ export function App() {
         clearActiveRunProgress();
       }
       setCredentialContext({ kind: "utility", utilityId: state.selectedUtilityId });
+    } else if (panel === "write-tools") {
+      if (
+        credentialContext.kind !== "write-tool" ||
+        credentialContext.writeToolId !== selectedWriteToolId
+      ) {
+        clearActiveRunProgress();
+      }
+      setCredentialContext({ kind: "write-tool", writeToolId: selectedWriteToolId });
     }
 
     setActivePanel(panel);
   }
 
   function selectWriteTool(toolId: WriteToolId) {
+    if (credentialContext.kind !== "write-tool" || credentialContext.writeToolId !== toolId) {
+      clearActiveRunProgress();
+    }
+    setCredentialContext({ kind: "write-tool", writeToolId: toolId });
     setSelectedWriteToolId(toolId);
     setActivePanel("write-tools");
   }
@@ -539,6 +551,8 @@ export function App() {
       <ReportCatalog selectedReportId={state.selectedReportId} onSelect={selectReport} />
     ) : credentialContext.kind === "utility" ? (
       <UtilityCatalog selectedUtilityId={state.selectedUtilityId} onSelect={selectUtility} />
+    ) : credentialContext.kind === "write-tool" ? (
+      <WriteToolsCatalog selectedToolId={selectedWriteToolId} onSelect={selectWriteTool} />
     ) : (
       <ReportCatalog selectedReportId={state.selectedReportId} onSelect={selectReport} />
     );
