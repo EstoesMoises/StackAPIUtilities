@@ -20,22 +20,45 @@ import { normalizeTagSmeCounts } from "./tagSmeCounts";
 
 export type SmeCoverageDatasetName = "tags" | "questions" | "tagSmeCounts";
 
+export type DeepReadonly<T> =
+  T extends string | number | boolean | bigint | symbol | null | undefined
+    ? T
+    : T extends (...args: never[]) => unknown
+      ? T
+      : T extends readonly (infer Item)[]
+        ? readonly DeepReadonly<Item>[]
+        : T extends object
+          ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+          : T;
+
+export type SmeCoverageRunRecordValue =
+  | string
+  | number
+  | boolean
+  | null
+  | SmeCoverageRunRecord
+  | readonly SmeCoverageRunRecordValue[];
+
+export interface SmeCoverageRunRecord {
+  readonly [key: string]: SmeCoverageRunRecordValue;
+}
+
 export interface SmeCoverageRunDataset {
-  datasetName: SmeCoverageDatasetName;
-  records: Record<string, unknown>[];
-  pagination: SourcePagination;
+  readonly datasetName: SmeCoverageDatasetName;
+  readonly records: readonly SmeCoverageRunRecord[];
+  readonly pagination: Readonly<SourcePagination>;
 }
 
 export interface SmeCoverageRunResult {
-  utilityId: "sme-coverage-analyzer";
-  utilityTitle: "SME Coverage Analyzer";
-  pageSize: number;
-  maxPagesPerDataset: number;
-  runPreset?: ReportRunPresetId;
-  datasets: SmeCoverageRunDataset[];
-  messages: string[];
-  warnings: ReportWarning[];
-  decisionPack: SmeCoverageDecisionPack;
+  readonly utilityId: "sme-coverage-analyzer";
+  readonly utilityTitle: "SME Coverage Analyzer";
+  readonly pageSize: number;
+  readonly maxPagesPerDataset: number;
+  readonly runPreset?: ReportRunPresetId;
+  readonly datasets: readonly SmeCoverageRunDataset[];
+  readonly messages: readonly string[];
+  readonly warnings: readonly DeepReadonly<ReportWarning>[];
+  readonly decisionPack: DeepReadonly<SmeCoverageDecisionPack>;
 }
 
 export interface SmeCoverageRunOptions {
@@ -114,7 +137,7 @@ async function runValidatedSmeCoverageAnalysis(
   const tagSmeCounts = asCollectedSource(getDataset(datasets, "tagSmeCounts"));
   const demand = normalizeTagDemand({ tags, questions });
   const smeCounts = normalizeTagSmeCounts(tagSmeCounts);
-  validateSupportedSmeCounts(tags, smeCounts.rows);
+  validateSupportedSmeCounts(tags, smeCounts.rows, tagSmeCounts.pagination);
 
   const sourceStatus = {
     tags: tags.pagination,
@@ -146,11 +169,11 @@ async function runValidatedSmeCoverageAnalysis(
     maxPagesPerDataset: settings.maxPagesPerDataset,
     datasets,
     messages: datasets.map(formatDatasetMessage),
-    warnings: [...decisionPack.warnings],
+    warnings: decisionPack.warnings,
     decisionPack,
+    ...(settings.runPreset ? { runPreset: settings.runPreset } : {}),
   };
-  if (settings.runPreset) result.runPreset = settings.runPreset;
-  return result;
+  return deepFreezeCopy(result);
 }
 
 function normalizeSettings(settings: ApiVolumeSettingsValue): ApiVolumeSettingsValue {
@@ -203,6 +226,7 @@ function validateSourceIdentities(datasets: readonly SmeCoverageRunDataset[]): v
 function validateSupportedSmeCounts(
   tags: CollectedSource,
   smeRows: readonly { key: string; smeCount: number | null }[],
+  smePagination: SourcePagination,
 ): void {
   const v2TagKeys = new Set(
     tags.records
@@ -211,6 +235,7 @@ function validateSupportedSmeCounts(
       .map((identity) => identity.key),
   );
   if (v2TagKeys.size === 0) return;
+  if (smePagination.reachedMaxPages || smePagination.hasMore) return;
 
   const numericSmeKeys = new Set(
     smeRows.filter((row) => row.smeCount !== null).map((row) => row.key),
@@ -264,11 +289,11 @@ function asCollectedSource(dataset: SmeCoverageRunDataset): CollectedSource {
   return { records: dataset.records, pagination: dataset.pagination };
 }
 
-function toRecordList(records: unknown[]): Record<string, unknown>[] {
+function toRecordList(records: unknown[]): SmeCoverageRunRecord[] {
   return records.map((record) =>
     typeof record === "object" && record !== null && !Array.isArray(record)
-      ? record as Record<string, unknown>
-      : { value: record },
+      ? record as SmeCoverageRunRecord
+      : { value: record } as SmeCoverageRunRecord,
   );
 }
 
@@ -279,4 +304,17 @@ function formatDatasetMessage(dataset: SmeCoverageRunDataset): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function deepFreezeCopy<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => deepFreezeCopy(item))) as T;
+  }
+  if (typeof value === "object" && value !== null) {
+    const copy = Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, deepFreezeCopy(item)]),
+    );
+    return Object.freeze(copy) as T;
+  }
+  return value;
 }

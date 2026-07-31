@@ -2,6 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import type { FetchLike } from "../../api/httpClient";
 import type { ApiVolumeSettingsValue, SessionCredentials } from "../../domain/types";
 import { runSmeCoverageAnalysis, SmeCoverageRunError } from "./runner";
+import type { SmeCoverageRunResult } from "./runner";
+
+function assertDeepReadonlyResultType(result: SmeCoverageRunResult): void {
+  // @ts-expect-error Runner decision-pack summaries are deeply readonly.
+  result.decisionPack.summary.tagsAnalyzed = 0;
+  // @ts-expect-error Runner decision-pack evidence rows are deeply readonly.
+  result.decisionPack.evidence[0].tagName = "changed";
+}
+
+void assertDeepReadonlyResultType;
 
 const basicCredentials: SessionCredentials = {
   instanceType: "basic-business",
@@ -76,10 +86,13 @@ describe("runSmeCoverageAnalysis", () => {
     });
   });
 
-  it("sends a Basic/Business PAT through the existing authentication contract on both API lanes", async () => {
+  it("sends only the Basic/Business PAT when credentials retain a stale Enterprise API key", async () => {
     const fetchMock = standardFetch() as ReturnType<typeof vi.fn>;
 
-    await runSmeCoverageAnalysis(basicCredentials, { fetchFn: fetchMock, settings: deepSettings });
+    await runSmeCoverageAnalysis(
+      { ...basicCredentials, apiKey: "stale-enterprise-api-key" },
+      { fetchFn: fetchMock, settings: deepSettings },
+    );
 
     const v2Calls = fetchMock.mock.calls.filter(([input]) => input.toString().includes("/2.3/"));
     const v3Call = fetchMock.mock.calls.find(([input]) => input.toString().includes("/v3/"));
@@ -234,6 +247,32 @@ describe("runSmeCoverageAnalysis", () => {
     });
   });
 
+  it("keeps capped v3-unmatched v2 tags unknown when the retrieved numeric counts are unrelated", async () => {
+    const fetchMock: FetchLike = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/2.3/tags")) return Promise.resolve(v2Page([{ name: "piper" }]));
+      if (url.includes("/2.3/questions")) {
+        return Promise.resolve(v2Page([{ question_id: 1, tags: ["piper"], view_count: 800 }]));
+      }
+      return Promise.resolve(v3Page([{ name: "kafka", subjectMatterExpertCount: 2 }], 2));
+    }) as FetchLike;
+
+    const result = await runSmeCoverageAnalysis(basicCredentials, {
+      fetchFn: fetchMock,
+      settings: { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" },
+    });
+
+    expect(result.decisionPack.snapshot.completeness).toBe("Partial");
+    expect(result.decisionPack.evidence.find((row) => row.tagName === "piper")).toMatchObject({
+      smeCount: null,
+      smeQuality: "Unknown",
+      coverageTier: "Unknown",
+    });
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "sme-coverage.tag-sme-counts-page-cap" }),
+    );
+  });
+
   it("rejects v2 tag data when v3 provides no matching authoritative numeric SME count", async () => {
     const fetchMock: FetchLike = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = input.toString();
@@ -307,6 +346,46 @@ describe("runSmeCoverageAnalysis", () => {
     expect(result.decisionPack.snapshot.runPreset).toBeUndefined();
     expect(result.decisionPack.snapshot.completeness).toBe("Partial");
     expect(result.decisionPack.overview).toContain("configured API volume settings");
+  });
+
+  it("returns a deeply immutable result and supporting datasets", async () => {
+    const result = await runSmeCoverageAnalysis(basicCredentials, {
+      fetchFn: standardFetch(),
+      settings: deepSettings,
+    });
+    const originalJson = JSON.stringify(result);
+    const mutable = result as unknown as {
+      utilityTitle: string;
+      datasets: Array<{
+        records: Array<Record<string, unknown>>;
+        pagination: { pageCount: number };
+      }>;
+      messages: string[];
+      warnings: Array<Record<string, unknown>>;
+    };
+
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.datasets)).toBe(true);
+    expect(Object.isFrozen(result.messages)).toBe(true);
+    expect(Object.isFrozen(result.warnings)).toBe(true);
+    for (const dataset of result.datasets) {
+      expect(Object.isFrozen(dataset)).toBe(true);
+      expect(Object.isFrozen(dataset.records)).toBe(true);
+      expect(Object.isFrozen(dataset.pagination)).toBe(true);
+      for (const record of dataset.records) expect(Object.isFrozen(record)).toBe(true);
+    }
+    expect(Object.isFrozen(result.datasets[1].records[0].tags)).toBe(true);
+    expect(Object.isFrozen(result.warnings[0])).toBe(true);
+
+    expect(() => { mutable.utilityTitle = "Changed"; }).toThrow(TypeError);
+    expect(() => { mutable.datasets.reverse(); }).toThrow(TypeError);
+    expect(() => { mutable.datasets[0].records.push({}); }).toThrow(TypeError);
+    expect(() => { mutable.datasets[0].records[0].name = "changed"; }).toThrow(TypeError);
+    expect(() => { (mutable.datasets[1].records[0].tags as string[]).push("changed"); }).toThrow(TypeError);
+    expect(() => { mutable.datasets[0].pagination.pageCount = 99; }).toThrow(TypeError);
+    expect(() => { mutable.messages.push("changed"); }).toThrow(TypeError);
+    expect(() => { mutable.warnings.push({ code: "changed" }); }).toThrow(TypeError);
+    expect(JSON.stringify(result)).toBe(originalJson);
   });
 
   it("rejects invalid volume settings before fetch", async () => {
