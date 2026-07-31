@@ -1,4 +1,13 @@
 import type { MetricCard } from "./reportModels";
+import {
+  compareCodeUnits,
+  QUESTION_VIEW_ALIASES,
+  readNonNegativeNumber,
+  readQuestionTags,
+  readTagIdentity,
+  TAG_COUNT_ALIASES,
+  type NormalizedTagIdentity,
+} from "../domain/tagNormalization";
 
 export interface TagMetricRow {
   tagName: string;
@@ -115,6 +124,9 @@ interface LiveTagAggregate {
   firstAnswerHours: number[];
   smeIds: Set<string>;
 }
+
+const TAG_WATCHER_ALIASES = ["tagWatchers", "watcher_count", "watcherCount", "followers", "follower_count"] as const;
+const ANSWER_COUNT_ALIASES = ["answer_count", "answerCount"] as const;
 
 const LOW_ACTIVITY_MAX_PAGE_VIEWS = 25;
 const RESPONSE_ATTENTION_HOURS = 24;
@@ -563,33 +575,29 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
   const aggregates = new Map<string, LiveTagAggregate>();
 
   for (const record of records.filter((candidate) => candidate.datasetName === "tags")) {
-    const tagName = getText(record, "name", "tagName", "tag_name");
-    if (!tagName) continue;
+    const tag = readTagIdentity(record);
+    if (tag === null) continue;
 
-    const aggregate = ensureLiveAggregate(aggregates, tagName);
-    aggregate.pageViews += getNumber(record, "totalPageViews", "page_views", "pageViews", "view_count", "viewCount");
-    aggregate.watcherCount += getNumber(
-      record,
-      "tagWatchers",
-      "watcher_count",
-      "watcherCount",
-      "followers",
-      "follower_count",
+    const aggregate = ensureLiveAggregate(aggregates, tag);
+    aggregate.pageViews += readNonNegativeNumber(record, QUESTION_VIEW_ALIASES) ?? 0;
+    aggregate.watcherCount += readNonNegativeNumber(record, TAG_WATCHER_ALIASES) ?? 0;
+    aggregate.tagQuestionCount = Math.max(
+      aggregate.tagQuestionCount,
+      readNonNegativeNumber(record, TAG_COUNT_ALIASES) ?? 0,
     );
-    aggregate.tagQuestionCount = Math.max(aggregate.tagQuestionCount, getNumber(record, "questionCount", "question_count", "count"));
   }
 
   for (const record of records.filter((candidate) => candidate.datasetName === "questions")) {
-    const tags = getQuestionTags(record);
+    const tags = readQuestionTags(record);
 
-    for (const tagName of tags) {
-      const aggregate = ensureLiveAggregate(aggregates, tagName);
-      const answerCount = getNumber(record, "answer_count", "answerCount");
+    for (const tag of tags) {
+      const aggregate = ensureLiveAggregate(aggregates, tag);
+      const answerCount = readNonNegativeNumber(record, ANSWER_COUNT_ALIASES) ?? 0;
 
       aggregate.sawQuestions = true;
       aggregate.questionCount += 1;
       aggregate.answerCount += answerCount;
-      aggregate.pageViews += getNumber(record, "view_count", "viewCount", "page_views", "pageViews", "totalPageViews");
+      aggregate.pageViews += readNonNegativeNumber(record, QUESTION_VIEW_ALIASES) ?? 0;
       if (isQuestionUnanswered(record, answerCount)) aggregate.unansweredQuestions += 1;
 
       const firstAnswerHours = getFirstAnswerHours(record);
@@ -600,10 +608,10 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
   records
     .filter((candidate) => candidate.datasetName === "tagSmes")
     .forEach((record, index) => {
-      const tagName = getText(record, "tagName", "tag_name", "name");
-      if (!tagName) return;
+      const tag = readTagIdentity(record);
+      if (tag === null) return;
 
-      ensureLiveAggregate(aggregates, tagName).smeIds.add(getSmeIdentity(record) ?? `row-${index}`);
+      ensureLiveAggregate(aggregates, tag).smeIds.add(getSmeIdentity(record) ?? `row-${index}`);
     });
 
   return buildTagHealthRows(
@@ -661,12 +669,18 @@ function getRecommendedAction(status: TagHealthStatus): string {
   }
 }
 
-function ensureLiveAggregate(aggregates: Map<string, LiveTagAggregate>, tagName: string): LiveTagAggregate {
-  const existing = aggregates.get(tagName);
-  if (existing) return existing;
+function ensureLiveAggregate(
+  aggregates: Map<string, LiveTagAggregate>,
+  tag: NormalizedTagIdentity,
+): LiveTagAggregate {
+  const existing = aggregates.get(tag.key);
+  if (existing) {
+    if (compareCodeUnits(tag.displayName, existing.tagName) < 0) existing.tagName = tag.displayName;
+    return existing;
+  }
 
   const aggregate: LiveTagAggregate = {
-    tagName,
+    tagName: tag.displayName,
     pageViews: 0,
     questionCount: 0,
     tagQuestionCount: 0,
@@ -678,26 +692,8 @@ function ensureLiveAggregate(aggregates: Map<string, LiveTagAggregate>, tagName:
     smeIds: new Set(),
   };
 
-  aggregates.set(tagName, aggregate);
+  aggregates.set(tag.key, aggregate);
   return aggregate;
-}
-
-function getQuestionTags(record: Record<string, unknown>): string[] {
-  const tags = record.tags ?? record.tagNames ?? record.tag_names;
-
-  if (Array.isArray(tags)) {
-    return tags.filter((tag): tag is string => typeof tag === "string" && tag.trim() !== "").map((tag) => tag.trim());
-  }
-
-  if (typeof tags === "string") {
-    return tags
-      .split(/[;,]/)
-      .map((tag) => tag.trim())
-      .filter(Boolean);
-  }
-
-  const singleTag = getText(record, "tagName", "tag_name", "name");
-  return singleTag ? [singleTag] : [];
 }
 
 function isQuestionUnanswered(record: Record<string, unknown>, answerCount: number): boolean {

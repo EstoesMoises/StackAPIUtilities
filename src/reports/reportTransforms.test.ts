@@ -609,6 +609,29 @@ describe("report transforms", () => {
     ]);
   });
 
+  it("counts duplicate case-variant question tags once for the canonical tag", () => {
+    const healthRows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "JavaScript" },
+      {
+        datasetName: "questions",
+        question_id: 1,
+        tags: [" JavaScript ", "javascript"],
+        answer_count: 1,
+        view_count: 30,
+      },
+      { datasetName: "tagSmes", tagName: "javascript", user_id: 96 },
+    ]);
+
+    expect(healthRows).toHaveLength(1);
+    expect(healthRows[0]).toMatchObject({
+      tag_name: "JavaScript",
+      question_count: 1,
+      answer_count: 1,
+      page_views: 30,
+      sme_count: 1,
+    });
+  });
+
   it("counts live questions with answers but is_answered false as needing response attention", () => {
     const healthRows = buildTagHealthRowsFromLiveRecords([
       { datasetName: "tags", name: "python" },
