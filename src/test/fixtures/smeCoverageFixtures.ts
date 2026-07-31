@@ -1,4 +1,10 @@
-import type { CollectedSource, SourcePagination } from "../../utilities/smeCoverage/model";
+import type {
+  CollectedSource,
+  NormalizedTagDemandRow,
+  NormalizedTagSmeRow,
+  SmeCoverageSourceStatus,
+  SourcePagination,
+} from "../../utilities/smeCoverage/model";
 
 export function collected(
   records: readonly Record<string, unknown>[],
@@ -24,3 +30,40 @@ export const completeRawSources = {
     { name: "timeout", subjectMatterExpertCount: 0 },
   ]),
 };
+
+export const completeSmeCoverageSourceStatus: SmeCoverageSourceStatus = {
+  tags: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+  questions: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+  tagSmeCounts: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+};
+
+export function normalizedDemandRow(
+  tagName: string,
+  pageViews: number | null,
+  questionCount = pageViews === null ? null : 1,
+  overrides: Partial<NormalizedTagDemandRow> = {},
+): NormalizedTagDemandRow {
+  return {
+    key: tagName.toLowerCase(),
+    tagNames: [tagName],
+    pageViews,
+    questionCount,
+    questionCountBasis: questionCount === null ? "Unavailable" : "Complete question enumeration",
+    demandQuality: pageViews === null || questionCount === null ? "Invalid" : "Complete",
+    ...overrides,
+  };
+}
+
+export function normalizedSmeRow(
+  tagName: string,
+  smeCount: number | null,
+  overrides: Partial<NormalizedTagSmeRow> = {},
+): NormalizedTagSmeRow {
+  return {
+    key: tagName.toLowerCase(),
+    tagNames: [tagName],
+    smeCount,
+    smeQuality: smeCount === null ? "Unknown" : "Complete",
+    ...overrides,
+  };
+}
