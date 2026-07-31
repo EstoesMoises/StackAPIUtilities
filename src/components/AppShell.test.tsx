@@ -81,6 +81,97 @@ describe("AppShell", () => {
     expect(screen.getByText(/add session credentials before running SME Coverage Analyzer/i)).toBeInTheDocument();
   });
 
+  it("inherits utility credential context after direct Utilities navigation", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=utility" }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Utilities" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+
+    expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      baseUrl: "https://demo.stackenterprise.co",
+      clientId: "client-123",
+      scopes: [],
+      includeNoExpiry: false,
+    });
+  });
+
+  it("restores report credential context after direct Scripts navigation", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=report" }),
+    );
+
+    render(<App />);
+
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+
+    expect(screen.getByText("Tag Report credential notes")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      baseUrl: "https://demo.stackenterprise.co",
+      clientId: "client-123",
+      scopes: ["write_access"],
+      includeNoExpiry: false,
+    });
+  });
+
+  it("invalidates a pending utility run when direct navigation crosses to Scripts", async () => {
+    const user = userEvent.setup();
+    const pendingRun = createDeferred<Response>();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+    const stalePack = {
+      ...completeSmeCoverageDecisionPack(),
+      overview: "This utility result must not commit after switching workflows.",
+    };
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("progressbar", { name: "SME Coverage Analyzer progress" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    expect(screen.getByRole("button", { name: "Scripts" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar", { name: "SME Coverage Analyzer progress" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      pendingRun.resolve(jsonResponse(makeSmeCoverageRunBody(stalePack, "stale")));
+      await pendingRun.promise;
+    });
+
+    expect(screen.getByRole("button", { name: "Scripts" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
+    expect(screen.queryByText(stalePack.overview)).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar", { name: "SME Coverage Analyzer progress" })).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+  });
+
   it("posts only credentials and API-volume settings, shows progress, and stores the completed utility result", async () => {
     const user = userEvent.setup();
     const pendingRun = createDeferred<Response>();
