@@ -12,6 +12,8 @@ import type {
   SmeCoverageSummary,
   SmeQuality,
 } from "./model";
+import { SME_COVERAGE_PARTIAL_SAMPLE_WARNING } from "./decisionPack";
+import { DEFAULT_SME_COVERAGE_SETTINGS } from "./settings";
 
 const completenessValues = new Set<SmeCoverageCompleteness>(["Complete", "Partial", "Empty"]);
 const questionCountBases = new Set<QuestionCountBasis>([
@@ -78,7 +80,7 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
 
   return Object.freeze({
     snapshot,
-    warnings,
+    warnings: migratePartialSampleWarnings(snapshot, warnings),
     summary,
     overview: value.overview,
     assessment: value.assessment,
@@ -86,6 +88,33 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
     methodology,
     evidence,
   });
+}
+
+const analyzerWarningCodes = new Set([
+  "sme-coverage.invalid-demand",
+  "sme-coverage.unknown-sme-coverage",
+  "sme-coverage.insufficient-covered-sample",
+]);
+
+function migratePartialSampleWarnings(
+  snapshot: SmeCoverageSnapshot,
+  warnings: readonly ReportWarning[],
+): readonly ReportWarning[] {
+  const hasPartialSampleWarning = warnings.some(
+    (warning) => warning.code === SME_COVERAGE_PARTIAL_SAMPLE_WARNING.code,
+  );
+  if (!hasPartialSampleWarning && !isConfiguredPartialSample(snapshot)) return warnings;
+
+  const migrated = warnings.filter(
+    (warning) => warning.code !== SME_COVERAGE_PARTIAL_SAMPLE_WARNING.code,
+  );
+  const analyzerWarningIndex = migrated.findIndex((warning) => analyzerWarningCodes.has(warning.code));
+  migrated.splice(
+    analyzerWarningIndex === -1 ? migrated.length : analyzerWarningIndex,
+    0,
+    SME_COVERAGE_PARTIAL_SAMPLE_WARNING,
+  );
+  return Object.freeze(migrated);
 }
 
 function parseSnapshot(value: unknown): SmeCoverageSnapshot | null {
@@ -351,10 +380,7 @@ function isCoherentDecisionPack(
     if (row.coverageTier !== expectedTier) return false;
   }
 
-  const configuredAsPartialSample =
-    snapshot.runPreset !== "deep-audit" ||
-    snapshot.pageSize !== 100 ||
-    snapshot.maxPagesPerDataset !== 20;
+  const configuredAsPartialSample = isConfiguredPartialSample(snapshot);
   if (configuredAsPartialSample) {
     return (
       snapshot.completeness === "Partial" &&
@@ -372,6 +398,14 @@ function isCoherentDecisionPack(
     );
   }
   return true;
+}
+
+function isConfiguredPartialSample(snapshot: SmeCoverageSnapshot): boolean {
+  return (
+    snapshot.runPreset !== DEFAULT_SME_COVERAGE_SETTINGS.runPreset ||
+    snapshot.pageSize !== DEFAULT_SME_COVERAGE_SETTINGS.pageSize ||
+    snapshot.maxPagesPerDataset !== DEFAULT_SME_COVERAGE_SETTINGS.maxPagesPerDataset
+  );
 }
 
 function isActiveEvidenceRow(row: SmeCoverageEvidenceRow): boolean {
