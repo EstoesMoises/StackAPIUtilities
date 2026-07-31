@@ -15,12 +15,17 @@ export interface PeriodScope {
 
 export type ReportRunPresetId = "quick-sample" | "standard" | "deep-audit";
 
-export interface ReportRunScope {
-  current: PeriodScope;
-  comparison?: PeriodScope;
+export type UtilityId = "sme-coverage-analyzer";
+
+export interface ApiVolumeSettingsValue {
   pageSize: number;
   maxPagesPerDataset: number;
   runPreset?: ReportRunPresetId;
+}
+
+export interface ReportRunScope extends ApiVolumeSettingsValue {
+  current: PeriodScope;
+  comparison?: PeriodScope;
 }
 
 export type DatasetName =
@@ -33,6 +38,7 @@ export type DatasetName =
   | "communities"
   | "userGroups"
   | "tagSmes"
+  | "tagSmeCounts"
   | "reputationHistory"
   | "interactions"
   | "dataExport";
@@ -77,8 +83,20 @@ export interface ReportMetadata {
   readonly excludedReason?: string;
 }
 
+export interface UtilityMetadata {
+  readonly id: UtilityId;
+  readonly title: string;
+  readonly scopeLabel: string;
+  readonly mode: "read-only";
+  readonly description: string;
+  readonly supportedInstances: readonly InstanceType[];
+  readonly credentialRequirements: readonly CredentialRequirement[];
+  readonly requiredDatasets: readonly DatasetName[];
+}
+
 export interface ReportWarning {
   reportId?: ReportId;
+  utilityId?: UtilityId;
   code: string;
   message: string;
 }
