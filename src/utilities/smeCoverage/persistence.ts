@@ -95,26 +95,57 @@ const analyzerWarningCodes = new Set([
   "sme-coverage.unknown-sme-coverage",
   "sme-coverage.insufficient-covered-sample",
 ]);
+const sourceCapWarningCodes = new Set([
+  "sme-coverage.tags-page-cap",
+  "sme-coverage.questions-page-cap",
+  "sme-coverage.tag-sme-counts-page-cap",
+]);
 
 function migratePartialSampleWarnings(
   snapshot: SmeCoverageSnapshot,
   warnings: readonly ReportWarning[],
 ): readonly ReportWarning[] {
+  if (snapshot.completeness !== "Partial") return warnings;
+
   const hasPartialSampleWarning = warnings.some(
-    (warning) => warning.code === SME_COVERAGE_PARTIAL_SAMPLE_WARNING.code,
+    (warning) =>
+      isSmeCoverageMigrationCandidate(warning) &&
+      warning.code === SME_COVERAGE_PARTIAL_SAMPLE_WARNING.code,
   );
-  if (!hasPartialSampleWarning && !isConfiguredPartialSample(snapshot)) return warnings;
+  const hasSourceCapWarning = warnings.some(
+    (warning) =>
+      isSmeCoverageMigrationCandidate(warning) && sourceCapWarningCodes.has(warning.code),
+  );
+  if (
+    !hasPartialSampleWarning &&
+    !hasSourceCapWarning &&
+    !isConfiguredPartialSample(snapshot)
+  ) {
+    return warnings;
+  }
 
   const migrated = warnings.filter(
-    (warning) => warning.code !== SME_COVERAGE_PARTIAL_SAMPLE_WARNING.code,
+    (warning) =>
+      !isSmeCoverageMigrationCandidate(warning) ||
+      warning.code !== SME_COVERAGE_PARTIAL_SAMPLE_WARNING.code,
   );
-  const analyzerWarningIndex = migrated.findIndex((warning) => analyzerWarningCodes.has(warning.code));
+  const analyzerWarningIndex = migrated.findIndex(
+    (warning) =>
+      isSmeCoverageMigrationCandidate(warning) && analyzerWarningCodes.has(warning.code),
+  );
   migrated.splice(
     analyzerWarningIndex === -1 ? migrated.length : analyzerWarningIndex,
     0,
     SME_COVERAGE_PARTIAL_SAMPLE_WARNING,
   );
   return Object.freeze(migrated);
+}
+
+function isSmeCoverageMigrationCandidate(warning: ReportWarning): boolean {
+  return (
+    typeof warning.reportId === "undefined" &&
+    (typeof warning.utilityId === "undefined" || warning.utilityId === "sme-coverage-analyzer")
+  );
 }
 
 function parseSnapshot(value: unknown): SmeCoverageSnapshot | null {

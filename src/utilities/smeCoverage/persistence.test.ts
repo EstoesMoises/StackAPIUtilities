@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildSmeCoverageEvidenceCsv, buildSmeCoverageMarkdown } from "./exports";
 import type { SmeCoverageDecisionPack } from "./model";
 import { parseSmeCoverageDecisionPack } from "./persistence";
 
@@ -164,6 +165,10 @@ describe("parseSmeCoverageDecisionPack", () => {
         message: "Legacy sampling copy without the required phrase.",
       },
       {
+        code: canonicalPartialSampleWarning.code,
+        message: "Ownerless legacy sampling copy.",
+      },
+      {
         utilityId: "sme-coverage-analyzer",
         code: "sme-coverage.invalid-demand",
         message: "Analyzer warning.",
@@ -176,8 +181,108 @@ describe("parseSmeCoverageDecisionPack", () => {
     expect(parsed?.warnings).toEqual([
       persisted.warnings[0],
       canonicalPartialSampleWarning,
-      persisted.warnings[2],
+      persisted.warnings[3],
     ]);
+  });
+
+  it("preserves a configured-partial report warning collision and adds one canonical utility warning", () => {
+    const persisted = createConfiguredPartialPack();
+    const reportCollision = {
+      reportId: "inactive-users",
+      code: canonicalPartialSampleWarning.code,
+      message: "Report-owned warning with colliding code and distinct copy.",
+    };
+    persisted.warnings = [reportCollision];
+
+    const parsed = parseSmeCoverageDecisionPack(persisted);
+
+    expect(parsed?.warnings).toEqual([reportCollision, canonicalPartialSampleWarning]);
+    expect(parsed?.warnings.filter(isCanonicalUtilityPartialWarning)).toHaveLength(1);
+  });
+
+  it.each([
+    ["Complete", createDecisionPack()],
+    ["Empty", createEmptyPack()],
+  ])("leaves an exact-Deep %s pack with report warning collisions unchanged", (_label, pack) => {
+    const persisted = structuredClone(pack) as Record<string, any>;
+    const reportWarnings = [
+      {
+        reportId: "inactive-users",
+        code: canonicalPartialSampleWarning.code,
+        message: "Report-owned canonical-code collision.",
+      },
+      {
+        reportId: "tag-report",
+        code: "sme-coverage.invalid-demand",
+        message: "Report-owned analyzer-code collision.",
+      },
+    ];
+    persisted.warnings = reportWarnings;
+
+    const parsed = parseSmeCoverageDecisionPack(persisted);
+
+    expect(parsed?.warnings).toEqual(reportWarnings);
+    expect(parsed?.warnings.some(isCanonicalUtilityPartialWarning)).toBe(false);
+    expect(buildSmeCoverageMarkdown(parsed!)).not.toContain(canonicalPartialSampleWarning.message);
+    expect(buildSmeCoverageEvidenceCsv(parsed!)).not.toContain(canonicalPartialSampleWarning.message);
+  });
+
+  it("does not use a report-owned analyzer-code collision as the analyzer insertion boundary", () => {
+    const persisted = createConfiguredPartialPack();
+    const sourceBefore = persisted.warnings[0];
+    const reportCollision = {
+      reportId: "inactive-users",
+      code: "sme-coverage.invalid-demand",
+      message: "Report-owned analyzer-code collision.",
+    };
+    const sourceAfter = {
+      utilityId: "sme-coverage-analyzer",
+      code: "sme-coverage.questions-page-cap",
+      message: "Questions reached the collection page cap.",
+    };
+    const utilityAnalyzerWarning = {
+      utilityId: "sme-coverage-analyzer",
+      code: "sme-coverage.insufficient-covered-sample",
+      message: "Utility analyzer warning.",
+    };
+    persisted.warnings = [sourceBefore, reportCollision, sourceAfter, utilityAnalyzerWarning];
+
+    expect(parseSmeCoverageDecisionPack(persisted)?.warnings).toEqual([
+      sourceBefore,
+      reportCollision,
+      sourceAfter,
+      canonicalPartialSampleWarning,
+      utilityAnalyzerWarning,
+    ]);
+  });
+
+  it.each([
+    ["utility-owned", { utilityId: "sme-coverage-analyzer" }],
+    ["ownerless", {}],
+  ])("migrates an exact-Deep Partial pack from a structured %s cap warning", (_label, owner) => {
+    const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
+    const capWarning = {
+      ...owner,
+      code: "sme-coverage.tags-page-cap",
+      message: "Legacy cap wording that is not used for migration decisions.",
+    };
+    persisted.warnings = [capWarning];
+
+    const parsed = parseSmeCoverageDecisionPack(persisted);
+
+    expect(parsed?.warnings).toEqual([capWarning, canonicalPartialSampleWarning]);
+  });
+
+  it("does not migrate an exact-Deep Partial pack from a report-owned cap-code collision", () => {
+    const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
+    const reportCollision = {
+      reportId: "inactive-users",
+      code: "sme-coverage.tags-page-cap",
+      message: "Report-owned cap-code collision.",
+    };
+    persisted.warnings = [reportCollision];
+
+    expect(parseSmeCoverageDecisionPack(persisted)?.warnings).toEqual([reportCollision]);
   });
 
   it("round-trips a current configured-partial pack without duplicating its canonical warning", () => {
@@ -414,4 +519,29 @@ function createEmptyPack(): SmeCoverageDecisionPack {
     },
     evidence: [],
   };
+}
+
+function createConfiguredPartialPack(): Record<string, any> {
+  const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
+  persisted.snapshot = {
+    ...persisted.snapshot,
+    pageSize: 100,
+    maxPagesPerDataset: 5,
+    runPreset: "standard",
+  };
+  persisted.overview += " This analysis is a partial sample.";
+  persisted.assessment += " This analysis is a partial sample.";
+  return persisted;
+}
+
+function isCanonicalUtilityPartialWarning(warning: {
+  utilityId?: string;
+  code: string;
+  message: string;
+}): boolean {
+  return (
+    warning.utilityId === canonicalPartialSampleWarning.utilityId &&
+    warning.code === canonicalPartialSampleWarning.code &&
+    warning.message === canonicalPartialSampleWarning.message
+  );
 }
