@@ -43,6 +43,19 @@ describe("oauthPkce", () => {
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
+  it("omits the scope query parameter when no OAuth scopes are requested", () => {
+    const url = buildEnterpriseAuthorizationUrl({
+      baseUrl: "https://demo.stackenterprise.co/",
+      clientId: "client-123",
+      redirectUri: "http://127.0.0.1:3000/api/oauth/pkce/callback",
+      scopes: [],
+      state: "state-123",
+      codeChallenge: "challenge-123",
+    });
+
+    expect(url.searchParams.has("scope")).toBe(false);
+  });
+
   it("builds the Enterprise token endpoint URL", () => {
     expect(buildEnterpriseTokenEndpointUrl("https://demo.stackenterprise.co/").toString()).toBe(
       "https://demo.stackenterprise.co/oauth/access_token/json",

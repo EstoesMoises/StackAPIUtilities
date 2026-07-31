@@ -70,6 +70,40 @@ describe("DatasetsPanel", () => {
     expect(downloadSessionDataset).toHaveBeenNthCalledWith(2, dataset, "json");
   });
 
+  it("shows utility workflow provenance and source-labeled accessible actions", async () => {
+    const user = userEvent.setup();
+    const dataset = utilityDataset();
+    const onRemoveDataset = vi.fn();
+
+    render(
+      <DatasetsPanel
+        datasets={[dataset]}
+        onRemoveDataset={onRemoveDataset}
+        onFlushDatasets={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("columnheader", { name: "Workflow" })).toBeInTheDocument();
+    expect(screen.getByText("SME Coverage Analyzer")).toBeInTheDocument();
+    expect(screen.getByText("Snapshot")).toBeInTheDocument();
+    expect(screen.getByText("All-time demand · Current SME coverage")).toBeInTheDocument();
+    expect(screen.getByText("Live API")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Download SME Coverage Analyzer tags snapshot dataset as CSV" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Download SME Coverage Analyzer tags snapshot dataset as JSON" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Remove SME Coverage Analyzer tags snapshot dataset" }),
+    );
+
+    expect(downloadSessionDataset).toHaveBeenNthCalledWith(1, dataset, "csv");
+    expect(downloadSessionDataset).toHaveBeenNthCalledWith(2, dataset, "json");
+    expect(onRemoveDataset).toHaveBeenCalledWith("utility-dataset-1");
+  });
+
   it("shows a bulk flush action only when datasets exist", async () => {
     const user = userEvent.setup();
     const onFlushDatasets = vi.fn();
@@ -105,5 +139,17 @@ function liveDataset(): SessionDataset {
     source: "live-api",
     periodRole: "current",
     scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+  };
+}
+
+function utilityDataset(): SessionDataset {
+  return {
+    id: "utility-dataset-1",
+    snapshotId: "utility-snapshot-1",
+    utilityId: "sme-coverage-analyzer",
+    name: "tags",
+    records: [{ name: "python" }],
+    loadedAt: "2026-07-30T12:00:00.000Z",
+    source: "live-api",
   };
 }

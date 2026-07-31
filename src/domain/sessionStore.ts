@@ -49,7 +49,7 @@ type SessionAction =
   | {
       type: "session/hydratePersistentDatasets";
       snapshot: unknown;
-      preserveSelection?: Pick<SessionState, "selectedReportId" | "selectedReportIds">;
+      preserveSelection?: Pick<SessionState, "selectedReportId" | "selectedReportIds" | "selectedUtilityId">;
     }
   | { type: "datasets/flush" }
   | { type: "session/reset" };
@@ -329,6 +329,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         ...hydrated,
         selectedReportId: action.preserveSelection.selectedReportId,
         selectedReportIds: action.preserveSelection.selectedReportIds,
+        selectedUtilityId: action.preserveSelection.selectedUtilityId,
       };
     }
     case "datasets/flush":

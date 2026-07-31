@@ -2,16 +2,18 @@
 
 import { useEffect, useReducer, useRef, useState } from "react";
 import { AppShell, type AppPanel } from "./components/AppShell";
-import { CredentialsPanel } from "./components/CredentialsPanel";
+import { CredentialsPanel, type CredentialWorkflow } from "./components/CredentialsPanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
 import { ReportCatalog } from "./components/ReportCatalog";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { RunStatus } from "./components/RunStatus";
 import { SessionOverview } from "./components/SessionOverview";
+import { SmeCoverageWorkspace, type SmeCoverageRunUiState } from "./components/SmeCoverageWorkspace";
 import { UploadsPanel, type ImportedUploadResult } from "./components/UploadsPanel";
 import { UserGroupSyncPanel } from "./components/UserGroupSyncPanel";
 import { WriteToolsCatalog, type WriteToolId } from "./components/WriteToolsCatalog";
-import { validateCredentialsForReport } from "./credentials/credentialRules";
+import { UtilityCatalog } from "./components/UtilityCatalog";
+import { validateCredentialsForReport, validateCredentialsForUtility } from "./credentials/credentialRules";
 import { createDatasetSessionSnapshot, type PersistedDatasetSessionSnapshot } from "./domain/datasetPersistence";
 import { DEFAULT_REPORT_RUN_SCOPE } from "./domain/reportScope";
 import { reportRegistry } from "./domain/reportRegistry";
@@ -23,8 +25,11 @@ import type {
   RunPeriodRole,
   RunQueueItem,
   SessionCredentials,
+  UtilityId,
 } from "./domain/types";
 import type { ReportRunResponseBody } from "./server/reportRunApi";
+import type { SmeCoverageRunResponseBody } from "./server/smeCoverageRunApi";
+import { DEFAULT_SME_COVERAGE_SETTINGS } from "./utilities/smeCoverage/settings";
 import {
   clearPersistedDatasetSession,
   loadPersistedDatasetSession,
@@ -45,10 +50,17 @@ export function App() {
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
   const [runProgress, setRunProgress] = useState<ReportRunProgress | undefined>();
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
+  const [smeCoverageSettings, setSmeCoverageSettings] = useState(DEFAULT_SME_COVERAGE_SETTINGS);
+  const [smeCoverageRunState, setSmeCoverageRunState] = useState<SmeCoverageRunUiState>({ status: "idle" });
+  const [credentialContext, setCredentialContext] = useState<CredentialWorkflow>({
+    kind: "report",
+    reportId: "tag-report",
+  });
   const [datasetStorageReady, setDatasetStorageReady] = useState(false);
   const [datasetStorageWarning, setDatasetStorageWarning] = useState<string | null>(null);
   const datasetContentRevisionRef = useRef(0);
   const reportSelectionRevisionRef = useRef(0);
+  const utilitySelectionRevisionRef = useRef(0);
   const reportScopeRevisionRef = useRef(0);
   const mountedRef = useRef(false);
   const persistenceQueueRef = useRef(Promise.resolve());
@@ -57,6 +69,7 @@ export function App() {
     selectedReportId: state.selectedReportId,
     selectedReportIds: state.selectedReportIds,
   });
+  const selectedUtilityRef = useRef(state.selectedUtilityId);
   const suppressNextEmptyClearRef = useRef(false);
   const explicitEmptyRevisionRef = useRef(0);
   const activeRunIdRef = useRef(0);
@@ -71,6 +84,11 @@ export function App() {
       selectedReportId: reportId,
       selectedReportIds: [reportId],
     };
+  }
+
+  function markUtilitySelectionChanged(utilityId: UtilityId) {
+    utilitySelectionRevisionRef.current += 1;
+    selectedUtilityRef.current = utilityId;
   }
 
   function updateReportScope(nextScope: ReportRunScope) {
@@ -94,9 +112,14 @@ export function App() {
   }, [state.selectedReportId, state.selectedReportIds]);
 
   useEffect(() => {
+    selectedUtilityRef.current = state.selectedUtilityId;
+  }, [state.selectedUtilityId]);
+
+  useEffect(() => {
     let active = true;
     const hydrationContentRevision = datasetContentRevisionRef.current;
     const hydrationSelectionRevision = reportSelectionRevisionRef.current;
+    const hydrationUtilitySelectionRevision = utilitySelectionRevisionRef.current;
     const hydrationReportScopeRevision = reportScopeRevisionRef.current;
     const hydrationEmptyRevision = explicitEmptyRevisionRef.current;
 
@@ -121,8 +144,12 @@ export function App() {
           type: "session/hydratePersistentDatasets",
           snapshot,
           preserveSelection:
-            reportSelectionRevisionRef.current !== hydrationSelectionRevision
-              ? selectedReportsRef.current
+            reportSelectionRevisionRef.current !== hydrationSelectionRevision ||
+            utilitySelectionRevisionRef.current !== hydrationUtilitySelectionRevision
+              ? {
+                  ...selectedReportsRef.current,
+                  selectedUtilityId: selectedUtilityRef.current,
+                }
               : undefined,
         });
         if (
@@ -155,19 +182,20 @@ export function App() {
       return;
     }
 
-    const hasDatasets = Object.keys(state.datasets).length > 0;
+    const hasPersistentContent =
+      Object.keys(state.datasets).length > 0 || Object.keys(state.utilityOutputs).length > 0;
 
-    if (!hasDatasets && suppressNextEmptyClearRef.current) {
+    if (!hasPersistentContent && suppressNextEmptyClearRef.current) {
       suppressNextEmptyClearRef.current = false;
       return;
     }
-    if (hasDatasets) {
+    if (hasPersistentContent) {
       suppressNextEmptyClearRef.current = false;
     }
 
     const sequence = persistenceSequenceRef.current + 1;
     persistenceSequenceRef.current = sequence;
-    const persist = () => hasDatasets
+    const persist = () => hasPersistentContent
       ? savePersistedDatasetSession(createDatasetSessionSnapshot(state))
       : clearPersistedDatasetSession();
 
@@ -188,14 +216,26 @@ export function App() {
     state.reportRunSnapshots,
     state.selectedReportId,
     state.selectedReportIds,
+    state.selectedUtilityId,
+    state.utilityOutputs,
+    state.utilityRunSnapshots,
     state.warnings,
   ]);
 
   function selectReport(reportId: ReportId) {
     markReportSelectionChanged(reportId);
     clearActiveRunProgress();
+    setCredentialContext({ kind: "report", reportId });
     dispatch({ type: "report/select", reportId });
     setActivePanel("report");
+  }
+
+  function selectUtility(utilityId: UtilityId) {
+    markUtilitySelectionChanged(utilityId);
+    clearActiveRunProgress();
+    setCredentialContext({ kind: "utility", utilityId });
+    dispatch({ type: "utility/select", utilityId });
+    setActivePanel("utilities");
   }
 
   function selectWriteTool(toolId: WriteToolId) {
@@ -328,6 +368,94 @@ export function App() {
     }
   }
 
+  async function queueSmeCoverageRun() {
+    const utilityId = state.selectedUtilityId;
+    const workflow = { kind: "utility", utilityId } as const;
+    setCredentialContext(workflow);
+
+    if (!state.credentials) {
+      clearActiveRunProgress();
+      setSmeCoverageRunState({
+        status: "failed",
+        kind: "validation",
+        error: "Add session credentials before running SME Coverage Analyzer.",
+      });
+      setRunQueue([
+        {
+          id: `${utilityId}-missing-credentials`,
+          reportId: state.selectedReportId,
+          status: "queued",
+          message: "Add session credentials before running SME Coverage Analyzer.",
+        },
+      ]);
+      setActivePanel("credentials");
+      return;
+    }
+
+    const validation = validateCredentialsForUtility(utilityId, state.credentials);
+    if (!validation.valid) {
+      clearActiveRunProgress();
+      const error = validation.messages.join(" ");
+      setSmeCoverageRunState({ status: "failed", kind: "validation", error });
+      setRunQueue(
+        validation.messages.map((message, index) => ({
+          id: `${utilityId}-credential-error-${index}`,
+          reportId: state.selectedReportId,
+          status: "failed" as const,
+          message,
+        })),
+      );
+      setActivePanel("credentials");
+      return;
+    }
+
+    const runId = startActiveRun();
+    setRunQueue([]);
+    setRunProgress(undefined);
+    setSmeCoverageRunState({ status: "running" });
+
+    try {
+      const response = await fetch("/api/utilities/sme-coverage/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          credentials: state.credentials,
+          pageSize: smeCoverageSettings.pageSize,
+          maxPagesPerDataset: smeCoverageSettings.maxPagesPerDataset,
+          ...(smeCoverageSettings.runPreset ? { runPreset: smeCoverageSettings.runPreset } : {}),
+        }),
+      });
+      const body = (await response.json()) as SmeCoverageRunResponseBody;
+
+      if (!isActiveRun(runId)) {
+        return;
+      }
+
+      if (!body.ok) {
+        setSmeCoverageRunState({
+          status: "failed",
+          kind: body.kind,
+          stage: body.stage,
+          error: body.error,
+        });
+        return;
+      }
+
+      markDatasetContentChanged();
+      dispatch({ type: "utility/loaded", result: body.result });
+      setSmeCoverageRunState({ status: "succeeded" });
+      setActivePanel("utilities");
+    } catch {
+      if (isActiveRun(runId)) {
+        setSmeCoverageRunState({
+          status: "failed",
+          kind: "unexpected",
+          error: "SME Coverage Analyzer could not complete the live API run. Try again.",
+        });
+      }
+    }
+  }
+
   function importUploadedReport(result: ImportedUploadResult) {
     const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
 
@@ -375,6 +503,7 @@ export function App() {
     activeRunIdRef.current += 1;
     setRunProgress(undefined);
     setRunQueue([]);
+    setSmeCoverageRunState({ status: "idle" });
   }
 
   function isActiveRun(runId: number) {
@@ -382,12 +511,18 @@ export function App() {
   }
 
   const selectedReportOutput = state.reportOutputs[state.selectedReportId];
+  const selectedUtilityOutput = state.utilityOutputs[state.selectedUtilityId];
   const selectedReportRecords = selectedReportOutput?.records ?? [];
   const datasets = Object.values(state.datasets);
   const datasetCount = datasets.length;
-  const sidebar =
-    activePanel === "write-tools" ? (
+  const sidebar = activePanel === "write-tools" ? (
       <WriteToolsCatalog selectedToolId={selectedWriteToolId} onSelect={selectWriteTool} />
+    ) : activePanel === "utilities" ? (
+      <UtilityCatalog selectedUtilityId={state.selectedUtilityId} onSelect={selectUtility} />
+    ) : activePanel === "report" ? (
+      <ReportCatalog selectedReportId={state.selectedReportId} onSelect={selectReport} />
+    ) : credentialContext.kind === "utility" ? (
+      <UtilityCatalog selectedUtilityId={state.selectedUtilityId} onSelect={selectUtility} />
     ) : (
       <ReportCatalog selectedReportId={state.selectedReportId} onSelect={selectReport} />
     );
@@ -408,7 +543,7 @@ export function App() {
       )}
       {activePanel === "credentials" && (
         <CredentialsPanel
-          selectedReportId={state.selectedReportId}
+          workflow={credentialContext}
           credentials={state.credentials}
           onSave={(credentials) => dispatch({ type: "credentials/set", credentials })}
         />
@@ -422,6 +557,15 @@ export function App() {
         />
       )}
       {activePanel === "write-tools" && renderWriteToolPanel(selectedWriteToolId, state.credentials)}
+      {activePanel === "utilities" && (
+        <SmeCoverageWorkspace
+          settings={smeCoverageSettings}
+          onSettingsChange={setSmeCoverageSettings}
+          onRun={queueSmeCoverageRun}
+          runState={smeCoverageRunState}
+          decisionPack={selectedUtilityOutput?.decisionPack}
+        />
+      )}
       {activePanel === "report" && (
         <ReportWorkspace
           reportId={state.selectedReportId}

@@ -1,9 +1,14 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { reportRegistry } from "../domain/reportRegistry";
-import type { InstanceType, ReportId, SessionCredentials } from "../domain/types";
+import { utilityRegistry } from "../domain/utilityRegistry";
+import type { InstanceType, ReportId, SessionCredentials, UtilityId } from "../domain/types";
+
+export type CredentialWorkflow =
+  | { kind: "report"; reportId: ReportId }
+  | { kind: "utility"; utilityId: UtilityId };
 
 interface CredentialsPanelProps {
-  selectedReportId: ReportId;
+  workflow: CredentialWorkflow;
   credentials: SessionCredentials | null;
   onSave: (credentials: SessionCredentials) => void;
 }
@@ -40,7 +45,6 @@ interface PendingOAuthFlow {
   popup: Window;
 }
 
-const OAUTH_SCOPES = ["write_access"];
 const OAUTH_CREDENTIAL_ERROR = "Unable to save Enterprise OAuth credentials. Try again.";
 const OAUTH_START_ERROR = "Unable to start Enterprise OAuth. Try again.";
 
@@ -52,8 +56,11 @@ const credentialLabels: Record<string, string> = {
   "enterprise-admin": "Enterprise admin access",
 };
 
-export function CredentialsPanel({ selectedReportId, credentials, onSave }: CredentialsPanelProps) {
-  const report = reportRegistry.find((candidate) => candidate.id === selectedReportId)!;
+export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsPanelProps) {
+  const metadata = workflow.kind === "utility"
+    ? utilityRegistry.find((candidate) => candidate.id === workflow.utilityId)!
+    : reportRegistry.find((candidate) => candidate.id === workflow.reportId)!;
+  const oauthScopes = workflow.kind === "utility" ? [] : ["write_access"];
   const [draft, setDraft] = useState<CredentialsDraft>({
     instanceType: credentials?.instanceType ?? "basic-business",
     baseUrl: credentials?.baseUrl ?? "",
@@ -222,7 +229,7 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
         body: JSON.stringify({
           baseUrl: startBaseUrl,
           clientId: pendingFlow.oauthClientId,
-          scopes: OAUTH_SCOPES,
+          scopes: oauthScopes,
           includeNoExpiry: draft.includeNoExpiry,
         }),
       });
@@ -280,22 +287,27 @@ export function CredentialsPanel({ selectedReportId, credentials, onSave }: Cred
         Credentials are kept in memory for this browser session only.
       </p>
       <div className="credential-notes" role="note">
-        <p className="scope-label">Scope notes for selected report</p>
-        <h3 className="fs-body2 mb8">{report.title} credential notes</h3>
+        <p className="scope-label">
+          Scope notes for selected {workflow.kind === "utility" ? "utility" : "report"}
+        </p>
+        <h3 className="fs-body2 mb8">{metadata.title} credential notes</h3>
         <ul className="m0">
           <li>Basic/Business: provide your team URL and Personal access token.</li>
           <li>
             Enterprise: provide your site URL
-            {report.credentialRequirements.includes("api-key") ? ", API key," : ""} and either
+            {metadata.credentialRequirements.includes("api-key") ? ", API key," : ""} and either
             connect with Enterprise OAuth or paste an optional access token.
           </li>
           <li>
             Required scope notes:{" "}
-            {report.credentialRequirements
+            {metadata.credentialRequirements
               .map((requirement) => credentialLabels[requirement] ?? requirement)
               .join(", ")}
             .
           </li>
+          {workflow.kind === "utility" && (
+            <li>Read-only workflow: both API lanes are used without requesting write access.</li>
+          )}
           <li>Credential acquisition guidance placeholder: add internal steps here.</li>
         </ul>
       </div>
