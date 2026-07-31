@@ -37,6 +37,24 @@ export const completeSmeCoverageSourceStatus: SmeCoverageSourceStatus = {
   tagSmeCounts: { pageCount: 1, reachedMaxPages: false, hasMore: false },
 };
 
+export const narrativeDemandRows: readonly NormalizedTagDemandRow[] = [
+  normalizedDemandRow("alpha", 100),
+  normalizedDemandRow("bravo", 200),
+  normalizedDemandRow("charlie", 300),
+  normalizedDemandRow("timeout", 600),
+  normalizedDemandRow("delta", 800),
+  normalizedDemandRow("echo", 1000),
+];
+
+export const narrativeSmeRows: readonly NormalizedTagSmeRow[] = [
+  normalizedSmeRow("alpha", 4),
+  normalizedSmeRow("bravo", 4),
+  normalizedSmeRow("charlie", 3),
+  normalizedSmeRow("timeout", 0),
+  normalizedSmeRow("delta", 2),
+  normalizedSmeRow("echo", 1),
+];
+
 export function normalizedDemandRow(
   tagName: string,
   pageViews: number | null,
