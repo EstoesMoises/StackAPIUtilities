@@ -7,6 +7,7 @@
   --so-blue: oklch(0.48 0.13 252);
   --so-blue-soft: oklch(0.95 0.025 252);
   --so-green: oklch(0.52 0.13 147);
+  --so-green-text: oklch(0.42 0.12 147);
   --so-green-soft: oklch(0.94 0.04 147);
   --so-red: oklch(0.54 0.18 28);
   --so-red-soft: oklch(0.95 0.04 28);
@@ -24,7 +25,7 @@
   --so-text-subtle: oklch(0.51 0.025 255);
   --so-border: oklch(0.84 0.018 255);
   --so-border-strong: oklch(0.7 0.03 255);
-  --so-focus: oklch(0.72 0.18 48 / 0.36);
+  --so-focus: var(--so-orange-deep);
   --so-shadow-hairline: 0 1px 2px oklch(0.2 0.035 255 / 0.08);
   --so-z-sticky: 20;
   --ease-out-product: cubic-bezier(0.16, 1, 0.3, 1);
@@ -1593,7 +1594,7 @@ select:disabled {
 
 .run-status-badge__succeeded {
   border-color: oklch(0.78 0.06 147);
-  color: var(--so-green);
+  color: var(--so-green-text);
   background: var(--so-green-soft);
 }
 
@@ -1781,7 +1782,7 @@ select:disabled {
 }
 
 .sme-run-stage__complete strong {
-  color: var(--so-green);
+  color: var(--so-green-text);
 }
 
 .sme-run-stage__failed strong {
@@ -2070,7 +2071,7 @@ select:disabled {
   }
 
   .sme-run-progress__running .sme-run-progress-fill {
-    width: 100%;
+    width: 42%;
     animation: none;
     opacity: 0.45;
   }
