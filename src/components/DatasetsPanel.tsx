@@ -1,6 +1,7 @@
 import { formatPeriodLabel } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
-import type { ReportId, RunPeriodRole, SessionDataset } from "../domain/types";
+import { utilityRegistry } from "../domain/utilityRegistry";
+import type { ReportId, RunPeriodRole, SessionDataset, UtilityId } from "../domain/types";
 import { downloadSessionDataset } from "../utils/datasetDownloads";
 
 interface DatasetsPanelProps {
@@ -35,7 +36,7 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
             <thead>
               <tr>
                 <th scope="col">Dataset</th>
-                <th scope="col">Report</th>
+                <th scope="col">Workflow</th>
                 <th scope="col">Period</th>
                 <th scope="col">Scope</th>
                 <th scope="col">Records</th>
@@ -45,12 +46,13 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
               </tr>
             </thead>
             <tbody>
-              {sortedDatasets.map((dataset) => (
-                <tr key={dataset.id}>
+              {sortedDatasets.map((dataset) => {
+                const sourceLabel = formatDatasetSourceLabel(dataset);
+                return <tr key={dataset.id}>
                   <td>{dataset.name}</td>
-                  <td>{formatReportName(dataset.reportId)}</td>
-                  <td>{formatPeriodRole(dataset.periodRole)}</td>
-                  <td>{dataset.scope ? formatPeriodLabel(dataset.scope) : "Uploaded file"}</td>
+                  <td>{formatWorkflowName(dataset)}</td>
+                  <td>{dataset.utilityId ? "Snapshot" : formatPeriodRole(dataset.periodRole)}</td>
+                  <td>{formatDatasetScope(dataset)}</td>
                   <td>{formatRecordCount(dataset.records.length)}</td>
                   <td>{formatSource(dataset.source)}</td>
                   <td>{formatLoadedAt(dataset.loadedAt)}</td>
@@ -59,7 +61,7 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
                       <button
                         className="s-btn s-btn__outlined s-btn__xs"
                         type="button"
-                        aria-label={`Download ${dataset.name} ${dataset.periodRole ?? "upload"} dataset as CSV`}
+                        aria-label={`Download ${sourceLabel} dataset as CSV`}
                         onClick={() => downloadSessionDataset(dataset, "csv")}
                       >
                         CSV
@@ -67,7 +69,7 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
                       <button
                         className="s-btn s-btn__outlined s-btn__xs"
                         type="button"
-                        aria-label={`Download ${dataset.name} ${dataset.periodRole ?? "upload"} dataset as JSON`}
+                        aria-label={`Download ${sourceLabel} dataset as JSON`}
                         onClick={() => downloadSessionDataset(dataset, "json")}
                       >
                         JSON
@@ -75,15 +77,15 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
                       <button
                         className="s-btn s-btn__outlined s-btn__xs"
                         type="button"
-                        aria-label={`Remove ${dataset.name} ${dataset.periodRole ?? "upload"} dataset`}
+                        aria-label={`Remove ${sourceLabel} dataset`}
                         onClick={() => onRemoveDataset(dataset.id)}
                       >
                         Remove
                       </button>
                     </div>
                   </td>
-                </tr>
-              ))}
+                </tr>;
+              })}
             </tbody>
           </table>
         </div>
@@ -92,12 +94,40 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
   );
 }
 
+function formatWorkflowName(dataset: SessionDataset): string {
+  if (dataset.utilityId) {
+    return formatUtilityName(dataset.utilityId);
+  }
+
+  return formatReportName(dataset.reportId);
+}
+
 function formatReportName(reportId: ReportId | undefined): string {
   if (!reportId) {
     return "Uploaded dataset";
   }
 
   return reportRegistry.find((report) => report.id === reportId)?.title ?? reportId;
+}
+
+function formatUtilityName(utilityId: UtilityId): string {
+  return utilityRegistry.find((utility) => utility.id === utilityId)?.title ?? utilityId;
+}
+
+function formatDatasetScope(dataset: SessionDataset): string {
+  if (dataset.utilityId) {
+    return utilityRegistry.find((utility) => utility.id === dataset.utilityId)?.scopeLabel ?? "Snapshot";
+  }
+
+  return dataset.scope ? formatPeriodLabel(dataset.scope) : "Uploaded file";
+}
+
+function formatDatasetSourceLabel(dataset: SessionDataset): string {
+  if (dataset.utilityId) {
+    return `${formatUtilityName(dataset.utilityId)} ${dataset.name} snapshot`;
+  }
+
+  return `${dataset.name} ${dataset.periodRole ?? "upload"}`;
 }
 
 function formatPeriodRole(periodRole: RunPeriodRole | undefined): string {

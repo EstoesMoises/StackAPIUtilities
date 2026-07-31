@@ -259,6 +259,43 @@ describe("datasetPersistence", () => {
     );
   });
 
+  it("strips nested request bodies from persisted supporting utility records", () => {
+    const state = {
+      ...createInitialSessionState(),
+      datasets: {
+        utility: {
+          id: "utility",
+          snapshotId: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          name: "questions",
+          records: [
+            {
+              question_id: 1,
+              nested: {
+                requestBody: { credentials: { pat: "secret" }, pageSize: 100 },
+                requestBodies: [{ accessToken: "secret" }],
+              },
+            },
+          ],
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          source: "live-api",
+        },
+      },
+      utilityOutputs: {
+        "sme-coverage-analyzer": {
+          utilityId: "sme-coverage-analyzer",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          decisionPack: createPersistedUtilityPack(),
+        },
+      },
+    } as unknown as SessionState;
+
+    const serialized = JSON.stringify(createDatasetSessionSnapshot(state));
+
+    expect(serialized).not.toMatch(/requestBod(?:y|ies)/);
+    expect(serialized).not.toContain("secret");
+  });
+
   it("recursively strips prohibited fields when parsing stored records and safely omits cycles", () => {
     const cycle: Record<string, unknown> = { safe: "cycle-root" };
     cycle.self = cycle;

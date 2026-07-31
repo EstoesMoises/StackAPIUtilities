@@ -894,6 +894,36 @@ describe("sessionStore", () => {
     expect(hydrated.datasets["dataset-1"]?.records).toEqual([{ user_id: 1 }]);
   });
 
+  it("preserves a newer utility selection while hydrating stored content", () => {
+    const current = {
+      ...createInitialSessionState(),
+      selectedUtilityId: "future-utility",
+    } as unknown as ReturnType<typeof createInitialSessionState>;
+    const hydrated = sessionReducer(current, {
+      type: "session/hydratePersistentDatasets",
+      snapshot: {
+        version: 2,
+        selectedReportId: "tag-report",
+        selectedReportIds: ["tag-report"],
+        selectedUtilityId: "sme-coverage-analyzer",
+        datasets: {},
+        reportOutputs: {},
+        reportRunSnapshots: [],
+        utilityOutputs: {},
+        utilityRunSnapshots: [],
+        warnings: [],
+      },
+      preserveSelection: {
+        selectedReportId: "tag-report",
+        selectedReportIds: ["tag-report"],
+        selectedUtilityId: "future-utility",
+      },
+    } as never);
+
+    expect(hydrated.selectedUtilityId).toBe("future-utility");
+    expect(hydrated.utilityOutputs).toEqual({});
+  });
+
   it("leaves existing state unchanged when persistent hydration is invalid", () => {
     const withDataset = sessionReducer(createInitialSessionState(), {
       type: "import/loaded",

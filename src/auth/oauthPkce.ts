@@ -46,7 +46,9 @@ export function buildEnterpriseAuthorizationUrl(input: EnterpriseAuthorizationUr
   const url = new URL("/oauth", normalizeOAuthBaseUrl(input.baseUrl));
   url.searchParams.set("client_id", input.clientId);
   url.searchParams.set("redirect_uri", input.redirectUri);
-  url.searchParams.set("scope", input.scopes.join(","));
+  if (input.scopes.length > 0) {
+    url.searchParams.set("scope", input.scopes.join(","));
+  }
   url.searchParams.set("state", input.state);
   url.searchParams.set("code_challenge", input.codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");

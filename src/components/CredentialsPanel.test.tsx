@@ -9,6 +9,36 @@ afterEach(() => {
 });
 
 describe("CredentialsPanel", () => {
+  it("shows read-only mixed-lane requirements for SME Coverage Analyzer", () => {
+    renderCredentialsPanel({ workflow: { kind: "utility", utilityId: "sme-coverage-analyzer" } });
+
+    expect(screen.getByText("Scope notes for selected utility")).toBeInTheDocument();
+    expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
+    expect(screen.getByText(/read-only/i)).toBeInTheDocument();
+    expect(screen.getByText(/both API lanes/i)).toBeInTheDocument();
+    expect(screen.getByText(/API key, Access token/i)).toBeInTheDocument();
+  });
+
+  it("starts read-only utility Enterprise OAuth with no write scopes", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=abc" }),
+    );
+
+    renderCredentialsPanel({ workflow: { kind: "utility", utilityId: "sme-coverage-analyzer" } });
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ scopes: [] });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).scopes).not.toContain("write_access");
+  });
+
   it("shows PAT credentials for Basic/Business and hides Enterprise OAuth controls", () => {
     renderCredentialsPanel();
 
@@ -627,13 +657,17 @@ describe("CredentialsPanel", () => {
 function renderCredentialsPanel({
   credentials = null,
   onSave = vi.fn(),
+  workflow = { kind: "report", reportId: "tag-report" },
 }: {
   credentials?: SessionCredentials | null;
   onSave?: (credentials: SessionCredentials) => void;
+  workflow?:
+    | { kind: "report"; reportId: "tag-report" }
+    | { kind: "utility"; utilityId: "sme-coverage-analyzer" };
 } = {}) {
   return render(
     <CredentialsPanel
-      selectedReportId="tag-report"
+      workflow={workflow}
       credentials={credentials}
       onSave={onSave}
     />,

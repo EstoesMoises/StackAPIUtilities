@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
 import {
+  completeSmeCoverageDecisionPack,
+  partialSmeCoverageDecisionPack,
+} from "../test/fixtures/smeCoverageFixtures";
+import {
   clearPersistedDatasetSession,
   loadPersistedDatasetSession,
   savePersistedDatasetSession,
@@ -56,6 +60,176 @@ describe("AppShell", () => {
     expect(screen.getByRole("button", { name: "Tag Report" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Data Export" })).toBeInTheDocument();
     await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
+  });
+
+  it("opens the self-contained SME Coverage Analyzer and redirects missing credentials", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Utilities" }));
+    await user.click(screen.getByRole("button", { name: "SME Coverage Analyzer" }));
+
+    expect(screen.getByRole("heading", { name: "SME Coverage Analyzer" })).toBeInTheDocument();
+    expect(screen.getAllByText("All-time demand · Current SME coverage")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Run SME coverage analysis" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+
+    expect(screen.getByRole("heading", { name: "Session Credentials" })).toBeInTheDocument();
+    expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
+    expect(screen.getByText(/add session credentials before running SME Coverage Analyzer/i)).toBeInTheDocument();
+  });
+
+  it("posts only credentials and API-volume settings, shows progress, and stores the completed utility result", async () => {
+    const user = userEvent.setup();
+    const pendingRun = createDeferred<Response>();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/api/utilities/sme-coverage/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          credentials: basicBusinessPatCredentials,
+          pageSize: 100,
+          maxPagesPerDataset: 20,
+          runPreset: "deep-audit",
+        }),
+      });
+    });
+    expect(screen.getByRole("progressbar", { name: "SME Coverage Analyzer progress" })).toBeInTheDocument();
+    expect(screen.getByText(/server is running the following stages in order/i)).toBeInTheDocument();
+
+    pendingRun.resolve(jsonResponse(makeSmeCoverageRunBody(completeSmeCoverageDecisionPack(), "first")));
+
+    expect(await screen.findByRole("heading", { name: "Highest-demand critical gaps" })).toBeInTheDocument();
+    expect(screen.getAllByText("Alpha-platform").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("3 datasets")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    const datasetsPanel = screen.getByRole("region", { name: "Datasets" });
+    expect(within(datasetsPanel).getAllByText("SME Coverage Analyzer")).toHaveLength(3);
+  });
+
+  it("renders partial utility warnings before the executive summary", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(makeSmeCoverageRunBody(partialSmeCoverageDecisionPack(), "partial")),
+    );
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+
+    const warning = await screen.findByText("Question evidence reached the configured collection cap.");
+    const overview = screen.getByText(
+      "This prepared result is partial; interpret priority findings with the warnings above.",
+    );
+    expect(warning.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("replaces the active utility pack on rerun while retaining six supporting datasets", async () => {
+    const user = userEvent.setup();
+    const firstPack = completeSmeCoverageDecisionPack();
+    const secondPack = {
+      ...completeSmeCoverageDecisionPack(),
+      overview: "The second prepared decision pack is active.",
+    };
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(makeSmeCoverageRunBody(firstPack, "first")))
+      .mockResolvedValueOnce(jsonResponse(makeSmeCoverageRunBody(secondPack, "second")));
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+    expect(await screen.findByText(firstPack.overview)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Run again" }));
+
+    expect(await screen.findByText(secondPack.overview)).toBeInTheDocument();
+    expect(screen.queryByText(firstPack.overview)).not.toBeInTheDocument();
+    expect(screen.getByText("6 datasets")).toBeInTheDocument();
+  });
+
+  it("does not let an older utility response replace a newer run", async () => {
+    const user = userEvent.setup();
+    const olderRun = createDeferred<Response>();
+    const newerRun = createDeferred<Response>();
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(olderRun.promise)
+      .mockReturnValueOnce(newerRun.promise);
+    const freshPack = { ...completeSmeCoverageDecisionPack(), overview: "Fresh utility result." };
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    newerRun.resolve(jsonResponse(makeSmeCoverageRunBody(freshPack, "fresh")));
+    expect(await screen.findByText("Fresh utility result.")).toBeInTheDocument();
+
+    await act(async () => {
+      olderRun.resolve(
+        jsonResponse(makeSmeCoverageRunBody({ ...completeSmeCoverageDecisionPack(), overview: "Stale utility result." }, "stale")),
+      );
+      await olderRun.promise;
+    });
+
+    expect(screen.getByText("Fresh utility result.")).toBeInTheDocument();
+    expect(screen.queryByText("Stale utility result.")).not.toBeInTheDocument();
+    expect(screen.getByText("3 datasets")).toBeInTheDocument();
+  });
+
+  it("hydrates a persisted utility pack without credentials", async () => {
+    const user = userEvent.setup();
+    const pack = persistableEmptySmeCoverageDecisionPack();
+    loadPersistedDatasetSessionMock.mockResolvedValueOnce(makePersistedUtilitySnapshot(pack));
+
+    render(<App />);
+
+    expect(await screen.findByText("No credentials")).toBeInTheDocument();
+    await openSmeCoverageAnalyzer(user);
+
+    expect(screen.getByText(pack.overview)).toBeInTheDocument();
+    expect(screen.getByText("No credentials")).toBeInTheDocument();
+  });
+
+  it("persists and restores an empty successful utility pack", async () => {
+    const user = userEvent.setup();
+    const pack = persistableEmptySmeCoverageDecisionPack();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(makeSmeCoverageRunBody(pack, "empty", true)),
+    );
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+
+    expect(await screen.findByText(pack.overview)).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+    const saveCalls = savePersistedDatasetSessionMock.mock.calls;
+    const saved = saveCalls[saveCalls.length - 1]?.[0];
+    expect(saved?.utilityOutputs["sme-coverage-analyzer"]?.decisionPack).toEqual(pack);
+    expect(saved?.datasets).toBeDefined();
   });
 
   it("hydrates persisted browser datasets without credentials", async () => {
@@ -1449,6 +1623,96 @@ async function saveBasicBusinessCredentials(user: ReturnType<typeof userEvent.se
   await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
   await user.type(screen.getByLabelText("Personal access token"), "pat-token");
   await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+}
+
+async function openSmeCoverageAnalyzer(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Utilities" }));
+  await user.click(screen.getByRole("button", { name: "SME Coverage Analyzer" }));
+}
+
+function makeSmeCoverageRunBody(
+  decisionPack: ReturnType<typeof completeSmeCoverageDecisionPack>,
+  marker: string,
+  empty = false,
+) {
+  const pagination = { pageCount: empty ? 0 : 1, reachedMaxPages: false, hasMore: false };
+  return {
+    ok: true as const,
+    result: {
+      utilityId: "sme-coverage-analyzer" as const,
+      utilityTitle: "SME Coverage Analyzer" as const,
+      pageSize: decisionPack.snapshot.pageSize,
+      maxPagesPerDataset: decisionPack.snapshot.maxPagesPerDataset,
+      runPreset: decisionPack.snapshot.runPreset,
+      datasets: [
+        { datasetName: "tags" as const, records: empty ? [] : [{ name: marker }], pagination },
+        { datasetName: "questions" as const, records: empty ? [] : [{ question_id: marker }], pagination },
+        { datasetName: "tagSmeCounts" as const, records: empty ? [] : [{ name: marker }], pagination },
+      ],
+      messages: [],
+      warnings: [...decisionPack.warnings],
+      decisionPack,
+    },
+  };
+}
+
+function makePersistedUtilitySnapshot(decisionPack: ReturnType<typeof completeSmeCoverageDecisionPack>) {
+  return {
+    version: 2 as const,
+    selectedReportId: "tag-report" as const,
+    selectedReportIds: ["tag-report" as const],
+    selectedUtilityId: "sme-coverage-analyzer" as const,
+    datasets: {},
+    reportOutputs: {},
+    reportRunSnapshots: [],
+    utilityOutputs: {
+      "sme-coverage-analyzer": {
+        utilityId: "sme-coverage-analyzer" as const,
+        loadedAt: "2026-07-30T12:00:00.000Z",
+        decisionPack,
+      },
+    },
+    utilityRunSnapshots: [],
+    warnings: [],
+  };
+}
+
+function persistableEmptySmeCoverageDecisionPack(): ReturnType<typeof completeSmeCoverageDecisionPack> {
+  return {
+    snapshot: {
+      instanceHost: "example.stackenterprise.co",
+      generatedAt: "2026-07-30T12:00:00.000Z",
+      scopeLabel: "All-time demand · Current SME coverage",
+      completeness: "Empty",
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+    },
+    warnings: [],
+    summary: {
+      tagsAnalyzed: 0,
+      tagsWithSmes: 0,
+      immediateGaps: 0,
+      criticalUnderCoverage: 0,
+      lightCoverage: 0,
+      unknownRows: 0,
+    },
+    overview: "No tags were available.",
+    assessment: "No assessment can be made.",
+    findings: { immediateGaps: [], criticalUnderCoverage: [], lightCoverage: [] },
+    methodology: {
+      activityQuestionMinimum: 1,
+      activityPageViewThresholdExclusive: 25,
+      activeTagMedianPageViews: null,
+      coveredActiveSampleSize: 0,
+      p75PageViewsPerSme: null,
+      p90PageViewsPerSme: null,
+      percentileSampleSufficient: false,
+      ratioFormula: "pageViews / smeCount",
+      roundingRule: "Nearest whole page view for display; unrounded for calculation",
+    },
+    evidence: [],
+  };
 }
 
 function makeTagReportRunBody(message: string) {

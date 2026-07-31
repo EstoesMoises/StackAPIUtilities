@@ -66,6 +66,8 @@ const prohibitedPersistedKeys = new Set([
   "accessTokenExpiresAt",
   "runQueue",
   "requestPayload",
+  "requestBody",
+  "requestBodies",
   "runProgress",
 ]);
 const omittedJsonValue = Symbol("omitted-json-value");

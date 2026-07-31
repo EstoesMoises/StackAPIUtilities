@@ -127,10 +127,6 @@ export async function handleOAuthPkceStartRequest(
     startPayload.includeNoExpiry === true,
   );
 
-  if (scopes.length === 0) {
-    return { response: jsonResponse({ ok: false, error: START_REQUEST_ERROR }, 400) };
-  }
-
   const now = dependencies.now?.() ?? new Date();
   const codeVerifier = createCodeVerifier();
   const state = createOAuthState();
@@ -681,18 +677,20 @@ function isExpiredPendingOAuthTransaction(pending: PendingOAuthTransaction, now:
 }
 
 function isSupportedRequestedScopeList(scopes: string[]): boolean {
-  return scopes.length > 0 && scopes.every((scope) => SUPPORTED_REQUESTED_SCOPES.has(scope));
+  return (
+    new Set(scopes).size === scopes.length &&
+    scopes.every((scope) => SUPPORTED_REQUESTED_SCOPES.has(scope))
+  );
 }
 
 function isValidPendingOAuthScopes(scopes: string[]): boolean {
-  if (scopes.length === 0 || scopes.length > 2) {
+  if (scopes.length > 2) {
     return false;
   }
 
   const scopeSet = new Set(scopes);
   return (
     scopeSet.size === scopes.length &&
-    scopeSet.has(OAUTH_SCOPE_WRITE_ACCESS) &&
     [...scopeSet].every(
       (scope) => scope === OAUTH_SCOPE_WRITE_ACCESS || scope === OAUTH_SCOPE_NO_EXPIRY,
     )
