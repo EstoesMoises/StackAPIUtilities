@@ -1,7 +1,7 @@
 # Browser OAuth Customer Profiles Design
 
 Date: 2026-08-19
-Status: Design approved in discussion; written spec pending user review
+Status: Approved
 
 ## Summary
 
