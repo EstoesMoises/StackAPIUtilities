@@ -5,6 +5,7 @@ import {
   inactiveUsersCsv,
   interactionMatrixCsv,
   tagMetricsCsv,
+  tagMetricsWithMetadataCsv,
   userMetricsCsv,
 } from "../test/fixtures/reportFixtures";
 import { importReportFile } from "./reportImporters";
@@ -15,10 +16,36 @@ describe("importReportFile", () => {
     expect(result.reportId).toBe("tag-report");
     expect(result.records[0]).toMatchObject({
       tagName: "machine-learning",
+      tagId: null,
+      tagCreationDate: "",
+      lastUsed: "",
       totalPageViews: 551412,
       questionsNoAnswers: 222,
       medianFirstAnswerHours: 7.41,
     });
+  });
+
+  it("imports Tag Report metadata from the updated CSV format", async () => {
+    const result = await importReportFile("tag_metrics.csv", tagMetricsWithMetadataCsv);
+
+    expect(result.records[0]).toMatchObject({
+      tagName: "machine-learning",
+      tagId: 42,
+      tagCreationDate: "2014-05-13",
+      lastUsed: "2026-08-18",
+      totalPageViews: 551412,
+      questionsNoAnswers: 222,
+      medianFirstAnswerHours: 7.41,
+    });
+  });
+
+  it("imports blank and invalid Tag Report IDs as null", async () => {
+    for (const tagId of ["", "not-an-id", "-1", "1.5", "9007199254740992"]) {
+      const csv = tagMetricsWithMetadataCsv.replace("machine-learning,42,", `machine-learning,${tagId},`);
+      const result = await importReportFile("tag_metrics.csv", csv);
+
+      expect(result.records[0]).toMatchObject({ tagId: null });
+    }
   });
 
   it("imports user metrics CSV", async () => {

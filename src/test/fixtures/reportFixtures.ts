@@ -2,6 +2,10 @@ export const tagMetricsCsv = `Tag Name,Total Page Views,Webhooks,Tag Watchers,Co
 machine-learning,551412,22,275,3,15,7.41,4.08,1781,970,763,1014,2,1355,3800,138,1899,222,519,56,1916,2,4426,99,1947,3,6,0
 python,338584,44,188,5,25,6.43,4.07,894,411,434,503,3,616,1323,75,658,122,260,67,795,10,1747,36,740,3,6,1`;
 
+export const tagMetricsWithMetadataCsv = `Tag Name,Tag Id,Tag Creation Date,Last Used,Total Page Views,Webhooks,Tag Watchers,Communities,Total Smes,Median Time To First Answer Hours,Median Time To First Response Hours,Total Unique Contributors,Unique Askers,Unique Answerers,Unique Commenters,Unique Article Contributors,Question Count,Question Upvotes,Question Downvotes,Question Comments,Questions No Answers,Questions Accepted Answer,Questions Self Answered,Answer Count,Sme Answers,Answer Upvotes,Answer Downvotes,Answer Comments,Article Count,Article Upvotes,Article Comments
+machine-learning,42,2014-05-13,2026-08-18,551412,22,275,3,15,7.41,4.08,1781,970,763,1014,2,1355,3800,138,1899,222,519,56,1916,2,4426,99,1947,3,6,0
+python,43,2011-02-15,2026-08-17,338584,44,188,5,25,6.43,4.07,894,411,434,503,3,616,1323,75,658,122,260,67,795,10,1747,36,740,3,6,1`;
+
 export const userMetricsCsv = `User ID,Display Name,Net Reputation,Account Longevity (Days),Account Inactivity (Days),Questions,Questions With No Answers,Answers,Answers Accepted,Median Answer Time (Hours),Articles,Comments,Total Upvotes,Total Downvotes,SME Tags,Account Status,Moderator,Email,Title,Department,External ID,Account ID
 96,Harley Q.,20207,2248,0,262,6,554,455,1.15,35,284,1498,2,"release-management, product-support",Registered,FALSE,user@company.com,"Director, Product Support",Product Operations and Experience,,1`;
 
