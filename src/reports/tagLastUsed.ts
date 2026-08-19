@@ -51,8 +51,14 @@ function parseTimestamp(value: unknown): number | null {
     ? value
     : typeof value === "string" && value.trim() !== "" ? Number(value) : null;
   if (numeric !== null && Number.isFinite(numeric)) {
-    const milliseconds = Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1_000 : numeric;
-    return isValidDateMilliseconds(milliseconds) ? milliseconds : null;
+    const secondsAsMilliseconds = numeric * 1_000;
+    const preferSeconds = Math.abs(numeric) < 1_000_000_000_000;
+    const primary = preferSeconds ? secondsAsMilliseconds : numeric;
+    const fallback = preferSeconds ? numeric : secondsAsMilliseconds;
+
+    return isValidDateMilliseconds(primary)
+      ? primary
+      : isValidDateMilliseconds(fallback) ? fallback : null;
   }
 
   if (typeof value !== "string") return null;
@@ -61,7 +67,10 @@ function parseTimestamp(value: unknown): number | null {
 }
 
 function isValidDateMilliseconds(milliseconds: number): boolean {
-  return Number.isFinite(milliseconds) && Math.abs(milliseconds) <= 8.64e15;
+  if (!Number.isFinite(milliseconds) || Math.abs(milliseconds) > 8.64e15) return false;
+
+  const year = new Date(milliseconds).getUTCFullYear();
+  return year >= 0 && year <= 9_999;
 }
 
 function formatUtcDate(milliseconds: number | undefined): string {

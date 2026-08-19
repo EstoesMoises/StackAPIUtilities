@@ -37,4 +37,24 @@ describe("buildTagLastUsedRows", () => {
       [{ tags: ["python"], creation_date: 100_000_000_000 }],
     )).toEqual([{ tagName: "python", lastUsed: "5138-11-16" }]);
   });
+
+  it("accepts Unix milliseconds supplied as numbers and numeric strings", () => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }, { name: "javascript" }],
+      [
+        { tags: ["python"], creation_date: 946_684_800_000 },
+        { tags: ["javascript"], creationDate: "946684800000" },
+      ],
+    )).toEqual([
+      { tagName: "python", lastUsed: "2000-01-01" },
+      { tagName: "javascript", lastUsed: "2000-01-01" },
+    ]);
+  });
+
+  it("rejects numeric timestamps outside the four-digit UTC date range", () => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }],
+      [{ tags: ["python"], creation_date: 300_000_000_000_000 }],
+    )).toEqual([{ tagName: "python", lastUsed: "" }]);
+  });
 });
