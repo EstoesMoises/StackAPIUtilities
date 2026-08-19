@@ -12,6 +12,10 @@ const PROFILE_STORE_NAME = "profiles";
 const PREFERENCE_STORE_NAME = "preferences";
 const CURRENT_PREFERENCE_KEY = "current";
 const STORAGE_UNAVAILABLE_MESSAGE = "Saved customers are unavailable in this browser.";
+const customerProfileNameCollator = new Intl.Collator("en-US", {
+  usage: "sort",
+  sensitivity: "accent",
+});
 
 export interface OAuthCustomerProfileStoreSnapshot {
   available: boolean;
@@ -60,7 +64,16 @@ export async function loadOAuthCustomerProfileStore(): Promise<OAuthCustomerProf
       }
     }
 
-    profiles.sort((left, right) => left.customerName.localeCompare(right.customerName));
+    profiles.sort((left, right) => {
+      const nameComparison = customerProfileNameCollator.compare(
+        left.customerName,
+        right.customerName,
+      );
+      if (nameComparison !== 0) {
+        return nameComparison;
+      }
+      return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+    });
 
     return {
       available: true,
@@ -165,7 +178,7 @@ async function openDatabase(): Promise<IDBDatabase | null> {
     }
   };
 
-  return requestToPromise(request);
+  return openRequestToPromise(request);
 }
 
 async function requireDatabase(): Promise<IDBDatabase> {
@@ -202,6 +215,38 @@ function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
+  });
+}
+
+function openRequestToPromise(request: IDBOpenDBRequest): Promise<IDBDatabase> {
+  let settled = false;
+
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => {
+      if (settled) {
+        request.result.close();
+        return;
+      }
+
+      settled = true;
+      resolve(request.result);
+    };
+    request.onerror = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(request.error ?? new Error("IndexedDB request failed."));
+    };
+    request.onblocked = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(new Error(STORAGE_UNAVAILABLE_MESSAGE));
+    };
   });
 }
 

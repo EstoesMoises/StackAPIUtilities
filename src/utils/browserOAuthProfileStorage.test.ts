@@ -160,20 +160,28 @@ describe("browserOAuthProfileStorage", () => {
     });
   });
 
-  it("sorts loaded profiles by customer name", async () => {
+  it("sorts profile names with fixed en-US accent semantics and ID tie-breaking", async () => {
     const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
     fake.store("profiles").set(
-      "zulu",
-      createProfile({ id: "zulu", customerName: "Zulu" }),
+      "id-z",
+      createProfile({ id: "id-z", customerName: "acme" }),
     );
     fake.store("profiles").set(
-      "alpha",
-      createProfile({ id: "alpha", customerName: "Alpha" }),
+      "id-a",
+      createProfile({ id: "id-a", customerName: "ACME" }),
+    );
+    fake.store("profiles").set(
+      "accent",
+      createProfile({ id: "accent", customerName: "Ácme" }),
+    );
+    fake.store("profiles").set(
+      "beta",
+      createProfile({ id: "beta", customerName: "Beta" }),
     );
 
     const snapshot = await loadOAuthCustomerProfileStore();
 
-    expect(snapshot.profiles.map(({ customerName }) => customerName)).toEqual(["Alpha", "Zulu"]);
+    expect(snapshot.profiles.map(({ id }) => id)).toEqual(["id-a", "id-z", "accent", "beta"]);
   });
 
   it("defaults malformed preferences safely", async () => {
@@ -219,11 +227,60 @@ describe("browserOAuthProfileStorage", () => {
     );
   });
 
+  it.each([
+    ["load profiles", () => loadOAuthCustomerProfileStore()],
+    ["save profile", () => saveOAuthCustomerProfile(createProfile())],
+    ["save selection", () => saveLastSelectedOAuthCustomerProfileId("profile-1")],
+    ["delete profile", () => deleteOAuthCustomerProfile("profile-1")],
+  ])("rejects %s when opening the database is blocked", async (_name, operation) => {
+    const fake = installFakeIndexedDB();
+    fake.blockNextOpen();
+
+    await expect(operation()).rejects.toThrow(
+      "Saved customers are unavailable in this browser.",
+    );
+    expect(fake.closeCount).toBe(0);
+  });
+
+  it("closes a database that succeeds after its blocked open already rejected", async () => {
+    const fake = installFakeIndexedDB();
+    fake.blockNextOpen({ succeedLater: true });
+
+    await expect(loadOAuthCustomerProfileStore()).rejects.toThrow(
+      "Saved customers are unavailable in this browser.",
+    );
+    await Promise.resolve();
+
+    expect(fake.closeCount).toBe(1);
+  });
+
   it("propagates object store request failures and closes the database", async () => {
     const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
     fake.failNextRequest(new Error("Profile request failed"));
 
     await expect(loadOAuthCustomerProfileStore()).rejects.toThrow("Profile request failed");
+    expect(fake.transactionEvents).toEqual(["error", "abort"]);
+    expect(fake.closeCount).toBe(1);
+  });
+
+  it("rolls back delete when its conditional preference-clearing put fails", async () => {
+    const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
+    fake.store("profiles").set("profile-1", createProfile());
+    fake.store("preferences").set("current", {
+      schemaVersion: 1,
+      lastSelectedProfileId: "profile-1",
+    });
+    fake.failRequestAt(3, new Error("Preference clear failed"));
+
+    await expect(deleteOAuthCustomerProfile("profile-1")).rejects.toThrow(
+      "Preference clear failed",
+    );
+    expect(fake.store("profiles").get("profile-1")).toEqual(createProfile());
+    expect(fake.store("preferences").get("current")).toEqual({
+      schemaVersion: 1,
+      lastSelectedProfileId: "profile-1",
+    });
+    expect(fake.transactionEvents).toEqual(["error", "abort"]);
     expect(fake.closeCount).toBe(1);
   });
 
@@ -324,6 +381,8 @@ function installFakeIndexedDB(options: { existingStores?: string[] } = {}): Fake
 }
 
 type TransactionFailure = { outcome: "abort" | "error"; error: Error };
+type OpenBlock = { succeedLater: boolean };
+type RequestFailure = { remainingRequests: number; error: Error };
 
 class FakeIndexedDB {
   readonly createdObjectStores: string[] = [];
@@ -332,14 +391,16 @@ class FakeIndexedDB {
     storeNames: string[];
     mode: IDBTransactionMode;
   }> = [];
+  readonly transactionEvents: Array<"error" | "abort"> = [];
   readonly indexedDB = {
     open: (name: string, version?: number) => this.open(name, version),
   };
 
   closeCount = 0;
   private readonly stores = new Map<string, Map<string, unknown>>();
+  private nextOpenBlock: OpenBlock | null = null;
   private nextOpenError: Error | null = null;
-  private nextRequestError: Error | null = null;
+  private nextRequestFailure: RequestFailure | null = null;
   private nextTransactionFailure: TransactionFailure | null = null;
 
   constructor(existingStores: string[]) {
@@ -369,8 +430,16 @@ class FakeIndexedDB {
     this.nextOpenError = error;
   }
 
+  blockNextOpen(options: { succeedLater?: boolean } = {}): void {
+    this.nextOpenBlock = { succeedLater: options.succeedLater ?? false };
+  }
+
   failNextRequest(error: Error): void {
-    this.nextRequestError = error;
+    this.failRequestAt(1, error);
+  }
+
+  failRequestAt(requestNumber: number, error: Error): void {
+    this.nextRequestFailure = { remainingRequests: requestNumber, error };
   }
 
   failNextTransaction(outcome: "abort" | "error", error: Error): void {
@@ -378,9 +447,22 @@ class FakeIndexedDB {
   }
 
   consumeRequestError(): Error | null {
-    const error = this.nextRequestError;
-    this.nextRequestError = null;
+    if (!this.nextRequestFailure) {
+      return null;
+    }
+
+    this.nextRequestFailure.remainingRequests -= 1;
+    if (this.nextRequestFailure.remainingRequests > 0) {
+      return null;
+    }
+
+    const { error } = this.nextRequestFailure;
+    this.nextRequestFailure = null;
     return error;
+  }
+
+  recordTransactionEvent(event: "error" | "abort"): void {
+    this.transactionEvents.push(event);
   }
 
   consumeTransactionFailure(): TransactionFailure | null {
@@ -407,7 +489,9 @@ class FakeIndexedDB {
     this.openCalls.push({ name, version });
     const database = new FakeIDBDatabase(this);
     const request = new FakeIDBOpenRequest(database);
+    const openBlock = this.nextOpenBlock;
     const openError = this.nextOpenError;
+    this.nextOpenBlock = null;
     this.nextOpenError = null;
 
     queueMicrotask(() => {
@@ -416,13 +500,28 @@ class FakeIndexedDB {
         return;
       }
 
-      if (!this.hasStore("profiles") || !this.hasStore("preferences")) {
-        request.fireUpgradeNeeded();
+      if (openBlock) {
+        request.fireBlocked();
+        if (openBlock.succeedLater) {
+          queueMicrotask(() => this.finishOpen(request, database));
+        }
+        return;
       }
-      request.fireSuccess(database);
+
+      this.finishOpen(request, database);
     });
 
     return request as unknown as IDBOpenDBRequest;
+  }
+
+  private finishOpen(
+    request: FakeIDBOpenRequest<FakeIDBDatabase>,
+    database: FakeIDBDatabase,
+  ): void {
+    if (!this.hasStore("profiles") || !this.hasStore("preferences")) {
+      request.fireUpgradeNeeded();
+    }
+    request.fireSuccess(database);
   }
 }
 
@@ -512,7 +611,10 @@ class FakeIDBTransaction {
   failRequest(error: Error): void {
     this.error = error;
     this.finished = true;
-    queueMicrotask(() => this.onerror?.());
+    this.fake.recordTransactionEvent("error");
+    this.onerror?.();
+    this.fake.recordTransactionEvent("abort");
+    this.onabort?.();
   }
 
   private queueCompletion(): void {
@@ -531,9 +633,13 @@ class FakeIDBTransaction {
       if (this.failure) {
         this.error = this.failure.error;
         if (this.failure.outcome === "abort") {
+          this.fake.recordTransactionEvent("abort");
           this.onabort?.();
         } else {
+          this.fake.recordTransactionEvent("error");
           this.onerror?.();
+          this.fake.recordTransactionEvent("abort");
+          this.onabort?.();
         }
         return;
       }
@@ -582,7 +688,7 @@ class FakeIDBObjectStore {
     queueMicrotask(() => {
       const error = this.fake.consumeRequestError();
       if (error) {
-        request.fireError(error);
+        this.transaction.runRequestCallback(() => request.fireError(error));
         this.transaction.failRequest(error);
         return;
       }
@@ -613,6 +719,7 @@ class FakeIDBRequest<T> {
 }
 
 class FakeIDBOpenRequest<T> extends FakeIDBRequest<T> {
+  onblocked: (() => void) | null = null;
   onupgradeneeded: (() => void) | null = null;
 
   constructor(result: T) {
@@ -622,5 +729,9 @@ class FakeIDBOpenRequest<T> extends FakeIDBRequest<T> {
 
   fireUpgradeNeeded(): void {
     this.onupgradeneeded?.();
+  }
+
+  fireBlocked(): void {
+    this.onblocked?.();
   }
 }
