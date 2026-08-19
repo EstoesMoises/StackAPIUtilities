@@ -9,6 +9,14 @@ afterEach(() => {
 });
 
 describe("CredentialsPanel", () => {
+  it("discloses Tag Report's v2.3 and v3 Enterprise credential requirements", () => {
+    renderCredentialsPanel();
+
+    expect(screen.getByText(
+      "Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires both an API key and an OAuth access token (or pasted token).",
+    )).toBeInTheDocument();
+  });
+
   it("shows read-only mixed-lane requirements for SME Coverage Analyzer", () => {
     renderCredentialsPanel({ workflow: { kind: "utility", utilityId: "sme-coverage-analyzer" } });
 

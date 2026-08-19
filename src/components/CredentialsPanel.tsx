@@ -68,6 +68,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       ? writeTool!
       : reportRegistry.find((candidate) => candidate.id === workflow.reportId)!;
   const oauthScopes = workflow.kind === "write-tool" ? [...writeTool!.oauthScopes] : [];
+  const isTagReport = workflow.kind === "report" && workflow.reportId === "tag-report";
   const [draft, setDraft] = useState<CredentialsDraft>({
     instanceType: credentials?.instanceType ?? "basic-business",
     baseUrl: credentials?.baseUrl ?? "",
@@ -314,6 +315,12 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
           </li>
           {workflow.kind === "utility" && (
             <li>Read-only workflow: both API lanes are used without requesting write access.</li>
+          )}
+          {isTagReport && (
+            <li>
+              Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires both an{" "}
+              API key and an OAuth access token (or pasted token).
+            </li>
           )}
           <li>Credential acquisition guidance placeholder: add internal steps here.</li>
         </ul>

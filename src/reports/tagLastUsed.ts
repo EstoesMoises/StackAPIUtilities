@@ -62,8 +62,26 @@ function parseTimestamp(value: unknown): number | null {
   }
 
   if (typeof value !== "string") return null;
+  if (!hasValidIsoCalendarDate(value)) return null;
   const milliseconds = Date.parse(value);
   return isValidDateMilliseconds(milliseconds) ? milliseconds : null;
+}
+
+function hasValidIsoCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+  if (match === null) return true;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) return false;
+
+  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1];
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 }
 
 function isValidDateMilliseconds(milliseconds: number): boolean {

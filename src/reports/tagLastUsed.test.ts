@@ -57,4 +57,24 @@ describe("buildTagLastUsedRows", () => {
       [{ tags: ["python"], creation_date: 300_000_000_000_000 }],
     )).toEqual([{ tagName: "python", lastUsed: "" }]);
   });
+
+  it("rejects ISO calendar dates that Date.parse would roll over", () => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }, { name: "javascript" }],
+      [
+        { tags: ["python"], creationDate: "2025-02-29T12:00:00Z" },
+        { tags: ["javascript"], creation_date: "2024-02-30" },
+      ],
+    )).toEqual([
+      { tagName: "python", lastUsed: "" },
+      { tagName: "javascript", lastUsed: "" },
+    ]);
+  });
+
+  it("keeps valid ISO leap-day timestamps", () => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }],
+      [{ tags: ["python"], creationDate: "2024-02-29T12:00:00Z" }],
+    )).toEqual([{ tagName: "python", lastUsed: "2024-02-29" }]);
+  });
 });
