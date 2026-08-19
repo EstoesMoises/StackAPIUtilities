@@ -123,4 +123,36 @@ describe("buildTagLastUsedRows", () => {
       [{ tags: ["python"], creationDate: " \n2024-02-29T12:00:00Z\t" }],
     )).toEqual([{ tagName: "python", lastUsed: "2024-02-29" }]);
   });
+
+  it.each([
+    "2024-02-29T23:59:59.123Z",
+    "2024-02-29T23:59Z",
+    "2024-02-29t23:59:59z",
+    "2024-02-29 23:59:59+02:30",
+    "2024-02-29 23:59:59+14:00",
+  ])("accepts strict timezone-aware ISO-style timestamp %s", (timestamp) => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }],
+      [{ tags: ["python"], creationDate: timestamp }],
+    )).toEqual([{ tagName: "python", lastUsed: "2024-02-29" }]);
+  });
+
+  it.each([
+    "+002025-02-29T12:00:00Z",
+    "2024/02/29",
+    "2024-02-29Z",
+    "2024-02-29T12:00:00",
+    "2024-02-29T24:00:00Z",
+    "2024-02-29T12:60:00Z",
+    "2024-02-29T12:00:60Z",
+    "2024-02-29T12:00:00+24:00",
+    "2024-02-29T12:00:00+12:60",
+    "2024-02-29T12:00:00+14:01",
+    "2024-02-29T12:00:00-15:00",
+  ])("rejects timestamp syntax outside the strict contract: %s", (timestamp) => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }],
+      [{ tags: ["python"], creationDate: timestamp }],
+    )).toEqual([{ tagName: "python", lastUsed: "" }]);
+  });
 });
