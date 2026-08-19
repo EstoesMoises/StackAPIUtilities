@@ -140,7 +140,7 @@ export function useOAuthCustomerProfiles(
         }
 
         setAvailable(true);
-        setProfiles(snapshot.profiles);
+        setProfiles(sortProfiles([...snapshot.profiles]));
         const storedSelection = snapshot.preferences.lastSelectedProfileId;
         const restoredSelection =
           storedSelection !== undefined &&

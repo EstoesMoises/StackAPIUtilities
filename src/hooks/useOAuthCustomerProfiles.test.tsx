@@ -115,6 +115,27 @@ describe("useOAuthCustomerProfiles", () => {
     expect(replacementStorage.load).not.toHaveBeenCalled();
   });
 
+  it("sorts hydrated profiles without mutating the storage snapshot", async () => {
+    const zulu = createProfile("zulu", "Zulu");
+    const equalHigh = createProfile("z-id", "alpha");
+    const accented = createProfile("accented", "Álpha");
+    const equalLow = createProfile("a-id", "Alpha");
+    const storedOrder = [zulu, equalHigh, accented, equalLow];
+    const snapshot = snapshotWith(storedOrder);
+    const storage = createStorage(snapshot);
+    const { result } = renderHook(() => useOAuthCustomerProfiles(storage));
+
+    await waitUntilReady(result);
+
+    expect(result.current.profiles.map((profile) => profile.id)).toEqual([
+      equalLow.id,
+      equalHigh.id,
+      accented.id,
+      zulu.id,
+    ]);
+    expect(snapshot.profiles).toEqual([zulu, equalHigh, accented, equalLow]);
+  });
+
   it("clears a stale last-selected preference without selecting a profile", async () => {
     const profile = createProfile();
     const storage = createStorage(snapshotWith([profile], "missing-profile"));
