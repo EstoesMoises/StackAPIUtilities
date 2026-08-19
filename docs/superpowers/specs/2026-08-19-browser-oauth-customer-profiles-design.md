@@ -5,7 +5,7 @@ Status: Approved
 
 ## Summary
 
-Add browser-local customer profiles for the non-sensitive configuration needed to start Stack Enterprise OAuth. A user can select a saved customer, review the server-controlled redirect URL, and start OAuth without re-entering the Enterprise URL or client ID. Tokens and every other credential remain memory-only.
+Add browser-local customer profiles for the non-sensitive configuration needed to start Stack Enterprise OAuth. A user can select a saved customer, review the server-controlled redirect URL, and start OAuth without re-entering the Enterprise URL or client ID. Access tokens and other long-lived credentials remain session-only; the existing short-lived PKCE transaction cookie remains separate from customer-profile storage.
 
 ## Goals
 
@@ -18,7 +18,7 @@ Add browser-local customer profiles for the non-sensitive configuration needed t
 
 ## Non-Goals
 
-- Do not persist access tokens, API keys, personal access tokens, authorization codes, PKCE verifiers, OAuth state, pending transactions, or client secrets.
+- Do not write access tokens, API keys, personal access tokens, authorization codes, PKCE verifiers, OAuth state, pending transactions, or client secrets to customer-profile IndexedDB. Preserve the existing server-mediated PKCE flow, which temporarily stores verifier, state, and pending transaction details in a protected cookie for at most 10 minutes and clears it after the callback succeeds or fails.
 - Do not automatically start OAuth when a customer is selected.
 - Do not add account sync, server-side profile storage, import/export, or live cross-tab synchronization.
 - Do not let a customer profile override the server-controlled OAuth redirect URL.
@@ -70,6 +70,11 @@ The profile schema intentionally excludes:
 - PKCE verifier, challenge, and state values
 - Pending OAuth transaction data
 - Client secrets
+
+The existing PKCE transaction cookie remains outside customer-profile storage. It
+is `HttpOnly`, `SameSite=Lax`, `Secure` when applicable, scoped to
+`/api/oauth/pkce`, expires after 10 minutes, and is cleared after the callback
+succeeds or fails.
 
 OAuth scopes remain derived from the selected report, utility, or write tool. The `includeNoExpiry` preference is persisted because it is a non-sensitive, explicit customer preference; the resulting `no_expiry` scope is still constructed by the existing OAuth start flow.
 

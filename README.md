@@ -42,9 +42,13 @@ direct users to upload existing CSV or JSON outputs.
 
 ## Credentials
 
-Sensitive credentials are session-only and memory-only. The app does not persist
-access tokens, API keys, PATs, OAuth authorization codes, PKCE state or verifiers,
-pending OAuth transactions, or client secrets.
+The app keeps access tokens, API keys, and PATs session-only and in memory. OAuth
+authorization codes and client secrets are not persisted. The server-mediated
+PKCE flow temporarily stores OAuth state, the verifier, and pending transaction
+details in a protected cookie for at most 10 minutes. That cookie is `HttpOnly`,
+`SameSite=Lax`, `Secure` when applicable, scoped to `/api/oauth/pkce`, and cleared
+after the callback succeeds or fails. None of these sensitive values enter the
+customer-profile IndexedDB database.
 
 For Stack Enterprise OAuth, users may explicitly save browser-local customer
 profiles containing only a customer name, Enterprise instance URL, OAuth client

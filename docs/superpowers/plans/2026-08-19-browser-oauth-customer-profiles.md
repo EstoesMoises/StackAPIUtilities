@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let each browser user explicitly save, restore, update, and delete non-sensitive Stack Enterprise OAuth customer setup while keeping every credential and PKCE transaction value memory-only.
+**Goal:** Let each browser user explicitly save, restore, update, and delete non-sensitive Stack Enterprise OAuth customer setup while excluding credentials and PKCE transaction values from profile storage and preserving the existing short-lived protected PKCE cookie.
 
 **Architecture:** A pure domain module owns the exact persisted allowlist and validation. A dedicated IndexedDB database and a focused React hook own persistence and hydration independently from datasets and session credentials. `CredentialsPanel` composes a profile manager with the existing PKCE flow, while a read-only server endpoint exposes the same resolved redirect URL used by OAuth start.
 
@@ -2360,9 +2360,13 @@ Expected: the current Credentials section says OAuth client IDs and metadata are
 Replace the opening Credentials paragraphs with:
 
 ```md
-Sensitive credentials are session-only and memory-only. The app does not persist
-access tokens, API keys, PATs, OAuth authorization codes, PKCE state, verifiers,
-pending OAuth transactions, or client secrets.
+The app keeps access tokens, API keys, and PATs session-only and in memory. OAuth
+authorization codes and client secrets are not persisted. The server-mediated
+PKCE flow temporarily stores OAuth state, the verifier, and pending transaction
+details in a protected cookie for at most 10 minutes. That cookie is `HttpOnly`,
+`SameSite=Lax`, `Secure` when applicable, scoped to `/api/oauth/pkce`, and cleared
+after the callback succeeds or fails. None of these sensitive values enter the
+customer-profile IndexedDB database.
 
 For Stack Enterprise OAuth, users may explicitly save browser-local customer
 profiles containing only a customer name, Enterprise instance URL, OAuth client
@@ -2379,7 +2383,7 @@ Keep the existing dataset persistence and OAuth lane guidance after these paragr
 
 Run: `rg -n "OAuth client IDs|customer profile|memory-only|browser-local" README.md PRODUCT.md docs/superpowers/specs/2026-08-19-browser-oauth-customer-profiles-design.md`
 
-Expected: README and the approved spec consistently separate memory-only secrets from browser-local non-sensitive customer profiles; `PRODUCT.md` still correctly describes credentials as sensitive session state.
+Expected: README and the approved spec consistently separate session-only credentials, the short-lived protected PKCE transaction cookie, and browser-local non-sensitive customer profiles; `PRODUCT.md` still correctly describes credentials as sensitive session state.
 
 - [ ] **Step 4: Run all unit and type checks**
 
