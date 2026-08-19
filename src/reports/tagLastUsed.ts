@@ -1,0 +1,69 @@
+import { readQuestionTags, readTagIdentity } from "../domain/tagNormalization";
+
+export interface TagLastUsedRow {
+  tagName: string;
+  lastUsed: string;
+}
+
+export function buildTagLastUsedRows(
+  tags: readonly Record<string, unknown>[],
+  contentRecords: readonly Record<string, unknown>[],
+): TagLastUsedRow[] {
+  const knownTags = new Map<string, string>();
+
+  for (const tag of tags) {
+    const identity = readTagIdentity(tag);
+    if (identity !== null && !knownTags.has(identity.key)) {
+      knownTags.set(identity.key, identity.displayName);
+    }
+  }
+
+  const latestUsed = new Map<string, number>();
+  for (const record of contentRecords) {
+    const timestamp = readContentTimestamp(record);
+    if (timestamp === null) continue;
+
+    for (const tag of readQuestionTags(record)) {
+      if (!knownTags.has(tag.key)) continue;
+      const previous = latestUsed.get(tag.key);
+      if (previous === undefined || timestamp > previous) latestUsed.set(tag.key, timestamp);
+    }
+  }
+
+  return [...knownTags].map(([key, tagName]) => ({
+    tagName,
+    lastUsed: formatUtcDate(latestUsed.get(key)),
+  }));
+}
+
+function readContentTimestamp(record: Record<string, unknown>): number | null {
+  const timestamps = [record.creation_date, record.creationDate]
+    .map(parseTimestamp)
+    .filter((timestamp): timestamp is number => timestamp !== null);
+
+  return timestamps.length === 0 ? null : Math.max(...timestamps);
+}
+
+function parseTimestamp(value: unknown): number | null {
+  if (typeof value === "boolean" || value === null || value === undefined) return null;
+
+  const numeric = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim() !== "" ? Number(value) : null;
+  if (numeric !== null && Number.isFinite(numeric)) {
+    const milliseconds = Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1_000 : numeric;
+    return isValidDateMilliseconds(milliseconds) ? milliseconds : null;
+  }
+
+  if (typeof value !== "string") return null;
+  const milliseconds = Date.parse(value);
+  return isValidDateMilliseconds(milliseconds) ? milliseconds : null;
+}
+
+function isValidDateMilliseconds(milliseconds: number): boolean {
+  return Number.isFinite(milliseconds) && Math.abs(milliseconds) <= 8.64e15;
+}
+
+function formatUtcDate(milliseconds: number | undefined): string {
+  return milliseconds === undefined ? "" : new Date(milliseconds).toISOString().slice(0, 10);
+}

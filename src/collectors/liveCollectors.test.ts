@@ -33,5 +33,6 @@ describe("live collectors", () => {
   it("maps tags to v2 and assigned-SME counts to v3", async () => {
     expect(getLiveDatasetClient("tags")).toBe("v2");
     expect(getLiveDatasetClient("tagSmeCounts")).toBe("v3");
+    expect(getLiveDatasetClient("tagLastUsed")).toBe("v2");
   });
 });

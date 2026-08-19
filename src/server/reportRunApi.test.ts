@@ -8,6 +8,7 @@ const credentials: SessionCredentials = {
   baseUrl: "https://soedemo.stackenterprise.co",
   apiKey: "key",
   accessToken: "token",
+  authSource: "manual-enterprise-token",
 };
 const CONNECTION_REQUIRED_MESSAGE = "Enterprise access token is required for Stack API v3 calls.";
 

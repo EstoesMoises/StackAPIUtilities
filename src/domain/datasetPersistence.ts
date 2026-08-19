@@ -42,6 +42,7 @@ const knownDatasetNames = new Set<DatasetName>([
   "userGroups",
   "tagSmes",
   "tagSmeCounts",
+  "tagLastUsed",
   "reputationHistory",
   "interactions",
   "dataExport",

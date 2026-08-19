@@ -133,7 +133,7 @@ describe("AppShell", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
-      scopes: ["write_access"],
+      scopes: [],
       includeNoExpiry: false,
     });
   });

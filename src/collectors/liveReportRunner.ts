@@ -221,6 +221,7 @@ function normalizeRunPreset(
 function formatDatasetName(datasetName: DatasetName): string {
   const explicitLabels: Partial<Record<DatasetName, string>> = {
     tagSmes: "Tag SMEs",
+    tagLastUsed: "Tag last used",
     userGroups: "User groups",
     reputationHistory: "Reputation history",
     dataExport: "Data export",

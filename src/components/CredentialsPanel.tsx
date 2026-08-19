@@ -67,11 +67,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
     : workflow.kind === "write-tool"
       ? writeTool!
       : reportRegistry.find((candidate) => candidate.id === workflow.reportId)!;
-  const oauthScopes = workflow.kind === "utility"
-    ? []
-    : workflow.kind === "write-tool"
-      ? [...writeTool!.oauthScopes]
-      : ["write_access"];
+  const oauthScopes = workflow.kind === "write-tool" ? [...writeTool!.oauthScopes] : [];
   const [draft, setDraft] = useState<CredentialsDraft>({
     instanceType: credentials?.instanceType ?? "basic-business",
     baseUrl: credentials?.baseUrl ?? "",

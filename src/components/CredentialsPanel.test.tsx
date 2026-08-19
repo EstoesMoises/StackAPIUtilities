@@ -122,7 +122,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Access token (optional)")).toHaveValue("manual-token");
   });
 
-  it("starts Enterprise OAuth with write_access and no no_expiry by default", async () => {
+  it("starts report Enterprise OAuth with no write scopes and no no_expiry by default", async () => {
     const user = userEvent.setup();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
@@ -144,7 +144,7 @@ describe("CredentialsPanel", () => {
         body: JSON.stringify({
           baseUrl: "https://demo.stackenterprise.co",
           clientId: "client-123",
-          scopes: ["write_access"],
+          scopes: [],
           includeNoExpiry: false,
         }),
       });
@@ -152,7 +152,7 @@ describe("CredentialsPanel", () => {
     expect(popup.location.href).toBe("https://demo.stackenterprise.co/oauth?state=abc");
   });
 
-  it("starts Enterprise OAuth with no-expiry opt in", async () => {
+  it("starts report Enterprise OAuth with no-expiry opt in and no write scopes", async () => {
     const user = userEvent.setup();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
@@ -172,7 +172,7 @@ describe("CredentialsPanel", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
-      scopes: ["write_access"],
+      scopes: [],
       includeNoExpiry: true,
     });
   });
