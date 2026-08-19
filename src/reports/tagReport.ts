@@ -836,7 +836,12 @@ function normalizeDate(value: unknown): string {
   if (dateText === "" || !hasValidIsoCalendarDate(dateText)) return "";
 
   const timestamp = Date.parse(dateText);
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : "";
+  return Number.isFinite(timestamp) ? formatFourDigitUtcDate(timestamp) : "";
+}
+
+function formatFourDigitUtcDate(timestamp: number): string {
+  const utcDate = new Date(timestamp).toISOString().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(utcDate) ? utcDate : "";
 }
 
 function hasValidIsoCalendarDate(value: string): boolean {

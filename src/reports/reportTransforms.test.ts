@@ -668,6 +668,50 @@ describe("report transforms", () => {
     expect(healthRows[3]).toMatchObject({ tag_creation_date: "2025-03-05", last_used: "2025-03-05" });
   });
 
+  it("rejects metadata dates whose timezone conversion leaves the four-digit UTC year range", () => {
+    const healthRows = buildTagHealthRows([
+      {
+        tagName: "future-overflow",
+        tagCreationDate: "9999-12-31T23:59:59-05:00",
+        lastUsed: "9999-12-31T23:59:59-05:00",
+      },
+      {
+        tagName: "past-overflow",
+        tagCreationDate: "0000-01-01T00:00:00+05:00",
+        lastUsed: "0000-01-01T00:00:00+05:00",
+      },
+      {
+        tagName: "valid-boundary",
+        tagCreationDate: "9999-12-31T18:59:59-05:00",
+        lastUsed: "0000-01-01T05:00:00+05:00",
+      },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[1]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[2]).toMatchObject({ tag_creation_date: "9999-12-31", last_used: "0000-01-01" });
+  });
+
+  it("normalizes Tag Health IDs only when they are non-negative safe integers", () => {
+    const healthRows = buildTagHealthRows([
+      { tagName: "zero", tagId: 0 },
+      { tagName: "safe", tag_id: Number.MAX_SAFE_INTEGER },
+      { tagName: "negative", id: -1 },
+      { tagName: "fractional", tagId: 1.5 },
+      { tagName: "non-finite", tag_id: Number.POSITIVE_INFINITY },
+      { tagName: "unsafe", id: Number.MAX_SAFE_INTEGER + 1 },
+    ]);
+
+    expect(healthRows.map((row) => row.tag_id)).toEqual([
+      0,
+      Number.MAX_SAFE_INTEGER,
+      null,
+      null,
+      null,
+      null,
+    ]);
+  });
+
   it("counts duplicate case-variant question tags once for the canonical tag", () => {
     const healthRows = buildTagHealthRowsFromLiveRecords([
       { datasetName: "tags", name: "JavaScript" },
