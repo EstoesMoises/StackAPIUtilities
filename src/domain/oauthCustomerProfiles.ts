@@ -39,7 +39,7 @@ export interface OAuthCustomerProfileDependencies {
   now?: () => Date;
 }
 
-const customerNameCollator = new Intl.Collator("und", {
+const customerNameCollator = new Intl.Collator("en-US", {
   usage: "search",
   sensitivity: "accent",
 });

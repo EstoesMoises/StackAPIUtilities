@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION,
   createOAuthCustomerProfile,
@@ -83,6 +83,35 @@ describe("OAuth customer profiles", () => {
     );
 
     expect(result.ok).toBe(true);
+  });
+
+  it("uses deterministic English casing for dotted and dotless I", async () => {
+    const collatorSpy = vi.spyOn(Intl, "Collator");
+    vi.resetModules();
+
+    try {
+      const { createOAuthCustomerProfile: createProfile } = await import(
+        "./oauthCustomerProfiles"
+      );
+      const existing = [{ ...profile, customerName: "I" }];
+
+      expect(createProfile({ ...draft, customerName: "i" }, existing)).toEqual({
+        ok: false,
+        errors: { customerName: "Use a unique customer name." },
+      });
+      expect(
+        createProfile({ ...draft, customerName: "ı" }, existing, {
+          createId: () => "profile-2",
+          now: () => new Date("2026-08-20T10:00:00.000Z"),
+        }).ok,
+      ).toBe(true);
+      expect(collatorSpy).toHaveBeenCalledWith("en-US", {
+        usage: "search",
+        sensitivity: "accent",
+      });
+    } finally {
+      collatorSpy.mockRestore();
+    }
   });
 
   it("updates a profile while retaining its own name and immutable fields", () => {
