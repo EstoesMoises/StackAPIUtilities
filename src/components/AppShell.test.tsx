@@ -85,8 +85,8 @@ describe("AppShell", () => {
     const user = userEvent.setup();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=utility" }),
+    const fetchMock = mockOAuthEndpoints(
+      "https://demo.stackenterprise.co/oauth?state=utility",
     );
 
     render(<App />);
@@ -100,8 +100,8 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
     await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+    await waitFor(() => expect(findOAuthStartCall(fetchMock)).toBeDefined());
+    expect(JSON.parse(String(findOAuthStartCall(fetchMock)?.[1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
       scopes: [],
@@ -113,8 +113,8 @@ describe("AppShell", () => {
     const user = userEvent.setup();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=report" }),
+    const fetchMock = mockOAuthEndpoints(
+      "https://demo.stackenterprise.co/oauth?state=report",
     );
 
     render(<App />);
@@ -129,8 +129,8 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
     await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+    await waitFor(() => expect(findOAuthStartCall(fetchMock)).toBeDefined());
+    expect(JSON.parse(String(findOAuthStartCall(fetchMock)?.[1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
       scopes: ["write_access"],
@@ -142,8 +142,8 @@ describe("AppShell", () => {
     const user = userEvent.setup();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=write-tool" }),
+    const fetchMock = mockOAuthEndpoints(
+      "https://demo.stackenterprise.co/oauth?state=write-tool",
     );
 
     render(<App />);
@@ -158,8 +158,8 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
     await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+    await waitFor(() => expect(findOAuthStartCall(fetchMock)).toBeDefined());
+    expect(JSON.parse(String(findOAuthStartCall(fetchMock)?.[1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
       scopes: ["write_access"],
@@ -1712,9 +1712,7 @@ describe("AppShell", () => {
     const user = userEvent.setup();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=abc" }),
-    );
+    const fetchMock = mockOAuthEndpoints();
 
     render(<App />);
 
@@ -1727,7 +1725,7 @@ describe("AppShell", () => {
     await waitFor(() => {
       expect(popup.location.href).toBe("https://demo.stackenterprise.co/oauth?state=abc");
     });
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/oauth/pkce/start");
+    expect(findOAuthStartCall(fetchMock)?.[0]).toBe("/api/oauth/pkce/start");
 
     act(() => {
       window.dispatchEvent(
@@ -1894,4 +1892,26 @@ function createDeferred<T>() {
   });
 
   return { promise, resolve, reject };
+}
+
+function mockOAuthEndpoints(
+  authorizationUrl = "https://demo.stackenterprise.co/oauth?state=abc",
+) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (String(input) === "/api/oauth/pkce/config") {
+      return jsonResponse({
+        ok: true,
+        redirectUri: "https://utilities.example.com/api/oauth/pkce/callback",
+      });
+    }
+    if (String(input) === "/api/oauth/pkce/start" && init?.method === "POST") {
+      return jsonResponse({ ok: true, authorizationUrl });
+    }
+    throw new Error(`Unexpected fetch: ${String(input)}`);
+  });
+}
+
+function findOAuthStartCall(fetchMock: ReturnType<typeof mockOAuthEndpoints>) {
+  return fetchMock.mock.calls.find(([input, init]) =>
+    String(input) === "/api/oauth/pkce/start" && init?.method === "POST");
 }
