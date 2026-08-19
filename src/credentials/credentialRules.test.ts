@@ -153,6 +153,17 @@ describe("validateCredentialsForReport", () => {
     expect(result.messages).toContain(CONNECTION_REQUIRED_MESSAGE);
   });
 
+  it("requires an Enterprise access token for Tag Report metadata even with an API key", () => {
+    const result = validateCredentialsForReport("tag-report", {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      apiKey: "key",
+    }, NOW);
+
+    expect(result.valid).toBe(false);
+    expect(result.messages).toContain(CONNECTION_REQUIRED_MESSAGE);
+  });
+
   it("accepts Enterprise API key credentials for reports that only use Stack API v2.3 datasets", () => {
     const result = validateCredentialsForReport("inactive-users", {
       instanceType: "enterprise",

@@ -37,8 +37,8 @@ describe("reportDownloads", () => {
     expect(download.mimeType).toBe("text/csv;charset=utf-8");
     expect(download.contents).toBe(
       [
-        "tag_name,health_status,page_views,question_count,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action",
-        "python,Needs SME coverage,500,8,11,0,20,1,12,Assign or confirm SMEs for this tag.",
+        "tag_name,tag_id,tag_creation_date,last_used,health_status,page_views,question_count,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action",
+        "python,,,,Needs SME coverage,500,8,11,0,20,1,12,Assign or confirm SMEs for this tag.",
       ].join("\n"),
     );
   });
@@ -67,7 +67,7 @@ describe("reportDownloads", () => {
     });
 
     expect(download.contents).toBe(
-      "tag_name,health_status,page_views,question_count,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action",
+      "tag_name,tag_id,tag_creation_date,last_used,health_status,page_views,question_count,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action",
     );
   });
 
@@ -83,7 +83,7 @@ describe("reportDownloads", () => {
 
     expect(downloadTextFile).toHaveBeenCalledWith(
       "tag-report-tag-health-current-2026-07-08.csv",
-      expect.stringContaining("tag_name,health_status,page_views"),
+      expect.stringContaining("tag_name,tag_id,tag_creation_date,last_used,health_status,page_views"),
       "text/csv;charset=utf-8",
     );
   });

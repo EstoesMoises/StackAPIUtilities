@@ -18,4 +18,16 @@ describe("reportRegistry", () => {
     expect(getExecutableReports().map((report) => report.id)).not.toContain("webhook-report");
     expect(getExecutableReports().map((report) => report.id)).not.toContain("scim-user-deletion");
   });
+
+  it("plans Tag Report metadata datasets in dependency order", () => {
+    expect(reportRegistry.find((report) => report.id === "tag-report")?.requiredDatasets).toEqual([
+      "tags",
+      "users",
+      "questions",
+      "articles",
+      "tagSmes",
+      "tagSmeCounts",
+      "tagLastUsed",
+    ]);
+  });
 });

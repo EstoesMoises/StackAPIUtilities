@@ -71,6 +71,9 @@ describe("report transforms", () => {
 
     expect(healthRows[0]).toMatchObject({
       tag_name: "python",
+      tag_id: null,
+      tag_creation_date: "",
+      last_used: "",
       health_status: "Needs SME coverage",
       page_views: 500,
       question_count: 8,
@@ -129,7 +132,7 @@ describe("report transforms", () => {
 
   it("summarizes Tag Health rows for dashboard-ready metrics and slices", () => {
     const summary = summarizeTagHealthRows([
-      {
+      tagHealthRow({
         tag_name: "python",
         health_status: "Needs response attention",
         page_views: 500,
@@ -140,8 +143,8 @@ describe("report transforms", () => {
         unanswered_questions: 3,
         median_first_answer_hours: 36,
         recommended_action: "Review unanswered questions and response time for this tag.",
-      },
-      {
+      }),
+      tagHealthRow({
         tag_name: "r",
         health_status: "Healthy",
         page_views: 250,
@@ -152,8 +155,8 @@ describe("report transforms", () => {
         unanswered_questions: 0,
         median_first_answer_hours: 5,
         recommended_action: "Maintain current coverage and response habits.",
-      },
-      {
+      }),
+      tagHealthRow({
         tag_name: "excel",
         health_status: "Needs SME coverage",
         page_views: 150,
@@ -164,7 +167,7 @@ describe("report transforms", () => {
         unanswered_questions: 0,
         median_first_answer_hours: 9,
         recommended_action: "Assign or confirm SMEs for this tag.",
-      },
+      }),
     ]);
 
     expect(summary.metricCards).toContainEqual({ label: "Tags Covered", value: 3 });
@@ -596,6 +599,9 @@ describe("report transforms", () => {
     expect(healthRows).toEqual([
       {
         tag_name: "python",
+        tag_id: null,
+        tag_creation_date: "",
+        last_used: "",
         health_status: "Needs response attention",
         page_views: 80,
         question_count: 2,
@@ -606,6 +612,103 @@ describe("report transforms", () => {
         median_first_answer_hours: 0,
         recommended_action: "Review unanswered questions and response time for this tag.",
       },
+    ]);
+  });
+
+  it("joins normalized metadata from live Tag Health records", () => {
+    const healthRows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tagSmeCounts", id: 42, name: "PYTHON", creationDate: "2014-05-13T12:00:00Z" },
+      { datasetName: "tags", name: "python", totalPageViews: 100 },
+      { datasetName: "tagLastUsed", tagName: "python", lastUsed: "2026-08-18" },
+    ]);
+
+    expect(healthRows).toEqual([
+      expect.objectContaining({
+        tag_name: "PYTHON",
+        tag_id: 42,
+        tag_creation_date: "2014-05-13",
+        last_used: "2026-08-18",
+      }),
+    ]);
+  });
+
+  it("rejects invalid lowercase-t metadata dates without rejecting valid timestamps", () => {
+    const healthRows = buildTagHealthRows([
+      {
+        tagName: "invalid-date",
+        tagCreationDate: "2024-02-30t00:00:00Z",
+        lastUsed: "2024-02-30t00:00:00Z",
+      },
+      {
+        tagName: "valid-date",
+        tagCreationDate: "2024-02-29t00:00:00Z",
+        lastUsed: "2024-02-29t00:00:00Z",
+      },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[1]).toMatchObject({ tag_creation_date: "2024-02-29", last_used: "2024-02-29" });
+  });
+
+  it("accepts only valid ISO metadata date forms", () => {
+    const healthRows = buildTagHealthRows([
+      { tagName: "slash-date", tagCreationDate: "02/30/2024", lastUsed: "02/30/2024" },
+      { tagName: "invalid-suffix", tagCreationDate: "2024-02-30Z", lastUsed: "2024-02-30Z" },
+      { tagName: "date-only", tagCreationDate: "2024-02-29", lastUsed: "2024-02-29" },
+      {
+        tagName: "offset-timestamp",
+        tagCreationDate: "2025-03-04T23:59:59-05:00",
+        lastUsed: "2025-03-04T23:59:59-05:00",
+      },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[1]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[2]).toMatchObject({ tag_creation_date: "2024-02-29", last_used: "2024-02-29" });
+    expect(healthRows[3]).toMatchObject({ tag_creation_date: "2025-03-05", last_used: "2025-03-05" });
+  });
+
+  it("rejects metadata dates whose timezone conversion leaves the four-digit UTC year range", () => {
+    const healthRows = buildTagHealthRows([
+      {
+        tagName: "future-overflow",
+        tagCreationDate: "9999-12-31T23:59:59-05:00",
+        lastUsed: "9999-12-31T23:59:59-05:00",
+      },
+      {
+        tagName: "past-overflow",
+        tagCreationDate: "0000-01-01T00:00:00+05:00",
+        lastUsed: "0000-01-01T00:00:00+05:00",
+      },
+      {
+        tagName: "valid-boundary",
+        tagCreationDate: "9999-12-31T18:59:59-05:00",
+        lastUsed: "0000-01-01T05:00:00+05:00",
+      },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[1]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[2]).toMatchObject({ tag_creation_date: "9999-12-31", last_used: "0000-01-01" });
+  });
+
+  it("normalizes Tag Health IDs only when they are non-negative safe integers", () => {
+    const healthRows = buildTagHealthRows([
+      { tagName: "zero", tagId: 0 },
+      { tagName: "safe", tag_id: Number.MAX_SAFE_INTEGER },
+      { tagName: "negative", id: -1 },
+      { tagName: "fractional", tagId: 1.5 },
+      { tagName: "non-finite", tag_id: Number.POSITIVE_INFINITY },
+      { tagName: "unsafe", id: Number.MAX_SAFE_INTEGER + 1 },
+    ]);
+
+    expect(healthRows.map((row) => row.tag_id)).toEqual([
+      0,
+      Number.MAX_SAFE_INTEGER,
+      null,
+      null,
+      null,
+      null,
     ]);
   });
 
@@ -739,6 +842,9 @@ describe("report transforms", () => {
 function tagHealthRow(overrides: Partial<TagHealthRow>): TagHealthRow {
   return {
     tag_name: "tag",
+    tag_id: null,
+    tag_creation_date: "",
+    last_used: "",
     health_status: "Healthy",
     page_views: 0,
     question_count: 0,

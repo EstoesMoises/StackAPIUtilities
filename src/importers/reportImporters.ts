@@ -29,6 +29,9 @@ export async function importReportFile(fileName: string, text: string): Promise<
 function importTagMetrics(text: string) {
   return parseCsvRecords<Record<string, string>>(text).map((row) => ({
     tagName: row["Tag Name"],
+    tagId: toOptionalTagId(row["Tag Id"]),
+    tagCreationDate: String(row["Tag Creation Date"] ?? "").trim(),
+    lastUsed: String(row["Last Used"] ?? "").trim(),
     totalPageViews: toNumber(row["Total Page Views"]),
     webhooks: toNumber(row.Webhooks),
     tagWatchers: toNumber(row["Tag Watchers"]),
@@ -38,6 +41,14 @@ function importTagMetrics(text: string) {
     medianFirstAnswerHours: toNumber(row["Median Time To First Answer Hours"]),
     answerCount: toNumber(row["Answer Count"]),
   }));
+}
+
+function toOptionalTagId(value: unknown): number | null {
+  if (typeof value === "string" && value.trim() === "") return null;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+
+  const tagId = Number(value);
+  return Number.isSafeInteger(tagId) && tagId >= 0 ? tagId : null;
 }
 
 function importUserMetrics(text: string) {

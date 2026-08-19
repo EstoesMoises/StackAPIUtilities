@@ -144,13 +144,14 @@ describe("runLiveReport", () => {
   it("warns when a preset cap leaves more dataset data available", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = input.toString();
-      const isTagsDataset = url.includes("/tags?") && !url.includes("/top-answerers/");
+      const isTagsDataset = url.includes("/2.3/tags?");
 
       return Promise.resolve(
         new Response(
           JSON.stringify({
             items: isTagsDataset ? [{ name: "python" }] : itemsForTagReportUrl(url),
             has_more: isTagsDataset,
+            totalPages: url.includes("/v3/") ? 1 : undefined,
           }),
           { status: 200 },
         ),
@@ -178,13 +179,14 @@ describe("runLiveReport", () => {
   it("clears stale preset labels when custom volume settings do not match the requested preset", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = input.toString();
-      const isTagsDataset = url.includes("/tags?") && !url.includes("/top-answerers/");
+      const isTagsDataset = url.includes("/2.3/tags?");
 
       return Promise.resolve(
         new Response(
           JSON.stringify({
             items: isTagsDataset ? [{ name: "python" }] : itemsForTagReportUrl(url),
             has_more: isTagsDataset,
+            totalPages: url.includes("/v3/") ? 1 : undefined,
           }),
           { status: 200 },
         ),
@@ -212,7 +214,11 @@ describe("runLiveReport", () => {
   it("runs Tag Report by collecting tag SME records from tags", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) =>
       Promise.resolve(
-        new Response(JSON.stringify({ items: itemsForTagReportUrl(input.toString()), has_more: false }), {
+        new Response(JSON.stringify({
+          items: itemsForTagReportUrl(input.toString()),
+          has_more: false,
+          totalPages: input.toString().includes("/v3/") ? 1 : undefined,
+        }), {
           status: 200,
         }),
       ),
@@ -220,6 +226,7 @@ describe("runLiveReport", () => {
 
     const result = await runLiveReport("tag-report", basicCredentials, {
       fetchFn: fetchMock,
+      scope: { startDate: "2025-01-01", endDate: "2025-01-31" },
     });
 
     expect(result.datasets.map((dataset) => dataset.datasetName)).toEqual([
@@ -228,10 +235,57 @@ describe("runLiveReport", () => {
       "questions",
       "articles",
       "tagSmes",
+      "tagSmeCounts",
+      "tagLastUsed",
     ]);
     expect(result.datasets.find((dataset) => dataset.datasetName === "tagSmes")?.records).toEqual([
       { tagName: "python", user_id: 1, score: 12 },
     ]);
+    expect(result.datasets.find((dataset) => dataset.datasetName === "tagSmeCounts")?.records).toEqual([
+      { id: 42, name: "python", creationDate: "2014-05-13T00:00:00Z" },
+    ]);
+    expect(result.datasets.find((dataset) => dataset.datasetName === "tagLastUsed")?.records).toEqual([
+      { tagName: "python", lastUsed: "2025-01-01" },
+    ]);
+
+    const questionUrls = fetchMock.mock.calls
+      .map((call) => call[0].toString())
+      .filter((url) => url.includes("/questions?"));
+    const articleUrls = fetchMock.mock.calls
+      .map((call) => call[0].toString())
+      .filter((url) => url.includes("/articles?"));
+    expect(questionUrls).toHaveLength(2);
+    expect(articleUrls).toHaveLength(2);
+    expect(questionUrls.some((url) => url.includes("fromdate=1735689600"))).toBe(true);
+    expect(articleUrls.some((url) => url.includes("todate=1738281600"))).toBe(true);
+    expect(questionUrls.filter((url) => !url.includes("fromdate=") && !url.includes("todate="))).toHaveLength(1);
+    expect(articleUrls.filter((url) => !url.includes("fromdate=") && !url.includes("todate="))).toHaveLength(1);
+  });
+
+  it("warns when all-time Tag last used data reaches the Quick sample page cap", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString();
+      const isLastUsedContent = (url.includes("/questions?") || url.includes("/articles?")) && !url.includes("fromdate=");
+      return Promise.resolve(new Response(JSON.stringify({
+        items: itemsForTagReportUrl(url),
+        has_more: isLastUsedContent,
+        totalPages: 1,
+      }), { status: 200 }));
+    });
+
+    const result = await runLiveReport("tag-report", basicCredentials, {
+      fetchFn: fetchMock,
+      pageSize: 50,
+      maxPagesPerDataset: 1,
+      runPreset: "quick-sample",
+    });
+
+    expect(result.warnings).toContainEqual({
+      reportId: "tag-report",
+      code: "dataset-page-cap",
+      message:
+        "Tag last used hit the Quick sample page cap (requested up to 50 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
+    });
   });
 
   it("runs API User Report by collecting reputation history from users", async () => {
@@ -340,12 +394,24 @@ function itemsForInteractionsUrl(url: string): Record<string, unknown>[] {
 }
 
 function itemsForTagReportUrl(url: string): Record<string, unknown>[] {
-  if (url.includes("/tags?")) {
+  if (url.includes("/v3/") && url.includes("/tags?")) {
+    return [{ id: 42, name: "python", creationDate: "2014-05-13T00:00:00Z" }];
+  }
+
+  if (url.includes("/2.3/tags?")) {
     return [{ name: "python" }];
   }
 
   if (url.includes("/top-answerers/")) {
     return [{ user_id: 1, score: 12 }];
+  }
+
+  if (url.includes("/questions?")) {
+    return [{ id: 1, tags: ["python"], creation_date: 1_735_689_600 }];
+  }
+
+  if (url.includes("/articles?")) {
+    return [{ id: 2, tags: ["python"], creationDate: "2025-01-01T00:00:00Z" }];
   }
 
   return [{ id: 1 }];

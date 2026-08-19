@@ -11,6 +11,8 @@ describe("planDatasetsForReports", () => {
       "questions",
       "articles",
       "tagSmes",
+      "tagSmeCounts",
+      "tagLastUsed",
       "reputationHistory",
       "communities",
     ]);
@@ -124,6 +126,60 @@ describe("collectDataset", () => {
     expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/users/1;2/reputation-history", {
       pagesize: "100",
     });
+  });
+
+  it("collects all-time tag last-used metadata without period date filters", async () => {
+    const clients = createMockClients();
+    clients.v2.getPagedResult
+      .mockResolvedValueOnce({
+        items: [{ tags: ["python"], creation_date: 1_735_689_600 }],
+        pageCount: 2,
+        reachedMaxPages: true,
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        items: [{ tags: ["python"], creationDate: "2025-01-01T23:00:00-05:00" }],
+        pageCount: 1,
+        reachedMaxPages: false,
+        hasMore: false,
+      });
+
+    await expect(collectDataset("tagLastUsed", clients, {
+      collectedDatasets: { tagSmeCounts: [{ name: "python" }] },
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      pageSize: 50,
+      maxPagesPerDataset: 2,
+    })).resolves.toEqual({
+      records: [{ tagName: "python", lastUsed: "2025-01-02" }],
+      pagination: { pageCount: 3, reachedMaxPages: true, hasMore: true },
+    });
+
+    expect(clients.v2.getPagedResult).toHaveBeenNthCalledWith(1, "/questions", { pagesize: "50" }, { maxPages: 2 });
+    expect(clients.v2.getPagedResult).toHaveBeenNthCalledWith(2, "/articles", { pagesize: "50" }, { maxPages: 2 });
+  });
+
+  it("does not fetch last-used content when no known tags were collected", async () => {
+    const clients = createMockClients();
+
+    await expect(collectDataset("tagLastUsed", clients, {
+      collectedDatasets: { tagSmeCounts: [] },
+    })).resolves.toEqual({
+      records: [],
+      pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+    });
+    expect(clients.v2.getPagedResult).not.toHaveBeenCalled();
+  });
+
+  it("does not fetch last-used content when collected metadata has no tag identities", async () => {
+    const clients = createMockClients();
+
+    await expect(collectDataset("tagLastUsed", clients, {
+      collectedDatasets: { tagSmeCounts: [{ id: 42 }] },
+    })).resolves.toEqual({
+      records: [],
+      pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+    });
+    expect(clients.v2.getPagedResult).not.toHaveBeenCalled();
   });
 
   it("throws an explicit error for unsupported live datasets", async () => {

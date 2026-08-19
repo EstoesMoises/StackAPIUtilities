@@ -308,6 +308,10 @@ describe("sessionStore", () => {
           records: [{ name: "python", totalPageViews: 350, tagWatchers: 12 }],
         },
         {
+          datasetName: "tagSmeCounts",
+          records: [{ id: 42, name: "PYTHON", creationDate: "2014-05-13T12:00:00Z" }],
+        },
+        {
           datasetName: "questions",
           records: [
             {
@@ -325,16 +329,23 @@ describe("sessionStore", () => {
           datasetName: "tagSmes",
           records: [{ tagName: "python", user_id: 1 }],
         },
+        {
+          datasetName: "tagLastUsed",
+          records: [{ tagName: "python", lastUsed: "2026-08-18" }],
+        },
       ],
     });
 
-    expect(Object.values(state.datasets)).toHaveLength(3);
+    expect(Object.values(state.datasets)).toHaveLength(5);
     expect(Object.values(state.datasets).find((dataset) => dataset.name === "tags")?.records).toEqual([
       { name: "python", totalPageViews: 350, tagWatchers: 12 },
     ]);
     expect(state.reportOutputs["tag-report"]?.records).toEqual([
       expect.objectContaining({
-        tag_name: "python",
+        tag_name: "PYTHON",
+        tag_id: 42,
+        tag_creation_date: "2014-05-13",
+        last_used: "2026-08-18",
         health_status: "Healthy",
         page_views: 400,
         question_count: 1,

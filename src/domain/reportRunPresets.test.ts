@@ -38,7 +38,7 @@ describe("report run presets", () => {
 
   it("discloses technical settings in user-facing copy", () => {
     expect(getReportRunPresetDisclosure("deep-audit")).toBe(
-      "SME detail is separate: up to 2,000 top-answerer records for each collected tag. Technical settings: pageSize 100, maxPagesPerDataset 20. Slower, but reduces the chance of capped results.",
+      "Last-used metadata separately requests up to 2,000 all-time questions and 2,000 all-time articles. SME detail is separate: up to 2,000 top-answerer records for each collected tag. Technical settings: pageSize 100, maxPagesPerDataset 20. Slower, but reduces the chance of capped results.",
     );
   });
 

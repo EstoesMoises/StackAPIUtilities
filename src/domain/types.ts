@@ -41,6 +41,7 @@ export type DatasetName =
   | "userGroups"
   | "tagSmes"
   | "tagSmeCounts"
+  | "tagLastUsed"
   | "reputationHistory"
   | "interactions"
   | "dataExport";

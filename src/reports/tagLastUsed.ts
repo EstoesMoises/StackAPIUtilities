@@ -1,0 +1,138 @@
+import { readQuestionTags, readTagIdentity } from "../domain/tagNormalization";
+
+export interface TagLastUsedRow {
+  tagName: string;
+  lastUsed: string;
+}
+
+export function buildTagLastUsedRows(
+  tags: readonly Record<string, unknown>[],
+  contentRecords: readonly Record<string, unknown>[],
+): TagLastUsedRow[] {
+  const knownTags = new Map<string, string>();
+
+  for (const tag of tags) {
+    const identity = readTagIdentity(tag);
+    if (identity !== null && !knownTags.has(identity.key)) {
+      knownTags.set(identity.key, identity.displayName);
+    }
+  }
+
+  const latestUsed = new Map<string, number>();
+  for (const record of contentRecords) {
+    const timestamp = readContentTimestamp(record);
+    if (timestamp === null) continue;
+
+    for (const tag of readQuestionTags(record)) {
+      if (!knownTags.has(tag.key)) continue;
+      const previous = latestUsed.get(tag.key);
+      if (previous === undefined || timestamp > previous) latestUsed.set(tag.key, timestamp);
+    }
+  }
+
+  return [...knownTags].map(([key, tagName]) => ({
+    tagName,
+    lastUsed: formatUtcDate(latestUsed.get(key)),
+  }));
+}
+
+function readContentTimestamp(record: Record<string, unknown>): number | null {
+  const timestamps = [record.creation_date, record.creationDate]
+    .map(parseTimestamp)
+    .filter((timestamp): timestamp is number => timestamp !== null);
+
+  return timestamps.length === 0 ? null : Math.max(...timestamps);
+}
+
+function parseTimestamp(value: unknown): number | null {
+  if (typeof value === "boolean" || value === null || value === undefined) return null;
+
+  const stringValue = typeof value === "string" ? value.trim() : null;
+  if (stringValue === "") return null;
+  const numeric = typeof value === "number"
+    ? value
+    : stringValue !== null ? Number(stringValue) : null;
+  if (numeric !== null && Number.isFinite(numeric)) {
+    const secondsAsMilliseconds = numeric * 1_000;
+    const preferSeconds = Math.abs(numeric) < 1_000_000_000_000;
+    const primary = preferSeconds ? secondsAsMilliseconds : numeric;
+    const fallback = preferSeconds ? numeric : secondsAsMilliseconds;
+
+    return isValidDateMilliseconds(primary)
+      ? primary
+      : isValidDateMilliseconds(fallback) ? fallback : null;
+  }
+
+  return stringValue === null ? null : parseStrictIsoTimestamp(stringValue);
+}
+
+function parseStrictIsoTimestamp(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:([Tt ])(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|z|([+-])(\d{2}):(\d{2})))?$/.exec(value);
+  if (match === null) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!isValidCalendarDate(year, month, day)) return null;
+
+  if (match[4] === undefined) {
+    return createUtcMilliseconds(year, month, day, 0, 0, 0, 0);
+  }
+
+  const hour = Number(match[5]);
+  const minute = Number(match[6]);
+  const second = Number(match[7] ?? 0);
+  if (hour > 23 || minute > 59 || second > 59) return null;
+
+  const fractionDigits = match[8]?.slice(1) ?? "";
+  const milliseconds = Number((fractionDigits + "000").slice(0, 3));
+  let timestamp = createUtcMilliseconds(year, month, day, hour, minute, second, milliseconds);
+
+  if (match[10] !== undefined) {
+    const offsetHour = Number(match[11]);
+    const offsetMinute = Number(match[12]);
+    if (offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)) return null;
+
+    const offsetMilliseconds = (offsetHour * 60 + offsetMinute) * 60_000;
+    timestamp += match[10] === "+" ? -offsetMilliseconds : offsetMilliseconds;
+  }
+
+  return isValidDateMilliseconds(timestamp) ? timestamp : null;
+}
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+
+  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1];
+}
+
+function createUtcMilliseconds(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  milliseconds: number,
+): number {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, milliseconds);
+  return date.getTime();
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function isValidDateMilliseconds(milliseconds: number): boolean {
+  if (!Number.isFinite(milliseconds) || Math.abs(milliseconds) > 8.64e15) return false;
+
+  const year = new Date(milliseconds).getUTCFullYear();
+  return year >= 0 && year <= 9_999;
+}
+
+function formatUtcDate(milliseconds: number | undefined): string {
+  return milliseconds === undefined ? "" : new Date(milliseconds).toISOString().slice(0, 10);
+}

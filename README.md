@@ -14,6 +14,12 @@ read-only Scripts are:
 - Community Members
 - Data Export
 
+Tag Report includes the stable Enterprise API v3 tag ID and tag creation date.
+Its `last_used` value is the latest UTC `creation_date` among questions or
+articles that currently carry the tag, not tag assignment, edit, or general
+activity time. Last-used collection scans all fetched history even when health
+metrics are date-scoped; API cap warnings mean the result may be incomplete.
+
 Utilities answer defined operational questions directly from API data. The SME
 Coverage Analyzer produces an evidence-first decision pack for the question:
 where is all-time knowledge demand not matched by current assigned-SME coverage?

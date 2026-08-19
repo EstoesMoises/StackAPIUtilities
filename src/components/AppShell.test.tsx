@@ -133,8 +133,36 @@ describe("AppShell", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
-      scopes: ["write_access"],
+      scopes: [],
       includeNoExpiry: false,
+    });
+  });
+
+  it("requests no-expiry read-only report OAuth without write_access", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=report-no-expiry" }),
+    );
+
+    render(<App />);
+
+    await openSmeCoverageAnalyzer(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByLabelText("Request non-expiring token"));
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      baseUrl: "https://demo.stackenterprise.co",
+      clientId: "client-123",
+      scopes: [],
+      includeNoExpiry: true,
     });
   });
 
