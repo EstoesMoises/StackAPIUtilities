@@ -39,15 +39,28 @@ export interface OAuthCustomerProfileDependencies {
   now?: () => Date;
 }
 
+const customerNameCollator = new Intl.Collator("und", {
+  usage: "search",
+  sensitivity: "accent",
+});
+
+function normalizeDraftString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function normalizeDraft(draft: OAuthCustomerProfileDraft): OAuthCustomerProfileDraft {
-  const baseUrl = draft.baseUrl.trim();
+  const baseUrl = normalizeDraftString(draft.baseUrl);
 
   return {
-    customerName: draft.customerName.trim(),
+    customerName: normalizeDraftString(draft.customerName),
     baseUrl: isSupportedEnterpriseOAuthTarget(baseUrl) ? normalizeOAuthBaseUrl(baseUrl) : baseUrl,
-    oauthClientId: draft.oauthClientId.trim(),
+    oauthClientId: normalizeDraftString(draft.oauthClientId),
     includeNoExpiry: draft.includeNoExpiry,
   };
+}
+
+function customerNamesMatch(left: string, right: string): boolean {
+  return customerNameCollator.compare(left.normalize("NFC"), right.normalize("NFC")) === 0;
 }
 
 function validateDraft(
@@ -63,7 +76,7 @@ function validateDraft(
     existingProfiles.some(
       (profile) =>
         profile.id !== profileIdToExclude &&
-        profile.customerName.trim().toLowerCase() === draft.customerName.toLowerCase(),
+        customerNamesMatch(profile.customerName.trim(), draft.customerName),
     )
   ) {
     errors.customerName = "Use a unique customer name.";

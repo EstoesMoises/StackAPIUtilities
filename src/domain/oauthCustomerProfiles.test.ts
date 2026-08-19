@@ -60,6 +60,31 @@ describe("OAuth customer profiles", () => {
     });
   });
 
+  it.each([
+    ["Greek sigma case forms", "ΟΣ", "οσ"],
+    ["canonically equivalent accents", "É", "E\u0301"],
+  ])("rejects customer names duplicated by %s", (_description, existingName, newName) => {
+    expect(
+      createOAuthCustomerProfile(
+        { ...draft, customerName: newName },
+        [{ ...profile, customerName: existingName }],
+      ),
+    ).toEqual({
+      ok: false,
+      errors: { customerName: "Use a unique customer name." },
+    });
+  });
+
+  it("retains accent distinctions in customer names", () => {
+    const result = createOAuthCustomerProfile(
+      { ...draft, customerName: "È" },
+      [{ ...profile, customerName: "É" }],
+      { createId: () => "profile-2", now: () => new Date("2026-08-20T10:00:00.000Z") },
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
   it("updates a profile while retaining its own name and immutable fields", () => {
     const result = updateOAuthCustomerProfile(
       profile,
@@ -86,6 +111,21 @@ describe("OAuth customer profiles", () => {
     });
   });
 
+  it("rejects an update that collides with a different existing profile", () => {
+    const otherProfile = { ...profile, id: "profile-2", customerName: "Other Customer" };
+
+    expect(
+      updateOAuthCustomerProfile(
+        profile,
+        { ...draft, customerName: "other customer" },
+        [profile, otherProfile],
+      ),
+    ).toEqual({
+      ok: false,
+      errors: { customerName: "Use a unique customer name." },
+    });
+  });
+
   it.each([
     ["blank name", { ...draft, customerName: "  " }, { customerName: "Enter a customer name." }],
     ["blank client ID", { ...draft, oauthClientId: "  " }, { oauthClientId: "Enter an OAuth client ID." }],
@@ -99,6 +139,17 @@ describe("OAuth customer profiles", () => {
     expect(createOAuthCustomerProfile({ ...draft, includeNoExpiry: "true" } as never, [])).toEqual({
       ok: false,
       errors: { includeNoExpiry: "Choose whether to include users without an expiry date." },
+    });
+  });
+
+  it.each([
+    ["customerName", null, { customerName: "Enter a customer name." }],
+    ["baseUrl", 42, { baseUrl: "Enter a Stack Enterprise HTTPS instance URL." }],
+    ["oauthClientId", {}, { oauthClientId: "Enter an OAuth client ID." }],
+  ])("returns structured errors for a non-string %s", (field, value, errors) => {
+    expect(createOAuthCustomerProfile({ ...draft, [field]: value } as never, [])).toEqual({
+      ok: false,
+      errors,
     });
   });
 
