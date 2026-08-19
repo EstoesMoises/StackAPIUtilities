@@ -826,6 +826,56 @@ select:disabled {
   font-size: 13px;
 }
 
+.oauth-profile-manager {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  gap: 12px;
+  border: 1px solid var(--so-border);
+  border-radius: 8px;
+  background: var(--so-surface-raised);
+}
+
+.oauth-profile-manager > legend {
+  padding: 0 4px;
+  color: var(--so-text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.oauth-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+}
+
+.oauth-profile-actions,
+.oauth-redirect-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.oauth-redirect-row > label {
+  flex: 1 1 420px;
+}
+
+.oauth-profile-dirty,
+.oauth-profile-error {
+  margin: 0;
+  font-size: 13px;
+}
+
+.oauth-profile-dirty {
+  color: var(--so-text-muted);
+}
+
+.oauth-profile-error {
+  color: var(--so-red);
+}
+
 .session-overview {
   width: min(100%, 1180px);
   margin-bottom: 16px;
