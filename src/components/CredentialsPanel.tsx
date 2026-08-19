@@ -113,10 +113,12 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   const oauthPendingRef = useRef(false);
   const nextOAuthFlowIdRef = useRef(0);
   const profileBackedDraftEditedRef = useRef(false);
+  const instanceTypeEditedRef = useRef(false);
   const restoredProfileAppliedRef = useRef(false);
   const configRequestedRef = useRef(false);
   const mountedRef = useRef(false);
   const isEnterprise = draft.instanceType === "enterprise";
+  const profileTargetBusy = customerProfiles.busy || oauthPending;
   const profileDraft: OAuthCustomerProfileDraft = {
     customerName: draft.customerName,
     baseUrl: draft.baseUrl,
@@ -173,6 +175,8 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       return;
     }
     restoredProfileAppliedRef.current = true;
+    const keepExplicitBasicLane =
+      instanceTypeEditedRef.current && draft.instanceType === "basic-business";
 
     if (credentials?.instanceType === "enterprise") {
       const matchingSessionProfile = customerProfiles.profiles.find(
@@ -186,7 +190,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
         if (matchingSessionProfile.id !== customerProfiles.selectedProfileId) {
           void customerProfiles.selectProfile(matchingSessionProfile.id);
         }
-        if (!profileBackedDraftEditedRef.current) {
+        if (!profileBackedDraftEditedRef.current && !keepExplicitBasicLane) {
           applyProfile(matchingSessionProfile);
         }
       } else if (customerProfiles.selectedProfileId !== undefined) {
@@ -195,7 +199,11 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       return;
     }
 
-    if (profileBackedDraftEditedRef.current || !customerProfiles.selectedProfile) {
+    if (
+      profileBackedDraftEditedRef.current ||
+      keepExplicitBasicLane ||
+      !customerProfiles.selectedProfile
+    ) {
       return;
     }
 
@@ -315,6 +323,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   }
 
   function handleInstanceTypeChange(instanceType: InstanceType) {
+    instanceTypeEditedRef.current = true;
     updateDraft("instanceType", instanceType, false);
     if (instanceType !== "enterprise") {
       setProfileErrors({});
@@ -541,7 +550,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
           <select
             className="s-select"
             value={draft.instanceType}
-            disabled={customerProfiles.busy}
+            disabled={profileTargetBusy}
             onChange={(event) => handleInstanceTypeChange(event.currentTarget.value as InstanceType)}
           >
             <option value="basic-business">Basic / Business</option>
@@ -557,7 +566,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
             }
             aria-invalid={isEnterprise && profileErrors.baseUrl ? true : undefined}
             value={draft.baseUrl}
-            disabled={customerProfiles.busy}
+            disabled={profileTargetBusy}
             onChange={(event) => updateDraft("baseUrl", event.currentTarget.value)}
             placeholder="https://stackoverflowteams.com/c/team-name"
             required
@@ -577,7 +586,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
               dirty={profileDirty}
               ready={customerProfiles.ready}
               available={customerProfiles.available}
-              busy={customerProfiles.busy}
+              busy={profileTargetBusy}
               errors={profileErrors}
               warning={customerProfiles.warning}
               onCustomerNameChange={(value) => updateDraft("customerName", value)}
@@ -618,7 +627,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
                 }
                 aria-invalid={profileErrors.oauthClientId ? true : undefined}
                 value={draft.oauthClientId}
-                disabled={customerProfiles.busy}
+                disabled={profileTargetBusy}
                 onChange={(event) => updateDraft("oauthClientId", event.currentTarget.value)}
               />
             </label>
@@ -658,7 +667,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
                 <input
                   type="checkbox"
                   checked={draft.includeNoExpiry}
-                  disabled={customerProfiles.busy}
+                  disabled={profileTargetBusy}
                   onChange={(event) => updateDraft("includeNoExpiry", event.currentTarget.checked)}
                 />
                 <span>Request non-expiring token</span>

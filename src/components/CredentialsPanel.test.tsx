@@ -254,21 +254,62 @@ describe("CredentialsPanel", () => {
     });
   });
 
-  it("keeps OAuth callback credentials bound to the pending Enterprise URL", async () => {
+  it("locks the selected customer target while OAuth is pending and saves that target", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [enterpriseProfile(), enterpriseProfile({
+        id: "profile-2",
+        customerName: "Other Customer",
+        baseUrl: "https://other.stackenterprise.co",
+        oauthClientId: "client-456",
+        includeNoExpiry: true,
+      })],
+      lastSelectedProfileId: "profile-1",
+    });
 
     renderCredentialsPanel({ onSave });
 
-    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
-    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
-    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await waitFor(() => {
+      expect(screen.getByLabelText("Saved customer")).toHaveValue("profile-1");
+    });
     await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
-    await user.clear(screen.getByLabelText("Instance URL"));
-    await user.type(screen.getByLabelText("Instance URL"), "https://other.stackenterprise.co");
+
+    const instanceType = screen.getByLabelText("Instance type");
+    const savedCustomer = screen.getByLabelText("Saved customer");
+    const customerName = screen.getByLabelText("Customer name");
+    const baseUrl = screen.getByLabelText("Instance URL");
+    const clientId = screen.getByLabelText("OAuth Client ID");
+    const includeNoExpiry = screen.getByLabelText("Request non-expiring token");
+    expect(instanceType).toBeDisabled();
+    expect(savedCustomer).toBeDisabled();
+    expect(customerName).toBeDisabled();
+    expect(baseUrl).toBeDisabled();
+    expect(clientId).toBeDisabled();
+    expect(includeNoExpiry).toBeDisabled();
+    expect(screen.getByRole("button", { name: "New customer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Update customer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete customer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel Enterprise OAuth" })).toBeEnabled();
+    expect(screen.getByLabelText("API key")).toBeEnabled();
+    expect(screen.getByLabelText("Access token (optional)")).toBeEnabled();
+
+    await user.selectOptions(savedCustomer, "profile-2");
+    await user.click(screen.getByRole("button", { name: "New customer" }));
+    await user.selectOptions(instanceType, "basic-business");
+    await user.type(baseUrl, "https://other.stackenterprise.co");
+    await user.type(clientId, "client-456");
+    await user.click(includeNoExpiry);
+    expect(savedCustomer).toHaveValue("profile-1");
+    expect(customerName).toHaveValue("Demo Customer");
+    expect(instanceType).toHaveValue("enterprise");
+    expect(baseUrl).toHaveValue("https://demo.stackenterprise.co");
+    expect(clientId).toHaveValue("client-123");
+    expect(includeNoExpiry).not.toBeChecked();
 
     const credential = enterpriseOAuthCredentials();
     act(() => {
@@ -601,20 +642,36 @@ describe("CredentialsPanel", () => {
       }
       throw new Error(`Unexpected fetch: ${String(input)}`);
     });
+    installProfileStorage();
 
     renderCredentialsPanel();
 
     await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save customer" })).toBeEnabled();
+    });
     await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
     await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
     const connectButton = screen.getByRole("button", { name: "Connect with Enterprise OAuth" });
     await user.click(connectButton);
 
     expect(connectButton).toBeDisabled();
+    expect(screen.getByLabelText("Instance type")).toBeDisabled();
+    expect(screen.getByLabelText("Saved customer")).toBeDisabled();
+    expect(screen.getByLabelText("Customer name")).toBeDisabled();
+    expect(screen.getByLabelText("Instance URL")).toBeDisabled();
+    expect(screen.getByLabelText("OAuth Client ID")).toBeDisabled();
+    expect(screen.getByLabelText("Request non-expiring token")).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Cancel Enterprise OAuth" }));
 
     expect(firstPopup.close).toHaveBeenCalled();
     expect(connectButton).toBeEnabled();
+    expect(screen.getByLabelText("Instance type")).toBeEnabled();
+    expect(screen.getByLabelText("Saved customer")).toBeEnabled();
+    expect(screen.getByLabelText("Customer name")).toBeEnabled();
+    expect(screen.getByLabelText("Instance URL")).toBeEnabled();
+    expect(screen.getByLabelText("OAuth Client ID")).toBeEnabled();
+    expect(screen.getByLabelText("Request non-expiring token")).toBeEnabled();
 
     await user.click(connectButton);
 
@@ -843,6 +900,59 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Instance URL")).toHaveValue(
       "https://manual.stackenterprise.co",
     );
+  });
+
+  it("keeps an explicit Basic lane choice when profile hydration resolves late", async () => {
+    mockOAuthEndpoints();
+    const open = vi.spyOn(window, "open");
+    const storage = installDeferredProfileStorage();
+    renderCredentialsPanel();
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.selectOptions(screen.getByLabelText("Instance type"), "basic-business");
+    await act(async () => {
+      storage.resolve({
+        profiles: [enterpriseProfile()],
+        lastSelectedProfileId: "profile-1",
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("Instance type")).toHaveValue("basic-business");
+    expect(screen.getByLabelText("Personal access token")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Saved customer")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect with Enterprise OAuth" }))
+      .not.toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    expect(await screen.findByLabelText("Saved customer")).toHaveValue("profile-1");
+    expect(screen.getByLabelText("Customer name")).toHaveValue("Demo Customer");
+  });
+
+  it("keeps an explicit Basic lane choice over a matching Enterprise session", async () => {
+    mockOAuthEndpoints();
+    const storage = installDeferredProfileStorage();
+    renderCredentialsPanel({ credentials: enterpriseOAuthCredentials() });
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "basic-business");
+    await act(async () => {
+      storage.resolve({
+        profiles: [enterpriseProfile()],
+        lastSelectedProfileId: "profile-1",
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("Instance type")).toHaveValue("basic-business");
+    expect(screen.getByLabelText("Personal access token")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Saved customer")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    expect(await screen.findByLabelText("Saved customer")).toHaveValue("profile-1");
+    expect(screen.getByLabelText("Customer name")).toHaveValue("Demo Customer");
   });
 
   it("applies rapid profile choices immediately while preference writes are pending", async () => {
