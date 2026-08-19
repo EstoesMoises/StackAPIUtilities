@@ -840,7 +840,7 @@ function normalizeDate(value: unknown): string {
 }
 
 function hasValidIsoCalendarDate(value: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|\s|$)/.exec(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt]|\s|$)/.exec(value);
   if (match === null) return true;
 
   const year = Number(match[1]);

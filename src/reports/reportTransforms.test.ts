@@ -632,6 +632,24 @@ describe("report transforms", () => {
     ]);
   });
 
+  it("rejects invalid lowercase-t metadata dates without rejecting valid timestamps", () => {
+    const healthRows = buildTagHealthRows([
+      {
+        tagName: "invalid-date",
+        tagCreationDate: "2024-02-30t00:00:00Z",
+        lastUsed: "2024-02-30t00:00:00Z",
+      },
+      {
+        tagName: "valid-date",
+        tagCreationDate: "2024-02-29t00:00:00Z",
+        lastUsed: "2024-02-29t00:00:00Z",
+      },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[1]).toMatchObject({ tag_creation_date: "2024-02-29", last_used: "2024-02-29" });
+  });
+
   it("counts duplicate case-variant question tags once for the canonical tag", () => {
     const healthRows = buildTagHealthRowsFromLiveRecords([
       { datasetName: "tags", name: "JavaScript" },
