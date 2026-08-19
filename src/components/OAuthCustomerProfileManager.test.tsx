@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OAuthCustomerProfile } from "../domain/oauthCustomerProfiles";
 import {
@@ -55,7 +56,26 @@ describe("OAuthCustomerProfileManager", () => {
     const user = userEvent.setup();
     const profile = createProfile();
     const secondProfile = createProfile({ id: "profile-2", customerName: "Other Customer" });
-    const { props } = renderManager({ profiles: [profile, secondProfile] });
+    const props = defaultProps();
+    const onCustomerNameChange = vi.fn();
+
+    function ControlledManager() {
+      const [customerName, setCustomerName] = useState("");
+
+      return (
+        <OAuthCustomerProfileManager
+          {...props}
+          profiles={[profile, secondProfile]}
+          customerName={customerName}
+          onCustomerNameChange={(value) => {
+            onCustomerNameChange(value);
+            setCustomerName(value);
+          }}
+        />
+      );
+    }
+
+    render(<ControlledManager />);
 
     expect(screen.getByRole("group", { name: "Saved customer profiles" })).toBeInTheDocument();
     expect(screen.getByText(/non-sensitive OAuth settings in this browser/i)).toBeInTheDocument();
@@ -67,7 +87,8 @@ describe("OAuthCustomerProfileManager", () => {
     await user.click(screen.getByRole("button", { name: "Save customer" }));
 
     expect(props.onSelect).toHaveBeenCalledWith("profile-2");
-    expect(props.onCustomerNameChange).toHaveBeenLastCalledWith("e");
+    expect(onCustomerNameChange).toHaveBeenLastCalledWith("Acme");
+    expect(screen.getByLabelText("Customer name")).toHaveValue("Acme");
     expect(props.onSave).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Update customer" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete customer" })).not.toBeInTheDocument();
