@@ -77,4 +77,30 @@ describe("buildTagLastUsedRows", () => {
       [{ tags: ["python"], creationDate: "2024-02-29T12:00:00Z" }],
     )).toEqual([{ tagName: "python", lastUsed: "2024-02-29" }]);
   });
+
+  it("rejects rollover dates with lowercase-t and space separators", () => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }, { name: "javascript" }],
+      [
+        { tags: ["python"], creationDate: "2025-02-29t12:00:00Z" },
+        { tags: ["javascript"], creationDate: "2024-02-30 12:00:00Z" },
+      ],
+    )).toEqual([
+      { tagName: "python", lastUsed: "" },
+      { tagName: "javascript", lastUsed: "" },
+    ]);
+  });
+
+  it("keeps valid leap-day timestamps with lowercase-t and space separators", () => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }, { name: "javascript" }],
+      [
+        { tags: ["python"], creationDate: "2024-02-29t12:00:00Z" },
+        { tags: ["javascript"], creationDate: "2024-02-29 12:00:00Z" },
+      ],
+    )).toEqual([
+      { tagName: "python", lastUsed: "2024-02-29" },
+      { tagName: "javascript", lastUsed: "2024-02-29" },
+    ]);
+  });
 });

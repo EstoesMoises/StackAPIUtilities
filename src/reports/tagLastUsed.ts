@@ -68,7 +68,7 @@ function parseTimestamp(value: unknown): number | null {
 }
 
 function hasValidIsoCalendarDate(value: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   if (match === null) return true;
 
   const year = Number(match[1]);
