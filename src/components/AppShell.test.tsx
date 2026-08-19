@@ -100,7 +100,10 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
     await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
 
-    await waitFor(() => expect(findOAuthStartCall(fetchMock)).toBeDefined());
+    await waitFor(() => {
+      expect(oauthEndpointCallCount(fetchMock, "/api/oauth/pkce/config", "GET")).toBe(1);
+      expect(oauthEndpointCallCount(fetchMock, "/api/oauth/pkce/start", "POST")).toBe(1);
+    });
     expect(JSON.parse(String(findOAuthStartCall(fetchMock)?.[1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
@@ -129,7 +132,10 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
     await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
 
-    await waitFor(() => expect(findOAuthStartCall(fetchMock)).toBeDefined());
+    await waitFor(() => {
+      expect(oauthEndpointCallCount(fetchMock, "/api/oauth/pkce/config", "GET")).toBe(1);
+      expect(oauthEndpointCallCount(fetchMock, "/api/oauth/pkce/start", "POST")).toBe(1);
+    });
     expect(JSON.parse(String(findOAuthStartCall(fetchMock)?.[1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
@@ -158,7 +164,10 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
     await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
 
-    await waitFor(() => expect(findOAuthStartCall(fetchMock)).toBeDefined());
+    await waitFor(() => {
+      expect(oauthEndpointCallCount(fetchMock, "/api/oauth/pkce/config", "GET")).toBe(1);
+      expect(oauthEndpointCallCount(fetchMock, "/api/oauth/pkce/start", "POST")).toBe(1);
+    });
     expect(JSON.parse(String(findOAuthStartCall(fetchMock)?.[1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
@@ -1725,6 +1734,8 @@ describe("AppShell", () => {
     await waitFor(() => {
       expect(popup.location.href).toBe("https://demo.stackenterprise.co/oauth?state=abc");
     });
+    expect(oauthEndpointCallCount(fetchMock, "/api/oauth/pkce/config", "GET")).toBe(1);
+    expect(oauthEndpointCallCount(fetchMock, "/api/oauth/pkce/start", "POST")).toBe(1);
     expect(findOAuthStartCall(fetchMock)?.[0]).toBe("/api/oauth/pkce/start");
 
     act(() => {
@@ -1914,4 +1925,13 @@ function mockOAuthEndpoints(
 function findOAuthStartCall(fetchMock: ReturnType<typeof mockOAuthEndpoints>) {
   return fetchMock.mock.calls.find(([input, init]) =>
     String(input) === "/api/oauth/pkce/start" && init?.method === "POST");
+}
+
+function oauthEndpointCallCount(
+  fetchMock: ReturnType<typeof mockOAuthEndpoints>,
+  url: string,
+  method: "GET" | "POST",
+) {
+  return fetchMock.mock.calls.filter(([input, init]) =>
+    String(input) === url && (init?.method ?? "GET") === method).length;
 }
