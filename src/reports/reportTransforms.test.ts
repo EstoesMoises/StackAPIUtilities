@@ -650,6 +650,24 @@ describe("report transforms", () => {
     expect(healthRows[1]).toMatchObject({ tag_creation_date: "2024-02-29", last_used: "2024-02-29" });
   });
 
+  it("accepts only valid ISO metadata date forms", () => {
+    const healthRows = buildTagHealthRows([
+      { tagName: "slash-date", tagCreationDate: "02/30/2024", lastUsed: "02/30/2024" },
+      { tagName: "invalid-suffix", tagCreationDate: "2024-02-30Z", lastUsed: "2024-02-30Z" },
+      { tagName: "date-only", tagCreationDate: "2024-02-29", lastUsed: "2024-02-29" },
+      {
+        tagName: "offset-timestamp",
+        tagCreationDate: "2025-03-04T23:59:59-05:00",
+        lastUsed: "2025-03-04T23:59:59-05:00",
+      },
+    ]);
+
+    expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[1]).toMatchObject({ tag_creation_date: "", last_used: "" });
+    expect(healthRows[2]).toMatchObject({ tag_creation_date: "2024-02-29", last_used: "2024-02-29" });
+    expect(healthRows[3]).toMatchObject({ tag_creation_date: "2025-03-05", last_used: "2025-03-05" });
+  });
+
   it("counts duplicate case-variant question tags once for the canonical tag", () => {
     const healthRows = buildTagHealthRowsFromLiveRecords([
       { datasetName: "tags", name: "JavaScript" },
