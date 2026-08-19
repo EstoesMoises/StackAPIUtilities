@@ -296,6 +296,9 @@ function tagHealthRecord(
 ) {
   return {
     tag_name: tagName,
+    tag_id: null,
+    tag_creation_date: "",
+    last_used: "",
     health_status: healthStatus,
     page_views: 100,
     question_count: 1,

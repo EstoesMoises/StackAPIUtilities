@@ -71,6 +71,9 @@ describe("report transforms", () => {
 
     expect(healthRows[0]).toMatchObject({
       tag_name: "python",
+      tag_id: null,
+      tag_creation_date: "",
+      last_used: "",
       health_status: "Needs SME coverage",
       page_views: 500,
       question_count: 8,
@@ -129,7 +132,7 @@ describe("report transforms", () => {
 
   it("summarizes Tag Health rows for dashboard-ready metrics and slices", () => {
     const summary = summarizeTagHealthRows([
-      {
+      tagHealthRow({
         tag_name: "python",
         health_status: "Needs response attention",
         page_views: 500,
@@ -140,8 +143,8 @@ describe("report transforms", () => {
         unanswered_questions: 3,
         median_first_answer_hours: 36,
         recommended_action: "Review unanswered questions and response time for this tag.",
-      },
-      {
+      }),
+      tagHealthRow({
         tag_name: "r",
         health_status: "Healthy",
         page_views: 250,
@@ -152,8 +155,8 @@ describe("report transforms", () => {
         unanswered_questions: 0,
         median_first_answer_hours: 5,
         recommended_action: "Maintain current coverage and response habits.",
-      },
-      {
+      }),
+      tagHealthRow({
         tag_name: "excel",
         health_status: "Needs SME coverage",
         page_views: 150,
@@ -164,7 +167,7 @@ describe("report transforms", () => {
         unanswered_questions: 0,
         median_first_answer_hours: 9,
         recommended_action: "Assign or confirm SMEs for this tag.",
-      },
+      }),
     ]);
 
     expect(summary.metricCards).toContainEqual({ label: "Tags Covered", value: 3 });
@@ -596,6 +599,9 @@ describe("report transforms", () => {
     expect(healthRows).toEqual([
       {
         tag_name: "python",
+        tag_id: null,
+        tag_creation_date: "",
+        last_used: "",
         health_status: "Needs response attention",
         page_views: 80,
         question_count: 2,
@@ -606,6 +612,23 @@ describe("report transforms", () => {
         median_first_answer_hours: 0,
         recommended_action: "Review unanswered questions and response time for this tag.",
       },
+    ]);
+  });
+
+  it("joins normalized metadata from live Tag Health records", () => {
+    const healthRows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tagSmeCounts", id: 42, name: "PYTHON", creationDate: "2014-05-13T12:00:00Z" },
+      { datasetName: "tags", name: "python", totalPageViews: 100 },
+      { datasetName: "tagLastUsed", tagName: "python", lastUsed: "2026-08-18" },
+    ]);
+
+    expect(healthRows).toEqual([
+      expect.objectContaining({
+        tag_name: "PYTHON",
+        tag_id: 42,
+        tag_creation_date: "2014-05-13",
+        last_used: "2026-08-18",
+      }),
     ]);
   });
 
@@ -739,6 +762,9 @@ describe("report transforms", () => {
 function tagHealthRow(overrides: Partial<TagHealthRow>): TagHealthRow {
   return {
     tag_name: "tag",
+    tag_id: null,
+    tag_creation_date: "",
+    last_used: "",
     health_status: "Healthy",
     page_views: 0,
     question_count: 0,

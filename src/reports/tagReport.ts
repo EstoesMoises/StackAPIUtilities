@@ -11,6 +11,9 @@ import {
 
 export interface TagMetricRow {
   tagName: string;
+  tagId?: number | null;
+  tagCreationDate?: string;
+  lastUsed?: string;
   totalPageViews: number;
   tagWatchers: number;
   totalSmes: number;
@@ -28,6 +31,9 @@ export type TagHealthStatus =
 
 export interface TagHealthRow {
   tag_name: string;
+  tag_id: number | null;
+  tag_creation_date: string;
+  last_used: string;
   health_status: TagHealthStatus;
   page_views: number;
   question_count: number;
@@ -88,6 +94,9 @@ export interface TagHealthComparisonSummary {
 
 export const TAG_HEALTH_CSV_HEADERS = [
   "tag_name",
+  "tag_id",
+  "tag_creation_date",
+  "last_used",
   "health_status",
   "page_views",
   "question_count",
@@ -114,6 +123,10 @@ export interface TagHealthSummary {
 
 interface LiveTagAggregate {
   tagName: string;
+  tagId: number | null;
+  tagCreationDate: string;
+  lastUsed: string;
+  hasV3TagName: boolean;
   pageViews: number;
   questionCount: number;
   tagQuestionCount: number;
@@ -127,6 +140,7 @@ interface LiveTagAggregate {
 
 const TAG_WATCHER_ALIASES = ["tagWatchers", "watcher_count", "watcherCount", "followers", "follower_count"] as const;
 const ANSWER_COUNT_ALIASES = ["answer_count", "answerCount"] as const;
+const TAG_ID_ALIASES = ["tagId", "tag_id", "id"] as const;
 
 const LOW_ACTIVITY_MAX_PAGE_VIEWS = 25;
 const RESPONSE_ATTENTION_HOURS = 24;
@@ -163,6 +177,11 @@ export function summarizeTags(rows: TagMetricRow[]) {
 export function buildTagHealthRows(rows: readonly Record<string, unknown>[]): TagHealthRow[] {
   return rows.map((row) => {
     const tagName = getText(row, "tagName", "tag_name", "name") || "Unknown tag";
+    const tagId = readTagId(row);
+    const tagCreationDate = normalizeDate(
+      getText(row, "tagCreationDate", "tag_creation_date", "creationDate", "creation_date"),
+    );
+    const lastUsed = normalizeDate(getText(row, "lastUsed", "last_used"));
     const pageViews = getNumber(row, "totalPageViews", "page_views", "pageViews", "view_count", "viewCount");
     const questionCount = getNumber(row, "questionCount", "question_count");
     const answerCount = getNumber(row, "answerCount", "answer_count");
@@ -192,6 +211,9 @@ export function buildTagHealthRows(rows: readonly Record<string, unknown>[]): Ta
 
     return {
       tag_name: tagName,
+      tag_id: tagId,
+      tag_creation_date: tagCreationDate,
+      last_used: lastUsed,
       health_status: healthStatus,
       page_views: pageViews,
       question_count: questionCount,
@@ -313,6 +335,9 @@ function normalizeTagHealthRow(row: TagHealthRow): TagHealthRow {
 
   return {
     ...row,
+    tag_id: readTagId({ tag_id: row.tag_id }),
+    tag_creation_date: normalizeDate(row.tag_creation_date),
+    last_used: normalizeDate(row.last_used),
     health_status: healthStatus,
     recommended_action: recommendedAction,
   };
@@ -574,6 +599,17 @@ function getDeltaTone(delta: number, direction: TagDashboardDeltaDirection): Tag
 export function buildTagHealthRowsFromLiveRecords(records: readonly Record<string, unknown>[]): TagHealthRow[] {
   const aggregates = new Map<string, LiveTagAggregate>();
 
+  for (const record of records.filter((candidate) => candidate.datasetName === "tagSmeCounts")) {
+    const tag = readTagIdentity(record);
+    if (tag === null) continue;
+
+    const aggregate = ensureLiveAggregate(aggregates, tag, true);
+    aggregate.tagId ??= readTagId(record);
+    aggregate.tagCreationDate ||= normalizeDate(
+      getText(record, "tagCreationDate", "tag_creation_date", "creationDate", "creation_date"),
+    );
+  }
+
   for (const record of records.filter((candidate) => candidate.datasetName === "tags")) {
     const tag = readTagIdentity(record);
     if (tag === null) continue;
@@ -585,6 +621,15 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
       aggregate.tagQuestionCount,
       readNonNegativeNumber(record, TAG_COUNT_ALIASES) ?? 0,
     );
+  }
+
+  for (const record of records.filter((candidate) => candidate.datasetName === "tagLastUsed")) {
+    const tag = readTagIdentity(record);
+    if (tag === null) continue;
+
+    const aggregate = ensureLiveAggregate(aggregates, tag);
+    const lastUsed = normalizeDate(getText(record, "lastUsed", "last_used"));
+    if (lastUsed > aggregate.lastUsed) aggregate.lastUsed = lastUsed;
   }
 
   for (const record of records.filter((candidate) => candidate.datasetName === "questions")) {
@@ -617,6 +662,9 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
   return buildTagHealthRows(
     [...aggregates.values()].map((aggregate) => ({
       tagName: aggregate.tagName,
+      tagId: aggregate.tagId,
+      tagCreationDate: aggregate.tagCreationDate,
+      lastUsed: aggregate.lastUsed,
       totalPageViews: aggregate.pageViews,
       tagWatchers: aggregate.watcherCount,
       totalSmes: aggregate.smeIds.size,
@@ -672,15 +720,27 @@ function getRecommendedAction(status: TagHealthStatus): string {
 function ensureLiveAggregate(
   aggregates: Map<string, LiveTagAggregate>,
   tag: NormalizedTagIdentity,
+  isV3Tag = false,
 ): LiveTagAggregate {
   const existing = aggregates.get(tag.key);
   if (existing) {
-    if (compareCodeUnits(tag.displayName, existing.tagName) < 0) existing.tagName = tag.displayName;
+    if (isV3Tag) {
+      if (!existing.hasV3TagName || compareCodeUnits(tag.displayName, existing.tagName) < 0) {
+        existing.tagName = tag.displayName;
+      }
+      existing.hasV3TagName = true;
+    } else if (!existing.hasV3TagName && compareCodeUnits(tag.displayName, existing.tagName) < 0) {
+      existing.tagName = tag.displayName;
+    }
     return existing;
   }
 
   const aggregate: LiveTagAggregate = {
     tagName: tag.displayName,
+    tagId: null,
+    tagCreationDate: "",
+    lastUsed: "",
+    hasV3TagName: isV3Tag,
     pageViews: 0,
     questionCount: 0,
     tagQuestionCount: 0,
@@ -762,6 +822,38 @@ function getText(record: Record<string, unknown>, ...fieldNames: string[]): stri
   }
 
   return "";
+}
+
+function readTagId(record: Record<string, unknown>): number | null {
+  const tagId = readNonNegativeNumber(record, TAG_ID_ALIASES);
+  return tagId !== null && Number.isSafeInteger(tagId) ? tagId : null;
+}
+
+function normalizeDate(value: unknown): string {
+  if (typeof value !== "string") return "";
+
+  const dateText = value.trim();
+  if (dateText === "" || !hasValidIsoCalendarDate(dateText)) return "";
+
+  const timestamp = Date.parse(dateText);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : "";
+}
+
+function hasValidIsoCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|\s|$)/.exec(value);
+  if (match === null) return true;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) return false;
+
+  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1];
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 }
 
 function getBoolean(record: Record<string, unknown>, ...fieldNames: string[]): boolean | null {
