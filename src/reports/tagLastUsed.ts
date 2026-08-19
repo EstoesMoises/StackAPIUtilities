@@ -47,9 +47,11 @@ function readContentTimestamp(record: Record<string, unknown>): number | null {
 function parseTimestamp(value: unknown): number | null {
   if (typeof value === "boolean" || value === null || value === undefined) return null;
 
+  const stringValue = typeof value === "string" ? value.trim() : null;
+  if (stringValue === "") return null;
   const numeric = typeof value === "number"
     ? value
-    : typeof value === "string" && value.trim() !== "" ? Number(value) : null;
+    : stringValue !== null ? Number(stringValue) : null;
   if (numeric !== null && Number.isFinite(numeric)) {
     const secondsAsMilliseconds = numeric * 1_000;
     const preferSeconds = Math.abs(numeric) < 1_000_000_000_000;
@@ -61,9 +63,9 @@ function parseTimestamp(value: unknown): number | null {
       : isValidDateMilliseconds(fallback) ? fallback : null;
   }
 
-  if (typeof value !== "string") return null;
-  if (!hasValidIsoCalendarDate(value)) return null;
-  const milliseconds = Date.parse(value);
+  if (stringValue === null) return null;
+  if (!hasValidIsoCalendarDate(stringValue)) return null;
+  const milliseconds = Date.parse(stringValue);
   return isValidDateMilliseconds(milliseconds) ? milliseconds : null;
 }
 

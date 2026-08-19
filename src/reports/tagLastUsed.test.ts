@@ -103,4 +103,24 @@ describe("buildTagLastUsedRows", () => {
       { tagName: "javascript", lastUsed: "2024-02-29" },
     ]);
   });
+
+  it("trims padded strings before rejecting rollover dates and blank values", () => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }, { name: "javascript" }],
+      [
+        { tags: ["python"], creationDate: "\t2025-02-29 12:00:00Z\n" },
+        { tags: ["javascript"], creationDate: " \t\n" },
+      ],
+    )).toEqual([
+      { tagName: "python", lastUsed: "" },
+      { tagName: "javascript", lastUsed: "" },
+    ]);
+  });
+
+  it("accepts padded valid ISO timestamps", () => {
+    expect(buildTagLastUsedRows(
+      [{ name: "python" }],
+      [{ tags: ["python"], creationDate: " \n2024-02-29T12:00:00Z\t" }],
+    )).toEqual([{ tagName: "python", lastUsed: "2024-02-29" }]);
+  });
 });
