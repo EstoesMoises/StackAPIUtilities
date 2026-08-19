@@ -11,6 +11,7 @@ import {
   loadOAuthCustomerProfileStore,
   saveLastSelectedOAuthCustomerProfileId,
   saveOAuthCustomerProfile,
+  saveOAuthCustomerProfileAndSelect,
   type OAuthCustomerProfileStoreSnapshot,
 } from "../utils/browserOAuthProfileStorage";
 
@@ -26,6 +27,7 @@ const customerProfileNameCollator = new Intl.Collator("en-US", {
 export interface OAuthCustomerProfileStorageOperations {
   load: () => Promise<OAuthCustomerProfileStoreSnapshot>;
   saveProfile: (profile: OAuthCustomerProfile) => Promise<void>;
+  saveProfileAndSelect: (profile: OAuthCustomerProfile) => Promise<void>;
   saveLastSelectedProfileId: (profileId?: string) => Promise<void>;
   deleteProfile: (profileId: string) => Promise<void>;
 }
@@ -48,6 +50,7 @@ export interface UseOAuthCustomerProfilesResult {
 const defaultStorage: OAuthCustomerProfileStorageOperations = {
   load: loadOAuthCustomerProfileStore,
   saveProfile: saveOAuthCustomerProfile,
+  saveProfileAndSelect: saveOAuthCustomerProfileAndSelect,
   saveLastSelectedProfileId: saveLastSelectedOAuthCustomerProfileId,
   deleteProfile: deleteOAuthCustomerProfile,
 };
@@ -67,6 +70,7 @@ export function useOAuthCustomerProfiles(
   const selectedProfileIdRef = useRef<string>();
   const mountedRef = useRef(true);
   const loadStartedRef = useRef(false);
+  const readyRef = useRef(false);
   const operationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingMutationCountRef = useRef(0);
 
@@ -169,6 +173,7 @@ export function useOAuthCustomerProfiles(
         setWarning(UNAVAILABLE_WARNING);
       })
       .finally(() => {
+        readyRef.current = true;
         if (mountedRef.current) {
           setReady(true);
         }
@@ -200,6 +205,10 @@ export function useOAuthCustomerProfiles(
 
   const createProfile = useCallback(
     async (draft: OAuthCustomerProfileDraft): Promise<OAuthCustomerProfileMutationResult> => {
+      if (!readyRef.current) {
+        return failedMutation();
+      }
+
       beginMutation();
       try {
         return await enqueue(async () => {
@@ -209,8 +218,7 @@ export function useOAuthCustomerProfiles(
           }
 
           try {
-            await storageRef.current.saveProfile(mutation.profile);
-            await storageRef.current.saveLastSelectedProfileId(mutation.profile.id);
+            await storageRef.current.saveProfileAndSelect(mutation.profile);
           } catch {
             showWriteWarning();
             return failedMutation();
@@ -229,7 +237,12 @@ export function useOAuthCustomerProfiles(
 
   const updateProfile = useCallback(
     async (draft: OAuthCustomerProfileDraft): Promise<OAuthCustomerProfileMutationResult> => {
-      if (selectedProfileIdRef.current === undefined) {
+      if (!readyRef.current) {
+        return failedMutation();
+      }
+
+      const profileId = selectedProfileIdRef.current;
+      if (profileId === undefined) {
         return failedMutation();
       }
 
@@ -237,7 +250,7 @@ export function useOAuthCustomerProfiles(
       try {
         return await enqueue(async () => {
           const selected = profilesRef.current.find(
-            (profile) => profile.id === selectedProfileIdRef.current,
+            (profile) => profile.id === profileId,
           );
           if (!selected) {
             return failedMutation();
@@ -272,6 +285,10 @@ export function useOAuthCustomerProfiles(
   );
 
   const deleteSelectedProfile = useCallback(async (): Promise<boolean> => {
+    if (!readyRef.current) {
+      return false;
+    }
+
     const profileId = selectedProfileIdRef.current;
     if (profileId === undefined) {
       return false;

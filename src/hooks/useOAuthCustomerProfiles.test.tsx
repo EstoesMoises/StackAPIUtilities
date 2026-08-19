@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -73,6 +74,7 @@ function createStorage(
   return {
     load: vi.fn().mockResolvedValue(snapshot),
     saveProfile: vi.fn().mockResolvedValue(undefined),
+    saveProfileAndSelect: vi.fn().mockResolvedValue(undefined),
     saveLastSelectedProfileId: vi.fn().mockResolvedValue(undefined),
     deleteProfile: vi.fn().mockResolvedValue(undefined),
   } satisfies OAuthCustomerProfileStorageOperations;
@@ -113,6 +115,54 @@ describe("useOAuthCustomerProfiles", () => {
     expect(result.current.selectedProfile).toEqual(profile);
     expect(storage.load).toHaveBeenCalledTimes(1);
     expect(replacementStorage.load).not.toHaveBeenCalled();
+  });
+
+  it("hydrates once in StrictMode", async () => {
+    const profile = createProfile();
+    const storage = createStorage(snapshotWith([profile], profile.id));
+    const { result } = renderHook(() => useOAuthCustomerProfiles(storage), {
+      wrapper: StrictMode,
+    });
+
+    await waitUntilReady(result);
+
+    expect(storage.load).toHaveBeenCalledTimes(1);
+    expect(result.current.profiles).toEqual([profile]);
+    expect(result.current.selectedProfileId).toBe(profile.id);
+  });
+
+  it("rejects mutations before hydration without writes or visible-state races", async () => {
+    const hydrated = createProfile("hydrated", "Hydrated Customer");
+    const pendingLoad = deferred<OAuthCustomerProfileStoreSnapshot>();
+    const storage = createStorage();
+    storage.load.mockReturnValue(pendingLoad.promise);
+    const { result } = renderHook(() => useOAuthCustomerProfiles(storage));
+
+    await act(async () => {
+      expect(await result.current.createProfile(draft("Early Customer"))).toEqual({
+        ok: false,
+        errors: {},
+      });
+      expect(await result.current.updateProfile(draft("Early Update"))).toEqual({
+        ok: false,
+        errors: {},
+      });
+      expect(await result.current.deleteSelectedProfile()).toBe(false);
+    });
+
+    expect(result.current.busy).toBe(false);
+    expect(storage.saveProfileAndSelect).not.toHaveBeenCalled();
+    expect(storage.saveProfile).not.toHaveBeenCalled();
+    expect(storage.deleteProfile).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingLoad.resolve(snapshotWith([hydrated], hydrated.id));
+      await pendingLoad.promise;
+    });
+    await waitUntilReady(result);
+
+    expect(result.current.profiles).toEqual([hydrated]);
+    expect(result.current.selectedProfile).toEqual(hydrated);
   });
 
   it("sorts hydrated profiles without mutating the storage snapshot", async () => {
@@ -279,17 +329,16 @@ describe("useOAuthCustomerProfiles", () => {
         oauthClientId: "Enter an OAuth client ID.",
       },
     });
+    expect(storage.saveProfileAndSelect).not.toHaveBeenCalled();
     expect(storage.saveProfile).not.toHaveBeenCalled();
     expect(storage.saveLastSelectedProfileId).not.toHaveBeenCalled();
     expect(result.current.busy).toBe(false);
   });
 
-  it("commits a created profile only after the profile and selection writes succeed", async () => {
-    const profileWrite = deferred<void>();
-    const selectionWrite = deferred<void>();
+  it("commits a created profile only after its atomic storage write succeeds", async () => {
+    const atomicWrite = deferred<void>();
     const storage = createStorage();
-    storage.saveProfile.mockReturnValue(profileWrite.promise);
-    storage.saveLastSelectedProfileId.mockReturnValue(selectionWrite.promise);
+    storage.saveProfileAndSelect.mockReturnValue(atomicWrite.promise);
     const { result } = renderHook(() => useOAuthCustomerProfiles(storage));
     await waitUntilReady(result);
 
@@ -300,22 +349,16 @@ describe("useOAuthCustomerProfiles", () => {
 
     expect(result.current.busy).toBe(true);
     expect(result.current.profiles).toEqual([]);
-    await waitFor(() => expect(storage.saveProfile).toHaveBeenCalledTimes(1));
-    const savedProfile = storage.saveProfile.mock.calls[0][0];
-
-    await act(async () => {
-      profileWrite.resolve(undefined);
-      await profileWrite.promise;
-    });
     await waitFor(() =>
-      expect(storage.saveLastSelectedProfileId).toHaveBeenCalledWith(savedProfile.id),
+      expect(storage.saveProfileAndSelect).toHaveBeenCalledTimes(1),
     );
+    const savedProfile = storage.saveProfileAndSelect.mock.calls[0][0];
     expect(result.current.profiles).toEqual([]);
     expect(result.current.selectedProfileId).toBeUndefined();
 
     let mutation;
     await act(async () => {
-      selectionWrite.resolve(undefined);
+      atomicWrite.resolve(undefined);
       mutation = await mutationPromise;
     });
 
@@ -323,37 +366,51 @@ describe("useOAuthCustomerProfiles", () => {
     expect(result.current.profiles).toEqual([savedProfile]);
     expect(result.current.selectedProfileId).toBe(savedProfile.id);
     expect(result.current.busy).toBe(false);
+    expect(storage.saveProfile).not.toHaveBeenCalled();
+    expect(storage.saveLastSelectedProfileId).not.toHaveBeenCalled();
   });
 
-  it.each(["profile", "selection"] as const)(
-    "retains visible create state when the %s write fails",
-    async (failingWrite) => {
-      const existing = createProfile("existing", "Existing");
-      const storage = createStorage(snapshotWith([existing], existing.id));
-      if (failingWrite === "profile") {
-        storage.saveProfile.mockRejectedValue(new Error("profile write failed"));
-      } else {
-        storage.saveLastSelectedProfileId.mockRejectedValue(
-          new Error("selection write failed"),
-        );
-      }
-      const { result } = renderHook(() => useOAuthCustomerProfiles(storage));
-      await waitUntilReady(result);
+  it("retains visible create state when the atomic write fails", async () => {
+    const existing = createProfile("existing", "Existing");
+    const storage = createStorage(snapshotWith([existing], existing.id));
+    storage.saveProfileAndSelect.mockRejectedValue(new Error("atomic write failed"));
+    const { result } = renderHook(() => useOAuthCustomerProfiles(storage));
+    await waitUntilReady(result);
 
-      let mutation;
-      await act(async () => {
-        mutation = await result.current.createProfile(draft());
-      });
+    let mutation;
+    await act(async () => {
+      mutation = await result.current.createProfile(draft());
+    });
 
-      expect(mutation).toEqual({ ok: false, errors: {} });
-      expect(result.current.profiles).toEqual([existing]);
-      expect(result.current.selectedProfileId).toBe(existing.id);
-      expect(result.current.warning).toBe(WRITE_WARNING);
-      if (failingWrite === "profile") {
-        expect(storage.saveLastSelectedProfileId).not.toHaveBeenCalled();
-      }
-    },
-  );
+    expect(mutation).toEqual({ ok: false, errors: {} });
+    expect(result.current.profiles).toEqual([existing]);
+    expect(result.current.selectedProfileId).toBe(existing.id);
+    expect(result.current.warning).toBe(WRITE_WARNING);
+    expect(storage.saveProfile).not.toHaveBeenCalled();
+    expect(storage.saveLastSelectedProfileId).not.toHaveBeenCalled();
+  });
+
+  it("does not update visible state when a create completes after unmount", async () => {
+    const atomicWrite = deferred<void>();
+    const storage = createStorage();
+    storage.saveProfileAndSelect.mockReturnValue(atomicWrite.promise);
+    const hook = renderHook(() => useOAuthCustomerProfiles(storage));
+    await waitUntilReady(hook.result);
+
+    let creation!: ReturnType<typeof hook.result.current.createProfile>;
+    act(() => {
+      creation = hook.result.current.createProfile(draft());
+    });
+    await waitFor(() => expect(storage.saveProfileAndSelect).toHaveBeenCalledTimes(1));
+    hook.unmount();
+
+    atomicWrite.resolve(undefined);
+    expect((await creation).ok).toBe(true);
+
+    expect(hook.result.current.profiles).toEqual([]);
+    expect(hook.result.current.selectedProfileId).toBeUndefined();
+    expect(hook.result.current.warning).toBeNull();
+  });
 
   it("updates the selected profile, preserves deterministic order, and rejects collisions", async () => {
     const selected = createProfile("selected", "Zulu");
@@ -410,6 +467,51 @@ describe("useOAuthCustomerProfiles", () => {
     expect(result.current.warning).toBe(WRITE_WARNING);
   });
 
+  it("keeps a queued update targeted at the profile selected when it was invoked", async () => {
+    const first = createProfile("profile-a", "Alpha");
+    const second = createProfile("profile-b", "Beta");
+    const queueBlocker = deferred<void>();
+    const storage = createStorage(snapshotWith([first, second], first.id));
+    storage.saveLastSelectedProfileId
+      .mockReturnValueOnce(queueBlocker.promise)
+      .mockResolvedValueOnce(undefined);
+    const { result } = renderHook(() => useOAuthCustomerProfiles(storage));
+    await waitUntilReady(result);
+
+    let firstSelection!: Promise<void>;
+    let update!: ReturnType<typeof result.current.updateProfile>;
+    let secondSelection!: Promise<void>;
+    act(() => {
+      firstSelection = result.current.selectProfile(first.id);
+      update = result.current.updateProfile(
+        draft("Alpha Updated", "https://alpha-updated.stackenterprise.co"),
+      );
+      secondSelection = result.current.selectProfile(second.id);
+    });
+
+    expect(result.current.selectedProfileId).toBe(second.id);
+    await waitFor(() =>
+      expect(storage.saveLastSelectedProfileId).toHaveBeenCalledWith(first.id),
+    );
+    expect(storage.saveProfile).not.toHaveBeenCalled();
+
+    await act(async () => {
+      queueBlocker.resolve(undefined);
+      expect((await update).ok).toBe(true);
+      await Promise.all([firstSelection, secondSelection]);
+    });
+
+    expect(storage.saveProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: first.id, customerName: "Alpha Updated" }),
+    );
+    expect(result.current.profiles).toEqual([
+      expect.objectContaining({ id: first.id, customerName: "Alpha Updated" }),
+      second,
+    ]);
+    expect(result.current.selectedProfileId).toBe(second.id);
+    expect(result.current.selectedProfile).toEqual(second);
+  });
+
   it("deletes the selected profile only after storage succeeds and skips writes without a selection", async () => {
     const selected = createProfile();
     const pendingDelete = deferred<void>();
@@ -459,21 +561,18 @@ describe("useOAuthCustomerProfiles", () => {
   it("recovers the queue after rejection and serializes selection and mutation writes", async () => {
     const selected = createProfile();
     const failedSelection = deferred<void>();
-    const profileWrite = deferred<void>();
+    const atomicWrite = deferred<void>();
     const events: string[] = [];
     const storage = createStorage(snapshotWith([selected]));
     storage.saveLastSelectedProfileId
       .mockImplementationOnce(async () => {
         events.push("selection:start");
         await failedSelection.promise;
-      })
-      .mockImplementationOnce(async () => {
-        events.push("create-selection");
       });
-    storage.saveProfile.mockImplementation(async () => {
-      events.push("profile:start");
-      await profileWrite.promise;
-      events.push("profile:end");
+    storage.saveProfileAndSelect.mockImplementation(async () => {
+      events.push("create:start");
+      await atomicWrite.promise;
+      events.push("create:end");
     });
     const { result } = renderHook(() => useOAuthCustomerProfiles(storage));
     await waitUntilReady(result);
@@ -485,25 +584,20 @@ describe("useOAuthCustomerProfiles", () => {
       creation = result.current.createProfile(draft());
     });
     await waitFor(() => expect(events).toEqual(["selection:start"]));
-    expect(storage.saveProfile).not.toHaveBeenCalled();
+    expect(storage.saveProfileAndSelect).not.toHaveBeenCalled();
 
     await act(async () => {
       failedSelection.reject(new Error("first operation failed"));
       await selection;
     });
-    await waitFor(() => expect(events).toEqual(["selection:start", "profile:start"]));
+    await waitFor(() => expect(events).toEqual(["selection:start", "create:start"]));
 
     await act(async () => {
-      profileWrite.resolve(undefined);
+      atomicWrite.resolve(undefined);
       expect((await creation).ok).toBe(true);
     });
 
-    expect(events).toEqual([
-      "selection:start",
-      "profile:start",
-      "profile:end",
-      "create-selection",
-    ]);
+    expect(events).toEqual(["selection:start", "create:start", "create:end"]);
   });
 
   it("keeps busy true until overlapping create, update, and delete mutations settle", async () => {
@@ -512,9 +606,8 @@ describe("useOAuthCustomerProfiles", () => {
     const deleteWrite = deferred<void>();
     const createWrite = deferred<void>();
     const storage = createStorage(snapshotWith([selected], selected.id));
-    storage.saveProfile
-      .mockReturnValueOnce(updateWrite.promise)
-      .mockReturnValueOnce(createWrite.promise);
+    storage.saveProfile.mockReturnValue(updateWrite.promise);
+    storage.saveProfileAndSelect.mockReturnValue(createWrite.promise);
     storage.deleteProfile.mockReturnValue(deleteWrite.promise);
     const { result } = renderHook(() => useOAuthCustomerProfiles(storage));
     await waitUntilReady(result);
@@ -544,7 +637,7 @@ describe("useOAuthCustomerProfiles", () => {
       deleteWrite.resolve(undefined);
       expect(await deletion).toBe(true);
     });
-    await waitFor(() => expect(storage.saveProfile).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(storage.saveProfileAndSelect).toHaveBeenCalledTimes(1));
     expect(result.current.busy).toBe(true);
 
     await act(async () => {

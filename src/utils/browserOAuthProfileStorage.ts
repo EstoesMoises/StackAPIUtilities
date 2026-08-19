@@ -107,6 +107,42 @@ export async function saveOAuthCustomerProfile(profile: OAuthCustomerProfile): P
   }
 }
 
+export async function saveOAuthCustomerProfileAndSelect(
+  profile: OAuthCustomerProfile,
+): Promise<void> {
+  const sanitizedProfile = parseOAuthCustomerProfile(profile);
+  if (!sanitizedProfile) {
+    throw new Error("The customer profile is invalid.");
+  }
+
+  const preferences: OAuthCustomerProfilePreferences = {
+    schemaVersion: OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION,
+    lastSelectedProfileId: sanitizedProfile.id,
+  };
+  const database = await requireDatabase();
+
+  try {
+    const transaction = database.transaction(
+      [PROFILE_STORE_NAME, PREFERENCE_STORE_NAME],
+      "readwrite",
+    );
+    const profileRequest = transaction
+      .objectStore(PROFILE_STORE_NAME)
+      .put(sanitizedProfile, sanitizedProfile.id);
+    const preferenceRequest = transaction
+      .objectStore(PREFERENCE_STORE_NAME)
+      .put(preferences, CURRENT_PREFERENCE_KEY);
+
+    await Promise.all([
+      requestToPromise(profileRequest),
+      requestToPromise(preferenceRequest),
+      transactionToPromise(transaction),
+    ]);
+  } finally {
+    database.close();
+  }
+}
+
 export async function saveLastSelectedOAuthCustomerProfileId(profileId?: string): Promise<void> {
   if (profileId !== undefined && (profileId.length === 0 || profileId.trim() !== profileId)) {
     throw new Error("The customer profile selection is invalid.");

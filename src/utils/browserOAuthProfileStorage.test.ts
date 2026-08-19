@@ -5,6 +5,7 @@ import {
   loadOAuthCustomerProfileStore,
   saveLastSelectedOAuthCustomerProfileId,
   saveOAuthCustomerProfile,
+  saveOAuthCustomerProfileAndSelect,
 } from "./browserOAuthProfileStorage";
 
 const originalIndexedDB = globalThis.indexedDB;
@@ -70,6 +71,57 @@ describe("browserOAuthProfileStorage", () => {
     await saveOAuthCustomerProfile(updated);
 
     expect([...fake.store("profiles").entries()]).toEqual([[updated.id, updated]]);
+  });
+
+  it("atomically saves a sanitized profile followed by its exact selection", async () => {
+    const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
+    const profile = {
+      ...createProfile(),
+      accessToken: "access-secret",
+      clientSecret: "client-secret",
+    } as OAuthCustomerProfile;
+
+    await saveOAuthCustomerProfileAndSelect(profile);
+
+    expect(fake.putCalls).toEqual([
+      { storeName: "profiles", key: profile.id, value: createProfile() },
+      {
+        storeName: "preferences",
+        key: "current",
+        value: { schemaVersion: 1, lastSelectedProfileId: profile.id },
+      },
+    ]);
+    expect(fake.store("profiles").get(profile.id)).toEqual(createProfile());
+    expect(fake.store("preferences").get("current")).toEqual({
+      schemaVersion: 1,
+      lastSelectedProfileId: profile.id,
+    });
+    expect(fake.transactionCalls[fake.transactionCalls.length - 1]).toEqual({
+      storeNames: ["profiles", "preferences"],
+      mode: "readwrite",
+    });
+    expect(fake.closeCount).toBe(1);
+  });
+
+  it("rolls back profile and selection when the atomic selection put fails", async () => {
+    const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
+    fake.store("preferences").set("current", {
+      schemaVersion: 1,
+      lastSelectedProfileId: "existing-profile",
+    });
+    fake.failRequestAt(2, new Error("Atomic selection failed"));
+
+    await expect(saveOAuthCustomerProfileAndSelect(createProfile())).rejects.toThrow(
+      "Atomic selection failed",
+    );
+
+    expect(fake.store("profiles").size).toBe(0);
+    expect(fake.store("preferences").get("current")).toEqual({
+      schemaVersion: 1,
+      lastSelectedProfileId: "existing-profile",
+    });
+    expect(fake.transactionEvents).toEqual(["error", "abort"]);
+    expect(fake.closeCount).toBe(1);
   });
 
   it("rejects an invalid profile before opening IndexedDB", async () => {
@@ -210,6 +262,7 @@ describe("browserOAuthProfileStorage", () => {
 
   it.each([
     ["save profile", () => saveOAuthCustomerProfile(createProfile())],
+    ["save profile and selection", () => saveOAuthCustomerProfileAndSelect(createProfile())],
     ["save selection", () => saveLastSelectedOAuthCustomerProfileId("profile-1")],
     ["delete profile", () => deleteOAuthCustomerProfile("profile-1")],
   ])("rejects %s when IndexedDB is unavailable", async (_name, mutate) => {
@@ -230,6 +283,7 @@ describe("browserOAuthProfileStorage", () => {
   it.each([
     ["load profiles", () => loadOAuthCustomerProfileStore()],
     ["save profile", () => saveOAuthCustomerProfile(createProfile())],
+    ["save profile and selection", () => saveOAuthCustomerProfileAndSelect(createProfile())],
     ["save selection", () => saveLastSelectedOAuthCustomerProfileId("profile-1")],
     ["delete profile", () => deleteOAuthCustomerProfile("profile-1")],
   ])("rejects %s when opening the database is blocked", async (_name, operation) => {
@@ -326,6 +380,21 @@ describe("browserOAuthProfileStorage", () => {
   );
 
   it.each(["abort", "error"] as const)(
+    "propagates a transaction %s and rolls back atomic profile creation",
+    async (outcome) => {
+      const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
+      fake.failNextTransaction(outcome, new Error(`Atomic profile ${outcome}`));
+
+      await expect(saveOAuthCustomerProfileAndSelect(createProfile())).rejects.toThrow(
+        `Atomic profile ${outcome}`,
+      );
+      expect(fake.store("profiles").size).toBe(0);
+      expect(fake.store("preferences").size).toBe(0);
+      expect(fake.closeCount).toBe(1);
+    },
+  );
+
+  it.each(["abort", "error"] as const)(
     "propagates a transaction %s and atomically rolls back delete",
     async (outcome) => {
       const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
@@ -353,10 +422,11 @@ describe("browserOAuthProfileStorage", () => {
 
     await loadOAuthCustomerProfileStore();
     await saveOAuthCustomerProfile(createProfile());
+    await saveOAuthCustomerProfileAndSelect(createProfile());
     await saveLastSelectedOAuthCustomerProfileId("profile-1");
     await deleteOAuthCustomerProfile("profile-1");
 
-    expect(fake.closeCount).toBe(4);
+    expect(fake.closeCount).toBe(5);
   });
 });
 
@@ -392,6 +462,7 @@ class FakeIndexedDB {
     mode: IDBTransactionMode;
   }> = [];
   readonly transactionEvents: Array<"error" | "abort"> = [];
+  readonly putCalls: Array<{ storeName: string; key: IDBValidKey; value: unknown }> = [];
   readonly indexedDB = {
     open: (name: string, version?: number) => this.open(name, version),
   };
@@ -668,6 +739,7 @@ class FakeIDBObjectStore {
   }
 
   put(value: unknown, key: IDBValidKey): IDBRequest<IDBValidKey> {
+    this.fake.putCalls.push({ storeName: this.storeName, key, value });
     return this.scheduleRequest(() => {
       this.transaction.stageWrite(() => this.fake.store(this.storeName).set(String(key), value));
       return key;
