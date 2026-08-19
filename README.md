@@ -42,9 +42,17 @@ direct users to upload existing CSV or JSON outputs.
 
 ## Credentials
 
-Credentials are session-only and memory-only; the app does not persist access
-tokens, API keys, PATs, OAuth client IDs, OAuth metadata, or OAuth state in
-browser storage.
+Sensitive credentials are session-only and memory-only. The app does not persist
+access tokens, API keys, PATs, OAuth authorization codes, PKCE state or verifiers,
+pending OAuth transactions, or client secrets.
+
+For Stack Enterprise OAuth, users may explicitly save browser-local customer
+profiles containing only a customer name, Enterprise instance URL, OAuth client
+ID, and the non-expiring-token preference. The server-controlled OAuth redirect
+URL is displayed read-only and is never overridden by a saved profile. Saved
+customer profiles survive refreshes and browser restarts until the user deletes
+them or clears browser site data. Dataset flushing and session reset do not remove
+customer profiles.
 
 Loaded Script datasets and Utility supporting datasets and decision packs are
 stored locally in this browser by default. Use the Datasets panel to remove
