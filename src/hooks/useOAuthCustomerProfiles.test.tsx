@@ -21,11 +21,12 @@ function createProfile(
   customerName = "Demo Customer",
 ): OAuthCustomerProfile {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     customerName,
     baseUrl: `https://${id}.stackenterprise.co`,
     oauthClientId: `client-${id}`,
+    apiKey: `key-${id}`,
     includeNoExpiry: false,
     createdAt: "2026-08-19T12:00:00.000Z",
     updatedAt: "2026-08-19T12:00:00.000Z",
@@ -35,11 +36,13 @@ function createProfile(
 function draft(
   customerName = "New Customer",
   baseUrl = "https://new.stackenterprise.co",
+  apiKey = "new-customer-key",
 ): OAuthCustomerProfileDraft {
   return {
     customerName,
     baseUrl,
     oauthClientId: `client-${customerName.toLowerCase().replace(/ /g, "-")}`,
+    apiKey,
     includeNoExpiry: true,
   };
 }
@@ -48,7 +51,7 @@ function emptyAvailableSnapshot(): OAuthCustomerProfileStoreSnapshot {
   return {
     available: true,
     profiles: [],
-    preferences: { schemaVersion: 1 },
+    preferences: { schemaVersion: 2 },
     malformedProfileCount: 0,
   };
 }
@@ -62,8 +65,8 @@ function snapshotWith(
     profiles,
     preferences:
       selectedProfileId === undefined
-        ? { schemaVersion: 1 }
-        : { schemaVersion: 1, lastSelectedProfileId: selectedProfileId },
+        ? { schemaVersion: 2 }
+        : { schemaVersion: 2, lastSelectedProfileId: selectedProfileId },
     malformedProfileCount: 0,
   };
 }
@@ -207,7 +210,7 @@ describe("useOAuthCustomerProfiles", () => {
       async () => ({
         available: false,
         profiles: [createProfile()],
-        preferences: { schemaVersion: 1 as const, lastSelectedProfileId: "profile-1" },
+        preferences: { schemaVersion: 2 as const, lastSelectedProfileId: "profile-1" },
         malformedProfileCount: 0,
       }),
     ],
@@ -317,6 +320,7 @@ describe("useOAuthCustomerProfiles", () => {
         customerName: "",
         baseUrl: "not-a-url",
         oauthClientId: "",
+        apiKey: "",
         includeNoExpiry: false,
       });
     });
@@ -353,6 +357,7 @@ describe("useOAuthCustomerProfiles", () => {
       expect(storage.saveProfileAndSelect).toHaveBeenCalledTimes(1),
     );
     const savedProfile = storage.saveProfileAndSelect.mock.calls[0][0];
+    expect(savedProfile.apiKey).toBe("new-customer-key");
     expect(result.current.profiles).toEqual([]);
     expect(result.current.selectedProfileId).toBeUndefined();
 
@@ -424,7 +429,9 @@ describe("useOAuthCustomerProfiles", () => {
 
     let updated;
     await act(async () => {
-      updated = await result.current.updateProfile(draft("Able"));
+      updated = await result.current.updateProfile(
+        draft("Able", "https://new.stackenterprise.co", "updated-key"),
+      );
     });
 
     expect(updated).toMatchObject({ ok: true });
@@ -436,6 +443,9 @@ describe("useOAuthCustomerProfiles", () => {
     expect(result.current.selectedProfileId).toBe(selected.id);
     expect(result.current.selectedProfile?.customerName).toBe("Able");
     expect(storage.saveProfile).toHaveBeenCalledTimes(1);
+    expect(storage.saveProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "updated-key" }),
+    );
 
     let collision;
     await act(async () => {
