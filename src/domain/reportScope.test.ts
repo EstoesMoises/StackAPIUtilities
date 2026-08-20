@@ -3,7 +3,6 @@ import {
   DEFAULT_REPORT_RUN_SCOPE,
   dateToUnixSeconds,
   formatPeriodLabel,
-  validateApiVolumeSettings,
   validateReportRunScope,
 } from "./reportScope";
 
@@ -23,16 +22,6 @@ describe("report scope", () => {
       messages: [
         "Current period end date must be on or after its start date.",
         "Comparison period start date must use YYYY-MM-DD.",
-      ],
-    });
-  });
-
-  it("validates reusable API volume settings", () => {
-    expect(validateApiVolumeSettings({ pageSize: 0, maxPagesPerDataset: 0 })).toEqual({
-      valid: false,
-      messages: [
-        "Page size must be between 1 and 100.",
-        "Max pages per dataset must be at least 1.",
       ],
     });
   });

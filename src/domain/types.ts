@@ -15,15 +15,7 @@ export interface PeriodScope {
   endDate?: string;
 }
 
-export type ReportRunPresetId = "quick-sample" | "standard" | "deep-audit";
-
 export type UtilityId = "sme-coverage-analyzer";
-
-export interface ApiVolumeSettingsValue {
-  pageSize: number;
-  maxPagesPerDataset: number;
-  runPreset?: ReportRunPresetId;
-}
 
 export interface ReportRunScope {
   current: PeriodScope;
@@ -135,9 +127,6 @@ export interface ReportRunSnapshot {
 export interface UtilityRunSnapshot {
   id: string;
   utilityId: UtilityId;
-  pageSize: number;
-  maxPagesPerDataset: number;
-  runPreset?: ReportRunPresetId;
   loadedAt: string;
   datasetIds: string[];
   warnings: ReportWarning[];

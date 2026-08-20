@@ -7,7 +7,6 @@ import type {
   PeriodScope,
   ReportId,
   ReportOutput,
-  ReportRunPresetId,
   ReportRunSnapshot,
   ReportWarning,
   RunPeriodRole,
@@ -53,7 +52,7 @@ const knownDatasetNames = new Set<DatasetName>([
 ]);
 const knownReportIds = new Set<ReportId>(reportRegistry.map((report) => report.id));
 const runPeriodRoles = new Set<RunPeriodRole>(["current", "comparison"]);
-const reportRunPresetIds = new Set<ReportRunPresetId>(["quick-sample", "standard", "deep-audit"]);
+const legacyReportRunPresetIds = new Set(["quick-sample", "standard", "deep-audit"]);
 const knownUtilityIds = new Set<UtilityId>(["sme-coverage-analyzer"]);
 const prohibitedPersistedKeys = new Set([
   "credentials",
@@ -136,14 +135,13 @@ export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSes
 
   const storedVersion = value.version;
   const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
-  const supportsUtilities = storedVersion >= 2;
 
   const selectedReportId = isKnownReportId(value.selectedReportId) ? value.selectedReportId : "tag-report";
   const selectedReportIdCandidates = Array.isArray(value.selectedReportIds)
     ? value.selectedReportIds.filter(isKnownReportId)
     : [];
   const selectedReportIds = normalizeSelectedReportIds(selectedReportId, selectedReportIdCandidates);
-  const parsedDatasets = parseDatasetRecord(value.datasets, supportsUtilities);
+  const parsedDatasets = parseDatasetRecord(value.datasets, true);
 
   if (!parsedDatasets) {
     return null;
@@ -156,19 +154,19 @@ export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSes
     ? addLegacyCollectionWarningsToLiveReportDatasets(parsedDatasets)
     : parsedDatasets;
   const reportRunSnapshots = parseReportRunSnapshots(value.reportRunSnapshots, datasets, storedVersion);
-  const utilityRunSnapshots = supportsUtilities ? parseUtilityRunSnapshots(value.utilityRunSnapshots, datasets) : [];
+  const utilityRunSnapshots = parseUtilityRunSnapshots(value.utilityRunSnapshots, datasets, storedVersion);
 
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
     selectedReportId,
     selectedReportIds,
-    selectedUtilityId: supportsUtilities && isKnownUtilityId(value.selectedUtilityId)
+    selectedUtilityId: isKnownUtilityId(value.selectedUtilityId)
       ? value.selectedUtilityId
       : "sme-coverage-analyzer",
     datasets,
     reportOutputs: parseReportOutputs(value.reportOutputs, datasets, reportRunSnapshots, isLegacyVersion),
     reportRunSnapshots,
-    utilityOutputs: supportsUtilities ? parseUtilityOutputs(value.utilityOutputs) : {},
+    utilityOutputs: parseUtilityOutputs(value.utilityOutputs),
     utilityRunSnapshots,
     warnings: parseWarnings(value.warnings),
   };
@@ -276,6 +274,7 @@ function parseUtilityOutputs(value: unknown): Partial<Record<UtilityId, SmeCover
 function parseUtilityRunSnapshots(
   value: unknown,
   datasets: Record<string, SessionDataset>,
+  storedVersion: DatasetSessionPersistenceVersion = DATASET_SESSION_PERSISTENCE_VERSION,
 ): UtilityRunSnapshot[] {
   if (!Array.isArray(value)) return [];
   const idCounts = new Map<string, number>();
@@ -288,7 +287,7 @@ function parseUtilityRunSnapshots(
     if (isRecord(candidate) && typeof candidate.id === "string" && (idCounts.get(candidate.id) ?? 0) > 1) {
       return [];
     }
-    const snapshot = parseUtilityRunSnapshot(candidate, datasets);
+    const snapshot = parseUtilityRunSnapshot(candidate, datasets, storedVersion);
     return snapshot ? [snapshot] : [];
   });
 }
@@ -296,15 +295,20 @@ function parseUtilityRunSnapshots(
 function parseUtilityRunSnapshot(
   value: unknown,
   datasets: Record<string, SessionDataset>,
+  storedVersion: DatasetSessionPersistenceVersion,
 ): UtilityRunSnapshot | null {
+  const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
     value.id.length === 0 ||
     !isKnownUtilityId(value.utilityId) ||
-    !isNonnegativeInteger(value.pageSize) ||
-    !isNonnegativeInteger(value.maxPagesPerDataset) ||
-    (typeof value.runPreset !== "undefined" && !isReportRunPresetId(value.runPreset)) ||
+    (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
+    (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
+    (isLegacyVersion && !isLegacyReportRunPresetId(value.runPreset)) ||
+    (!isLegacyVersion && typeof value.pageSize !== "undefined") ||
+    (!isLegacyVersion && typeof value.maxPagesPerDataset !== "undefined") ||
+    (!isLegacyVersion && typeof value.runPreset !== "undefined") ||
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
     value.datasetIds.length === 0 ||
@@ -325,13 +329,10 @@ function parseUtilityRunSnapshot(
   const snapshot: UtilityRunSnapshot = {
     id: value.id,
     utilityId: value.utilityId,
-    pageSize: value.pageSize,
-    maxPagesPerDataset: value.maxPagesPerDataset,
     loadedAt: value.loadedAt,
     datasetIds: [...value.datasetIds],
     warnings: parseWarnings(value.warnings),
   };
-  if (isReportRunPresetId(value.runPreset)) snapshot.runPreset = value.runPreset;
   return snapshot;
 }
 
@@ -557,7 +558,7 @@ function parseReportRunSnapshot(
     !Array.isArray(value.warnings) ||
     (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
     (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
-    (isLegacyVersion && typeof value.runPreset !== "undefined" && !isReportRunPresetId(value.runPreset)) ||
+    (isLegacyVersion && typeof value.runPreset !== "undefined" && !isLegacyReportRunPresetId(value.runPreset)) ||
     (!isLegacyVersion && typeof value.pageSize !== "undefined") ||
     (!isLegacyVersion && typeof value.maxPagesPerDataset !== "undefined") ||
     (!isLegacyVersion && typeof value.runPreset !== "undefined")
@@ -664,8 +665,8 @@ function isRunPeriodRole(value: unknown): value is RunPeriodRole {
   return typeof value === "string" && runPeriodRoles.has(value as RunPeriodRole);
 }
 
-function isReportRunPresetId(value: unknown): value is ReportRunPresetId {
-  return typeof value === "string" && reportRunPresetIds.has(value as ReportRunPresetId);
+function isLegacyReportRunPresetId(value: unknown): value is string {
+  return typeof value === "string" && legacyReportRunPresetIds.has(value);
 }
 
 function isNonnegativeInteger(value: unknown): value is number {

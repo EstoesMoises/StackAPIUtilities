@@ -222,6 +222,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     }
     case "utility/loaded": {
       const { result } = action;
+      if (!isTerminalSmeCoverageResult(result)) return state;
       const loadedAt = new Date().toISOString();
       const snapshotId = createUtilitySnapshotId(state, result.utilityId, loadedAt);
       const liveDatasets: Record<string, SessionDataset> = {};
@@ -266,9 +267,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           {
             id: snapshotId,
             utilityId: result.utilityId,
-            pageSize: result.pageSize,
-            maxPagesPerDataset: result.maxPagesPerDataset,
-            ...(result.runPreset ? { runPreset: result.runPreset } : {}),
             loadedAt,
             datasetIds,
             warnings,
@@ -346,6 +344,18 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     default:
       return state;
   }
+}
+
+function isTerminalSmeCoverageResult(result: SmeCoverageRunResult): boolean {
+  const requiredDatasetNames = ["tags", "questions", "tagSmeCounts"] as const;
+  return (
+    result.decisionPack.snapshot.collectionLabel === "All available data collected" &&
+    result.datasets.length === requiredDatasetNames.length &&
+    requiredDatasetNames.every((datasetName) => {
+      const matches = result.datasets.filter((dataset) => dataset.datasetName === datasetName);
+      return matches.length === 1 && !matches[0]!.pagination.reachedMaxPages && !matches[0]!.pagination.hasMore;
+    })
+  );
 }
 
 function removeReportOutputsForDataset(

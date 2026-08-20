@@ -673,9 +673,6 @@ describe("datasetPersistence", () => {
         {
           id: "utility-snapshot",
           utilityId: "sme-coverage-analyzer",
-          pageSize: 100,
-          maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
           loadedAt: "2026-07-30T12:00:00.000Z",
           datasetIds: ["utility-dataset"],
           warnings: [],
@@ -694,15 +691,36 @@ describe("datasetPersistence", () => {
     expect(restored?.utilityRunSnapshots[0]).toMatchObject({
       id: "utility-snapshot",
       datasetIds: ["utility-dataset"],
-      pageSize: 100,
-      maxPagesPerDataset: 20,
     });
+    expect(restored?.utilityRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(restored?.utilityRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(restored?.utilityRunSnapshots[0]).not.toHaveProperty("runPreset");
     expect(serialized).not.toMatch(
       /"(?:credentials|apiKey|accessToken|pat|authSource|oauthClientId|oauthScopes|runQueue|progress)"/,
     );
   });
 
-  it("migrates a legacy configured-partial v2 utility pack through parse and hydration exports", () => {
+  it.each([1, 2] as const)(
+    "validates then discards version %s utility collection settings",
+    (version) => {
+      const value = createUtilitySnapshotValue([createUtilityRunSnapshotValue()]);
+      value.version = version;
+
+      const parsed = parseDatasetSessionSnapshot(value);
+
+      expect(parsed?.utilityRunSnapshots).toEqual([
+        {
+          id: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          datasetIds: ["utility-dataset"],
+          warnings: [],
+        },
+      ]);
+    },
+  );
+
+  it("migrates a legacy v2 utility pack with its original cap warning and provenance label", () => {
     const legacyPack = createLegacyConfiguredPartialUtilityPack();
     const persisted = createVersion2SnapshotValue({
       utilityOutputs: {
@@ -721,20 +739,27 @@ describe("datasetPersistence", () => {
 
     expect(parsed?.version).toBe(3);
     expect(parsedPack).toEqual(hydratedPack);
+    expect(parsedPack?.snapshot.collectionLabel).toBe(
+      "Legacy run — completeness not verified under current collection rules",
+    );
     expect(parsedPack?.warnings).toEqual([
       {
         utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.partial-sample",
-        message:
-          "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+        code: "sme-coverage.questions-page-cap",
+        message: "Questions reached the historical collection page cap.",
+      },
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "collection.legacy-unverified",
+        message: "Legacy run — completeness not verified under current collection rules.",
       },
     ]);
     expect(Object.isFrozen(parsedPack)).toBe(true);
     expect(buildSmeCoverageMarkdown(parsedPack!)).toContain(
-      "- sme-coverage.partial-sample: This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+      "- Collection: Legacy run — completeness not verified under current collection rules",
     );
-    expect(buildSmeCoverageEvidenceCsv(parsedPack!).split("\n")[1]).toBe(
-      "python,100,1,Complete question enumeration,0,,,Immediate gap,Active tag has no assigned SMEs.,Assign or confirm at least one SME.,Complete,Complete,Partial,sme-coverage.partial-sample: This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+    expect(buildSmeCoverageEvidenceCsv(parsedPack!)).toContain(
+      "collection.legacy-unverified: Legacy run — completeness not verified under current collection rules.",
     );
   });
 
@@ -1318,10 +1343,8 @@ function createPersistedUtilityPack(): SmeCoverageDecisionPack {
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: "Empty",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     },
     warnings: [],
     summary: {
@@ -1350,7 +1373,7 @@ function createPersistedUtilityPack(): SmeCoverageDecisionPack {
   };
 }
 
-function createLegacyConfiguredPartialUtilityPack(): SmeCoverageDecisionPack {
+function createLegacyConfiguredPartialUtilityPack(): Record<string, unknown> {
   const row = {
     tagName: "python",
     pageViews: 100,
@@ -1375,7 +1398,13 @@ function createLegacyConfiguredPartialUtilityPack(): SmeCoverageDecisionPack {
       maxPagesPerDataset: 1,
       runPreset: "quick-sample",
     },
-    warnings: [],
+    warnings: [
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "sme-coverage.questions-page-cap",
+        message: "Questions reached the historical collection page cap.",
+      },
+    ],
     summary: {
       tagsAnalyzed: 1,
       tagsWithSmes: 0,

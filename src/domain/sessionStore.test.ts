@@ -72,9 +72,6 @@ describe("sessionStore", () => {
       result: {
         utilityId: "sme-coverage-analyzer",
         utilityTitle: "SME Coverage Analyzer",
-        pageSize: 100,
-        maxPagesPerDataset: 20,
-        runPreset: "deep-audit",
         datasets: [
           { datasetName: "tags", records: [{ name: "python" }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
           { datasetName: "questions", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
@@ -102,12 +99,25 @@ describe("sessionStore", () => {
     expect(state.utilityOutputs["sme-coverage-analyzer"]?.decisionPack).toEqual(pack);
     expect(state.utilityRunSnapshots[0]).toMatchObject({
       utilityId: "sme-coverage-analyzer",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
       warnings: [warning],
     });
+    expect(state.utilityRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(state.utilityRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(state.utilityRunSnapshots[0]).not.toHaveProperty("runPreset");
     expect(state.warnings).toEqual([warning]);
+  });
+
+  it.each([
+    ["missing a required source", (action: Record<string, any>) => action.result.datasets.pop()],
+    ["nonterminal pagination", (action: Record<string, any>) => {
+      action.result.datasets[0].pagination = { pageCount: 1, reachedMaxPages: false, hasMore: true };
+    }],
+  ])("does not commit a utility result %s", (_label, mutate) => {
+    const action = createUtilityLoadedAction(createUtilityDecisionPack()) as Record<string, any>;
+    mutate(action);
+
+    const initial = createInitialSessionState();
+    expect(sessionReducer(initial, action as never)).toBe(initial);
   });
 
   it("replaces the active utility pack on rerun while retaining all source snapshots", () => {
@@ -1256,9 +1266,6 @@ function createUtilityLoadedAction(decisionPack: SmeCoverageDecisionPack) {
     result: {
       utilityId: "sme-coverage-analyzer",
       utilityTitle: "SME Coverage Analyzer",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
       datasets: [
         { datasetName: "tags", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
         { datasetName: "questions", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
@@ -1279,10 +1286,8 @@ function createUtilityDecisionPack(
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness,
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     },
     warnings: [],
     summary: {

@@ -1,4 +1,4 @@
-import type { ApiVolumeSettingsValue, PeriodScope, ReportRunScope } from "./types";
+import type { PeriodScope, ReportRunScope } from "./types";
 
 export const DEFAULT_REPORT_RUN_SCOPE: ReportRunScope = {
   current: {},
@@ -15,19 +15,6 @@ export function validateReportRunScope(scope: ReportRunScope): ValidationResult 
   validatePeriod("Current period", scope.current, messages);
   if (scope.comparison) validatePeriod("Comparison period", scope.comparison, messages);
 
-  return { valid: messages.length === 0, messages };
-}
-
-export function validateApiVolumeSettings(
-  settings: Pick<ApiVolumeSettingsValue, "pageSize" | "maxPagesPerDataset">,
-): ValidationResult {
-  const messages: string[] = [];
-  if (!Number.isInteger(settings.pageSize) || settings.pageSize < 1 || settings.pageSize > 100) {
-    messages.push("Page size must be between 1 and 100.");
-  }
-  if (!Number.isInteger(settings.maxPagesPerDataset) || settings.maxPagesPerDataset < 1) {
-    messages.push("Max pages per dataset must be at least 1.");
-  }
   return { valid: messages.length === 0, messages };
 }
 

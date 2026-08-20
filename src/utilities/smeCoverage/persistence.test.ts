@@ -1,16 +1,87 @@
 import { describe, expect, it } from "vitest";
-import { buildSmeCoverageEvidenceCsv, buildSmeCoverageMarkdown } from "./exports";
 import type { SmeCoverageDecisionPack } from "./model";
 import { parseSmeCoverageDecisionPack } from "./persistence";
 
-const canonicalPartialSampleWarning = {
+const legacyCollectionLabel = "Legacy run — completeness not verified under current collection rules" as const;
+const canonicalLegacyCollectionWarning = {
   utilityId: "sme-coverage-analyzer",
-  code: "sme-coverage.partial-sample",
-  message:
-    "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+  code: "collection.legacy-unverified",
+  message: `${legacyCollectionLabel}.`,
 } as const;
 
 describe("parseSmeCoverageDecisionPack", () => {
+  it("migrates a legacy decision pack without losing its historical warnings", () => {
+    const legacy = structuredClone(createDecisionPack()) as Record<string, any>;
+    delete legacy.snapshot.collectionLabel;
+    Object.assign(legacy.snapshot, {
+      pageSize: 50,
+      maxPagesPerDataset: 1,
+      runPreset: "quick-sample",
+    });
+    const historicalCapWarning = {
+      utilityId: "sme-coverage-analyzer",
+      code: "sme-coverage.questions-page-cap",
+      message: "Questions reached the historical collection page cap.",
+    };
+    legacy.warnings.push(historicalCapWarning, canonicalLegacyCollectionWarning, canonicalLegacyCollectionWarning);
+
+    const parsed = parseSmeCoverageDecisionPack(legacy);
+
+    expect(parsed?.snapshot.collectionLabel).toBe(legacyCollectionLabel);
+    expect(parsed?.warnings).toEqual([
+      legacy.warnings[0],
+      historicalCapWarning,
+      canonicalLegacyCollectionWarning,
+    ]);
+    expect(parsed?.snapshot).not.toHaveProperty("pageSize");
+    expect(parsed?.snapshot).not.toHaveProperty("maxPagesPerDataset");
+    expect(parsed?.snapshot).not.toHaveProperty("runPreset");
+    expect(parseSmeCoverageDecisionPack(parsed)).toEqual(parsed);
+  });
+
+  it("round-trips a current exhaustive decision pack without a legacy warning", () => {
+    const pack = createDecisionPack();
+
+    const parsed = parseSmeCoverageDecisionPack(pack);
+
+    expect(parsed).toEqual(pack);
+    expect(parsed?.snapshot.collectionLabel).toBe("All available data collected");
+    expect(parsed?.warnings).not.toContainEqual(canonicalLegacyCollectionWarning);
+  });
+
+  it.each(["pageSize", "maxPagesPerDataset", "runPreset"])(
+    "rejects a legacy decision pack missing historical %s evidence",
+    (field) => {
+      const legacy = structuredClone(createDecisionPack()) as Record<string, any>;
+      delete legacy.snapshot.collectionLabel;
+      Object.assign(legacy.snapshot, {
+        pageSize: 100,
+        maxPagesPerDataset: 5,
+        runPreset: "standard",
+      });
+      delete legacy.snapshot[field];
+
+      expect(parseSmeCoverageDecisionPack(legacy)).toBeNull();
+    },
+  );
+
+  it.each([
+    ["zero page size", "pageSize", 0],
+    ["fractional page limit", "maxPagesPerDataset", 1.5],
+    ["unknown preset", "runPreset", "unbounded"],
+  ])("rejects invalid legacy collection evidence: %s", (_label, field, invalidValue) => {
+    const legacy = structuredClone(createDecisionPack()) as Record<string, any>;
+    delete legacy.snapshot.collectionLabel;
+    Object.assign(legacy.snapshot, {
+      pageSize: 100,
+      maxPagesPerDataset: 5,
+      runPreset: "standard",
+      [field]: invalidValue,
+    });
+
+    expect(parseSmeCoverageDecisionPack(legacy)).toBeNull();
+  });
+
   it.each([
     ["complete", createDecisionPack()],
     ["partial", createDecisionPack({ completeness: "Partial" })],
@@ -26,7 +97,7 @@ describe("parseSmeCoverageDecisionPack", () => {
 
   it.each([
     ["snapshot completeness enum", (pack: Record<string, any>) => { pack.snapshot.completeness = "Nearly"; }],
-    ["negative snapshot metric", (pack: Record<string, any>) => { pack.snapshot.pageSize = -1; }],
+    ["unknown collection label", (pack: Record<string, any>) => { pack.snapshot.collectionLabel = "Mostly collected"; }],
     ["non-finite metric", (pack: Record<string, any>) => { pack.methodology.p90PageViewsPerSme = Infinity; }],
     ["percentile above 100", (pack: Record<string, any>) => { pack.evidence[0].coveragePercentile = 101; }],
     ["wrong summary type", (pack: Record<string, any>) => { pack.summary.tagsAnalyzed = "3"; }],
@@ -121,201 +192,15 @@ describe("parseSmeCoverageDecisionPack", () => {
     expect(parseSmeCoverageDecisionPack(persisted)).toBeNull();
   });
 
-  it.each([
-    ["Quick", { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" }],
-    ["Standard", { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" }],
-    ["missing preset", { pageSize: 100, maxPagesPerDataset: 20 }],
-    ["custom", { pageSize: 75, maxPagesPerDataset: 7 }],
-    ["changed Deep", { pageSize: 50, maxPagesPerDataset: 20, runPreset: "deep-audit" }],
-  ])("migrates a legacy %s configuration to one immutable canonical partial-sample warning", (_label, settings) => {
-    const missingNarrative = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
-    missingNarrative.snapshot = { ...missingNarrative.snapshot, ...settings };
-    if (!("runPreset" in settings)) delete missingNarrative.snapshot.runPreset;
-    expect(parseSmeCoverageDecisionPack(missingNarrative)).toBeNull();
-
-    missingNarrative.overview += " This analysis is a partial sample.";
-    missingNarrative.assessment += " This analysis is a partial sample.";
-    const parsed = parseSmeCoverageDecisionPack(missingNarrative);
-    expect(parsed).not.toBeNull();
-    expect(parsed?.warnings.filter((warning) => warning.code === canonicalPartialSampleWarning.code)).toEqual([
-      canonicalPartialSampleWarning,
-    ]);
-    expect(Object.isFrozen(parsed?.warnings)).toBe(true);
-    expect(Object.isFrozen(parsed?.warnings.find((warning) => warning.code === canonicalPartialSampleWarning.code))).toBe(true);
-
-    missingNarrative.snapshot.completeness = "Complete";
-    expect(parseSmeCoverageDecisionPack(missingNarrative)).toBeNull();
-  });
-
-  it("normalizes and deduplicates a same-code legacy warning in source-to-sampling-to-analyzer order", () => {
-    const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
-    persisted.snapshot = {
-      ...persisted.snapshot,
-      pageSize: 100,
-      maxPagesPerDataset: 5,
-      runPreset: "standard",
-    };
-    persisted.overview += " This analysis is a partial sample.";
-    persisted.assessment += " This analysis is a partial sample.";
-    persisted.warnings = [
-      persisted.warnings[0],
-      {
-        utilityId: "sme-coverage-analyzer",
-        code: canonicalPartialSampleWarning.code,
-        message: "Legacy sampling copy without the required phrase.",
-      },
-      {
-        code: canonicalPartialSampleWarning.code,
-        message: "Ownerless legacy sampling copy.",
-      },
-      {
-        utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.invalid-demand",
-        message: "Analyzer warning.",
-      },
-      canonicalPartialSampleWarning,
-    ];
-
-    const parsed = parseSmeCoverageDecisionPack(persisted);
-
-    expect(parsed?.warnings).toEqual([
-      persisted.warnings[0],
-      canonicalPartialSampleWarning,
-      persisted.warnings[3],
-    ]);
-  });
-
-  it("preserves a configured-partial report warning collision and adds one canonical utility warning", () => {
-    const persisted = createConfiguredPartialPack();
-    const reportCollision = {
-      reportId: "inactive-users",
-      code: canonicalPartialSampleWarning.code,
-      message: "Report-owned warning with colliding code and distinct copy.",
-    };
-    persisted.warnings = [reportCollision];
-
-    const parsed = parseSmeCoverageDecisionPack(persisted);
-
-    expect(parsed?.warnings).toEqual([reportCollision, canonicalPartialSampleWarning]);
-    expect(parsed?.warnings.filter(isCanonicalUtilityPartialWarning)).toHaveLength(1);
-  });
-
-  it.each([
-    ["Complete", createDecisionPack()],
-    ["Empty", createEmptyPack()],
-  ])("leaves an exact-Deep %s pack with report warning collisions unchanged", (_label, pack) => {
-    const persisted = structuredClone(pack) as Record<string, any>;
-    const reportWarnings = [
-      {
-        reportId: "inactive-users",
-        code: canonicalPartialSampleWarning.code,
-        message: "Report-owned canonical-code collision.",
-      },
-      {
-        reportId: "tag-report",
-        code: "sme-coverage.invalid-demand",
-        message: "Report-owned analyzer-code collision.",
-      },
-    ];
-    persisted.warnings = reportWarnings;
-
-    const parsed = parseSmeCoverageDecisionPack(persisted);
-
-    expect(parsed?.warnings).toEqual(reportWarnings);
-    expect(parsed?.warnings.some(isCanonicalUtilityPartialWarning)).toBe(false);
-    expect(buildSmeCoverageMarkdown(parsed!)).not.toContain(canonicalPartialSampleWarning.message);
-    expect(buildSmeCoverageEvidenceCsv(parsed!)).not.toContain(canonicalPartialSampleWarning.message);
-  });
-
-  it("does not use a report-owned analyzer-code collision as the analyzer insertion boundary", () => {
-    const persisted = createConfiguredPartialPack();
-    const sourceBefore = persisted.warnings[0];
-    const reportCollision = {
-      reportId: "inactive-users",
-      code: "sme-coverage.invalid-demand",
-      message: "Report-owned analyzer-code collision.",
-    };
-    const sourceAfter = {
-      utilityId: "sme-coverage-analyzer",
-      code: "sme-coverage.questions-page-cap",
-      message: "Questions reached the collection page cap.",
-    };
-    const utilityAnalyzerWarning = {
-      utilityId: "sme-coverage-analyzer",
-      code: "sme-coverage.insufficient-covered-sample",
-      message: "Utility analyzer warning.",
-    };
-    persisted.warnings = [sourceBefore, reportCollision, sourceAfter, utilityAnalyzerWarning];
-
-    expect(parseSmeCoverageDecisionPack(persisted)?.warnings).toEqual([
-      sourceBefore,
-      reportCollision,
-      sourceAfter,
-      canonicalPartialSampleWarning,
-      utilityAnalyzerWarning,
-    ]);
-  });
-
-  it.each([
-    ["utility-owned", { utilityId: "sme-coverage-analyzer" }],
-    ["ownerless", {}],
-  ])("migrates an exact-Deep Partial pack from a structured %s cap warning", (_label, owner) => {
-    const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
-    const capWarning = {
-      ...owner,
-      code: "sme-coverage.tags-page-cap",
-      message: "Legacy cap wording that is not used for migration decisions.",
-    };
-    persisted.warnings = [capWarning];
-
-    const parsed = parseSmeCoverageDecisionPack(persisted);
-
-    expect(parsed?.warnings).toEqual([capWarning, canonicalPartialSampleWarning]);
-  });
-
-  it("does not migrate an exact-Deep Partial pack from a report-owned cap-code collision", () => {
-    const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
-    const reportCollision = {
-      reportId: "inactive-users",
-      code: "sme-coverage.tags-page-cap",
-      message: "Report-owned cap-code collision.",
-    };
-    persisted.warnings = [reportCollision];
-
-    expect(parseSmeCoverageDecisionPack(persisted)?.warnings).toEqual([reportCollision]);
-  });
-
-  it("round-trips a current configured-partial pack without duplicating its canonical warning", () => {
-    const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
-    persisted.snapshot = {
-      ...persisted.snapshot,
-      pageSize: 100,
-      maxPagesPerDataset: 5,
-      runPreset: "standard",
-    };
-    persisted.overview += " This analysis is a partial sample.";
-    persisted.assessment += " This analysis is a partial sample.";
-    persisted.warnings = [persisted.warnings[0], canonicalPartialSampleWarning];
-
-    const firstParse = parseSmeCoverageDecisionPack(persisted);
-    const secondParse = parseSmeCoverageDecisionPack(firstParse);
-
-    expect(firstParse?.warnings).toEqual([persisted.warnings[0], canonicalPartialSampleWarning]);
-    expect(secondParse?.warnings).toEqual(firstParse?.warnings);
-    expect(
-      secondParse?.warnings.filter((warning) => warning.code === canonicalPartialSampleWarning.code),
-    ).toHaveLength(1);
-  });
-
-  it("does not add sampling warnings to structured Deep Complete or Empty packs", () => {
+  it("does not add legacy warnings to current Complete or Empty packs", () => {
     for (const pack of [createDecisionPack(), createEmptyPack()]) {
       const parsed = parseSmeCoverageDecisionPack(pack);
       expect(parsed).not.toBeNull();
-      expect(parsed?.warnings.filter((warning) => warning.code === canonicalPartialSampleWarning.code)).toEqual([]);
+      expect(parsed?.warnings.filter((warning) => warning.code === canonicalLegacyCollectionWarning.code)).toEqual([]);
     }
   });
 
-  it("enforces empty-pack completeness and configured-partial narrative consistency", () => {
+  it("enforces empty-pack completeness consistency", () => {
     const completeEmpty = structuredClone(createEmptyPack()) as Record<string, any>;
     completeEmpty.snapshot.completeness = "Complete";
     expect(parseSmeCoverageDecisionPack(completeEmpty)).toBeNull();
@@ -324,19 +209,6 @@ describe("parseSmeCoverageDecisionPack", () => {
     nonemptyMarkedEmpty.snapshot.completeness = "Empty";
     expect(parseSmeCoverageDecisionPack(nonemptyMarkedEmpty)).toBeNull();
 
-    const partialEmpty = structuredClone(createEmptyPack()) as Record<string, any>;
-    partialEmpty.snapshot = {
-      ...partialEmpty.snapshot,
-      completeness: "Partial",
-      pageSize: 50,
-      maxPagesPerDataset: 1,
-      runPreset: "quick-sample",
-    };
-    expect(parseSmeCoverageDecisionPack(partialEmpty)).toBeNull();
-
-    partialEmpty.overview += " This analysis is a partial sample.";
-    partialEmpty.assessment += " This analysis is a partial sample.";
-    expect(parseSmeCoverageDecisionPack(partialEmpty)).not.toBeNull();
   });
 });
 
@@ -413,10 +285,8 @@ export function createDecisionPack(
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: options.completeness ?? "Complete",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     },
     warnings: [
       {
@@ -519,29 +389,4 @@ function createEmptyPack(): SmeCoverageDecisionPack {
     },
     evidence: [],
   };
-}
-
-function createConfiguredPartialPack(): Record<string, any> {
-  const persisted = structuredClone(createDecisionPack({ completeness: "Partial" })) as Record<string, any>;
-  persisted.snapshot = {
-    ...persisted.snapshot,
-    pageSize: 100,
-    maxPagesPerDataset: 5,
-    runPreset: "standard",
-  };
-  persisted.overview += " This analysis is a partial sample.";
-  persisted.assessment += " This analysis is a partial sample.";
-  return persisted;
-}
-
-function isCanonicalUtilityPartialWarning(warning: {
-  utilityId?: string;
-  code: string;
-  message: string;
-}): boolean {
-  return (
-    warning.utilityId === canonicalPartialSampleWarning.utilityId &&
-    warning.code === canonicalPartialSampleWarning.code &&
-    warning.message === canonicalPartialSampleWarning.message
-  );
 }
