@@ -254,6 +254,18 @@ describe("OAuth customer profiles", () => {
     expect(parsed).not.toHaveProperty("apiKey");
   });
 
+  it("does not retain an inherited API key", () => {
+    const inheritedApiKeyProfile = Object.assign(
+      Object.create({ apiKey: "inherited-secret" }),
+      profile,
+    );
+
+    const parsed = parseOAuthCustomerProfile(inheritedApiKeyProfile);
+
+    expect(parsed).toEqual(profile);
+    expect(parsed).not.toHaveProperty("apiKey");
+  });
+
   it("migrates legacy profiles without retaining an API key", () => {
     expect(
       parseOAuthCustomerProfile({

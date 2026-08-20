@@ -227,7 +227,10 @@ export function parseOAuthCustomerProfile(value: unknown): OAuthCustomerProfile 
     return profile;
   }
 
-  if (value.apiKey === undefined) {
+  if (
+    !Object.prototype.hasOwnProperty.call(value, "apiKey") ||
+    value.apiKey === undefined
+  ) {
     return profile;
   }
 
