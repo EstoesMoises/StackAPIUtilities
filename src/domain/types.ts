@@ -25,7 +25,7 @@ export interface ApiVolumeSettingsValue {
   runPreset?: ReportRunPresetId;
 }
 
-export interface ReportRunScope extends ApiVolumeSettingsValue {
+export interface ReportRunScope {
   current: PeriodScope;
   comparison?: PeriodScope;
 }
@@ -127,9 +127,6 @@ export interface ReportRunSnapshot {
   reportId: ReportId;
   periodRole: RunPeriodRole;
   scope: PeriodScope;
-  pageSize: number;
-  maxPagesPerDataset: number;
-  runPreset?: ReportRunPresetId;
   loadedAt: string;
   datasetIds: string[];
   warnings: ReportWarning[];

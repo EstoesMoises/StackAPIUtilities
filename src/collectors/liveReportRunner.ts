@@ -1,13 +1,11 @@
 import type { FetchLike, ThrottleNotice } from "../api/httpClient";
 import { validateCredentialsForReport } from "../credentials/credentialRules";
-import { getReportRunPreset, getReportRunPresetForSettings } from "../domain/reportRunPresets";
 import { DEFAULT_REPORT_RUN_SCOPE } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
 import type {
   DatasetName,
   PeriodScope,
   ReportId,
-  ReportRunPresetId,
   ReportWarning,
   RunPeriodRole,
   SessionCredentials,
@@ -15,11 +13,16 @@ import type {
 import { buildInteractionEdgesFromLiveContent } from "../reports/interactions";
 import { planDatasetsForReports } from "./datasetPlanner";
 import { createLiveCollectorClients } from "./liveCollectorClients";
-import { collectDataset, getUnsupportedLiveDatasets } from "./liveCollectors";
+import {
+  collectDataset,
+  getUnsupportedLiveDatasets,
+  type DatasetPaginationMetadata,
+} from "./liveCollectors";
 
 export interface LiveReportDataset {
   datasetName: DatasetName;
   records: Record<string, unknown>[];
+  pagination: DatasetPaginationMetadata;
 }
 
 export interface LiveReportRunResult {
@@ -27,9 +30,6 @@ export interface LiveReportRunResult {
   reportTitle: string;
   periodRole: RunPeriodRole;
   scope: PeriodScope;
-  pageSize: number;
-  maxPagesPerDataset: number;
-  runPreset?: ReportRunPresetId;
   datasets: LiveReportDataset[];
   messages: string[];
   warnings: ReportWarning[];
@@ -40,9 +40,15 @@ export interface LiveReportRunOptions {
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
   periodRole?: RunPeriodRole;
   scope?: PeriodScope;
-  pageSize?: number;
-  maxPagesPerDataset?: number;
-  runPreset?: ReportRunPresetId;
+}
+
+export class LiveReportCollectionError extends Error {
+  constructor(datasetName: DatasetName, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Failed to collect ${datasetName}. No complete result was produced. ${detail}`);
+    this.name = "LiveReportCollectionError";
+    (this as Error & { cause?: unknown }).cause = cause;
+  }
 }
 
 export class UnsupportedLiveReportRunError extends Error {
@@ -87,27 +93,23 @@ export async function runLiveReport(
   const collectedDatasets: Partial<Record<DatasetName, Record<string, unknown>[]>> = {};
   const periodRole = options.periodRole ?? "current";
   const scope = options.scope ?? DEFAULT_REPORT_RUN_SCOPE.current;
-  const pageSize = options.pageSize ?? DEFAULT_REPORT_RUN_SCOPE.pageSize;
-  const maxPagesPerDataset = options.maxPagesPerDataset ?? DEFAULT_REPORT_RUN_SCOPE.maxPagesPerDataset;
-  const runPreset = normalizeRunPreset(options.runPreset, pageSize, maxPagesPerDataset);
   const warnings: ReportWarning[] = [];
 
   for (const datasetName of plannedDatasets) {
-    const collection = await collectDataset(datasetName, clients, {
-      collectedDatasets,
-      periodRole,
-      scope,
-      pageSize,
-      maxPagesPerDataset,
-    });
+    let collection;
+    try {
+      collection = await collectDataset(datasetName, clients, {
+        collectedDatasets,
+        periodRole,
+        scope,
+      });
+    } catch (error) {
+      throw new LiveReportCollectionError(datasetName, error);
+    }
     const records = toRecordList(collection.records);
 
-    if (collection.pagination.reachedMaxPages && collection.pagination.hasMore) {
-      warnings.push(createDatasetCapWarning(reportId, datasetName, pageSize, maxPagesPerDataset, runPreset));
-    }
-
     collectedDatasets[datasetName] = records;
-    datasets.push({ datasetName, records });
+    datasets.push({ datasetName, records, pagination: collection.pagination });
   }
 
   datasets.push(...buildSyntheticDatasets(reportId, datasets));
@@ -117,16 +119,10 @@ export async function runLiveReport(
     reportTitle: report.title,
     periodRole,
     scope,
-    pageSize,
-    maxPagesPerDataset,
     datasets,
     messages: datasets.map((dataset) => formatDatasetMessage(reportId, report.title, dataset)),
     warnings,
   };
-
-  if (runPreset) {
-    result.runPreset = runPreset;
-  }
 
   return result;
 }
@@ -150,6 +146,7 @@ function buildSyntheticDatasets(
         answers: recordsByDataset.get("answers") ?? [],
         comments: recordsByDataset.get("comments") ?? [],
       }).map((edge) => ({ ...edge })),
+      pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
     },
   ];
 }
@@ -180,54 +177,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatRecordCount(count: number): string {
   return `${count} ${count === 1 ? "record" : "records"}`;
-}
-
-function createDatasetCapWarning(
-  reportId: ReportId,
-  datasetName: DatasetName,
-  pageSize: number,
-  maxPagesPerDataset: number,
-  runPreset: ReportRunPresetId | undefined,
-): ReportWarning {
-  const capSize = pageSize * maxPagesPerDataset;
-  const datasetLabel = formatDatasetName(datasetName);
-  const capLabel = runPreset
-    ? `${getReportRunPreset(runPreset).label} page cap`
-    : "custom API volume page cap";
-
-  return {
-    reportId,
-    code: "dataset-page-cap",
-    message: `${datasetLabel} hit the ${capLabel} (requested up to ${formatNumber(capSize)} records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.`,
-  };
-}
-
-function formatNumber(value: number): string {
-  return value.toLocaleString("en-US");
-}
-
-function normalizeRunPreset(
-  requestedPreset: ReportRunPresetId | undefined,
-  pageSize: number,
-  maxPagesPerDataset: number,
-): ReportRunPresetId | undefined {
-  if (!requestedPreset) {
-    return undefined;
-  }
-
-  return getReportRunPresetForSettings(pageSize, maxPagesPerDataset)?.id;
-}
-
-function formatDatasetName(datasetName: DatasetName): string {
-  const explicitLabels: Partial<Record<DatasetName, string>> = {
-    tagSmes: "Tag SMEs",
-    tagLastUsed: "Tag last used",
-    userGroups: "User groups",
-    reputationHistory: "Reputation history",
-    dataExport: "Data export",
-  };
-
-  const label = explicitLabels[datasetName] ?? datasetName.replace(/([a-z])([A-Z])/g, "$1 $2");
-
-  return label.charAt(0).toUpperCase() + label.slice(1);
 }

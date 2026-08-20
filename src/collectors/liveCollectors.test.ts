@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionCredentials } from "../domain/types";
 import { createLiveCollectorClients } from "./liveCollectorClients";
-import { collectDataset, getLiveDatasetClient } from "./liveCollectors";
+import { collectDataset, getLiveDatasetClient, INTERNAL_API_PAGE_SIZE } from "./liveCollectors";
 
 const basicCredentials: SessionCredentials = {
   instanceType: "basic-business",
@@ -10,7 +10,7 @@ const basicCredentials: SessionCredentials = {
 };
 
 describe("live collectors", () => {
-  it("collects assigned-SME counts from the Basic/Business v3 tags endpoint with pageSize", async () => {
+  it("collects assigned-SME counts from the Basic/Business v3 tags endpoint with the internal page size", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         items: [{ name: "piper", subjectMatterExpertCount: 1 }],
@@ -19,14 +19,15 @@ describe("live collectors", () => {
     );
     const clients = createLiveCollectorClients(basicCredentials, { fetchFn: fetchMock });
 
-    await expect(collectDataset("tagSmeCounts", clients, { pageSize: 50 })).resolves.toEqual({
+    await expect(collectDataset("tagSmeCounts", clients)).resolves.toEqual({
       records: [{ name: "piper", subjectMatterExpertCount: 1 }],
       pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(INTERNAL_API_PAGE_SIZE).toBe(100);
     expect(fetchMock.mock.calls[0][0].toString()).toBe(
-      "https://api.stackoverflowteams.com/v3/teams/example-team/tags?pageSize=50&page=1",
+      "https://api.stackoverflowteams.com/v3/teams/example-team/tags?pageSize=100&page=1",
     );
   });
 

@@ -8,23 +8,21 @@ import {
 } from "./reportScope";
 
 describe("report scope", () => {
-  it("accepts the default scope", () => {
-    expect(validateReportRunScope(DEFAULT_REPORT_RUN_SCOPE)).toEqual({ valid: true, messages: [] });
+  it("defaults to all available history with no collection-depth configuration", () => {
+    expect(DEFAULT_REPORT_RUN_SCOPE).toEqual({ current: {} });
   });
 
-  it("rejects invalid page limits and reversed date ranges", () => {
+  it("validates only current and comparison date periods", () => {
     expect(
       validateReportRunScope({
         current: { startDate: "2026-04-30", endDate: "2026-04-01" },
-        pageSize: 0,
-        maxPagesPerDataset: 0,
+        comparison: { startDate: "not-a-date", endDate: "2026-03-01" },
       }),
     ).toEqual({
       valid: false,
       messages: [
-        "Page size must be between 1 and 100.",
-        "Max pages per dataset must be at least 1.",
         "Current period end date must be on or after its start date.",
+        "Comparison period start date must use YYYY-MM-DD.",
       ],
     });
   });

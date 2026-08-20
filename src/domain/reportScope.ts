@@ -1,13 +1,7 @@
-import { DEFAULT_REPORT_RUN_PRESET_ID, getReportRunPreset } from "./reportRunPresets";
 import type { ApiVolumeSettingsValue, PeriodScope, ReportRunScope } from "./types";
-
-const defaultPreset = getReportRunPreset(DEFAULT_REPORT_RUN_PRESET_ID);
 
 export const DEFAULT_REPORT_RUN_SCOPE: ReportRunScope = {
   current: {},
-  pageSize: defaultPreset.pageSize,
-  maxPagesPerDataset: defaultPreset.maxPagesPerDataset,
-  runPreset: defaultPreset.id,
 };
 
 interface ValidationResult {
@@ -15,10 +9,8 @@ interface ValidationResult {
   messages: string[];
 }
 
-type ValidatableReportRunScope = Omit<ReportRunScope, "runPreset"> & Partial<Pick<ReportRunScope, "runPreset">>;
-
-export function validateReportRunScope(scope: ValidatableReportRunScope): ValidationResult {
-  const messages = [...validateApiVolumeSettings(scope).messages];
+export function validateReportRunScope(scope: ReportRunScope): ValidationResult {
+  const messages: string[] = [];
 
   validatePeriod("Current period", scope.current, messages);
   if (scope.comparison) validatePeriod("Comparison period", scope.comparison, messages);

@@ -36,12 +36,12 @@ export interface CollectedDatasetResult {
   pagination: DatasetPaginationMetadata;
 }
 
+export const INTERNAL_API_PAGE_SIZE = 100;
+
 export interface LiveCollectorContext {
   collectedDatasets?: Partial<Record<DatasetName, Record<string, unknown>[]>>;
   periodRole?: RunPeriodRole;
   scope?: PeriodScope;
-  pageSize?: number;
-  maxPagesPerDataset?: number;
 }
 
 interface LiveDatasetEndpoint {
@@ -117,7 +117,6 @@ export async function collectDataset(
     clients[endpoint.client],
     endpoint.path,
     buildDatasetQuery(context, endpoint.client, endpoint.client === "v2"),
-    context,
   );
 }
 
@@ -134,7 +133,6 @@ async function collectTagSmes(
       clients.v2,
       `/tags/${encodeURIComponent(tagName)}/top-answerers/all_time`,
       buildDatasetQuery(context, "v2", false),
-      context,
     );
 
     records.push(...toRecordList(tagScores.records).map((record) => ({ tagName, ...record })));
@@ -158,7 +156,6 @@ async function collectReputationHistory(
       clients.v2,
       `/users/${userIdBatch.join(";")}/reputation-history`,
       buildDatasetQuery(context, "v2", true),
-      context,
     );
 
     records.push(...toRecordList(reputationEvents.records));
@@ -180,8 +177,8 @@ async function collectTagLastUsed(
 
   const query = buildDatasetQuery(context, "v2", false);
   const [questions, articles] = await Promise.all([
-    collectPagedResult(clients.v2, "/questions", query, context),
-    collectPagedResult(clients.v2, "/articles", query, context),
+    collectPagedResult(clients.v2, "/questions", query),
+    collectPagedResult(clients.v2, "/articles", query),
   ]);
 
   return {
@@ -197,11 +194,8 @@ async function collectPagedResult(
   client: DatasetClient,
   path: string,
   query: Record<string, string>,
-  context: LiveCollectorContext,
 ): Promise<CollectedDatasetResult> {
-  const result = typeof context.maxPagesPerDataset === "number"
-    ? await client.getPagedResult(path, query, { maxPages: context.maxPagesPerDataset })
-    : await client.getPagedResult(path, query);
+  const result = await client.getPagedResult(path, query);
 
   return {
     records: result.items,
@@ -220,7 +214,7 @@ function buildDatasetQuery(
 ): Record<string, string> {
   const pageSizeKey = client === "v2" ? "pagesize" : "pageSize";
   const query: Record<string, string> = {
-    [pageSizeKey]: String(context.pageSize ?? 100),
+    [pageSizeKey]: String(INTERNAL_API_PAGE_SIZE),
   };
 
   if (!includeDateScope) {
