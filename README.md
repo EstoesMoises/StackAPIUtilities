@@ -37,7 +37,9 @@ dashboards plus raw tables. Script datasets, Utility decision packs, and Utility
 supporting datasets are stored browser-locally by default so they can survive
 refreshes, tab closes, and browser restarts until the user removes individual
 datasets or flushes all stored datasets from the Datasets panel. Credentials
-remain in memory only and are never included in persisted or exported results.
+remain in memory only, except for API keys explicitly saved in browser-local
+Stack Enterprise customer profiles. Credentials are never included in persisted
+or exported report results.
 
 Live Script execution uses the same-origin Next.js route at `/api/reports/run`.
 SME Coverage Analyzer execution uses the same-origin route at
