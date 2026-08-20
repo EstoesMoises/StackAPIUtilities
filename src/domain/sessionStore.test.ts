@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SmeCoverageDecisionPack } from "../utilities/smeCoverage/model";
+import { LEGACY_COLLECTION_WARNING } from "./datasetPersistence";
 import { createInitialSessionState, sessionReducer } from "./sessionStore";
 
 function createStorageShim(): Storage {
@@ -633,6 +634,56 @@ describe("sessionStore", () => {
     expect(currentRerunWithoutWarning.reportOutputs["tag-report"]?.warnings).toEqual([comparisonWarning]);
   });
 
+  it("preserves a legacy current warning after a new exhaustive comparison run", () => {
+    const hydrated = sessionReducer(createInitialSessionState(), {
+      type: "session/hydratePersistentDatasets",
+      snapshot: createLegacyPeriodSnapshot("current"),
+    });
+    const mixed = sessionReducer(hydrated, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 2, display_name: "Grace" }],
+          pagination: completePagination,
+        },
+      ],
+    });
+    const legacyWarning = { reportId: "inactive-users" as const, ...LEGACY_COLLECTION_WARNING };
+
+    expect(hydrated.reportRunSnapshots[0]?.warnings).toEqual([legacyWarning]);
+    expect(mixed.reportOutputs["inactive-users"]?.warnings).toEqual([legacyWarning]);
+  });
+
+  it("preserves a legacy comparison warning after a new exhaustive current run", () => {
+    const hydrated = sessionReducer(createInitialSessionState(), {
+      type: "session/hydratePersistentDatasets",
+      snapshot: createLegacyPeriodSnapshot("comparison"),
+    });
+    const mixed = sessionReducer(hydrated, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: completePagination,
+        },
+      ],
+    });
+    const legacyWarning = { reportId: "inactive-users" as const, ...LEGACY_COLLECTION_WARNING };
+
+    expect(hydrated.reportRunSnapshots[0]?.warnings).toEqual([legacyWarning]);
+    expect(mixed.reportOutputs["inactive-users"]?.warnings).toEqual([legacyWarning]);
+  });
+
   it("removes a managed dataset from the active session", () => {
     const withDataset = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",
@@ -965,6 +1016,67 @@ describe("sessionStore", () => {
     expect(flushed.warnings).toEqual([]);
   });
 });
+
+function createLegacyPeriodSnapshot(periodRole: "current" | "comparison"): Record<string, unknown> {
+  const snapshotId = `legacy-${periodRole}`;
+  const datasetId = `legacy-${periodRole}-users`;
+  const scope = periodRole === "current"
+    ? { startDate: "2026-06-01", endDate: "2026-06-30" }
+    : { startDate: "2026-05-01", endDate: "2026-05-31" };
+
+  return {
+    version: 2,
+    selectedReportId: "inactive-users",
+    selectedReportIds: ["inactive-users"],
+    selectedUtilityId: "sme-coverage-analyzer",
+    datasets: {
+      [datasetId]: {
+        id: datasetId,
+        snapshotId,
+        reportId: "inactive-users",
+        name: "users",
+        records: [{ user_id: periodRole === "current" ? 1 : 2 }],
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        source: "live-api",
+        periodRole,
+        scope,
+      },
+    },
+    reportOutputs: {
+      "inactive-users": {
+        reportId: "inactive-users",
+        datasetName: "users",
+        fileName: "Live API run",
+        records: periodRole === "current" ? [{ datasetName: "users", user_id: 1 }] : [],
+        ...(periodRole === "comparison"
+          ? { comparisonRecords: [{ datasetName: "users", user_id: 2 }] }
+          : {}),
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        source: "live-api",
+        ...(periodRole === "current"
+          ? { currentScope: scope, currentSnapshotId: snapshotId }
+          : { comparisonScope: scope, comparisonSnapshotId: snapshotId }),
+      },
+    },
+    reportRunSnapshots: [
+      {
+        id: snapshotId,
+        reportId: "inactive-users",
+        periodRole,
+        scope,
+        pageSize: 100,
+        maxPagesPerDataset: 20,
+        runPreset: "standard",
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        datasetIds: [datasetId],
+        warnings: [],
+      },
+    ],
+    utilityOutputs: {},
+    utilityRunSnapshots: [],
+    warnings: [],
+  };
+}
 
 function createUtilityLoadedAction(decisionPack: SmeCoverageDecisionPack) {
   return {

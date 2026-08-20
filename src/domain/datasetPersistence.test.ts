@@ -29,6 +29,7 @@ describe("datasetPersistence", () => {
       datasets: {
         "dataset-1": {
           id: "dataset-1",
+          snapshotId: "snapshot-1",
           name: "users",
           records: [{ user_id: 1 }],
           loadedAt: "2026-07-09T12:00:00.000Z",
@@ -120,6 +121,7 @@ describe("datasetPersistence", () => {
       datasets: {
         "dataset-1": {
           id: "dataset-1",
+          snapshotId: "snapshot-1",
           name: "users",
           records: [{ user_id: 1 }],
           loadedAt: "2026-07-09T12:00:00.000Z",
@@ -433,7 +435,7 @@ describe("datasetPersistence", () => {
         scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
         loadedAt: "2026-07-09T12:00:00.000Z",
         datasetIds: ["dataset-1"],
-        warnings: [],
+        warnings: [legacyWarning],
       },
     ]);
     expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("pageSize");
@@ -469,6 +471,7 @@ describe("datasetPersistence", () => {
 
     expect(hydrated.datasets["dataset-1"]?.warnings).toContainEqual(legacyWarning);
     expect(hydrated.reportOutputs["inactive-users"]?.warnings).toContainEqual(legacyWarning);
+    expect(hydrated.reportRunSnapshots[0]?.warnings).toContainEqual(legacyWarning);
   });
 
   it.each([1, 2] as const)(
@@ -477,6 +480,7 @@ describe("datasetPersistence", () => {
       const persisted = createLegacyLiveReportSnapshot(version);
       const datasets = persisted.datasets as Record<string, Record<string, unknown>>;
       const outputs = persisted.reportOutputs as Record<string, Record<string, unknown>>;
+      const snapshots = persisted.reportRunSnapshots as Record<string, unknown>[];
       const legacyWarning = {
         reportId: "inactive-users",
         ...LEGACY_COLLECTION_WARNING,
@@ -493,6 +497,7 @@ describe("datasetPersistence", () => {
       };
       datasets["dataset-1"]!.warnings = [firstWarning, legacyWarning, lastWarning, legacyWarning];
       outputs["inactive-users"]!.warnings = [firstWarning, legacyWarning, lastWarning, legacyWarning];
+      snapshots[0]!.warnings = [firstWarning, legacyWarning, lastWarning, legacyWarning];
 
       const parsed = parseDatasetSessionSnapshot(persisted);
 
@@ -502,6 +507,11 @@ describe("datasetPersistence", () => {
         lastWarning,
       ]);
       expect(parsed?.reportOutputs["inactive-users"]?.warnings).toEqual([
+        firstWarning,
+        legacyWarning,
+        lastWarning,
+      ]);
+      expect(parsed?.reportRunSnapshots[0]?.warnings).toEqual([
         firstWarning,
         legacyWarning,
         lastWarning,
@@ -895,6 +905,7 @@ describe("datasetPersistence", () => {
       datasets: {
         "dataset-1": {
           id: "dataset-1",
+          snapshotId: "snapshot-1",
           name: "users",
           records: [{ user_id: 1 }],
           loadedAt: "2026-07-09T12:00:00.000Z",
@@ -1147,6 +1158,69 @@ describe("datasetPersistence", () => {
     expect(parsed?.reportRunSnapshots).toEqual([]);
   });
 
+  it.each([
+    ["empty snapshot id", (value: Record<string, unknown>) => {
+      const snapshots = value.reportRunSnapshots as Record<string, unknown>[];
+      snapshots[0]!.id = "";
+    }],
+    ["duplicate snapshot ids", (value: Record<string, unknown>) => {
+      const snapshots = value.reportRunSnapshots as Record<string, unknown>[];
+      snapshots.push({ ...snapshots[0] });
+    }],
+    ["empty dataset ids", (value: Record<string, unknown>) => {
+      const snapshots = value.reportRunSnapshots as Record<string, unknown>[];
+      snapshots[0]!.datasetIds = [];
+    }],
+    ["duplicate dataset ids", (value: Record<string, unknown>) => {
+      const snapshots = value.reportRunSnapshots as Record<string, unknown>[];
+      snapshots[0]!.datasetIds = ["dataset-1", "dataset-1"];
+    }],
+  ])("drops live report provenance with %s", (_label, mutate) => {
+    const value = createLegacyLiveReportSnapshot(2);
+    mutate(value);
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
+  });
+
+  it.each([
+    ["cross-report ownership", "reportId", "tag-report"],
+    ["uploaded source", "source", "upload"],
+    ["different snapshot", "snapshotId", "snapshot-2"],
+    ["different period", "periodRole", "comparison"],
+  ])("drops live report provenance when a linked dataset has %s", (_label, field, value) => {
+    const persisted = createLegacyLiveReportSnapshot(2);
+    const datasets = persisted.datasets as Record<string, Record<string, unknown>>;
+    datasets["dataset-1"]![field] = value;
+
+    const parsed = parseDatasetSessionSnapshot(persisted);
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
+  });
+
+  it.each(["currentSnapshotId", "comparisonSnapshotId"] as const)(
+    "drops live output when %s references a snapshot with the wrong period role",
+    (snapshotField) => {
+      const persisted = createLegacyLiveReportSnapshot(2);
+      const datasets = persisted.datasets as Record<string, Record<string, unknown>>;
+      const outputs = persisted.reportOutputs as Record<string, Record<string, unknown>>;
+      const snapshots = persisted.reportRunSnapshots as Record<string, unknown>[];
+      const expectedSnapshotRole = snapshotField === "currentSnapshotId" ? "comparison" : "current";
+      snapshots[0]!.periodRole = expectedSnapshotRole;
+      datasets["dataset-1"]!.periodRole = expectedSnapshotRole;
+      delete outputs["inactive-users"]!.currentSnapshotId;
+      outputs["inactive-users"]![snapshotField] = "snapshot-1";
+
+      const parsed = parseDatasetSessionSnapshot(persisted);
+
+      expect(parsed?.reportRunSnapshots).toHaveLength(1);
+      expect(parsed?.reportOutputs).toEqual({});
+    },
+  );
+
   it("validates and discards legacy collection metadata on persisted report run snapshots", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 1,
@@ -1189,7 +1263,12 @@ describe("datasetPersistence", () => {
       scope: {},
       loadedAt: "2026-07-09T12:00:00.000Z",
       datasetIds: ["dataset-1"],
-      warnings: [],
+      warnings: [
+        {
+          reportId: "tag-report",
+          ...LEGACY_COLLECTION_WARNING,
+        },
+      ],
     });
   });
 

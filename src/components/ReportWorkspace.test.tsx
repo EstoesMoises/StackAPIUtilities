@@ -69,9 +69,12 @@ describe("ReportWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("status", { name: "Collection status" })).toHaveTextContent(
+    const status = screen.getByRole("status", { name: "Collection status" });
+    expect(status).toHaveTextContent(
       "All available data collected · 2026-01-01 to 2026-01-31",
     );
+    expect(status).toHaveClass("s-notice__success");
+    expect(status).not.toHaveClass("s-notice__warning");
   });
 
   it("labels legacy live collection without claiming current completeness", () => {
@@ -97,6 +100,36 @@ describe("ReportWorkspace", () => {
       "Legacy run — completeness not verified under current collection rules. · 2026-01-01 to 2026-01-31",
     );
     expect(status).not.toHaveTextContent("All available data collected");
+    expect(status).toHaveClass("s-notice__warning");
+    expect(status).not.toHaveClass("s-notice__success");
+  });
+
+  it("ignores legacy-like warnings that are noncanonical or owned by another report", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        warnings={[
+          {
+            reportId: "tag-report",
+            code: "collection.legacy-unverified",
+            message: "Legacy run — completeness not verified under current collection rules.",
+          },
+          {
+            reportId: "inactive-users",
+            code: "collection.legacy-unverified",
+            message: "Legacy collection warning with noncanonical copy.",
+          },
+        ]}
+      />,
+    );
+
+    const status = screen.getByRole("status", { name: "Collection status" });
+    expect(status).toHaveTextContent("All available data collected");
+    expect(status).toHaveClass("s-notice__success");
+    expect(status).not.toHaveClass("s-notice__warning");
   });
 
   it("appends the comparison scope to live collection status", () => {

@@ -1,4 +1,5 @@
 import { reportRegistry } from "./reportRegistry";
+import { LEGACY_COLLECTION_WARNING, isLegacyCollectionWarning } from "./collectionWarnings";
 import { parseSmeCoverageDecisionPack } from "../utilities/smeCoverage/persistence";
 import type { SmeCoverageStoredOutput } from "../utilities/smeCoverage/model";
 import type {
@@ -17,10 +18,7 @@ import type {
 } from "./types";
 
 export const DATASET_SESSION_PERSISTENCE_VERSION = 3;
-export const LEGACY_COLLECTION_WARNING: Readonly<ReportWarning> = Object.freeze({
-  code: "collection.legacy-unverified",
-  message: "Legacy run — completeness not verified under current collection rules.",
-});
+export { LEGACY_COLLECTION_WARNING } from "./collectionWarnings";
 
 type DatasetSessionPersistenceVersion = 1 | 2 | typeof DATASET_SESSION_PERSISTENCE_VERSION;
 
@@ -235,7 +233,21 @@ function parseReportRunSnapshots(
     return [];
   }
 
+  const idCounts = new Map<string, number>();
+  for (const candidate of value) {
+    if (isRecord(candidate) && typeof candidate.id === "string" && candidate.id.length > 0) {
+      idCounts.set(candidate.id, (idCounts.get(candidate.id) ?? 0) + 1);
+    }
+  }
+
   return value.flatMap((snapshot) => {
+    if (
+      isRecord(snapshot) &&
+      typeof snapshot.id === "string" &&
+      (idCounts.get(snapshot.id) ?? 0) > 1
+    ) {
+      return [];
+    }
     const parsedSnapshot = parseReportRunSnapshot(snapshot, datasets, storedVersion);
     return parsedSnapshot ? [parsedSnapshot] : [];
   });
@@ -480,17 +492,34 @@ function isReportOutputBackedByDatasetState(
     );
   }
 
-  const outputSnapshotIds = [output.currentSnapshotId, output.comparisonSnapshotId].filter(
-    (snapshotId): snapshotId is string => typeof snapshotId === "string",
-  );
+  const hasCurrentSnapshot = typeof output.currentSnapshotId === "string";
+  const hasComparisonSnapshot = typeof output.comparisonSnapshotId === "string";
 
-  if (outputSnapshotIds.length === 0) {
+  if (!hasCurrentSnapshot && !hasComparisonSnapshot) return false;
+  if (
+    hasCurrentSnapshot &&
+    !reportRunSnapshots.some(
+      (snapshot) =>
+        snapshot.id === output.currentSnapshotId &&
+        snapshot.reportId === output.reportId &&
+        snapshot.periodRole === "current",
+    )
+  ) {
+    return false;
+  }
+  if (
+    hasComparisonSnapshot &&
+    !reportRunSnapshots.some(
+      (snapshot) =>
+        snapshot.id === output.comparisonSnapshotId &&
+        snapshot.reportId === output.reportId &&
+        snapshot.periodRole === "comparison",
+    )
+  ) {
     return false;
   }
 
-  return outputSnapshotIds.every((snapshotId) =>
-    reportRunSnapshots.some((snapshot) => snapshot.id === snapshotId && snapshot.reportId === output.reportId),
-  );
+  return true;
 }
 
 function parseReportRunSnapshot(
@@ -506,11 +535,25 @@ function parseReportRunSnapshot(
 
   if (
     typeof value.id !== "string" ||
+    value.id.length === 0 ||
     !isKnownReportId(value.reportId) ||
     !isRunPeriodRole(value.periodRole) ||
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
-    !value.datasetIds.every((datasetId) => typeof datasetId === "string" && hasOwn(datasets, datasetId)) ||
+    value.datasetIds.length === 0 ||
+    new Set(value.datasetIds).size !== value.datasetIds.length ||
+    !value.datasetIds.every((datasetId) => {
+      if (typeof datasetId !== "string" || datasetId.length === 0 || !hasOwn(datasets, datasetId)) {
+        return false;
+      }
+      const dataset = datasets[datasetId];
+      return (
+        dataset?.source === "live-api" &&
+        dataset.snapshotId === value.id &&
+        dataset.reportId === value.reportId &&
+        dataset.periodRole === value.periodRole
+      );
+    }) ||
     !Array.isArray(value.warnings) ||
     (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
     (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
@@ -535,7 +578,9 @@ function parseReportRunSnapshot(
     scope,
     loadedAt: value.loadedAt,
     datasetIds: [...value.datasetIds],
-    warnings: parseWarnings(value.warnings),
+    warnings: isLegacyVersion
+      ? appendLegacyCollectionWarning(parseWarnings(value.warnings), value.reportId)
+      : parseWarnings(value.warnings),
   };
 
   return snapshot;
@@ -561,10 +606,7 @@ function appendLegacyCollectionWarning(
   const legacyWarning: ReportWarning = { reportId, ...LEGACY_COLLECTION_WARNING };
   let foundLegacyWarning = false;
   const deduplicatedWarnings = existingWarnings.filter((warning) => {
-    const matchesLegacyWarning =
-      warning.reportId === legacyWarning.reportId &&
-      warning.code === legacyWarning.code &&
-      warning.message === legacyWarning.message;
+    const matchesLegacyWarning = isLegacyCollectionWarning(warning, reportId);
 
     if (!matchesLegacyWarning) return true;
     if (foundLegacyWarning) return false;
