@@ -519,6 +519,28 @@ describe("datasetPersistence", () => {
     },
   );
 
+  it.each([1, 2] as const)(
+    "restores a version %s custom-volume utility snapshot without a preset id",
+    (version) => {
+      const legacySnapshot = createUtilityRunSnapshotValue();
+      delete legacySnapshot.runPreset;
+      legacySnapshot.pageSize = 75;
+      legacySnapshot.maxPagesPerDataset = 7;
+      const value = createUtilitySnapshotValue([legacySnapshot]);
+      value.version = version;
+
+      expect(parseDatasetSessionSnapshot(value)?.utilityRunSnapshots).toEqual([
+        {
+          id: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          datasetIds: ["utility-dataset"],
+          warnings: [],
+        },
+      ]);
+    },
+  );
+
   it("does not label legacy uploaded outputs or datasets as unverified live collections", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 2,

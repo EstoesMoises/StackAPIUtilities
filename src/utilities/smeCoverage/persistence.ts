@@ -51,6 +51,9 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
   if (!snapshot || !warnings || !summary || !methodology || !evidence || !isRecord(value.findings)) {
     return null;
   }
+  if (!snapshot.legacy && warnings.some(isCanonicalLegacyCollectionWarning)) {
+    return null;
+  }
 
   const evidenceByTag = new Map<string, SmeCoverageEvidenceRow>();
   for (const row of evidence) {
@@ -148,7 +151,7 @@ function parseSnapshot(value: unknown): { value: SmeCoverageSnapshot; legacy: bo
   } else if (
     !isPositiveInteger(value.pageSize) ||
     !isPositiveInteger(value.maxPagesPerDataset) ||
-    !isSetMember(value.runPreset, legacyReportRunPresetIds)
+    (typeof value.runPreset !== "undefined" && !isSetMember(value.runPreset, legacyReportRunPresetIds))
   ) {
     return null;
   }

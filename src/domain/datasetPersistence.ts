@@ -305,7 +305,7 @@ function parseUtilityRunSnapshot(
     !isKnownUtilityId(value.utilityId) ||
     (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
     (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
-    (isLegacyVersion && !isLegacyReportRunPresetId(value.runPreset)) ||
+    (isLegacyVersion && typeof value.runPreset !== "undefined" && !isLegacyReportRunPresetId(value.runPreset)) ||
     (!isLegacyVersion && typeof value.pageSize !== "undefined") ||
     (!isLegacyVersion && typeof value.maxPagesPerDataset !== "undefined") ||
     (!isLegacyVersion && typeof value.runPreset !== "undefined") ||

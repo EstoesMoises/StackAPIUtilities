@@ -49,7 +49,7 @@ describe("parseSmeCoverageDecisionPack", () => {
     expect(parsed?.warnings).not.toContainEqual(canonicalLegacyCollectionWarning);
   });
 
-  it.each(["pageSize", "maxPagesPerDataset", "runPreset"])(
+  it.each(["pageSize", "maxPagesPerDataset"])(
     "rejects a legacy decision pack missing historical %s evidence",
     (field) => {
       const legacy = structuredClone(createDecisionPack()) as Record<string, any>;
@@ -64,6 +64,24 @@ describe("parseSmeCoverageDecisionPack", () => {
       expect(parseSmeCoverageDecisionPack(legacy)).toBeNull();
     },
   );
+
+  it("migrates a legacy custom-volume decision pack without a preset id", () => {
+    const legacy = structuredClone(createDecisionPack()) as Record<string, any>;
+    delete legacy.snapshot.collectionLabel;
+    Object.assign(legacy.snapshot, { pageSize: 75, maxPagesPerDataset: 7 });
+
+    const parsed = parseSmeCoverageDecisionPack(legacy);
+
+    expect(parsed?.snapshot.collectionLabel).toBe(legacyCollectionLabel);
+    expect(parsed?.warnings).toContainEqual(canonicalLegacyCollectionWarning);
+  });
+
+  it("rejects a current exhaustive pack carrying the canonical legacy warning", () => {
+    const current = structuredClone(createDecisionPack()) as Record<string, any>;
+    current.warnings.push(canonicalLegacyCollectionWarning);
+
+    expect(parseSmeCoverageDecisionPack(current)).toBeNull();
+  });
 
   it.each([
     ["zero page size", "pageSize", 0],
