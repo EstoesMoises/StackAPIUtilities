@@ -825,6 +825,7 @@ describe("CredentialsPanel", () => {
       credentials: {
         ...enterpriseOAuthCredentials(),
         baseUrl: "https://demo.stackenterprise.co/",
+        apiKey: "profile-api-key",
       },
     });
 
@@ -837,6 +838,114 @@ describe("CredentialsPanel", () => {
     expect(profileStorageMocks.saveLastSelectedProfileId).toHaveBeenCalledWith(
       "matching-profile",
     );
+  });
+
+  it("matches an Enterprise session to the profile with the same normalized API key", async () => {
+    mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [
+        enterpriseProfile({
+          id: "wrong-profile",
+          customerName: "Alpha Customer",
+          apiKey: "wrong-key",
+        }),
+        enterpriseProfile({
+          id: "matching-profile",
+          customerName: "Matching Customer",
+          apiKey: "session-key",
+        }),
+      ],
+      lastSelectedProfileId: "wrong-profile",
+    });
+
+    renderCredentialsPanel({
+      credentials: {
+        ...enterpriseOAuthCredentials(),
+        apiKey: " session-key ",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Saved customer")).toHaveValue("matching-profile");
+    });
+    expect(screen.getByLabelText("Customer name")).toHaveValue("Matching Customer");
+    expect(screen.getByLabelText("API key")).toHaveValue("session-key");
+    expect(profileStorageMocks.saveLastSelectedProfileId).toHaveBeenCalledWith(
+      "matching-profile",
+    );
+  });
+
+  it("prefers the selected profile when multiple profiles match the Enterprise session", async () => {
+    mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [
+        enterpriseProfile({
+          id: "alpha-profile",
+          customerName: "Alpha Customer",
+          apiKey: "shared-key",
+        }),
+        enterpriseProfile({
+          id: "preferred-profile",
+          customerName: "Preferred Customer",
+          apiKey: "shared-key",
+        }),
+      ],
+      lastSelectedProfileId: "preferred-profile",
+    });
+
+    renderCredentialsPanel({
+      credentials: {
+        ...enterpriseOAuthCredentials(),
+        apiKey: "shared-key",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Saved customer")).toHaveValue("preferred-profile");
+    });
+    expect(screen.getByLabelText("Customer name")).toHaveValue("Preferred Customer");
+    expect(screen.getByLabelText("API key")).toHaveValue("shared-key");
+    expect(profileStorageMocks.saveLastSelectedProfileId).not.toHaveBeenCalled();
+  });
+
+  it("preserves an ambiguous Enterprise session draft and clears a stale preference", async () => {
+    mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [
+        enterpriseProfile({
+          id: "alpha-profile",
+          customerName: "Alpha Customer",
+          apiKey: "shared-key",
+        }),
+        enterpriseProfile({
+          id: "beta-profile",
+          customerName: "Beta Customer",
+          apiKey: "shared-key",
+        }),
+        enterpriseProfile({
+          id: "stale-profile",
+          customerName: "Stale Customer",
+          apiKey: "different-key",
+        }),
+      ],
+      lastSelectedProfileId: "stale-profile",
+    });
+
+    renderCredentialsPanel({
+      credentials: {
+        ...enterpriseOAuthCredentials(),
+        apiKey: " shared-key ",
+      },
+    });
+
+    await waitFor(() => expect(screen.getByLabelText("Saved customer")).toHaveValue(""));
+    expect(screen.getByLabelText("Customer name")).toHaveValue("");
+    expect(screen.getByLabelText("Instance URL")).toHaveValue(
+      "https://demo.stackenterprise.co",
+    );
+    expect(screen.getByLabelText("OAuth Client ID")).toHaveValue("client-123");
+    expect(screen.getByLabelText("API key")).toHaveValue(" shared-key ");
+    expect(profileStorageMocks.saveLastSelectedProfileId).toHaveBeenCalledWith(undefined);
   });
 
   it("keeps nonmatching Enterprise session values as a new unsaved customer", async () => {
@@ -945,7 +1054,12 @@ describe("CredentialsPanel", () => {
   it("keeps an explicit Basic lane choice over a matching Enterprise session", async () => {
     mockOAuthEndpoints();
     const storage = installDeferredProfileStorage();
-    renderCredentialsPanel({ credentials: enterpriseOAuthCredentials() });
+    renderCredentialsPanel({
+      credentials: {
+        ...enterpriseOAuthCredentials(),
+        apiKey: "profile-api-key",
+      },
+    });
     const user = userEvent.setup();
 
     await user.selectOptions(screen.getByLabelText("Instance type"), "basic-business");
@@ -1078,7 +1192,7 @@ describe("CredentialsPanel", () => {
     const credentials: SessionCredentials = {
       instanceType: "enterprise",
       baseUrl: "https://demo.stackenterprise.co",
-      apiKey: "secret-api-key",
+      apiKey: "profile-api-key",
       accessToken: "secret-access-token",
       authSource: "manual-enterprise-token",
       oauthClientId: "client-123",
@@ -1120,7 +1234,7 @@ describe("CredentialsPanel", () => {
     expect(credentials).toEqual({
       instanceType: "enterprise",
       baseUrl: "https://demo.stackenterprise.co",
-      apiKey: "secret-api-key",
+      apiKey: "profile-api-key",
       accessToken: "secret-access-token",
       authSource: "manual-enterprise-token",
       oauthClientId: "client-123",
@@ -1138,7 +1252,7 @@ describe("CredentialsPanel", () => {
       credentials: {
         instanceType: "enterprise",
         baseUrl: "https://demo.stackenterprise.co",
-        apiKey: "secret-api-key",
+        apiKey: "profile-api-key",
         accessToken: "secret-access-token",
         authSource: "manual-enterprise-token",
         oauthClientId: "client-123",

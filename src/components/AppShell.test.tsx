@@ -1300,7 +1300,9 @@ describe("AppShell", () => {
 
     expect(screen.getByRole("heading", { name: "Session Credentials" })).toBeInTheDocument();
     expect(
-      screen.getByText("Credentials are kept in memory for this browser session only."),
+      screen.getByText(
+        "OAuth access tokens and PATs stay in memory for this browser session. API keys persist only when explicitly saved in a customer profile.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Instance URL")).toBeInTheDocument();
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();

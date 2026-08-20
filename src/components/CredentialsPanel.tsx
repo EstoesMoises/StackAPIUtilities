@@ -178,11 +178,19 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       instanceTypeEditedRef.current && draft.instanceType === "basic-business";
 
     if (credentials?.instanceType === "enterprise") {
-      const matchingSessionProfile = customerProfiles.profiles.find(
+      const sessionApiKey = credentials.apiKey?.trim() ?? "";
+      const matchingSessionProfiles = customerProfiles.profiles.filter(
         (profile) =>
           canonicalizeEnterpriseBaseUrl(profile.baseUrl) ===
             canonicalizeEnterpriseBaseUrl(credentials.baseUrl) &&
-          profile.oauthClientId === (credentials.oauthClientId ?? ""),
+          profile.oauthClientId === (credentials.oauthClientId ?? "") &&
+          (profile.apiKey ?? "") === sessionApiKey,
+      );
+      const selectedMatchingSessionProfile = matchingSessionProfiles.find(
+        (profile) => profile.id === customerProfiles.selectedProfileId,
+      );
+      const matchingSessionProfile = selectedMatchingSessionProfile ?? (
+        matchingSessionProfiles.length === 1 ? matchingSessionProfiles[0] : undefined
       );
 
       if (matchingSessionProfile) {
@@ -518,7 +526,8 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
         </div>
       </div>
       <p className="workspace-copy credential-session-copy">
-        Credentials are kept in memory for this browser session only.
+        OAuth access tokens and PATs stay in memory for this browser session. API keys persist only
+        when explicitly saved in a customer profile.
       </p>
       <div className="credential-notes" role="note">
         <p className="scope-label">
