@@ -14,8 +14,8 @@ interface StackApiV2ClientOptions {
 }
 
 interface StackApiV2Page<T> {
-  items?: T[];
-  has_more?: boolean;
+  items: T[];
+  has_more: boolean;
   backoff?: number;
   quota_remaining?: number;
 }
@@ -71,12 +71,16 @@ export class StackApiV2Client {
       assertSafePaginationPage("Stack API v2.3", path, page, this.paginationSafetyLimit);
       const url = this.buildUrl(path, { ...query, page: String(page) });
       const response = await this.fetchFn(url, { headers: this.headers });
-      const body = await readJsonResponse<StackApiV2Page<T>>(response, "Stack API v2.3");
+      const body = validatePaginationEnvelope<T>(
+        await readJsonResponse<unknown>(response, "Stack API v2.3"),
+        path,
+        page,
+      );
 
-      items.push(...(body.items ?? []));
+      items.push(...body.items);
       await this.notifyBackoff(body);
 
-      hasMore = body.has_more === true;
+      hasMore = body.has_more;
       pageCount += 1;
       page += 1;
     }
@@ -111,4 +115,36 @@ export class StackApiV2Client {
 
     await this.onThrottle({ kind: "backoff", seconds: body.backoff, remaining: body.quota_remaining });
   }
+}
+
+function validatePaginationEnvelope<T>(
+  value: unknown,
+  path: string,
+  page: number,
+): StackApiV2Page<T> {
+  if (
+    !isRecord(value) ||
+    !hasOwn(value, "items") ||
+    !Array.isArray(value.items) ||
+    !hasOwn(value, "has_more") ||
+    typeof value.has_more !== "boolean"
+  ) {
+    throw invalidPaginationEnvelope(path, page);
+  }
+
+  return value as unknown as StackApiV2Page<T>;
+}
+
+function invalidPaginationEnvelope(path: string, page: number): Error {
+  return new Error(
+    `Stack API v2.3 returned an invalid pagination envelope for ${path} page ${page}. No complete result was produced.`,
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(value: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }

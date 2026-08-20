@@ -66,11 +66,16 @@ export async function handleSmeCoverageRunRequest(
 
 function errorResponse(error: unknown, credentialStrings: readonly string[]): Response {
   if (error instanceof SmeCoverageRunError) {
+    if (error.kind === "unexpected") {
+      return jsonResponse(
+        { ok: false, kind: "unexpected", error: "SME Coverage Analyzer failed unexpectedly." },
+        500,
+      );
+    }
     const status = {
       validation: 400,
       unsupported: 422,
       collection: 502,
-      unexpected: 500,
     }[error.kind];
     const stage = typeof error.stage === "string" && error.stage.trim().length > 0
       ? { stage: redactCredentialValues(error.stage, credentialStrings) }

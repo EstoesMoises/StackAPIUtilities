@@ -125,7 +125,6 @@ describe("handleSmeCoverageRunRequest", () => {
     ["validation", 400],
     ["unsupported", 422],
     ["collection", 502],
-    ["unexpected", 500],
   ] as const)("maps a %s runner error to HTTP %i", async (kind, status) => {
     const runSmeCoverageAnalysis = vi.fn().mockRejectedValue(new SmeCoverageRunError(kind, `${kind} failed`));
 
@@ -133,6 +132,24 @@ describe("handleSmeCoverageRunRequest", () => {
 
     expect(response.status).toBe(status);
     await expect(responseBody(response)).resolves.toEqual({ ok: false, kind, error: `${kind} failed` });
+  });
+
+  it("does not expose unexpected runner details or stages", async () => {
+    const sensitiveDetail = "database-password=internal-secret";
+    const runSmeCoverageAnalysis = vi.fn().mockRejectedValue(
+      new SmeCoverageRunError("unexpected", sensitiveDetail, `stage-${sensitiveDetail}`),
+    );
+
+    const response = await handleSmeCoverageRunRequest({ credentials }, { runSmeCoverageAnalysis });
+    const body = await responseBody(response);
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      ok: false,
+      kind: "unexpected",
+      error: "SME Coverage Analyzer failed unexpectedly.",
+    });
+    expect(JSON.stringify(body)).not.toContain(sensitiveDetail);
   });
 
   it("includes a non-empty collection stage", async () => {

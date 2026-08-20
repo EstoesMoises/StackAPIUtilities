@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FetchLike } from "../../api/httpClient";
 import * as liveCollectors from "../../collectors/liveCollectors";
 import type { SessionCredentials } from "../../domain/types";
+import * as decisionPack from "./decisionPack";
 import { runSmeCoverageAnalysis, SmeCoverageRunError } from "./runner";
 import type { SmeCoverageRunResult } from "./runner";
 
@@ -194,29 +195,77 @@ describe("runSmeCoverageAnalysis", () => {
     expect(result).not.toHaveProperty("runPreset");
   });
 
-  it.each([
-    ["reachedMaxPages", { pageCount: 1, reachedMaxPages: true, hasMore: false }],
-    ["hasMore", { pageCount: 1, reachedMaxPages: false, hasMore: true }],
-  ] as const)("fails closed before later collection when a source reports %s", async (_label, pagination) => {
-    const collectSpy = vi.spyOn(liveCollectors, "collectDataset").mockResolvedValueOnce({
-      records: [{ name: "piper" }],
-      pagination,
-    });
+  describe.each(["tags", "questions", "tagSmeCounts"] as const)("nonterminal %s collection", (source) => {
+    it.each([
+      ["reachedMaxPages", { pageCount: 1, reachedMaxPages: true, hasMore: false }],
+      ["hasMore", { pageCount: 1, reachedMaxPages: false, hasMore: true }],
+    ] as const)("fails closed when metadata reports %s", async (_label, nonterminalPagination) => {
+      const collectSpy = vi.spyOn(liveCollectors, "collectDataset").mockImplementation(async (datasetName) => {
+        const records = datasetName === "questions"
+          ? [{ question_id: 1, tags: ["piper"], view_count: 800 }]
+          : [{ name: "piper", subjectMatterExpertCount: 1 }];
+        return {
+          records,
+          pagination: datasetName === source
+            ? nonterminalPagination
+            : { pageCount: 1, reachedMaxPages: false, hasMore: false },
+        };
+      });
 
-    const error = await runSmeCoverageAnalysis(basicCredentials, { fetchFn: vi.fn() }).catch(
-      (caught: unknown) => caught,
-    );
-    const collectionCallCount = collectSpy.mock.calls.length;
-    collectSpy.mockRestore();
+      const error = await runSmeCoverageAnalysis(basicCredentials, { fetchFn: vi.fn() }).catch(
+        (caught: unknown) => caught,
+      );
+      const collectedSources = collectSpy.mock.calls.map(([datasetName]) => datasetName);
+      collectSpy.mockRestore();
 
-    expect(error).toBeInstanceOf(SmeCoverageRunError);
-    expect(error).toMatchObject({
-      kind: "collection",
-      stage: "tags",
-      message: "tags collection did not reach terminal pagination. No complete result was produced.",
+      expect(error).toBeInstanceOf(SmeCoverageRunError);
+      expect(error).toMatchObject({
+        kind: "collection",
+        stage: source,
+        message: `${source} collection did not reach terminal pagination. No complete result was produced.`,
+      });
+      expect(collectedSources).toEqual(
+        ["tags", "questions", "tagSmeCounts"].slice(0, ["tags", "questions", "tagSmeCounts"].indexOf(source) + 1),
+      );
     });
-    expect(collectionCallCount).toBe(1);
   });
+
+  it.each(["tags", "questions", "tagSmeCounts"] as const)(
+    "surfaces a malformed %s pagination envelope as a collection error",
+    async (failedStage) => {
+      const decisionPackSpy = vi.spyOn(decisionPack, "buildSmeCoverageDecisionPack");
+      const fetchMock: FetchLike = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes("/2.3/tags")) {
+          return Promise.resolve(failedStage === "tags"
+            ? new Response(JSON.stringify({ has_more: false }), { status: 200 })
+            : v2Page([{ name: "piper", count: 8 }]));
+        }
+        if (url.includes("/2.3/questions")) {
+          return Promise.resolve(failedStage === "questions"
+            ? new Response(JSON.stringify({ items: [] }), { status: 200 })
+            : v2Page([{ question_id: 1, tags: ["piper"], view_count: 800 }]));
+        }
+        return Promise.resolve(failedStage === "tagSmeCounts"
+          ? new Response(JSON.stringify({ totalPages: 1 }), { status: 200 })
+          : v3Page([{ name: "piper", subjectMatterExpertCount: 1 }]));
+      }) as FetchLike;
+
+      const error = await runSmeCoverageAnalysis(basicCredentials, { fetchFn: fetchMock }).catch(
+        (caught: unknown) => caught,
+      );
+      const decisionPackCallCount = decisionPackSpy.mock.calls.length;
+      decisionPackSpy.mockRestore();
+
+      expect(error).toBeInstanceOf(SmeCoverageRunError);
+      expect(error).toMatchObject({
+        kind: "collection",
+        stage: failedStage,
+        message: expect.stringContaining("invalid pagination envelope"),
+      });
+      expect(decisionPackCallCount).toBe(0);
+    },
+  );
 
   it("rejects v2 tag data when v3 provides no matching authoritative numeric SME count", async () => {
     const fetchMock: FetchLike = vi.fn().mockImplementation((input: RequestInfo | URL) => {

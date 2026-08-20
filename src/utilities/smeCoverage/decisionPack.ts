@@ -24,6 +24,7 @@ export function buildSmeCoverageDecisionPack({
   snapshot,
   sourceWarnings,
 }: BuildSmeCoverageDecisionPackInput): SmeCoverageDecisionPack {
+  assertTerminalSourceStatus(analysis);
   const narrative = buildSmeCoverageNarrative(analysis);
   const evidenceBySource = new Map<SmeCoverageEvidenceRow, SmeCoverageEvidenceRow>();
   const evidence = Object.freeze(
@@ -57,6 +58,16 @@ export function buildSmeCoverageDecisionPack({
     methodology: Object.freeze({ ...analysis.methodology }),
     evidence,
   });
+}
+
+function assertTerminalSourceStatus(analysis: SmeCoverageAnalysisResult): void {
+  for (const source of ["tags", "questions", "tagSmeCounts"] as const) {
+    const pagination = analysis.sourceStatus[source];
+    if (!pagination.reachedMaxPages && !pagination.hasMore) continue;
+    throw new Error(
+      `Cannot build SME coverage decision pack: ${source} collection did not reach terminal pagination. No complete result was produced.`,
+    );
+  }
 }
 
 function determineCompleteness(analysis: SmeCoverageAnalysisResult): SmeCoverageCompleteness {

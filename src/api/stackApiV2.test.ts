@@ -5,6 +5,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function responseWithJson(body: unknown): Response {
+  const response = new Response("", { status: 200 });
+  vi.spyOn(response, "json").mockResolvedValue(body);
+  return response;
+}
+
 describe("StackApiV2Client", () => {
   it("fetches all pages and appends the team slug for Basic/Business", async () => {
     const fetchMock = vi.fn()
@@ -72,6 +78,42 @@ describe("StackApiV2Client", () => {
       hasMore: true,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a null body", null],
+    ["an array body", []],
+    ["missing items", { has_more: false }],
+    ["non-array items", { items: {}, has_more: false }],
+    ["missing has_more", { items: [] }],
+    ["non-boolean has_more", { items: [], has_more: "false" }],
+    ["inherited pagination fields", Object.create({ items: [], has_more: false })],
+  ])("fails closed when page 1 has %s", async (_label, body) => {
+    const client = new StackApiV2Client({
+      apiV2Url: "https://api.stackoverflowteams.com/2.3",
+      teamSlug: "example-team",
+      fetchFn: vi.fn().mockResolvedValue(responseWithJson(body)),
+    });
+
+    await expect(client.getPagedItems("/users")).rejects.toThrow(
+      "Stack API v2.3 returned an invalid pagination envelope for /users page 1. No complete result was produced.",
+    );
+  });
+
+  it("validates every v2 page before returning any accumulated result", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: 1 }], has_more: true }))
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: 2 }] }));
+    const client = new StackApiV2Client({
+      apiV2Url: "https://api.stackoverflowteams.com/2.3",
+      teamSlug: "example-team",
+      fetchFn: fetchMock,
+    });
+
+    await expect(client.getPagedItems("/users")).rejects.toThrow(
+      "Stack API v2.3 returned an invalid pagination envelope for /users page 2. No complete result was produced.",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("throws a mapped error on non-200 responses", async () => {

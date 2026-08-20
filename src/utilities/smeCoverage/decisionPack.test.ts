@@ -85,20 +85,13 @@ describe("buildSmeCoverageDecisionPack", () => {
   });
 
   it.each(["tags", "questions", "tagSmeCounts"] as const)(
-    "does not use a legacy %s source cap to override complete evidence quality",
+    "rejects nonterminal %s source metadata before constructing a pack",
     (source) => {
       const analysis = analyze(narrativeDemandRows, narrativeSmeRows, capped(source));
-      const sourceWarning = warning("legacy.source", "Legacy source warning.");
 
-      const pack = buildSmeCoverageDecisionPack({
-        analysis,
-        snapshot,
-        sourceWarnings: [sourceWarning],
-      });
-
-      expect(pack.snapshot.completeness).toBe("Complete");
-      expect(pack.warnings).toContainEqual(sourceWarning);
-      expect(pack.warnings).not.toContainEqual(expect.objectContaining({ code: "sme-coverage.partial-sample" }));
+      expect(() => buildSmeCoverageDecisionPack({ analysis, snapshot, sourceWarnings: [] })).toThrow(
+        `Cannot build SME coverage decision pack: ${source} collection did not reach terminal pagination. No complete result was produced.`,
+      );
     },
   );
 
@@ -133,16 +126,6 @@ describe("buildSmeCoverageDecisionPack", () => {
       lightCoverage: 0,
       unknownRows: 0,
     });
-  });
-
-  it("marks zero evidence Empty even for legacy nonterminal source metadata", () => {
-    const pack = buildSmeCoverageDecisionPack({
-      analysis: analyze([], [], capped("tags")),
-      snapshot,
-      sourceWarnings: [],
-    });
-
-    expect(pack.snapshot.completeness).toBe("Empty");
   });
 
   it("deduplicates source warnings before analysis warnings in stable source order", () => {
