@@ -65,7 +65,7 @@ describe("StackApiV2Client", () => {
       events.push(`fetch-${page}`);
       return page === 1
         ? responseWithJson({ items: [{ id: 1 }], has_more: true, backoff: 4, quota_remaining: 12 })
-        : responseWithJson({ items: [{ id: 2 }], has_more: false, backoff: 9, quota_remaining: 11 });
+        : responseWithJson({ items: [{ id: 2 }], has_more: false });
     });
     const onThrottle = vi.fn(async () => {
       events.push("notify");
@@ -88,6 +88,47 @@ describe("StackApiV2Client", () => {
     expect(waitFn).toHaveBeenCalledTimes(1);
     expect(waitFn).toHaveBeenCalledWith(4);
     expect(events).toEqual(["fetch-1", "notify", "wait", "fetch-2"]);
+  });
+
+  it("carries a terminal-page backoff to the next call and consumes it once", async () => {
+    let releaseWait: (() => void) | undefined;
+    const waitFn = vi.fn(() => new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    }));
+    const onThrottle = vi.fn(async () => undefined);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responseWithJson({
+        items: [{ id: 1 }],
+        has_more: false,
+        backoff: 5,
+        quota_remaining: 8,
+      }))
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: 2 }], has_more: false }))
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: 3 }], has_more: false }));
+    const client = new StackApiV2Client({
+      apiV2Url: "https://api.stackoverflowteams.com/2.3",
+      teamSlug: "example-team",
+      fetchFn: fetchMock,
+      onThrottle,
+      waitFn,
+    });
+
+    await expect(client.getPagedItems("/users")).resolves.toEqual([{ id: 1 }]);
+    expect(onThrottle).toHaveBeenCalledTimes(1);
+    expect(onThrottle).toHaveBeenCalledWith({ kind: "backoff", seconds: 5, remaining: 8 });
+    expect(waitFn).not.toHaveBeenCalled();
+
+    const secondResult = client.getPagedItems("/tags");
+    await vi.waitFor(() => expect(waitFn).toHaveBeenCalledWith(5));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    releaseWait?.();
+    await expect(secondResult).resolves.toEqual([{ id: 2 }]);
+    await expect(client.getPagedItems("/badges")).resolves.toEqual([{ id: 3 }]);
+
+    expect(waitFn).toHaveBeenCalledTimes(1);
+    expect(onThrottle).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("does not wait when a non-terminal page has no backoff", async () => {

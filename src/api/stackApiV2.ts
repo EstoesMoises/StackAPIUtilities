@@ -45,6 +45,8 @@ export class StackApiV2Client {
   private readonly onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
   private readonly waitFn: WaitFn;
   private readonly paginationSafetyLimit: number;
+  private pendingBackoffSeconds: number | null = null;
+  private activeBackoffWait: Promise<void> | null = null;
 
   constructor(options: StackApiV2ClientOptions) {
     this.apiV2Url = options.apiV2Url.replace(/\/+$/, "");
@@ -78,6 +80,7 @@ export class StackApiV2Client {
     while (hasMore && page <= maxPages) {
       assertSafePaginationPage("Stack API v2.3", path, page, this.paginationSafetyLimit);
       const url = this.buildUrl(path, { ...query, page: String(page) });
+      await this.waitForPendingBackoff();
       const response = await this.fetchFn(url, { headers: this.headers });
       const body = validatePaginationEnvelope<T>(
         await readJsonResponse<unknown>(response, "Stack API v2.3"),
@@ -86,9 +89,7 @@ export class StackApiV2Client {
       );
 
       items.push(...body.items);
-      if (body.has_more && page < maxPages) {
-        await this.honorBackoff(body);
-      }
+      await this.recordBackoff(body);
 
       hasMore = body.has_more;
       pageCount += 1;
@@ -118,16 +119,37 @@ export class StackApiV2Client {
     return url;
   }
 
-  private async honorBackoff<T>(body: StackApiV2Page<T>): Promise<void> {
+  private async recordBackoff<T>(body: StackApiV2Page<T>): Promise<void> {
     if (typeof body.backoff !== "number") {
       return;
     }
 
+    this.pendingBackoffSeconds = Math.max(this.pendingBackoffSeconds ?? 0, body.backoff);
+
     if (this.onThrottle) {
       await this.onThrottle({ kind: "backoff", seconds: body.backoff, remaining: body.quota_remaining });
     }
+  }
 
-    await this.waitFn(body.backoff);
+  private async waitForPendingBackoff(): Promise<void> {
+    if (this.activeBackoffWait === null && this.pendingBackoffSeconds !== null) {
+      const seconds = this.pendingBackoffSeconds;
+      this.pendingBackoffSeconds = null;
+      this.activeBackoffWait = Promise.resolve().then(() => this.waitFn(seconds));
+    }
+
+    const wait = this.activeBackoffWait;
+    if (wait === null) {
+      return;
+    }
+
+    try {
+      await wait;
+    } finally {
+      if (this.activeBackoffWait === wait) {
+        this.activeBackoffWait = null;
+      }
+    }
   }
 }
 
