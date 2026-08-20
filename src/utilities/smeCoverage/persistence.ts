@@ -94,6 +94,17 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
   });
 }
 
+export function parseCurrentSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisionPack | null {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.snapshot) ||
+    value.snapshot.collectionLabel !== exhaustiveCollectionLabel
+  ) {
+    return null;
+  }
+  return parseSmeCoverageDecisionPack(value);
+}
+
 function normalizeLegacyCollectionWarnings(
   warnings: readonly ReportWarning[],
   legacy: boolean,
@@ -401,15 +412,12 @@ function isCoherentDecisionPack(
     if (row.coverageTier !== expectedTier) return false;
   }
 
-  if (evidence.length === 0) return snapshot.completeness !== "Complete";
-  if (snapshot.completeness === "Empty") return false;
-  if (snapshot.completeness === "Complete") {
-    return (
-      percentileSampleSufficient &&
-      evidence.every((row) => row.demandQuality === "Complete" && row.smeQuality === "Complete")
-    );
-  }
-  return true;
+  if (evidence.length === 0) return snapshot.completeness === "Empty";
+  const expectedCompleteness = percentileSampleSufficient &&
+    evidence.every((row) => row.demandQuality === "Complete" && row.smeQuality === "Complete")
+    ? "Complete"
+    : "Partial";
+  return snapshot.completeness === expectedCompleteness;
 }
 
 function isActiveEvidenceRow(row: SmeCoverageEvidenceRow): boolean {

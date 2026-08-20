@@ -456,6 +456,34 @@ describe("AppShell", () => {
         evidence: [{}] as unknown as typeof body.result.decisionPack.evidence,
       };
     }],
+    ["a negative evidence metric", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).evidence[0].pageViews = -1;
+    }],
+    ["a percentile above 100", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).evidence[1].coveragePercentile = 101;
+    }],
+    ["a summary that does not match the evidence", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).summary.tagsAnalyzed += 1;
+    }],
+    ["a finding that does not match the evidence", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      const pack = mutableSmeDecisionPack(body);
+      pack.findings.immediateGaps[0] = {
+        ...pack.findings.immediateGaps[0],
+        reason: "Tampered finding.",
+      };
+    }],
+    ["an invalid evidence tier", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).evidence[0].coverageTier = "Impossible";
+    }],
+    ["incoherent methodology", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).methodology.coveredActiveSampleSize += 1;
+    }],
+    ["an evidence ratio that does not match its inputs", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).evidence[1].pageViewsPerSme += 1;
+    }],
+    ["a completeness label that does not match the evidence", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).snapshot.completeness = "Partial";
+    }],
   ])("fails visibly without publishing a utility result containing %s", async (_label, mutate) => {
     const user = userEvent.setup();
     const body = makeSmeCoverageRunBody(completeSmeCoverageDecisionPack(), "invalid");
@@ -2132,6 +2160,12 @@ function makeSmeCoverageRunBody(
       decisionPack,
     },
   };
+}
+
+function mutableSmeDecisionPack(body: ReturnType<typeof makeSmeCoverageRunBody>): Record<string, any> {
+  const decisionPack = structuredClone(body.result.decisionPack);
+  body.result.decisionPack = decisionPack;
+  return decisionPack as unknown as Record<string, any>;
 }
 
 function makePersistedUtilitySnapshot(decisionPack: ReturnType<typeof completeSmeCoverageDecisionPack>) {

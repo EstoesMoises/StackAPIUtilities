@@ -1,125 +1,70 @@
 import type { ReportWarning } from "../../domain/types";
+import { parseCurrentSmeCoverageDecisionPack } from "./persistence";
 import type {
-  SmeCoverageDecisionPack,
-  SmeCoverageEvidenceRow,
-  SmeCoverageMethodology,
-  SmeCoverageSummary,
-} from "./model";
-import type { SmeCoverageRunResult } from "./runner";
+  SmeCoverageRunDataset,
+  SmeCoverageRunResult,
+} from "./runner";
 
 const REQUIRED_DATASETS = ["tags", "questions", "tagSmeCounts"] as const;
-const QUESTION_COUNT_BASES = [
-  "Complete question enumeration",
-  "All-time tag total",
-  "Partial question sample",
-  "Unavailable",
-] as const;
-const COVERAGE_TIERS = [
-  "Immediate gap",
-  "Critical under-coverage",
-  "Light coverage",
-  "Adequate coverage",
-  "Not classified",
-  "Low-demand uncovered",
-  "Unknown",
-] as const;
-const DEMAND_QUALITIES = ["Complete", "Partial sample", "Invalid"] as const;
-const SME_QUALITIES = ["Complete", "Unknown"] as const;
 
-export function isTerminalSmeCoverageResult(value: unknown): value is SmeCoverageRunResult {
-  if (!isRecord(value)) return false;
+export function parseTerminalSmeCoverageResult(value: unknown): SmeCoverageRunResult | null {
+  if (!isRecord(value)) return null;
   if (value.utilityId !== "sme-coverage-analyzer" || value.utilityTitle !== "SME Coverage Analyzer") {
-    return false;
+    return null;
   }
-  if (!isStringArray(value.messages) || !isWarningArray(value.warnings)) return false;
-  if (!Array.isArray(value.datasets) || value.datasets.length !== REQUIRED_DATASETS.length) return false;
+  if (!isStringArray(value.messages) || !isWarningArray(value.warnings)) return null;
+  if (!Array.isArray(value.datasets) || value.datasets.length !== REQUIRED_DATASETS.length) return null;
 
+  const datasets: SmeCoverageRunDataset[] = [];
   const seen = new Set<string>();
   for (const dataset of value.datasets) {
-    if (!isRecord(dataset) || !isRequiredDatasetName(dataset.datasetName)) return false;
-    if (seen.has(dataset.datasetName)) return false;
+    if (!isRecord(dataset) || !isRequiredDatasetName(dataset.datasetName)) return null;
+    if (seen.has(dataset.datasetName)) return null;
     seen.add(dataset.datasetName);
-    if (!Array.isArray(dataset.records) || !dataset.records.every(isRecord)) return false;
-    if (!isTerminalPagination(dataset.pagination)) return false;
+    if (!Array.isArray(dataset.records) || !dataset.records.every(isRecord)) return null;
+    const pagination = parseTerminalPagination(dataset.pagination);
+    if (!pagination) return null;
+    datasets.push({
+      datasetName: dataset.datasetName,
+      records: dataset.records as SmeCoverageRunDataset["records"],
+      pagination,
+    });
   }
 
-  return REQUIRED_DATASETS.every((datasetName) => seen.has(datasetName)) && isDecisionPack(value.decisionPack);
-}
-
-function isDecisionPack(value: unknown): value is SmeCoverageDecisionPack {
-  if (!isRecord(value) || !isRecord(value.snapshot)) return false;
-  const snapshot = value.snapshot;
+  const decisionPack = parseCurrentSmeCoverageDecisionPack(value.decisionPack);
   if (
-    typeof snapshot.instanceHost !== "string" ||
-    typeof snapshot.generatedAt !== "string" ||
-    snapshot.scopeLabel !== "All-time demand · Current SME coverage" ||
-    snapshot.collectionLabel !== "All available data collected" ||
-    !["Complete", "Partial", "Empty"].includes(String(snapshot.completeness))
+    !REQUIRED_DATASETS.every((datasetName) => seen.has(datasetName)) ||
+    !decisionPack ||
+    !warningsMatch(value.warnings, decisionPack.warnings)
   ) {
-    return false;
+    return null;
   }
 
-  return (
-    isWarningArray(value.warnings) &&
-    isSummary(value.summary) &&
-    typeof value.overview === "string" &&
-    typeof value.assessment === "string" &&
-    isRecord(value.findings) &&
-    isEvidenceRowArray(value.findings.immediateGaps) &&
-    isEvidenceRowArray(value.findings.criticalUnderCoverage) &&
-    isEvidenceRowArray(value.findings.lightCoverage) &&
-    isMethodology(value.methodology) &&
-    isEvidenceRowArray(value.evidence)
-  );
+  return {
+    utilityId: "sme-coverage-analyzer",
+    utilityTitle: "SME Coverage Analyzer",
+    datasets,
+    messages: [...value.messages],
+    warnings: decisionPack.warnings,
+    decisionPack,
+  };
 }
 
-function isSummary(value: unknown): value is SmeCoverageSummary {
-  if (!isRecord(value)) return false;
-  return [
-    value.tagsAnalyzed,
-    value.tagsWithSmes,
-    value.immediateGaps,
-    value.criticalUnderCoverage,
-    value.lightCoverage,
-    value.unknownRows,
-  ].every(isNonNegativeInteger);
+function warningsMatch(left: readonly ReportWarning[], right: readonly ReportWarning[]): boolean {
+  return left.length === right.length && left.every((warning, index) => {
+    const expected = right[index];
+    return (
+      expected !== undefined &&
+      warning.code === expected.code &&
+      warning.message === expected.message &&
+      warning.reportId === expected.reportId &&
+      warning.utilityId === expected.utilityId
+    );
+  });
 }
 
-function isEvidenceRowArray(value: unknown): value is SmeCoverageEvidenceRow[] {
-  return Array.isArray(value) && value.every(isEvidenceRow);
-}
-
-function isEvidenceRow(value: unknown): value is SmeCoverageEvidenceRow {
-  return (
-    isRecord(value) &&
-    typeof value.tagName === "string" &&
-    isNullableFiniteNumber(value.pageViews) &&
-    isNullableFiniteNumber(value.questionCount) &&
-    includesValue(QUESTION_COUNT_BASES, value.questionCountBasis) &&
-    isNullableFiniteNumber(value.smeCount) &&
-    isNullableFiniteNumber(value.pageViewsPerSme) &&
-    isNullableFiniteNumber(value.coveragePercentile) &&
-    includesValue(COVERAGE_TIERS, value.coverageTier) &&
-    typeof value.reason === "string" &&
-    typeof value.recommendedAction === "string" &&
-    includesValue(DEMAND_QUALITIES, value.demandQuality) &&
-    includesValue(SME_QUALITIES, value.smeQuality)
-  );
-}
-
-function isMethodology(value: unknown): value is SmeCoverageMethodology {
-  return (
-    isRecord(value) &&
-    value.activityQuestionMinimum === 1 &&
-    value.activityPageViewThresholdExclusive === 25 &&
-    isNullableFiniteNumber(value.activeTagMedianPageViews) &&
-    isNonNegativeInteger(value.coveredActiveSampleSize) &&
-    isNullableFiniteNumber(value.p75PageViewsPerSme) &&
-    isNullableFiniteNumber(value.p90PageViewsPerSme) &&
-    typeof value.percentileSampleSufficient === "boolean" &&
-    value.ratioFormula === "pageViews / smeCount" &&
-    value.roundingRule === "Nearest whole page view for display; unrounded for calculation"
-  );
+export function isTerminalSmeCoverageResult(value: unknown): value is SmeCoverageRunResult {
+  return parseTerminalSmeCoverageResult(value) !== null;
 }
 
 function isWarningArray(value: unknown): value is ReportWarning[] {
@@ -132,13 +77,16 @@ function isWarningArray(value: unknown): value is ReportWarning[] {
   ));
 }
 
-function isTerminalPagination(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    isNonNegativeInteger(value.pageCount) &&
-    value.reachedMaxPages === false &&
-    value.hasMore === false
-  );
+function parseTerminalPagination(value: unknown): SmeCoverageRunDataset["pagination"] | null {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeInteger(value.pageCount) ||
+    value.reachedMaxPages !== false ||
+    value.hasMore !== false
+  ) {
+    return null;
+  }
+  return { pageCount: value.pageCount, reachedMaxPages: false, hasMore: false };
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -149,16 +97,8 @@ function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-function isNullableFiniteNumber(value: unknown): value is number | null {
-  return value === null || (typeof value === "number" && Number.isFinite(value));
-}
-
 function isRequiredDatasetName(value: unknown): value is (typeof REQUIRED_DATASETS)[number] {
-  return includesValue(REQUIRED_DATASETS, value);
-}
-
-function includesValue<const T extends readonly unknown[]>(values: T, value: unknown): value is T[number] {
-  return values.includes(value);
+  return typeof value === "string" && REQUIRED_DATASETS.includes(value as (typeof REQUIRED_DATASETS)[number]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

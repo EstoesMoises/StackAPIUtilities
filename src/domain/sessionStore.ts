@@ -14,7 +14,7 @@ import type {
 } from "./types";
 import { buildTagHealthRowsFromLiveRecords } from "../reports/tagReport";
 import type { SmeCoverageRunResult } from "../utilities/smeCoverage/runner";
-import { isTerminalSmeCoverageResult } from "../utilities/smeCoverage/runtimeValidation";
+import { parseTerminalSmeCoverageResult } from "../utilities/smeCoverage/runtimeValidation";
 
 interface LiveDatasetPayload {
   datasetName: DatasetName;
@@ -222,8 +222,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       };
     }
     case "utility/loaded": {
-      const { result } = action;
-      if (!isTerminalSmeCoverageResult(result)) return state;
+      const result = parseTerminalSmeCoverageResult(action.result);
+      if (!result) return state;
       const loadedAt = new Date().toISOString();
       const snapshotId = createUtilitySnapshotId(state, result.utilityId, loadedAt);
       const liveDatasets: Record<string, SessionDataset> = {};

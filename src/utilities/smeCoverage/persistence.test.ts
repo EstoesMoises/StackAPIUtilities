@@ -102,7 +102,6 @@ describe("parseSmeCoverageDecisionPack", () => {
 
   it.each([
     ["complete", createDecisionPack()],
-    ["partial", createDecisionPack({ completeness: "Partial" })],
     ["small sample", createSmallSamplePack()],
     ["empty", createEmptyPack()],
   ])("round-trips a %s decision pack without reordering canonical evidence", (_label, pack) => {
@@ -226,6 +225,14 @@ describe("parseSmeCoverageDecisionPack", () => {
     const nonemptyMarkedEmpty = structuredClone(createDecisionPack()) as Record<string, any>;
     nonemptyMarkedEmpty.snapshot.completeness = "Empty";
     expect(parseSmeCoverageDecisionPack(nonemptyMarkedEmpty)).toBeNull();
+
+    const completeMarkedPartial = structuredClone(createDecisionPack()) as Record<string, any>;
+    completeMarkedPartial.snapshot.completeness = "Partial";
+    expect(parseSmeCoverageDecisionPack(completeMarkedPartial)).toBeNull();
+
+    const emptyMarkedPartial = structuredClone(createEmptyPack()) as Record<string, any>;
+    emptyMarkedPartial.snapshot.completeness = "Partial";
+    expect(parseSmeCoverageDecisionPack(emptyMarkedPartial)).toBeNull();
 
   });
 });

@@ -61,12 +61,12 @@ describe("sessionStore", () => {
   });
 
   it("stores every utility source dataset, provenance, snapshot metadata, and active pack", () => {
-    const pack = createUtilityDecisionPack();
     const warning = {
       utilityId: "sme-coverage-analyzer" as const,
       code: "coverage.partial-sample",
       message: "The approved sample may be partial.",
     };
+    const pack = { ...createUtilityDecisionPack(), warnings: [warning] };
     const state = sessionReducer(createInitialSessionState(), {
       type: "utility/loaded",
       result: {
@@ -122,7 +122,7 @@ describe("sessionStore", () => {
 
   it("replaces the active utility pack on rerun while retaining all source snapshots", () => {
     const firstPack = createUtilityDecisionPack();
-    const secondPack = { ...createUtilityDecisionPack("Partial"), assessment: "Second run." };
+    const secondPack = { ...createUtilityDecisionPack(), assessment: "Second run." };
     const first = sessionReducer(createInitialSessionState(), createUtilityLoadedAction(firstPack) as never);
     const second = sessionReducer(first, createUtilityLoadedAction(secondPack) as never);
 

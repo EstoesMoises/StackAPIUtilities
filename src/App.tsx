@@ -31,7 +31,7 @@ import type {
   UtilityId,
 } from "./domain/types";
 import type { LiveReportRunResult } from "./collectors/liveReportRunner";
-import { isTerminalSmeCoverageResult } from "./utilities/smeCoverage/runtimeValidation";
+import { parseTerminalSmeCoverageResult } from "./utilities/smeCoverage/runtimeValidation";
 import {
   clearPersistedDatasetSession,
   loadPersistedDatasetSession,
@@ -479,7 +479,8 @@ export function App() {
         return;
       }
 
-      if (!isTerminalSmeCoverageResult(body.result)) {
+      const result = parseTerminalSmeCoverageResult(body.result);
+      if (!result) {
         setSmeCoverageRunState({
           status: "failed",
           kind: "unexpected",
@@ -489,7 +490,7 @@ export function App() {
       }
 
       markDatasetContentChanged();
-      dispatch({ type: "utility/loaded", result: body.result });
+      dispatch({ type: "utility/loaded", result });
       setSmeCoverageRunState({ status: "succeeded" });
       setActivePanel("utilities");
     } catch {
