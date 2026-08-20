@@ -122,14 +122,14 @@ const lightGap: SmeCoverageEvidenceRow = {
   tagName: "beta-data",
   pageViews: 2_500,
   questionCount: 7,
-  questionCountBasis: "Partial question sample",
+  questionCountBasis: "Complete question enumeration",
   smeCount: 2,
   pageViewsPerSme: 1_250.4,
   coveragePercentile: 80,
   coverageTier: "Light coverage",
   reason: "Ratio is at or above the prepared P75 threshold.",
   recommendedAction: "Review resilience and add an SME if needed.",
-  demandQuality: "Partial sample",
+  demandQuality: "Complete",
   smeQuality: "Complete",
 };
 
@@ -159,16 +159,15 @@ export function completeSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
     },
     warnings: [],
     summary: {
-      tagsAnalyzed: 4,
+      tagsAnalyzed: 3,
       tagsWithSmes: 2,
       immediateGaps: 1,
       criticalUnderCoverage: 1,
       lightCoverage: 1,
-      unknownRows: 1,
+      unknownRows: 0,
     },
-    overview: "Four prepared evidence rows include three priority coverage findings.",
-    assessment:
-      "Prioritize `zeta-runtime` and `Alpha-platform`.\n\nValidate `unknown-source` before drawing a complete conclusion.",
+    overview: "Three prepared evidence rows include three priority coverage findings.",
+    assessment: "Prioritize `zeta-runtime` and `Alpha-platform`.",
     findings: {
       immediateGaps: [immediateGap],
       criticalUnderCoverage: [criticalGap],
@@ -185,7 +184,7 @@ export function completeSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
       ratioFormula: "pageViews / smeCount",
       roundingRule: "Nearest whole page view for display; unrounded for calculation",
     },
-    evidence: [immediateGap, criticalGap, lightGap, unknownCoverage],
+    evidence: [immediateGap, criticalGap, lightGap],
   };
 }
 
@@ -197,24 +196,27 @@ export function partialSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
       ...pack.snapshot,
       completeness: "Partial",
     },
+    summary: {
+      ...pack.summary,
+      tagsAnalyzed: 4,
+      unknownRows: 1,
+    },
     warnings: [
       {
         utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.partial-sample",
-        message: "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+        code: "demand.invalid",
+        message: "Demand evidence is unavailable or invalid for unknown-source; review that row before qualifying conclusions.",
       },
       {
         utilityId: "sme-coverage-analyzer",
-        code: "questions.partial",
-        message: "Question evidence reached the configured collection cap.",
-      },
-      {
-        utilityId: "sme-coverage-analyzer",
-        code: "smes.partial",
-        message: "Assigned-SME coverage may be incomplete for unmatched tags.",
+        code: "smes.unknown",
+        message: "Assigned-SME evidence is unavailable for unknown-source; review that row before qualifying conclusions.",
       },
     ],
-    overview: "This prepared result is partial; interpret priority findings with the warnings above.",
+    overview: "Analysis quality is Partial because one evidence row has unavailable demand and SME data. Review the evidence notes before qualifying conclusions.",
+    assessment:
+      "Prioritize `zeta-runtime` and `Alpha-platform`.\n\nValidate `unknown-source` before drawing a coverage conclusion.",
+    evidence: [...pack.evidence, unknownCoverage],
   };
 }
 
@@ -226,9 +228,15 @@ export function warninglessPartialSmeCoverageDecisionPack(): SmeCoverageDecision
       ...pack.snapshot,
       completeness: "Partial",
     },
+    summary: {
+      ...pack.summary,
+      tagsAnalyzed: 4,
+      unknownRows: 1,
+    },
     warnings: [],
-    overview: "The prepared result is partial and its conclusions require qualification.",
-    assessment: "Review the prepared evidence and partial result context before assigning owners.",
+    overview: "Analysis quality is Partial because one evidence row has unavailable demand and SME data.",
+    assessment: "Review the unavailable unknown-source evidence before assigning owners.",
+    evidence: [...pack.evidence, unknownCoverage],
   };
 }
 

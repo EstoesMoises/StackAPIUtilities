@@ -1950,7 +1950,9 @@ select:disabled {
 
 .sme-completeness-badge {
   min-height: 28px;
+  max-width: 100%;
   padding: 5px 9px;
+  white-space: normal;
 }
 
 .sme-completeness-badge__complete {
@@ -2691,6 +2693,7 @@ select:disabled {
   }
 
   .sme-result-actions,
+  .sme-result-header,
   .sme-section-header {
     align-items: stretch;
     flex-direction: column;

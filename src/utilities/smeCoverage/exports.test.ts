@@ -12,8 +12,8 @@ describe("SME coverage exports", () => {
     expect(csv).toBe(
       [
         csvHeader,
-        'first-tag,1234.567,9,Partial question sample,1,1234.567,80,Critical under-coverage,"Demand, sample-based","Assign ""one"" SME",Partial sample,Complete,All available data collected,Partial,questions.partial: This analysis is a partial sample.',
-        "second-tag,,,Unavailable,,,,Unknown,Unavailable,Validate source data,Invalid,Unknown,All available data collected,Partial,questions.partial: This analysis is a partial sample.",
+        'first-tag,1234.567,9,Partial question sample,1,1234.567,80,Critical under-coverage,"Demand, sample-based","Assign ""one"" SME",Partial sample,Complete,All available data collected,Partial,questions.incomplete: Question-count evidence is incomplete for first-tag; review that row before qualifying conclusions.',
+        "second-tag,,,Unavailable,,,,Unknown,Unavailable,Validate source data,Invalid,Unknown,All available data collected,Partial,questions.incomplete: Question-count evidence is incomplete for first-tag; review that row before qualifying conclusions.",
       ].join("\n"),
     );
   });
@@ -40,7 +40,9 @@ describe("SME coverage exports", () => {
     for (let index = 1; index < sections.length; index += 1) {
       expect(markdown.indexOf(sections[index]!)).toBeGreaterThan(markdown.indexOf(sections[index - 1]!));
     }
-    expect(markdown).toContain("This analysis is a partial sample.");
+    expect(markdown).toContain(
+      "Question-count evidence is incomplete for first-tag; review that row before qualifying conclusions.",
+    );
     expect(markdown).toContain("- Collection: All available data collected");
     expect(markdown).toContain("- Analysis quality: Partial");
     expect(markdown).not.toContain("Page size");
@@ -77,8 +79,9 @@ function partialPack(): SmeCoverageDecisionPack {
     warnings: [
       {
         utilityId: "sme-coverage-analyzer",
-        code: "questions.partial",
-        message: "This analysis is a partial sample.",
+        code: "questions.incomplete",
+        message:
+          "Question-count evidence is incomplete for first-tag; review that row before qualifying conclusions.",
       },
     ],
     summary: {
@@ -89,8 +92,8 @@ function partialPack(): SmeCoverageDecisionPack {
       lightCoverage: 0,
       unknownRows: 1,
     },
-    overview: "This analysis is a partial sample. One critical gap was identified.",
-    assessment: "Prioritize `first-tag` with collected-sample evidence.",
+    overview: "Analysis quality is Partial because question-count evidence is incomplete for first-tag.",
+    assessment: "Prioritize `first-tag` using the available evidence.",
     findings: {
       immediateGaps: [],
       criticalUnderCoverage: [

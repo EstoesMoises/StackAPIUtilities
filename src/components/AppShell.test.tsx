@@ -306,7 +306,7 @@ describe("AppShell", () => {
     expect(within(datasetsPanel).getAllByText("SME Coverage Analyzer")).toHaveLength(3);
   });
 
-  it("renders partial utility warnings before the executive summary", async () => {
+  it("renders partial utility evidence notes before the executive summary", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(makeSmeCoverageRunBody(partialSmeCoverageDecisionPack(), "partial")),
@@ -318,11 +318,15 @@ describe("AppShell", () => {
     await openSmeCoverageAnalyzer(user);
     await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
 
-    const warning = await screen.findByText("Question evidence reached the configured collection cap.");
-    const overview = screen.getByText(
-      "This prepared result is partial; interpret priority findings with the warnings above.",
+    const evidenceNote = await screen.findByText(
+      "Demand evidence is unavailable or invalid for unknown-source; review that row before qualifying conclusions.",
     );
-    expect(warning.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const overview = screen.getByText(
+      "Analysis quality is Partial because one evidence row has unavailable demand and SME data. Review the evidence notes before qualifying conclusions.",
+    );
+    expect(
+      evidenceNote.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("replaces the active utility pack on rerun while retaining six supporting datasets", async () => {

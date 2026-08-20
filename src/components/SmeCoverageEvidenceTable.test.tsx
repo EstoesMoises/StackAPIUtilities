@@ -31,7 +31,7 @@ describe("SmeCoverageEvidenceTable", () => {
         "col",
       );
     }
-    for (const tier of ["Immediate gap", "Critical under-coverage", "Light coverage", "Unknown"]) {
+    for (const tier of ["Immediate gap", "Critical under-coverage", "Light coverage"]) {
       expect(within(region).getByText(tier, { selector: ".sme-tier-badge" })).toBeInTheDocument();
     }
     expect(within(region).getAllByText("Unavailable").length).toBeGreaterThan(0);
@@ -41,7 +41,7 @@ describe("SmeCoverageEvidenceTable", () => {
     ["alpha", "Alpha-platform"],
     ["critical under", "Alpha-platform"],
     ["prepared p75", "beta-data"],
-    ["partial question", "beta-data"],
+    ["review resilience", "beta-data"],
   ])("searches all prepared evidence text for %s", async (query, expectedTag) => {
     const user = userEvent.setup();
     render(<SmeCoverageEvidenceTable evidence={completeSmeCoverageDecisionPack().evidence} />);
@@ -60,8 +60,8 @@ describe("SmeCoverageEvidenceTable", () => {
   });
 
   it.each([
-    ["Page views", ["beta-data", "Alpha-platform", "zeta-runtime", "unknown-source"], ["zeta-runtime", "Alpha-platform", "beta-data", "unknown-source"]],
-    ["Page views per SME", ["beta-data", "Alpha-platform", "zeta-runtime", "unknown-source"], ["Alpha-platform", "beta-data", "zeta-runtime", "unknown-source"]],
+    ["Page views", ["beta-data", "Alpha-platform", "zeta-runtime"], ["zeta-runtime", "Alpha-platform", "beta-data"]],
+    ["Page views per SME", ["beta-data", "Alpha-platform", "zeta-runtime"], ["Alpha-platform", "beta-data", "zeta-runtime"]],
   ] as const)("sorts %s numerically both ways with unavailable values last", async (header, ascending, descending) => {
     const user = userEvent.setup();
     render(<SmeCoverageEvidenceTable evidence={completeSmeCoverageDecisionPack().evidence} />);
@@ -84,9 +84,9 @@ describe("SmeCoverageEvidenceTable", () => {
 
     const tagHeader = screen.getByRole("columnheader", { name: "Tag" });
     await user.click(within(tagHeader).getByRole("button", { name: "Tag" }));
-    expect(dataRowTags()).toEqual(["Alpha-platform", "beta-data", "unknown-source", "zeta-runtime"]);
+    expect(dataRowTags()).toEqual(["Alpha-platform", "beta-data", "zeta-runtime"]);
     await user.click(within(tagHeader).getByRole("button", { name: "Tag" }));
-    expect(dataRowTags()).toEqual(["zeta-runtime", "unknown-source", "beta-data", "Alpha-platform"]);
+    expect(dataRowTags()).toEqual(["zeta-runtime", "beta-data", "Alpha-platform"]);
     expect(JSON.stringify(evidence)).toBe(before);
   });
 });
