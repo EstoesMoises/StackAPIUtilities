@@ -243,9 +243,15 @@ describe("OAuth customer profiles", () => {
     ["a whitespace-only API key", "  "],
     ["a padded API key", " api-secret "],
     ["a non-string API key", 42],
-    ["an undefined API key property", undefined],
   ])("rejects a current persisted profile with %s", (_description, apiKey) => {
     expect(parseOAuthCustomerProfile({ ...profile, apiKey })).toBeNull();
+  });
+
+  it("treats an undefined API key property as omitted", () => {
+    const parsed = parseOAuthCustomerProfile({ ...profile, apiKey: undefined });
+
+    expect(parsed).toEqual(profile);
+    expect(parsed).not.toHaveProperty("apiKey");
   });
 
   it("migrates legacy profiles without retaining an API key", () => {
