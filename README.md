@@ -48,21 +48,24 @@ direct users to upload existing CSV or JSON outputs.
 
 ## Credentials
 
-The app keeps access tokens, API keys, and PATs session-only and in memory. OAuth
-authorization codes and client secrets are not persisted. The server-mediated
-PKCE flow temporarily stores OAuth state, the verifier, and pending transaction
-details in a protected cookie for at most 10 minutes. That cookie is `HttpOnly`,
-`SameSite=Lax`, `Secure` when applicable, scoped to `/api/oauth/pkce`, and cleared
-after the callback succeeds or fails. None of these sensitive values enter the
-customer-profile IndexedDB database.
+The app keeps OAuth access tokens and PATs session-only and in memory. API keys
+also remain memory-only unless the user explicitly saves one in a browser-local
+Stack Enterprise customer profile. OAuth authorization codes and client secrets
+are not persisted. The server-mediated PKCE flow temporarily stores OAuth state,
+the verifier, and pending transaction details in a protected cookie for at most
+10 minutes. That cookie is `HttpOnly`, `SameSite=Lax`, `Secure` when applicable,
+scoped to `/api/oauth/pkce`, and cleared after the callback succeeds or fails.
+These OAuth secrets never enter the customer-profile IndexedDB database.
 
 For Stack Enterprise OAuth, users may explicitly save browser-local customer
-profiles containing only a customer name, Enterprise instance URL, OAuth client
-ID, and the non-expiring-token preference. The server-controlled OAuth redirect
-URL is displayed read-only and is never overridden by a saved profile. Saved
-customer profiles survive refreshes and browser restarts until the user deletes
-them or clears browser site data. Dataset flushing and session reset do not remove
-customer profiles.
+profiles containing a customer name, Enterprise instance URL, OAuth client ID,
+the non-expiring-token preference, and an optional API key. The API key is stored
+directly in browser IndexedDB and is readable by scripts running under the app
+origin; customer profiles are not a secret vault. The server-controlled OAuth
+redirect URL is displayed read-only and is never overridden by a saved profile.
+Saved customer profiles survive refreshes and browser restarts until the user
+deletes them or clears browser site data. Dataset flushing and session reset do
+not remove customer profiles.
 
 Loaded Script datasets and Utility supporting datasets and decision packs are
 stored locally in this browser by default. Use the Datasets panel to remove
