@@ -16,7 +16,13 @@ import type {
   UtilityRunSnapshot,
 } from "./types";
 
-export const DATASET_SESSION_PERSISTENCE_VERSION = 2;
+export const DATASET_SESSION_PERSISTENCE_VERSION = 3;
+export const LEGACY_COLLECTION_WARNING: Readonly<ReportWarning> = Object.freeze({
+  code: "collection.legacy-unverified",
+  message: "Legacy run — completeness not verified under current collection rules.",
+});
+
+type DatasetSessionPersistenceVersion = 1 | 2 | typeof DATASET_SESSION_PERSISTENCE_VERSION;
 
 export interface PersistedDatasetSessionSnapshot {
   version: typeof DATASET_SESSION_PERSISTENCE_VERSION;
@@ -75,7 +81,11 @@ const omittedJsonValue = Symbol("omitted-json-value");
 
 export function createDatasetSessionSnapshot(state: SessionState): PersistedDatasetSessionSnapshot {
   const datasets = parseDatasetRecord(state.datasets, true) ?? {};
-  const reportRunSnapshots = parseReportRunSnapshots(state.reportRunSnapshots, datasets);
+  const reportRunSnapshots = parseReportRunSnapshots(
+    state.reportRunSnapshots,
+    datasets,
+    DATASET_SESSION_PERSISTENCE_VERSION,
+  );
   const utilityRunSnapshots = parseUtilityRunSnapshots(state.utilityRunSnapshots, datasets);
 
   return {
@@ -84,7 +94,7 @@ export function createDatasetSessionSnapshot(state: SessionState): PersistedData
     selectedReportIds: normalizeSelectedReportIds(state.selectedReportId, state.selectedReportIds),
     selectedUtilityId: isKnownUtilityId(state.selectedUtilityId) ? state.selectedUtilityId : "sme-coverage-analyzer",
     datasets,
-    reportOutputs: parseReportOutputs(state.reportOutputs, datasets, reportRunSnapshots),
+    reportOutputs: parseReportOutputs(state.reportOutputs, datasets, reportRunSnapshots, false),
     reportRunSnapshots,
     utilityOutputs: parseUtilityOutputs(state.utilityOutputs),
     utilityRunSnapshots,
@@ -122,40 +132,45 @@ export function hydrateDatasetSessionState(state: SessionState, value: unknown):
 }
 
 export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSessionSnapshot | null {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== DATASET_SESSION_PERSISTENCE_VERSION)) {
+  if (!isRecord(value) || !isDatasetSessionPersistenceVersion(value.version)) {
     return null;
   }
 
-  const isVersion2 = value.version === DATASET_SESSION_PERSISTENCE_VERSION;
+  const storedVersion = value.version;
+  const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
+  const supportsUtilities = storedVersion >= 2;
 
   const selectedReportId = isKnownReportId(value.selectedReportId) ? value.selectedReportId : "tag-report";
   const selectedReportIdCandidates = Array.isArray(value.selectedReportIds)
     ? value.selectedReportIds.filter(isKnownReportId)
     : [];
   const selectedReportIds = normalizeSelectedReportIds(selectedReportId, selectedReportIdCandidates);
-  const datasets = parseDatasetRecord(value.datasets, isVersion2);
+  const parsedDatasets = parseDatasetRecord(value.datasets, supportsUtilities);
 
-  if (!datasets) {
+  if (!parsedDatasets) {
     return null;
   }
   if (!isRecord(value.reportOutputs) || !Array.isArray(value.reportRunSnapshots) || !Array.isArray(value.warnings)) {
     return null;
   }
 
-  const reportRunSnapshots = parseReportRunSnapshots(value.reportRunSnapshots, datasets);
-  const utilityRunSnapshots = isVersion2 ? parseUtilityRunSnapshots(value.utilityRunSnapshots, datasets) : [];
+  const datasets = isLegacyVersion
+    ? addLegacyCollectionWarningsToLiveReportDatasets(parsedDatasets)
+    : parsedDatasets;
+  const reportRunSnapshots = parseReportRunSnapshots(value.reportRunSnapshots, datasets, storedVersion);
+  const utilityRunSnapshots = supportsUtilities ? parseUtilityRunSnapshots(value.utilityRunSnapshots, datasets) : [];
 
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
     selectedReportId,
     selectedReportIds,
-    selectedUtilityId: isVersion2 && isKnownUtilityId(value.selectedUtilityId)
+    selectedUtilityId: supportsUtilities && isKnownUtilityId(value.selectedUtilityId)
       ? value.selectedUtilityId
       : "sme-coverage-analyzer",
     datasets,
-    reportOutputs: parseReportOutputs(value.reportOutputs, datasets, reportRunSnapshots),
+    reportOutputs: parseReportOutputs(value.reportOutputs, datasets, reportRunSnapshots, isLegacyVersion),
     reportRunSnapshots,
-    utilityOutputs: isVersion2 ? parseUtilityOutputs(value.utilityOutputs) : {},
+    utilityOutputs: supportsUtilities ? parseUtilityOutputs(value.utilityOutputs) : {},
     utilityRunSnapshots,
     warnings: parseWarnings(value.warnings),
   };
@@ -185,6 +200,7 @@ function parseReportOutputs(
   value: unknown,
   datasets: Record<string, SessionDataset>,
   reportRunSnapshots: ReportRunSnapshot[],
+  addLegacyWarning: boolean,
 ): Partial<Record<ReportId, ReportOutput>> {
   if (!isRecord(value)) {
     return {};
@@ -200,6 +216,9 @@ function parseReportOutputs(
       parsedOutput?.reportId === key &&
       isReportOutputBackedByDatasetState(parsedOutput, datasets, reportRunSnapshots)
     ) {
+      if (addLegacyWarning && parsedOutput.source === "live-api") {
+        parsedOutput.warnings = appendLegacyCollectionWarning(parsedOutput.warnings, parsedOutput.reportId);
+      }
       outputs[key] = parsedOutput;
     }
   }
@@ -210,13 +229,14 @@ function parseReportOutputs(
 function parseReportRunSnapshots(
   value: unknown,
   datasets: Record<string, SessionDataset>,
+  storedVersion: DatasetSessionPersistenceVersion,
 ): ReportRunSnapshot[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
   return value.flatMap((snapshot) => {
-    const parsedSnapshot = parseReportRunSnapshot(snapshot, datasets);
+    const parsedSnapshot = parseReportRunSnapshot(snapshot, datasets, storedVersion);
     return parsedSnapshot ? [parsedSnapshot] : [];
   });
 }
@@ -476,27 +496,28 @@ function isReportOutputBackedByDatasetState(
 function parseReportRunSnapshot(
   value: unknown,
   datasets: Record<string, SessionDataset>,
+  storedVersion: DatasetSessionPersistenceVersion,
 ): ReportRunSnapshot | null {
   if (!isRecord(value)) {
     return null;
   }
 
-  const pageSize = value.pageSize;
-  const maxPagesPerDataset = value.maxPagesPerDataset;
+  const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
 
   if (
     typeof value.id !== "string" ||
     !isKnownReportId(value.reportId) ||
     !isRunPeriodRole(value.periodRole) ||
-    typeof pageSize !== "number" ||
-    !Number.isInteger(pageSize) ||
-    typeof maxPagesPerDataset !== "number" ||
-    !Number.isInteger(maxPagesPerDataset) ||
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
     !value.datasetIds.every((datasetId) => typeof datasetId === "string" && hasOwn(datasets, datasetId)) ||
     !Array.isArray(value.warnings) ||
-    (typeof value.runPreset !== "undefined" && !isReportRunPresetId(value.runPreset))
+    (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
+    (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
+    (isLegacyVersion && typeof value.runPreset !== "undefined" && !isReportRunPresetId(value.runPreset)) ||
+    (!isLegacyVersion && typeof value.pageSize !== "undefined") ||
+    (!isLegacyVersion && typeof value.maxPagesPerDataset !== "undefined") ||
+    (!isLegacyVersion && typeof value.runPreset !== "undefined")
   ) {
     return null;
   }
@@ -512,18 +533,45 @@ function parseReportRunSnapshot(
     reportId: value.reportId,
     periodRole: value.periodRole,
     scope,
-    pageSize,
-    maxPagesPerDataset,
     loadedAt: value.loadedAt,
     datasetIds: [...value.datasetIds],
     warnings: parseWarnings(value.warnings),
   };
 
-  if (isReportRunPresetId(value.runPreset)) {
-    snapshot.runPreset = value.runPreset;
+  return snapshot;
+}
+
+function addLegacyCollectionWarningsToLiveReportDatasets(
+  datasets: Record<string, SessionDataset>,
+): Record<string, SessionDataset> {
+  for (const dataset of Object.values(datasets)) {
+    if (dataset.source === "live-api" && dataset.reportId) {
+      dataset.warnings = appendLegacyCollectionWarning(dataset.warnings, dataset.reportId);
+    }
   }
 
-  return snapshot;
+  return datasets;
+}
+
+function appendLegacyCollectionWarning(
+  warnings: ReportWarning[] | undefined,
+  reportId: ReportId,
+): ReportWarning[] {
+  const existingWarnings = warnings ?? [];
+  const legacyWarning: ReportWarning = { reportId, ...LEGACY_COLLECTION_WARNING };
+
+  if (
+    existingWarnings.some(
+      (warning) =>
+        warning.reportId === legacyWarning.reportId &&
+        warning.code === legacyWarning.code &&
+        warning.message === legacyWarning.message,
+    )
+  ) {
+    return existingWarnings;
+  }
+
+  return [...existingWarnings, legacyWarning];
 }
 
 function parseWarning(value: unknown): ReportWarning | null {
@@ -555,6 +603,10 @@ function parseWarning(value: unknown): ReportWarning | null {
 
 function isKnownReportId(value: unknown): value is ReportId {
   return typeof value === "string" && knownReportIds.has(value as ReportId);
+}
+
+function isDatasetSessionPersistenceVersion(value: unknown): value is DatasetSessionPersistenceVersion {
+  return value === 1 || value === 2 || value === DATASET_SESSION_PERSISTENCE_VERSION;
 }
 
 function isKnownUtilityId(value: unknown): value is UtilityId {

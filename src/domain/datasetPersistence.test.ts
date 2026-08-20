@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SessionState } from "./types";
 import {
+  DATASET_SESSION_PERSISTENCE_VERSION,
+  LEGACY_COLLECTION_WARNING,
   createDatasetSessionSnapshot,
   hydrateDatasetSessionState,
   parseDatasetSessionSnapshot,
@@ -54,8 +56,6 @@ describe("datasetPersistence", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
@@ -75,7 +75,7 @@ describe("datasetPersistence", () => {
     const snapshot = createDatasetSessionSnapshot(state);
 
     expect(snapshot).toEqual({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -169,8 +169,6 @@ describe("datasetPersistence", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [
@@ -400,7 +398,7 @@ describe("datasetPersistence", () => {
     expect(hydrated.utilityRunSnapshots).toEqual([]);
   });
 
-  it("migrates a valid report-only version 1 snapshot to normalized version 2 utility defaults", () => {
+  it("migrates a valid report-only version 1 snapshot to normalized version 3 utility defaults", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 1,
       selectedReportId: "tag-report",
@@ -412,11 +410,178 @@ describe("datasetPersistence", () => {
     });
 
     expect(parsed).toMatchObject({
-      version: 2,
+      version: 3,
       selectedUtilityId: "sme-coverage-analyzer",
       utilityOutputs: {},
       utilityRunSnapshots: [],
     });
+  });
+
+  it("migrates a version 2 live report to version 3 without legacy collection controls", () => {
+    const parsed = parseDatasetSessionSnapshot(createLegacyLiveReportSnapshot(2));
+    const legacyWarning = {
+      reportId: "inactive-users",
+      ...LEGACY_COLLECTION_WARNING,
+    };
+
+    expect(parsed?.version).toBe(DATASET_SESSION_PERSISTENCE_VERSION);
+    expect(parsed?.reportRunSnapshots).toEqual([
+      {
+        id: "snapshot-1",
+        reportId: "inactive-users",
+        periodRole: "current",
+        scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        datasetIds: ["dataset-1"],
+        warnings: [],
+      },
+    ]);
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("runPreset");
+    expect(parsed?.datasets["dataset-1"]?.warnings).toEqual([
+      {
+        reportId: "inactive-users",
+        code: "dataset-cap-reached",
+        message: "Original dataset warning.",
+      },
+      legacyWarning,
+    ]);
+    expect(parsed?.reportOutputs["inactive-users"]?.warnings).toEqual([
+      {
+        reportId: "inactive-users",
+        code: "output-cap-reached",
+        message: "Original output warning.",
+      },
+      legacyWarning,
+    ]);
+  });
+
+  it("labels hydrated version 1 live report outputs and datasets as legacy", () => {
+    const hydrated = hydrateDatasetSessionState(
+      createInitialSessionState(),
+      createLegacyLiveReportSnapshot(1),
+    );
+    const legacyWarning = {
+      reportId: "inactive-users",
+      ...LEGACY_COLLECTION_WARNING,
+    };
+
+    expect(hydrated.datasets["dataset-1"]?.warnings).toContainEqual(legacyWarning);
+    expect(hydrated.reportOutputs["inactive-users"]?.warnings).toContainEqual(legacyWarning);
+  });
+
+  it("does not label legacy uploaded outputs or datasets as unverified live collections", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 2,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      datasets: {
+        upload: {
+          id: "upload",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ tagName: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+          fileName: "tags.csv",
+          warnings: [{ reportId: "tag-report", code: "upload-warning", message: "Keep me." }],
+        },
+      },
+      reportOutputs: {
+        "tag-report": {
+          reportId: "tag-report",
+          datasetName: "tags",
+          fileName: "tags.csv",
+          records: [{ tagName: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+          warnings: [{ reportId: "tag-report", code: "upload-warning", message: "Keep me." }],
+        },
+      },
+      reportRunSnapshots: [],
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
+      warnings: [],
+    });
+
+    expect(parsed?.datasets.upload?.warnings).toEqual([
+      { reportId: "tag-report", code: "upload-warning", message: "Keep me." },
+    ]);
+    expect(parsed?.reportOutputs["tag-report"]?.warnings).toEqual([
+      { reportId: "tag-report", code: "upload-warning", message: "Keep me." },
+    ]);
+  });
+
+  it("round-trips version 3 live reports without legacy labels or collection controls", () => {
+    const state: SessionState = {
+      ...createInitialSessionState(),
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "users",
+          records: [{ user_id: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [{ datasetName: "users", user_id: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
+    };
+
+    const snapshot = createDatasetSessionSnapshot(state);
+    const parsed = parseDatasetSessionSnapshot(snapshot);
+
+    expect(snapshot.version).toBe(DATASET_SESSION_PERSISTENCE_VERSION);
+    expect(parsed).toEqual(snapshot);
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("runPreset");
+    expect(parsed?.datasets["dataset-1"]?.warnings).toBeUndefined();
+    expect(parsed?.reportOutputs["inactive-users"]?.warnings).toBeUndefined();
+  });
+
+  it.each([
+    ["negative page size", "pageSize", -1],
+    ["fractional page limit", "maxPagesPerDataset", 1.5],
+    ["unknown preset", "runPreset", "unbounded"],
+  ])("drops a legacy report snapshot with %s", (_label, field, invalidValue) => {
+    const value = createLegacyLiveReportSnapshot(2);
+    const [snapshot] = value.reportRunSnapshots as Record<string, unknown>[];
+    snapshot[field] = invalidValue;
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
   });
 
   it("persists and restores utility output and provenance without memory-only secrets", () => {
@@ -476,7 +641,7 @@ describe("datasetPersistence", () => {
     const restored = parseDatasetSessionSnapshot(snapshot);
     const serialized = JSON.stringify(snapshot);
 
-    expect(snapshot.version).toBe(2);
+    expect(snapshot.version).toBe(3);
     expect(restored?.utilityOutputs["sme-coverage-analyzer"]?.decisionPack).toEqual(pack);
     expect(restored?.utilityRunSnapshots[0]).toMatchObject({
       id: "utility-snapshot",
@@ -506,7 +671,7 @@ describe("datasetPersistence", () => {
     const parsedPack = parsed?.utilityOutputs["sme-coverage-analyzer"]?.decisionPack;
     const hydratedPack = hydrated.utilityOutputs["sme-coverage-analyzer"]?.decisionPack;
 
-    expect(parsed?.version).toBe(2);
+    expect(parsed?.version).toBe(3);
     expect(parsedPack).toEqual(hydratedPack);
     expect(parsedPack?.warnings).toEqual([
       {
@@ -944,7 +1109,7 @@ describe("datasetPersistence", () => {
     expect(parsed?.reportRunSnapshots).toEqual([]);
   });
 
-  it("preserves valid run preset metadata on persisted report run snapshots", () => {
+  it("validates and discards legacy collection metadata on persisted report run snapshots", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 1,
       selectedReportId: "tag-report",
@@ -979,12 +1144,15 @@ describe("datasetPersistence", () => {
       warnings: [],
     });
 
-    expect(parsed?.reportRunSnapshots[0]).toEqual(
-      expect.objectContaining({
-        id: "snapshot-1",
-        runPreset: "deep-audit",
-      }),
-    );
+    expect(parsed?.reportRunSnapshots[0]).toEqual({
+      id: "snapshot-1",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      loadedAt: "2026-07-09T12:00:00.000Z",
+      datasetIds: ["dataset-1"],
+      warnings: [],
+    });
   });
 
   it("rejects persisted datasets with unsafe prototype keys", () => {
@@ -1130,6 +1298,71 @@ function createVersion2SnapshotValue(overrides: Record<string, unknown> = {}): R
     utilityRunSnapshots: [],
     warnings: [],
     ...overrides,
+  };
+}
+
+function createLegacyLiveReportSnapshot(version: 1 | 2): Record<string, unknown> {
+  return {
+    version,
+    selectedReportId: "inactive-users",
+    selectedReportIds: ["inactive-users"],
+    selectedUtilityId: "sme-coverage-analyzer",
+    datasets: {
+      "dataset-1": {
+        id: "dataset-1",
+        snapshotId: "snapshot-1",
+        reportId: "inactive-users",
+        name: "users",
+        records: [{ user_id: 1 }],
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        source: "live-api",
+        periodRole: "current",
+        scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        warnings: [
+          {
+            reportId: "inactive-users",
+            code: "dataset-cap-reached",
+            message: "Original dataset warning.",
+          },
+        ],
+      },
+    },
+    reportOutputs: {
+      "inactive-users": {
+        reportId: "inactive-users",
+        datasetName: "users",
+        fileName: "Live API run",
+        records: [{ datasetName: "users", user_id: 1 }],
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        source: "live-api",
+        currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        currentSnapshotId: "snapshot-1",
+        warnings: [
+          {
+            reportId: "inactive-users",
+            code: "output-cap-reached",
+            message: "Original output warning.",
+          },
+        ],
+      },
+    },
+    reportRunSnapshots: [
+      {
+        id: "snapshot-1",
+        reportId: "inactive-users",
+        periodRole: "current",
+        scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        pageSize: 100,
+        maxPagesPerDataset: 20,
+        runPreset: "standard",
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        datasetIds: ["dataset-1"],
+        warnings: [],
+      },
+    ],
+    utilityOutputs: {},
+    utilityRunSnapshots: [],
+    warnings: [],
   };
 }
 

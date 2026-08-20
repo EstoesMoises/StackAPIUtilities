@@ -426,7 +426,7 @@ describe("AppShell", () => {
   it("hydrates persisted browser datasets without credentials", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -463,12 +463,10 @@ describe("AppShell", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
-        } as never,
+        },
       ],
       warnings: [],
     });
@@ -492,7 +490,7 @@ describe("AppShell", () => {
       jsonResponse(makeTagReportRunBody("Collected restored-preset tags for Tag Report.")),
     );
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "tag-report",
       selectedReportIds: ["tag-report"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -517,12 +515,10 @@ describe("AppShell", () => {
           reportId: "tag-report",
           periodRole: "current",
           scope: {},
-          pageSize: 100,
-          maxPagesPerDataset: 20,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
-        } as never,
+        },
       ],
       warnings: [],
     });
@@ -569,7 +565,7 @@ describe("AppShell", () => {
       });
     });
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "tag-report",
       selectedReportIds: ["tag-report"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -618,23 +614,19 @@ describe("AppShell", () => {
           reportId: "tag-report",
           periodRole: "current",
           scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
-          pageSize: 100,
-          maxPagesPerDataset: 20,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["current-tags"],
           warnings: [],
-        } as never,
+        },
         {
           id: "comparison-snapshot",
           reportId: "tag-report",
           periodRole: "comparison",
           scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
-          pageSize: 100,
-          maxPagesPerDataset: 20,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["comparison-tags"],
           warnings: [],
-        } as never,
+        },
       ],
       warnings: [],
     });
@@ -706,7 +698,7 @@ describe("AppShell", () => {
     const saveCalls = savePersistedDatasetSessionMock.mock.calls;
     const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0] as unknown as Record<string, unknown>;
     expect(savedSnapshot).toMatchObject({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -720,7 +712,7 @@ describe("AppShell", () => {
   it("flushes current and persisted datasets in bulk", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -757,12 +749,10 @@ describe("AppShell", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
-        } as never,
+        },
       ],
       warnings: [],
     });
@@ -849,7 +839,7 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 2,
+        version: 3,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
         selectedUtilityId: "sme-coverage-analyzer",
@@ -884,12 +874,10 @@ describe("AppShell", () => {
             reportId: "inactive-users",
             periodRole: "current",
             scope: {},
-            pageSize: 100,
-            maxPagesPerDataset: 5,
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
-          } as never,
+          },
         ],
         warnings: [],
       });
@@ -924,7 +912,7 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 2,
+        version: 3,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
         selectedUtilityId: "sme-coverage-analyzer",
@@ -959,12 +947,10 @@ describe("AppShell", () => {
             reportId: "inactive-users",
             periodRole: "current",
             scope: {},
-            pageSize: 100,
-            maxPagesPerDataset: 5,
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
-          } as never,
+          },
         ],
         warnings: [],
       });
@@ -999,7 +985,7 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 2,
+        version: 3,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
         selectedUtilityId: "sme-coverage-analyzer",
@@ -1034,12 +1020,10 @@ describe("AppShell", () => {
             reportId: "inactive-users",
             periodRole: "current",
             scope: {},
-            pageSize: 100,
-            maxPagesPerDataset: 5,
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
-          } as never,
+          },
         ],
         warnings: [],
       });
@@ -1067,7 +1051,7 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 2,
+        version: 3,
         selectedReportId: "data-export",
         selectedReportIds: ["data-export"],
         selectedUtilityId: "sme-coverage-analyzer",
@@ -1102,12 +1086,10 @@ describe("AppShell", () => {
             reportId: "data-export",
             periodRole: "current",
             scope: {},
-            pageSize: 100,
-            maxPagesPerDataset: 5,
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["dataset-1"],
             warnings: [],
-          } as never,
+          },
         ],
         warnings: [],
       });
@@ -1131,7 +1113,7 @@ describe("AppShell", () => {
   it("does not persist removed report output records when another dataset remains", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -1182,12 +1164,10 @@ describe("AppShell", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-users", "dataset-tags"],
           warnings: [],
-        } as never,
+        },
       ],
       warnings: [],
     });
@@ -1975,7 +1955,7 @@ function makeSmeCoverageRunBody(
 
 function makePersistedUtilitySnapshot(decisionPack: ReturnType<typeof completeSmeCoverageDecisionPack>) {
   return {
-    version: 2 as const,
+    version: 3 as const,
     selectedReportId: "tag-report" as const,
     selectedReportIds: ["tag-report" as const],
     selectedUtilityId: "sme-coverage-analyzer" as const,

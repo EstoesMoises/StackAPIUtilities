@@ -41,6 +41,7 @@ export function ReportWorkspace({
   const report = reportRegistry.find((candidate) => candidate.id === reportId)!;
   const comparisonEnabled = scope.comparison !== undefined;
   const canDownloadTagHealth = reportId === "tag-report" && records.length > 0;
+  const legacyCollection = warnings?.some((warning) => warning.code === "collection.legacy-unverified") ?? false;
 
   function downloadTagHealthCsv() {
     downloadReportCsv({
@@ -115,7 +116,11 @@ export function ReportWorkspace({
           role="status"
           aria-label="Collection status"
         >
-          <strong>All available data collected</strong>
+          <strong>
+            {legacyCollection
+              ? "Legacy run — completeness not verified under current collection rules."
+              : "All available data collected"}
+          </strong>
           {currentScope ? (
             <>
               <span> · {formatPeriodLabel(currentScope)}</span>

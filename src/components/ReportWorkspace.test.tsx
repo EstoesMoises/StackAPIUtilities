@@ -74,6 +74,31 @@ describe("ReportWorkspace", () => {
     );
   });
 
+  it("labels legacy live collection without claiming current completeness", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        currentScope={{ startDate: "2026-01-01", endDate: "2026-01-31" }}
+        warnings={[
+          {
+            reportId: "inactive-users",
+            code: "collection.legacy-unverified",
+            message: "Legacy run — completeness not verified under current collection rules.",
+          },
+        ]}
+      />,
+    );
+
+    const status = screen.getByRole("status", { name: "Collection status" });
+    expect(status).toHaveTextContent(
+      "Legacy run — completeness not verified under current collection rules. · 2026-01-01 to 2026-01-31",
+    );
+    expect(status).not.toHaveTextContent("All available data collected");
+  });
+
   it("appends the comparison scope to live collection status", () => {
     render(
       <ReportWorkspace
