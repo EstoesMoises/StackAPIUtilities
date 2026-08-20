@@ -91,6 +91,26 @@ describe("ReportWorkspace", () => {
     );
   });
 
+  it("labels a comparison-only live collection without inventing a current scope", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[]}
+        comparisonRecords={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        comparisonScope={{ startDate: "2025-01-01", endDate: "2025-01-31" }}
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "Collection status" })).toHaveTextContent(
+      "All available data collected · Comparison: 2025-01-01 to 2025-01-31",
+    );
+    expect(screen.getByRole("status", { name: "Collection status" })).not.toHaveTextContent(
+      "All available history",
+    );
+  });
+
   it("does not claim API collection completeness for uploaded output", () => {
     render(
       <ReportWorkspace

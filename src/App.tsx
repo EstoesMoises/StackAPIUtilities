@@ -338,6 +338,10 @@ export function App() {
       }
 
       const result = body.result;
+      if (!hasCompletePaginationEvidence(result.datasets)) {
+        throw new Error("Report result did not include complete pagination evidence.");
+      }
+
       markDatasetContentChanged();
       dispatch({
         type: "live/loaded",
@@ -705,4 +709,28 @@ function getLiveRunErrorMessage(error: unknown, _reportTitle: string): string {
   return messageWithoutDisclaimer === ""
     ? completionDisclaimer
     : `${messageWithoutDisclaimer} ${completionDisclaimer}`;
+}
+
+function hasCompletePaginationEvidence(datasets: unknown): boolean {
+  return (
+    Array.isArray(datasets) &&
+    datasets.every((dataset) => {
+      if (!isRecord(dataset) || !isRecord(dataset.pagination)) {
+        return false;
+      }
+
+      const { pageCount, reachedMaxPages, hasMore } = dataset.pagination;
+      return (
+        typeof pageCount === "number" &&
+        Number.isInteger(pageCount) &&
+        pageCount >= 0 &&
+        reachedMaxPages === false &&
+        hasMore === false
+      );
+    })
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

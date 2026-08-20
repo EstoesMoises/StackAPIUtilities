@@ -138,7 +138,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
 
       action.datasets.forEach((dataset, index) => {
         const datasetId = createDatasetId(snapshotId, dataset.datasetName, String(index));
-        const pagination = dataset.pagination ?? { pageCount: 0, reachedMaxPages: false, hasMore: false };
         datasetIds.push(datasetId);
         liveDatasets[datasetId] = {
           id: datasetId,
@@ -151,9 +150,9 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           periodRole: action.periodRole,
           scope: action.scope,
           warnings: action.warnings,
-          pageCount: pagination.pageCount,
-          reachedMaxPages: pagination.reachedMaxPages,
-          hasMore: pagination.hasMore,
+          pageCount: dataset.pagination.pageCount,
+          reachedMaxPages: dataset.pagination.reachedMaxPages,
+          hasMore: dataset.pagination.hasMore,
         };
       });
 

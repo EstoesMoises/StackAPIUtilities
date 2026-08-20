@@ -43,7 +43,7 @@ export function ReportScopePanel({ scope, onChange }: ReportScopePanelProps) {
       </div>
       <p className="scope-help">
         Each run collects all available data for the selected dates. Large instances can take longer while the API
-        pages and rate limits are handled automatically.
+        pages and rate limits are handled automatically. Leave both dates blank to collect all available history.
       </p>
       <div className="scope-grid">
         <label className="scope-field">

@@ -116,8 +116,14 @@ export function ReportWorkspace({
           aria-label="Collection status"
         >
           <strong>All available data collected</strong>
-          <span> · {formatPeriodLabel(currentScope ?? {})}</span>
-          {comparisonScope && <span> · Compared with {formatPeriodLabel(comparisonScope)}</span>}
+          {currentScope ? (
+            <>
+              <span> · {formatPeriodLabel(currentScope)}</span>
+              {comparisonScope && <span> · Compared with {formatPeriodLabel(comparisonScope)}</span>}
+            </>
+          ) : comparisonScope ? (
+            <span> · Comparison: {formatPeriodLabel(comparisonScope)}</span>
+          ) : null}
         </div>
       )}
       <div className="s-navigation s-navigation__muted report-tabs" role="tablist">

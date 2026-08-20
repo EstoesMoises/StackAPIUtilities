@@ -13,7 +13,7 @@ describe("ReportScopePanel", () => {
     expect(
       screen.getByText(/collects all available data for the selected dates/i),
     ).toHaveTextContent(
-      "Each run collects all available data for the selected dates. Large instances can take longer while the API pages and rate limits are handled automatically.",
+      "Each run collects all available data for the selected dates. Large instances can take longer while the API pages and rate limits are handled automatically. Leave both dates blank to collect all available history.",
     );
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
     expect(screen.queryByText("Quick sample")).not.toBeInTheDocument();
@@ -32,7 +32,9 @@ describe("ReportScopePanel", () => {
 
     await user.type(screen.getByLabelText("Current start date"), "2026-01-01");
 
-    expect(onChange).toHaveBeenCalled();
+    expect(onChange).toHaveBeenLastCalledWith({
+      current: { startDate: "2026-01-01" },
+    });
   });
 
   it("enables comparison period controls", async () => {

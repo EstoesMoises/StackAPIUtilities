@@ -1555,6 +1555,48 @@ describe("AppShell", () => {
     expect(screen.getByText(expectedMessage).textContent?.match(/No complete result was produced\./g)).toHaveLength(1);
   });
 
+  it.each([
+    ["missing pagination", undefined],
+    ["more pages available", { pageCount: 1, reachedMaxPages: false, hasMore: true }],
+    ["page limit reached", { pageCount: 1, reachedMaxPages: true, hasMore: false }],
+  ])("rejects a successful report response with %s evidence", async (_label, pagination) => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        ok: true,
+        result: {
+          reportId: "tag-report",
+          reportTitle: "Tag Report",
+          periodRole: "current",
+          scope: {},
+          warnings: [],
+          datasets: [
+            {
+              datasetName: "tags",
+              records: [{ name: "python" }],
+              ...(pagination ? { pagination } : {}),
+            },
+          ],
+          messages: ["Collected tags for Tag Report."],
+        },
+      }),
+    );
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    const status = await screen.findByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
+    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
   it("ignores an older live run completion after a newer run starts", async () => {
     const user = userEvent.setup();
     const firstRun = createDeferred<Response>();
