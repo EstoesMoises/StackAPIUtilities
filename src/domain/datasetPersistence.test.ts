@@ -667,11 +667,31 @@ describe("datasetPersistence", () => {
     expect(parsed?.datasets).toEqual({});
   });
 
+  it("round-trips a complete version 3 Interactions snapshot with its synthetic result dataset", () => {
+    const value = createCurrentReportSnapshotValue(
+      ["users", "questions", "answers", "comments", "interactions"],
+      "interactions",
+    );
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.reportRunSnapshots).toHaveLength(1);
+    expect(parsed?.reportOutputs.interactions).toBeDefined();
+    expect(Object.values(parsed?.datasets ?? {}).map((dataset) => dataset.name)).toEqual([
+      "users",
+      "questions",
+      "answers",
+      "comments",
+      "interactions",
+    ]);
+  });
+
   it.each([
-    ["a missing required dataset", ["users", "questions", "answers"]],
-    ["a duplicate required dataset", ["users", "questions", "answers", "comments", "comments"]],
-    ["an extra dataset", ["users", "questions", "answers", "comments", "tags"]],
-  ])("drops a version 3 report run with %s", (_label, datasetNames) => {
+    ["a missing synthetic result dataset", ["users", "questions", "answers", "comments"]],
+    ["a missing required source dataset", ["users", "questions", "answers", "interactions"]],
+    ["a duplicate synthetic result dataset", ["users", "questions", "answers", "comments", "interactions", "interactions"]],
+    ["an arbitrary extra dataset", ["users", "questions", "answers", "comments", "interactions", "tags"]],
+  ])("drops a version 3 Interactions report run with %s", (_label, datasetNames) => {
     const parsed = parseDatasetSessionSnapshot(
       createCurrentReportSnapshotValue(datasetNames, "interactions"),
     );

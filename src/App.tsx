@@ -15,6 +15,7 @@ import { WriteToolsCatalog, type WriteToolId } from "./components/WriteToolsCata
 import { UtilityCatalog } from "./components/UtilityCatalog";
 import { validateCredentialsForReport, validateCredentialsForUtility } from "./credentials/credentialRules";
 import { createDatasetSessionSnapshot, type PersistedDatasetSessionSnapshot } from "./domain/datasetPersistence";
+import { getExpectedReportDatasetNames } from "./domain/reportDatasetRequirements";
 import { DEFAULT_REPORT_RUN_SCOPE } from "./domain/reportScope";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
@@ -350,7 +351,7 @@ export function App() {
           throw new Error(isRecord(body) && typeof body.error === "string" ? body.error : "Live API run failed.");
         }
         if (!isActiveRun(runId)) return;
-        const expectedDatasets = getExpectedResultDatasetNames(report.id, report.requiredDatasets);
+        const expectedDatasets = getExpectedReportDatasetNames(report.id, report.requiredDatasets);
         if (!isValidReportRunResult(body.result, report.id, periodRole, periodScope, expectedDatasets)) {
           throw new Error("Report result did not match the complete requested run.");
         }
@@ -760,13 +761,6 @@ function isValidReportRunResult(
   }
 
   return requiredDatasets.every((datasetName) => seen.has(datasetName));
-}
-
-function getExpectedResultDatasetNames(
-  reportId: ReportId,
-  requiredDatasets: readonly DatasetName[],
-): readonly DatasetName[] {
-  return reportId === "interactions" ? [...requiredDatasets, "interactions"] : requiredDatasets;
 }
 
 function normalizePeriodScope(scope: PeriodScope): PeriodScope {

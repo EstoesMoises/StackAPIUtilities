@@ -1,4 +1,5 @@
 import { reportRegistry } from "./reportRegistry";
+import { getExpectedReportDatasetNames } from "./reportDatasetRequirements";
 import { utilityRegistry } from "./utilityRegistry";
 import { LEGACY_COLLECTION_WARNING, isLegacyCollectionWarning } from "./collectionWarnings";
 import { parseSmeCoverageDecisionPack } from "../utilities/smeCoverage/persistence";
@@ -578,8 +579,11 @@ function parseReportRunSnapshot(
   }
 
   const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
-  const requiredDatasets = isKnownReportId(value.reportId)
-    ? reportRegistry.find((report) => report.id === value.reportId)?.requiredDatasets
+  const report = isKnownReportId(value.reportId)
+    ? reportRegistry.find((candidate) => candidate.id === value.reportId)
+    : undefined;
+  const requiredDatasets = report
+    ? getExpectedReportDatasetNames(report.id, report.requiredDatasets)
     : undefined;
 
   if (
