@@ -1178,6 +1178,49 @@ describe("CredentialsPanel", () => {
     expect(screen.getByRole("button", { name: "Update customer" })).toBeEnabled();
   });
 
+  it("persists a changed selected-profile API key and removes it when cleared", async () => {
+    mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [enterpriseProfile()],
+      lastSelectedProfileId: "profile-1",
+    });
+    renderCredentialsPanel();
+    const user = userEvent.setup();
+    const apiKey = await screen.findByLabelText("API key");
+
+    await user.clear(apiKey);
+    await user.type(apiKey, "replacement-key");
+    await user.click(screen.getByRole("button", { name: "Update customer" }));
+
+    await waitFor(() => expect(profileStorageMocks.saveProfile).toHaveBeenCalledTimes(1));
+    expect(profileStorageMocks.saveProfile.mock.calls[0][0]).toEqual({
+      schemaVersion: 2,
+      id: "profile-1",
+      customerName: "Demo Customer",
+      baseUrl: "https://demo.stackenterprise.co",
+      oauthClientId: "client-123",
+      apiKey: "replacement-key",
+      includeNoExpiry: false,
+      createdAt: "2026-08-19T12:00:00.000Z",
+      updatedAt: expect.any(String),
+    });
+
+    await user.clear(apiKey);
+    await user.click(screen.getByRole("button", { name: "Update customer" }));
+
+    await waitFor(() => expect(profileStorageMocks.saveProfile).toHaveBeenCalledTimes(2));
+    expect(profileStorageMocks.saveProfile.mock.calls[1][0]).toEqual({
+      schemaVersion: 2,
+      id: "profile-1",
+      customerName: "Demo Customer",
+      baseUrl: "https://demo.stackenterprise.co",
+      oauthClientId: "client-123",
+      includeNoExpiry: false,
+      createdAt: "2026-08-19T12:00:00.000Z",
+      updatedAt: expect.any(String),
+    });
+  });
+
   it("masks the profile-backed API key", async () => {
     mockOAuthEndpoints();
     installProfileStorage({
@@ -1186,7 +1229,9 @@ describe("CredentialsPanel", () => {
     });
     renderCredentialsPanel();
 
-    expect(await screen.findByLabelText("API key")).toHaveAttribute("type", "password");
+    const apiKey = await screen.findByLabelText("API key");
+    expect(apiKey).toHaveAttribute("type", "password");
+    expect(apiKey).toHaveAttribute("autocomplete", "off");
   });
 
   it("associates profile URL and client ID validation errors with their fields", async () => {
