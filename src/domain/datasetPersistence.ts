@@ -559,19 +559,20 @@ function appendLegacyCollectionWarning(
 ): ReportWarning[] {
   const existingWarnings = warnings ?? [];
   const legacyWarning: ReportWarning = { reportId, ...LEGACY_COLLECTION_WARNING };
+  let foundLegacyWarning = false;
+  const deduplicatedWarnings = existingWarnings.filter((warning) => {
+    const matchesLegacyWarning =
+      warning.reportId === legacyWarning.reportId &&
+      warning.code === legacyWarning.code &&
+      warning.message === legacyWarning.message;
 
-  if (
-    existingWarnings.some(
-      (warning) =>
-        warning.reportId === legacyWarning.reportId &&
-        warning.code === legacyWarning.code &&
-        warning.message === legacyWarning.message,
-    )
-  ) {
-    return existingWarnings;
-  }
+    if (!matchesLegacyWarning) return true;
+    if (foundLegacyWarning) return false;
+    foundLegacyWarning = true;
+    return true;
+  });
 
-  return [...existingWarnings, legacyWarning];
+  return foundLegacyWarning ? deduplicatedWarnings : [...deduplicatedWarnings, legacyWarning];
 }
 
 function parseWarning(value: unknown): ReportWarning | null {

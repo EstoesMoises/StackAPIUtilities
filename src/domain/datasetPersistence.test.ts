@@ -471,6 +471,44 @@ describe("datasetPersistence", () => {
     expect(hydrated.reportOutputs["inactive-users"]?.warnings).toContainEqual(legacyWarning);
   });
 
+  it.each([1, 2] as const)(
+    "deduplicates matching legacy warnings in version %s live report outputs and datasets",
+    (version) => {
+      const persisted = createLegacyLiveReportSnapshot(version);
+      const datasets = persisted.datasets as Record<string, Record<string, unknown>>;
+      const outputs = persisted.reportOutputs as Record<string, Record<string, unknown>>;
+      const legacyWarning = {
+        reportId: "inactive-users",
+        ...LEGACY_COLLECTION_WARNING,
+      };
+      const firstWarning = {
+        reportId: "inactive-users",
+        code: "first-warning",
+        message: "First original warning.",
+      };
+      const lastWarning = {
+        reportId: "inactive-users",
+        code: "last-warning",
+        message: "Last original warning.",
+      };
+      datasets["dataset-1"]!.warnings = [firstWarning, legacyWarning, lastWarning, legacyWarning];
+      outputs["inactive-users"]!.warnings = [firstWarning, legacyWarning, lastWarning, legacyWarning];
+
+      const parsed = parseDatasetSessionSnapshot(persisted);
+
+      expect(parsed?.datasets["dataset-1"]?.warnings).toEqual([
+        firstWarning,
+        legacyWarning,
+        lastWarning,
+      ]);
+      expect(parsed?.reportOutputs["inactive-users"]?.warnings).toEqual([
+        firstWarning,
+        legacyWarning,
+        lastWarning,
+      ]);
+    },
+  );
+
   it("does not label legacy uploaded outputs or datasets as unverified live collections", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 2,
