@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { ApiVolumeSettingsValue } from "../../domain/types";
 import {
   completeSmeCoverageSourceStatus,
   narrativeDemandRows,
@@ -19,13 +18,11 @@ function analyze(
   demandRows = narrativeDemandRows,
   smeRows = narrativeSmeRows,
   sourceStatus: SmeCoverageSourceStatus = completeSmeCoverageSourceStatus,
-  settings?: ApiVolumeSettingsValue,
 ): SmeCoverageAnalysisResult {
   return analyzeSmeCoverage({
     demand: { rows: demandRows, warnings: [] },
     smeCounts: { rows: smeRows, warnings: [] },
     sourceStatus,
-    settings,
   });
 }
 
@@ -96,17 +93,21 @@ describe("buildSmeCoverageNarrative", () => {
     expect(matchRenderedPairsToCanonicalRows(swappedPairs, selected)).toBeNull();
   });
 
-  it.each([
-    ["Quick sample", { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" }],
-    ["Standard", { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" }],
-    ["custom", { pageSize: 75, maxPagesPerDataset: 7 }],
-  ] as const)("labels a non-capped %s run as a partial sample", (_label, settings) => {
-    const narrative = buildSmeCoverageNarrative(
-      analyze(narrativeDemandRows, narrativeSmeRows, completeSmeCoverageSourceStatus, settings),
-    );
+  it("ignores legacy sampling configuration metadata", () => {
+    const legacyAnalysis = {
+      ...analyze(),
+      sampling: {
+        pageSize: 50,
+        maxPagesPerDataset: 1,
+        runPreset: "quick-sample",
+        configuredAsPartialSample: true,
+      },
+    } as SmeCoverageAnalysisResult;
 
-    expect(narrative.overview).toContain("partial sample");
-    expect(narrative.assessment).toContain("partial sample");
+    const narrative = buildSmeCoverageNarrative(legacyAnalysis);
+    const text = `${narrative.overview} ${narrative.assessment}`;
+
+    expect(text).not.toMatch(/configured|deep audit|default|api volume|partial sample/i);
   });
 
   it("limits each finding paragraph to the first ten canonical rows", () => {

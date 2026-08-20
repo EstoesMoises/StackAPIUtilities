@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FetchLike } from "../../api/httpClient";
-import type { ApiVolumeSettingsValue, SessionCredentials } from "../../domain/types";
+import * as liveCollectors from "../../collectors/liveCollectors";
+import type { SessionCredentials } from "../../domain/types";
 import { runSmeCoverageAnalysis, SmeCoverageRunError } from "./runner";
 import type { SmeCoverageRunResult } from "./runner";
 
@@ -28,12 +29,6 @@ const enterpriseCredentials: SessionCredentials = {
   authSource: "manual-enterprise-token",
 };
 
-const deepSettings: ApiVolumeSettingsValue = {
-  pageSize: 100,
-  maxPagesPerDataset: 20,
-  runPreset: "deep-audit",
-};
-
 function v2Page(items: Record<string, unknown>[], hasMore = false): Response {
   return new Response(JSON.stringify({ items, has_more: hasMore }), { status: 200 });
 }
@@ -57,13 +52,34 @@ function standardFetch(requestUrls: string[] = []): FetchLike {
   }) as FetchLike;
 }
 
+function exhaustiveMultiPageFetch(requestUrls: string[] = []): FetchLike {
+  return vi.fn().mockImplementation((input: RequestInfo | URL) => {
+    const url = new URL(input.toString());
+    const page = Number(url.searchParams.get("page"));
+    requestUrls.push(url.toString());
+    if (url.pathname.includes("/2.3/tags")) {
+      return Promise.resolve(v2Page([{ name: page === 1 ? "piper" : "kafka", count: 8 }], page === 1));
+    }
+    if (url.pathname.includes("/2.3/questions")) {
+      return Promise.resolve(v2Page([
+        { question_id: page, tags: [page === 1 ? "piper" : "kafka"], view_count: page * 400 },
+      ], page === 1));
+    }
+    if (url.pathname.includes("/v3/") && url.pathname.includes("/tags")) {
+      return Promise.resolve(v3Page([
+        { name: page === 1 ? "piper" : "kafka", subjectMatterExpertCount: 1 },
+      ], 2));
+    }
+    throw new Error(`Unexpected URL: ${url.toString()}`);
+  }) as FetchLike;
+}
+
 describe("runSmeCoverageAnalysis", () => {
   it("collects exactly v2 tags, v2 questions, and v3 tags before composing one decision pack", async () => {
     const requestUrls: string[] = [];
 
     const result = await runSmeCoverageAnalysis(basicCredentials, {
       fetchFn: standardFetch(requestUrls),
-      settings: deepSettings,
     });
 
     expect(requestUrls).toHaveLength(3);
@@ -91,7 +107,7 @@ describe("runSmeCoverageAnalysis", () => {
 
     await runSmeCoverageAnalysis(
       { ...basicCredentials, apiKey: "stale-enterprise-api-key" },
-      { fetchFn: fetchMock, settings: deepSettings },
+      { fetchFn: fetchMock },
     );
 
     const v2Calls = fetchMock.mock.calls.filter(([input]) => input.toString().includes("/2.3/"));
@@ -109,7 +125,7 @@ describe("runSmeCoverageAnalysis", () => {
   it("keeps Enterprise v2 API-key and v3 bearer authentication in separate lanes", async () => {
     const fetchMock = standardFetch() as ReturnType<typeof vi.fn>;
 
-    await runSmeCoverageAnalysis(enterpriseCredentials, { fetchFn: fetchMock, settings: deepSettings });
+    await runSmeCoverageAnalysis(enterpriseCredentials, { fetchFn: fetchMock });
 
     const v2Calls = fetchMock.mock.calls.filter(([input]) => input.toString().includes("/api/2.3/"));
     const v3Call = fetchMock.mock.calls.find(([input]) => input.toString().includes("/api/v3/"));
@@ -156,121 +172,50 @@ describe("runSmeCoverageAnalysis", () => {
     },
   );
 
+  it("collects every source across all pages and records terminal pagination", async () => {
+    const requestUrls: string[] = [];
+
+    const result = await runSmeCoverageAnalysis(basicCredentials, {
+      fetchFn: exhaustiveMultiPageFetch(requestUrls),
+    });
+
+    expect(requestUrls).toHaveLength(6);
+    expect(result.datasets).toHaveLength(3);
+    for (const dataset of result.datasets) {
+      expect(dataset.records).toHaveLength(2);
+      expect(dataset.pagination).toEqual({
+        pageCount: 2,
+        reachedMaxPages: false,
+        hasMore: false,
+      });
+    }
+    expect(result).not.toHaveProperty("pageSize");
+    expect(result).not.toHaveProperty("maxPagesPerDataset");
+    expect(result).not.toHaveProperty("runPreset");
+  });
+
   it.each([
-    ["tags", "sme-coverage.tags-page-cap", "collected tag sample"],
-    ["questions", "sme-coverage.questions-page-cap", "collected partial sample"],
-    ["tagSmeCounts", "sme-coverage.tag-sme-counts-page-cap", "may be unknown"],
-  ] as const)("preserves a %s page cap and emits its stable warning", async (cappedSource, code, message) => {
-    const fetchMock: FetchLike = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      const url = input.toString();
-      if (url.includes("/2.3/tags")) {
-        return Promise.resolve(v2Page([{ name: "piper", count: 8 }], cappedSource === "tags"));
-      }
-      if (url.includes("/2.3/questions")) {
-        return Promise.resolve(
-          v2Page([{ question_id: 1, tags: ["piper"], view_count: 800 }], cappedSource === "questions"),
-        );
-      }
-      return Promise.resolve(
-        v3Page([{ name: "piper", subjectMatterExpertCount: 1 }], cappedSource === "tagSmeCounts" ? 2 : 1),
-      );
-    }) as FetchLike;
-
-    const result = await runSmeCoverageAnalysis(basicCredentials, {
-      fetchFn: fetchMock,
-      settings: { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" },
+    ["reachedMaxPages", { pageCount: 1, reachedMaxPages: true, hasMore: false }],
+    ["hasMore", { pageCount: 1, reachedMaxPages: false, hasMore: true }],
+  ] as const)("fails closed before later collection when a source reports %s", async (_label, pagination) => {
+    const collectSpy = vi.spyOn(liveCollectors, "collectDataset").mockResolvedValueOnce({
+      records: [{ name: "piper" }],
+      pagination,
     });
 
-    expect(result.datasets.find((dataset) => dataset.datasetName === cappedSource)?.pagination).toEqual({
-      pageCount: 1,
-      reachedMaxPages: true,
-      hasMore: true,
-    });
-    expect(result.warnings).toContainEqual(expect.objectContaining({ code, message: expect.stringContaining(message) }));
-    expect(result.decisionPack.warnings).toContainEqual(
-      expect.objectContaining({ code, message: expect.stringContaining(message) }),
+    const error = await runSmeCoverageAnalysis(basicCredentials, { fetchFn: vi.fn() }).catch(
+      (caught: unknown) => caught,
     );
-  });
+    const collectionCallCount = collectSpy.mock.calls.length;
+    collectSpy.mockRestore();
 
-  it("labels capped question demand and narrative conclusions as a partial sample", async () => {
-    const fetchMock: FetchLike = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      const url = input.toString();
-      if (url.includes("/2.3/tags")) return Promise.resolve(v2Page([{ name: "piper", count: 8 }]));
-      if (url.includes("/2.3/questions")) {
-        return Promise.resolve(v2Page([{ question_id: 1, tags: ["piper"], view_count: 800 }], true));
-      }
-      return Promise.resolve(v3Page([{ name: "piper", subjectMatterExpertCount: 1 }]));
-    }) as FetchLike;
-
-    const result = await runSmeCoverageAnalysis(basicCredentials, {
-      fetchFn: fetchMock,
-      settings: { pageSize: 100, maxPagesPerDataset: 1 },
+    expect(error).toBeInstanceOf(SmeCoverageRunError);
+    expect(error).toMatchObject({
+      kind: "collection",
+      stage: "tags",
+      message: "tags collection did not reach terminal pagination. No complete result was produced.",
     });
-
-    expect(result.decisionPack.evidence[0]).toMatchObject({
-      demandQuality: "Partial sample",
-      questionCount: 8,
-      questionCountBasis: "All-time tag total",
-    });
-    expect(result.decisionPack.snapshot.completeness).toBe("Partial");
-    expect(result.decisionPack.overview).toContain("partial sample");
-    expect(result.decisionPack.assessment).toContain("partial sample");
-  });
-
-  it("keeps retrieved numeric v3 tag counts complete while capped unmatched tags remain unknown", async () => {
-    const fetchMock: FetchLike = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      const url = input.toString();
-      if (url.includes("/2.3/tags")) {
-        return Promise.resolve(v2Page([{ name: "piper" }, { name: "kafka" }]));
-      }
-      if (url.includes("/2.3/questions")) {
-        return Promise.resolve(v2Page([
-          { question_id: 1, tags: ["piper"], view_count: 800 },
-          { question_id: 2, tags: ["kafka"], view_count: 400 },
-        ]));
-      }
-      return Promise.resolve(v3Page([{ name: "piper", subjectMatterExpertCount: 1 }], 2));
-    }) as FetchLike;
-
-    const result = await runSmeCoverageAnalysis(basicCredentials, {
-      fetchFn: fetchMock,
-      settings: { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" },
-    });
-
-    expect(result.decisionPack.evidence.find((row) => row.tagName === "piper")).toMatchObject({
-      smeCount: 1,
-      smeQuality: "Complete",
-    });
-    expect(result.decisionPack.evidence.find((row) => row.tagName === "kafka")).toMatchObject({
-      smeCount: null,
-      smeQuality: "Unknown",
-    });
-  });
-
-  it("keeps capped v3-unmatched v2 tags unknown when the retrieved numeric counts are unrelated", async () => {
-    const fetchMock: FetchLike = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      const url = input.toString();
-      if (url.includes("/2.3/tags")) return Promise.resolve(v2Page([{ name: "piper" }]));
-      if (url.includes("/2.3/questions")) {
-        return Promise.resolve(v2Page([{ question_id: 1, tags: ["piper"], view_count: 800 }]));
-      }
-      return Promise.resolve(v3Page([{ name: "kafka", subjectMatterExpertCount: 2 }], 2));
-    }) as FetchLike;
-
-    const result = await runSmeCoverageAnalysis(basicCredentials, {
-      fetchFn: fetchMock,
-      settings: { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" },
-    });
-
-    expect(result.decisionPack.snapshot.completeness).toBe("Partial");
-    expect(result.decisionPack.evidence.find((row) => row.tagName === "piper")).toMatchObject({
-      smeCount: null,
-      smeQuality: "Unknown",
-      coverageTier: "Unknown",
-    });
-    expect(result.warnings).toContainEqual(
-      expect.objectContaining({ code: "sme-coverage.tag-sme-counts-page-cap" }),
-    );
+    expect(collectionCallCount).toBe(1);
   });
 
   it("rejects v2 tag data when v3 provides no matching authoritative numeric SME count", async () => {
@@ -314,7 +259,6 @@ describe("runSmeCoverageAnalysis", () => {
 
     const result = await runSmeCoverageAnalysis(basicCredentials, {
       fetchFn: fetchMock,
-      settings: deepSettings,
     });
 
     expect(result.decisionPack.snapshot.completeness).toBe("Empty");
@@ -325,7 +269,6 @@ describe("runSmeCoverageAnalysis", () => {
   it("uses the injected clock and normalized instance host in the snapshot", async () => {
     const result = await runSmeCoverageAnalysis(enterpriseCredentials, {
       fetchFn: standardFetch(),
-      settings: deepSettings,
       clock: () => new Date("2026-07-31T15:00:00.000Z"),
     });
 
@@ -335,23 +278,9 @@ describe("runSmeCoverageAnalysis", () => {
     });
   });
 
-  it("normalizes stale preset labels and passes actual settings into analysis sampling", async () => {
-    const result = await runSmeCoverageAnalysis(basicCredentials, {
-      fetchFn: standardFetch(),
-      settings: { pageSize: 75, maxPagesPerDataset: 7, runPreset: "quick-sample" },
-    });
-
-    expect(result.runPreset).toBeUndefined();
-    expect(result.decisionPack.snapshot).toMatchObject({ pageSize: 75, maxPagesPerDataset: 7 });
-    expect(result.decisionPack.snapshot.runPreset).toBeUndefined();
-    expect(result.decisionPack.snapshot.completeness).toBe("Partial");
-    expect(result.decisionPack.overview).toContain("configured API volume settings");
-  });
-
   it("returns a deeply immutable result and supporting datasets", async () => {
     const result = await runSmeCoverageAnalysis(basicCredentials, {
       fetchFn: standardFetch(),
-      settings: deepSettings,
     });
     const originalJson = JSON.stringify(result);
     const mutable = result as unknown as {
@@ -388,18 +317,6 @@ describe("runSmeCoverageAnalysis", () => {
     expect(JSON.stringify(result)).toBe(originalJson);
   });
 
-  it("rejects invalid volume settings before fetch", async () => {
-    const fetchMock = vi.fn();
-
-    await expect(
-      runSmeCoverageAnalysis(basicCredentials, {
-        fetchFn: fetchMock,
-        settings: { pageSize: 0, maxPagesPerDataset: 0 },
-      }),
-    ).rejects.toMatchObject({ kind: "validation" });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it.each([
     [
       "Basic/Business PAT",
@@ -426,7 +343,6 @@ describe("runSmeCoverageAnalysis", () => {
   ])("never returns %s credentials or authentication metadata", async (_label, credentials, secretValues) => {
     const result = await runSmeCoverageAnalysis(credentials, {
       fetchFn: standardFetch(),
-      settings: deepSettings,
     });
     const serialized = JSON.stringify(result);
 

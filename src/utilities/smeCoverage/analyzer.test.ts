@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ApiVolumeSettingsValue, ReportWarning } from "../../domain/types";
+import type { ReportWarning } from "../../domain/types";
 import {
   completeSmeCoverageSourceStatus,
   normalizedDemandRow,
@@ -20,13 +20,11 @@ function analyze(
     demand?: readonly ReportWarning[];
     smeCounts?: readonly ReportWarning[];
   } = {},
-  settings?: ApiVolumeSettingsValue,
 ): SmeCoverageAnalysisResult {
   return analyzeSmeCoverage({
     demand: { rows: demandRows, warnings: sourceWarnings.demand ?? [] },
     smeCounts: { rows: smeRows, warnings: sourceWarnings.smeCounts ?? [] },
     sourceStatus: completeSmeCoverageSourceStatus,
-    settings,
   });
 }
 
@@ -47,87 +45,13 @@ function coveredRows(values: readonly number[]): {
 }
 
 describe("analyzeSmeCoverage", () => {
-  it.each([
-    {
-      label: "default Deep audit",
-      settings: undefined,
-      expected: {
-        pageSize: 100,
-        maxPagesPerDataset: 20,
-        runPreset: "deep-audit",
-        configuredAsPartialSample: false,
-      },
-    },
-    {
-      label: "Quick sample",
-      settings: { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" } as const,
-      expected: {
-        pageSize: 50,
-        maxPagesPerDataset: 1,
-        runPreset: "quick-sample",
-        configuredAsPartialSample: true,
-      },
-    },
-    {
-      label: "Standard",
-      settings: { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" } as const,
-      expected: {
-        pageSize: 100,
-        maxPagesPerDataset: 5,
-        runPreset: "standard",
-        configuredAsPartialSample: true,
-      },
-    },
-    {
-      label: "custom limits without a preset",
-      settings: { pageSize: 100, maxPagesPerDataset: 19 },
-      expected: {
-        pageSize: 100,
-        maxPagesPerDataset: 19,
-        runPreset: undefined,
-        configuredAsPartialSample: true,
-      },
-    },
-    {
-      label: "custom settings matching Deep audit limits without its preset",
-      settings: { pageSize: 100, maxPagesPerDataset: 20 },
-      expected: {
-        pageSize: 100,
-        maxPagesPerDataset: 20,
-        runPreset: undefined,
-        configuredAsPartialSample: true,
-      },
-    },
-    {
-      label: "Deep audit preset with a changed page size",
-      settings: { pageSize: 99, maxPagesPerDataset: 20, runPreset: "deep-audit" } as const,
-      expected: {
-        pageSize: 99,
-        maxPagesPerDataset: 20,
-        runPreset: "deep-audit",
-        configuredAsPartialSample: true,
-      },
-    },
-    {
-      label: "Deep audit preset with a changed page limit",
-      settings: { pageSize: 100, maxPagesPerDataset: 19, runPreset: "deep-audit" } as const,
-      expected: {
-        pageSize: 100,
-        maxPagesPerDataset: 19,
-        runPreset: "deep-audit",
-        configuredAsPartialSample: true,
-      },
-    },
-  ])("records immutable structured sampling metadata for $label", ({ settings, expected }) => {
+  it("needs no sampling settings and omits sampling metadata", () => {
     const result = analyze(
       [normalizedDemandRow("alpha", 100)],
       [normalizedSmeRow("alpha", 1)],
-      {},
-      settings,
     );
 
-    expect(result.sampling).toEqual(expected);
-    expect(Object.isFrozen(result.sampling)).toBe(true);
+    expect(result).not.toHaveProperty("sampling");
   });
 
   it("does not expose internal calculation flags on canonical evidence", () => {
