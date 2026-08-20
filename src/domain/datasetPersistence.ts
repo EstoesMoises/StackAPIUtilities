@@ -1,4 +1,5 @@
 import { reportRegistry } from "./reportRegistry";
+import { utilityRegistry } from "./utilityRegistry";
 import { LEGACY_COLLECTION_WARNING, isLegacyCollectionWarning } from "./collectionWarnings";
 import { parseSmeCoverageDecisionPack } from "../utilities/smeCoverage/persistence";
 import type { SmeCoverageStoredOutput } from "../utilities/smeCoverage/model";
@@ -77,13 +78,20 @@ const prohibitedPersistedKeys = new Set([
 const omittedJsonValue = Symbol("omitted-json-value");
 
 export function createDatasetSessionSnapshot(state: SessionState): PersistedDatasetSessionSnapshot {
-  const datasets = parseDatasetRecord(state.datasets, true) ?? {};
+  const parsedDatasets = parseDatasetRecord(state.datasets, true) ?? {};
   const reportRunSnapshots = parseReportRunSnapshots(
     state.reportRunSnapshots,
-    datasets,
+    parsedDatasets,
     DATASET_SESSION_PERSISTENCE_VERSION,
   );
-  const utilityRunSnapshots = parseUtilityRunSnapshots(state.utilityRunSnapshots, datasets);
+  const utilityRunSnapshots = parseUtilityRunSnapshots(state.utilityRunSnapshots, parsedDatasets);
+  const datasets = pruneOrphanedCurrentLiveDatasets(
+    parsedDatasets,
+    reportRunSnapshots,
+    utilityRunSnapshots,
+    state.reportRunSnapshots,
+    state.utilityRunSnapshots,
+  );
 
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
@@ -93,7 +101,7 @@ export function createDatasetSessionSnapshot(state: SessionState): PersistedData
     datasets,
     reportOutputs: parseReportOutputs(state.reportOutputs, datasets, reportRunSnapshots, false),
     reportRunSnapshots,
-    utilityOutputs: parseUtilityOutputs(state.utilityOutputs),
+    utilityOutputs: parseUtilityOutputs(state.utilityOutputs, utilityRunSnapshots, true),
     utilityRunSnapshots,
     warnings: parseWarnings(state.warnings),
   };
@@ -150,11 +158,28 @@ export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSes
     return null;
   }
 
-  const datasets = isLegacyVersion
+  const datasetsWithLegacyWarnings = isLegacyVersion
     ? addLegacyCollectionWarningsToLiveReportDatasets(parsedDatasets)
     : parsedDatasets;
-  const reportRunSnapshots = parseReportRunSnapshots(value.reportRunSnapshots, datasets, storedVersion);
-  const utilityRunSnapshots = parseUtilityRunSnapshots(value.utilityRunSnapshots, datasets, storedVersion);
+  const reportRunSnapshots = parseReportRunSnapshots(
+    value.reportRunSnapshots,
+    datasetsWithLegacyWarnings,
+    storedVersion,
+  );
+  const utilityRunSnapshots = parseUtilityRunSnapshots(
+    value.utilityRunSnapshots,
+    datasetsWithLegacyWarnings,
+    storedVersion,
+  );
+  const datasets = isLegacyVersion
+    ? datasetsWithLegacyWarnings
+    : pruneOrphanedCurrentLiveDatasets(
+        datasetsWithLegacyWarnings,
+        reportRunSnapshots,
+        utilityRunSnapshots,
+        value.reportRunSnapshots,
+        value.utilityRunSnapshots,
+      );
 
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
@@ -166,7 +191,7 @@ export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSes
     datasets,
     reportOutputs: parseReportOutputs(value.reportOutputs, datasets, reportRunSnapshots, isLegacyVersion),
     reportRunSnapshots,
-    utilityOutputs: parseUtilityOutputs(value.utilityOutputs),
+    utilityOutputs: parseUtilityOutputs(value.utilityOutputs, utilityRunSnapshots, !isLegacyVersion),
     utilityRunSnapshots,
     warnings: parseWarnings(value.warnings),
   };
@@ -251,12 +276,25 @@ function parseReportRunSnapshots(
   });
 }
 
-function parseUtilityOutputs(value: unknown): Partial<Record<UtilityId, SmeCoverageStoredOutput>> {
+function parseUtilityOutputs(
+  value: unknown,
+  utilityRunSnapshots: UtilityRunSnapshot[],
+  requireCurrentSnapshot: boolean,
+): Partial<Record<UtilityId, SmeCoverageStoredOutput>> {
   if (!isRecord(value)) return {};
   const outputs: Partial<Record<UtilityId, SmeCoverageStoredOutput>> = {};
 
   for (const [key, candidate] of Object.entries(value)) {
-    if (!isKnownUtilityId(key) || !isRecord(candidate) || candidate.utilityId !== key || typeof candidate.loadedAt !== "string") {
+    if (
+      !isKnownUtilityId(key) ||
+      !isRecord(candidate) ||
+      candidate.utilityId !== key ||
+      typeof candidate.loadedAt !== "string" ||
+      (requireCurrentSnapshot &&
+        !utilityRunSnapshots.some(
+          (snapshot) => snapshot.utilityId === key && snapshot.loadedAt === candidate.loadedAt,
+        ))
+    ) {
       continue;
     }
     const decisionPack = parseSmeCoverageDecisionPack(candidate.decisionPack);
@@ -298,6 +336,9 @@ function parseUtilityRunSnapshot(
   storedVersion: DatasetSessionPersistenceVersion,
 ): UtilityRunSnapshot | null {
   const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
+  const requiredDatasets = isRecord(value) && isKnownUtilityId(value.utilityId)
+    ? utilityRegistry.find((utility) => utility.id === value.utilityId)?.requiredDatasets
+    : undefined;
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
@@ -319,8 +360,12 @@ function parseUtilityRunSnapshot(
         datasetId.length > 0 &&
         hasOwn(datasets, datasetId) &&
         datasets[datasetId]?.utilityId === value.utilityId &&
-        datasets[datasetId]?.snapshotId === value.id,
+        datasets[datasetId]?.snapshotId === value.id &&
+        (isLegacyVersion ||
+          (datasets[datasetId]?.source === "live-api" && hasTerminalPagination(datasets[datasetId]))),
     ) ||
+    (!isLegacyVersion &&
+      (!requiredDatasets || !hasExactRequiredDatasets(value.datasetIds, datasets, requiredDatasets))) ||
     !Array.isArray(value.warnings)
   ) {
     return null;
@@ -533,6 +578,9 @@ function parseReportRunSnapshot(
   }
 
   const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
+  const requiredDatasets = isKnownReportId(value.reportId)
+    ? reportRegistry.find((report) => report.id === value.reportId)?.requiredDatasets
+    : undefined;
 
   if (
     typeof value.id !== "string" ||
@@ -552,9 +600,12 @@ function parseReportRunSnapshot(
         dataset?.source === "live-api" &&
         dataset.snapshotId === value.id &&
         dataset.reportId === value.reportId &&
-        dataset.periodRole === value.periodRole
+        dataset.periodRole === value.periodRole &&
+        (isLegacyVersion || hasTerminalPagination(dataset))
       );
     }) ||
+    (!isLegacyVersion &&
+      (!requiredDatasets || !hasExactRequiredDatasets(value.datasetIds, datasets, requiredDatasets))) ||
     !Array.isArray(value.warnings) ||
     (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
     (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
@@ -585,6 +636,67 @@ function parseReportRunSnapshot(
   };
 
   return snapshot;
+}
+
+function hasTerminalPagination(dataset: SessionDataset | undefined): boolean {
+  return (
+    !!dataset &&
+    isNonnegativeInteger(dataset.pageCount) &&
+    dataset.reachedMaxPages === false &&
+    dataset.hasMore === false
+  );
+}
+
+function hasExactRequiredDatasets(
+  datasetIds: unknown[],
+  datasets: Record<string, SessionDataset>,
+  requiredDatasets: readonly DatasetName[],
+): boolean {
+  const datasetNames = datasetIds.flatMap((datasetId) =>
+    typeof datasetId === "string" && hasOwn(datasets, datasetId) ? [datasets[datasetId]!.name] : [],
+  );
+
+  return (
+    datasetNames.length === requiredDatasets.length &&
+    new Set(datasetNames).size === datasetNames.length &&
+    requiredDatasets.every((requiredDataset) => datasetNames.includes(requiredDataset))
+  );
+}
+
+function pruneOrphanedCurrentLiveDatasets(
+  datasets: Record<string, SessionDataset>,
+  reportRunSnapshots: ReportRunSnapshot[],
+  utilityRunSnapshots: UtilityRunSnapshot[],
+  reportRunSnapshotCandidates: unknown,
+  utilityRunSnapshotCandidates: unknown,
+): Record<string, SessionDataset> {
+  const retainedDatasetIds = new Set([
+    ...reportRunSnapshots.flatMap((snapshot) => snapshot.datasetIds),
+    ...utilityRunSnapshots.flatMap((snapshot) => snapshot.datasetIds),
+  ]);
+  const referencedDatasetIds = new Set([
+    ...collectReferencedDatasetIds(reportRunSnapshotCandidates),
+    ...collectReferencedDatasetIds(utilityRunSnapshotCandidates),
+  ]);
+
+  return Object.fromEntries(
+    Object.entries(datasets).filter(([, dataset]) => {
+      const claimsRunOwnership =
+        dataset.source === "live-api" &&
+        (typeof dataset.snapshotId === "string" || referencedDatasetIds.has(dataset.id));
+      return !claimsRunOwnership || retainedDatasetIds.has(dataset.id);
+    }),
+  );
+}
+
+function collectReferencedDatasetIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((candidate) =>
+    isRecord(candidate) && Array.isArray(candidate.datasetIds)
+      ? candidate.datasetIds.filter((datasetId): datasetId is string => typeof datasetId === "string")
+      : [],
+  );
 }
 
 function addLegacyCollectionWarningsToLiveReportDatasets(
