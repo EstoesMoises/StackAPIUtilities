@@ -684,6 +684,58 @@ describe("sessionStore", () => {
     expect(mixed.reportOutputs["inactive-users"]?.warnings).toEqual([legacyWarning]);
   });
 
+  it.each([
+    ["legacy current", "current", "current"],
+    ["exhaustive comparison", "current", "comparison"],
+    ["legacy comparison", "comparison", "comparison"],
+    ["exhaustive current", "comparison", "current"],
+  ] as const)(
+    "refreshes mixed-period warnings after removing %s",
+    (_label, legacyRole, removedRole) => {
+      const exhaustiveRole = legacyRole === "current" ? "comparison" : "current";
+      const exhaustiveWarning = {
+        reportId: "inactive-users" as const,
+        code: "retained-exhaustive-warning",
+        message: "Retain this warning only with its exhaustive snapshot.",
+      };
+      const legacyWarning = { reportId: "inactive-users" as const, ...LEGACY_COLLECTION_WARNING };
+      const hydrated = sessionReducer(createInitialSessionState(), {
+        type: "session/hydratePersistentDatasets",
+        snapshot: createLegacyPeriodSnapshot(legacyRole),
+      });
+      const mixed = sessionReducer(hydrated, {
+        type: "live/loaded",
+        reportId: "inactive-users",
+        periodRole: exhaustiveRole,
+        scope: exhaustiveRole === "current"
+          ? { startDate: "2026-06-01", endDate: "2026-06-30" }
+          : { startDate: "2026-05-01", endDate: "2026-05-31" },
+        warnings: [exhaustiveWarning, exhaustiveWarning],
+        datasets: [
+          {
+            datasetName: "users",
+            records: [{ user_id: exhaustiveRole === "current" ? 1 : 2 }],
+            pagination: completePagination,
+          },
+        ],
+      });
+      const datasetToRemove = Object.values(mixed.datasets).find(
+        (dataset) => dataset.periodRole === removedRole,
+      );
+
+      expect(datasetToRemove).toBeDefined();
+      const remaining = sessionReducer(mixed, {
+        type: "dataset/remove",
+        datasetId: datasetToRemove?.id ?? "",
+      });
+
+      expect(remaining.reportRunSnapshots).toHaveLength(1);
+      expect(remaining.reportOutputs["inactive-users"]?.warnings).toEqual(
+        removedRole === legacyRole ? [exhaustiveWarning] : [legacyWarning],
+      );
+    },
+  );
+
   it("removes a managed dataset from the active session", () => {
     const withDataset = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",

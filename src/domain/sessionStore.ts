@@ -363,7 +363,13 @@ function removeReportOutputsForDataset(
       continue;
     }
 
-    const nextOutput = removeDatasetFromReportOutput(output, removedDataset, retainedSnapshotIds, remainingDatasets);
+    const nextOutput = removeDatasetFromReportOutput(
+      output,
+      removedDataset,
+      retainedSnapshotIds,
+      retainedReportRunSnapshots,
+      remainingDatasets,
+    );
 
     if (nextOutput) {
       nextReportOutputs[reportId] = nextOutput;
@@ -379,6 +385,7 @@ function removeDatasetFromReportOutput(
   output: ReportOutput,
   dataset: SessionDataset,
   retainedSnapshotIds: ReadonlySet<string>,
+  retainedReportRunSnapshots: SessionState["reportRunSnapshots"],
   remainingDatasets: SessionState["datasets"],
 ): ReportOutput | null {
   if (isUploadedReportOutputTiedToDataset(output, dataset)) {
@@ -408,7 +415,8 @@ function removeDatasetFromReportOutput(
       delete nextOutput.currentSnapshotId;
     }
 
-    return hasReportOutputRecords(nextOutput) ? nextOutput : null;
+    const refreshedOutput = refreshReportOutputWarnings(nextOutput, retainedReportRunSnapshots);
+    return hasReportOutputRecords(refreshedOutput) ? refreshedOutput : null;
   }
 
   if (output.comparisonSnapshotId === dataset.snapshotId) {
@@ -430,10 +438,28 @@ function removeDatasetFromReportOutput(
       delete nextOutput.comparisonSnapshotId;
     }
 
-    return hasReportOutputRecords(nextOutput) ? nextOutput : null;
+    const refreshedOutput = refreshReportOutputWarnings(nextOutput, retainedReportRunSnapshots);
+    return hasReportOutputRecords(refreshedOutput) ? refreshedOutput : null;
   }
 
   return output;
+}
+
+function refreshReportOutputWarnings(
+  output: ReportOutput,
+  reportRunSnapshots: SessionState["reportRunSnapshots"],
+): ReportOutput {
+  const warnings = [output.currentSnapshotId, output.comparisonSnapshotId].flatMap((snapshotId) => {
+    if (!snapshotId) return [];
+    return reportRunSnapshots.find(
+      (snapshot) => snapshot.id === snapshotId && snapshot.reportId === output.reportId,
+    )?.warnings ?? [];
+  });
+
+  return {
+    ...output,
+    warnings: dedupeWarnings(warnings),
+  };
 }
 
 function isUploadedReportOutputTiedToDataset(output: ReportOutput, dataset: SessionDataset): boolean {
