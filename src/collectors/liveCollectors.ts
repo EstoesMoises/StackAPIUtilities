@@ -1,5 +1,7 @@
 import { dateToUnixSeconds } from "../domain/reportScope";
+import { readTagIdentity } from "../domain/tagNormalization";
 import type { DatasetName, PeriodScope, RunPeriodRole } from "../domain/types";
+import { buildTagLastUsedRows } from "../reports/tagLastUsed";
 
 export interface LiveCollectorClients {
   v2: DatasetClient;
@@ -59,7 +61,7 @@ const liveDatasetEndpoints: Partial<Record<DatasetName, LiveDatasetEndpoint>> = 
   tagSmeCounts: { client: "v3", path: "/tags" },
 };
 
-const dependentLiveDatasets = new Set<DatasetName>(["tagSmes", "reputationHistory"]);
+const dependentLiveDatasets = new Set<DatasetName>(["tagSmes", "tagLastUsed", "reputationHistory"]);
 
 export class UnsupportedLiveDatasetError extends Error {
   constructor(public readonly dataset: DatasetName) {
@@ -95,6 +97,10 @@ export async function collectDataset(
 ): Promise<CollectedDatasetResult> {
   if (dataset === "tagSmes") {
     return collectTagSmes(clients, getCollectedDataset(context, "tags"), context);
+  }
+
+  if (dataset === "tagLastUsed") {
+    return collectTagLastUsed(clients, getCollectedDataset(context, "tagSmeCounts"), context);
   }
 
   if (dataset === "reputationHistory") {
@@ -160,6 +166,31 @@ async function collectReputationHistory(
   }
 
   return { records, pagination };
+}
+
+async function collectTagLastUsed(
+  clients: LiveCollectorClients,
+  knownTags: Record<string, unknown>[],
+  context: LiveCollectorContext,
+): Promise<CollectedDatasetResult> {
+  const knownTagRecords = knownTags.filter((tag) => readTagIdentity(tag) !== null);
+  if (knownTagRecords.length === 0) {
+    return { records: [], pagination: createEmptyPaginationMetadata() };
+  }
+
+  const query = buildDatasetQuery(context, "v2", false);
+  const [questions, articles] = await Promise.all([
+    collectPagedResult(clients.v2, "/questions", query, context),
+    collectPagedResult(clients.v2, "/articles", query, context),
+  ]);
+
+  return {
+    records: buildTagLastUsedRows(knownTagRecords, [
+      ...toRecordList(questions.records),
+      ...toRecordList(articles.records),
+    ]),
+    pagination: mergePaginationMetadata(questions.pagination, articles.pagination),
+  };
 }
 
 async function collectPagedResult(

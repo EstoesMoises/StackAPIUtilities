@@ -67,7 +67,9 @@ export function getPrimaryGroupRecordDetail(): string {
 export function getReportRunPresetDisclosure(id: ReportRunPresetId): string {
   const preset = getReportRunPreset(id);
   const maxRecords = getReportRunPresetMaxRecords(id);
-  return `SME detail is separate: up to ${formatNumber(
+  return `Last-used metadata separately requests up to ${formatNumber(
+    maxRecords,
+  )} all-time questions and ${formatNumber(maxRecords)} all-time articles. SME detail is separate: up to ${formatNumber(
     maxRecords,
   )} top-answerer records for each collected tag. Technical settings: pageSize ${preset.pageSize}, maxPagesPerDataset ${preset.maxPagesPerDataset}. ${preset.completenessTradeoff}`;
 }

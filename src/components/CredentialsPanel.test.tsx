@@ -43,6 +43,14 @@ afterEach(() => {
 });
 
 describe("CredentialsPanel", () => {
+  it("discloses Tag Report's v2.3 and v3 Enterprise credential requirements", () => {
+    renderCredentialsPanel();
+
+    expect(screen.getByText(
+      "Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires both an API key and an OAuth access token (or pasted token).",
+    )).toBeInTheDocument();
+  });
+
   it("shows read-only mixed-lane requirements for SME Coverage Analyzer", () => {
     renderCredentialsPanel({ workflow: { kind: "utility", utilityId: "sme-coverage-analyzer" } });
 
@@ -155,7 +163,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Access token (optional)")).toHaveValue("manual-token");
   });
 
-  it("starts Enterprise OAuth with write_access and no no_expiry by default", async () => {
+  it("starts report Enterprise OAuth with no write scopes and no no_expiry by default", async () => {
     const user = userEvent.setup();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
@@ -175,7 +183,7 @@ describe("CredentialsPanel", () => {
         body: JSON.stringify({
           baseUrl: "https://demo.stackenterprise.co",
           clientId: "client-123",
-          scopes: ["write_access"],
+          scopes: [],
           includeNoExpiry: false,
         }),
       });
@@ -183,7 +191,7 @@ describe("CredentialsPanel", () => {
     expect(popup.location.href).toBe("https://demo.stackenterprise.co/oauth?state=abc");
   });
 
-  it("starts Enterprise OAuth with no-expiry opt in", async () => {
+  it("starts report Enterprise OAuth with no-expiry opt in and no write scopes", async () => {
     const user = userEvent.setup();
     const popup = createPopup();
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
@@ -201,7 +209,7 @@ describe("CredentialsPanel", () => {
     expect(JSON.parse(String(findOAuthStartCall(fetchMock)?.[1]?.body))).toEqual({
       baseUrl: "https://demo.stackenterprise.co",
       clientId: "client-123",
-      scopes: ["write_access"],
+      scopes: [],
       includeNoExpiry: true,
     });
   });

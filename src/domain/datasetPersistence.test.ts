@@ -90,6 +90,28 @@ describe("datasetPersistence", () => {
     expect(snapshot).not.toHaveProperty("runQueue");
   });
 
+  it("persists and hydrates collected Tag last used source data", () => {
+    const state: SessionState = {
+      ...createInitialSessionState(),
+      datasets: {
+        "tag-last-used": {
+          id: "tag-last-used",
+          reportId: "tag-report",
+          name: "tagLastUsed",
+          records: [{ tagName: "python", lastUsed: "2025-01-01" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+        },
+      },
+    };
+
+    const snapshot = createDatasetSessionSnapshot(state);
+    const hydrated = hydrateDatasetSessionState(createInitialSessionState(), snapshot);
+
+    expect(snapshot.datasets).toEqual(state.datasets);
+    expect(hydrated.datasets).toEqual(state.datasets);
+  });
+
   it("creates a snapshot with sanitized nested dataset and report state", () => {
     const state = {
       ...createInitialSessionState(),
