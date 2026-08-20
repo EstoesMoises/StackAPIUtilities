@@ -1182,6 +1182,112 @@ describe("sessionStore", () => {
     );
   });
 
+  it("preserves an empty current period and its persisted provenance when comparison is removed", () => {
+    const currentScope = { startDate: "2026-06-01", endDate: "2026-06-30" };
+    const current = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: currentScope,
+      warnings: [],
+      datasets: [{ datasetName: "users", records: [], pagination: completePagination }],
+    });
+    const comparison = sessionReducer(current, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      warnings: [],
+      datasets: [
+        { datasetName: "users", records: [{ user_id: 2 }], pagination: completePagination },
+      ],
+    });
+    const comparisonDataset = Object.values(comparison.datasets).find(
+      (dataset) => dataset.periodRole === "comparison",
+    )!;
+
+    const withoutComparison = sessionReducer(comparison, {
+      type: "dataset/remove",
+      datasetId: comparisonDataset.id,
+    });
+
+    expect(withoutComparison.reportRunSnapshots).toHaveLength(1);
+    expect(withoutComparison.reportRunSnapshots[0]?.periodRole).toBe("current");
+    expect(withoutComparison.reportOutputs["inactive-users"]).toMatchObject({
+      records: [],
+      currentScope,
+      currentSnapshotId: current.reportRunSnapshots[0]?.id,
+    });
+    expect(withoutComparison.reportOutputs["inactive-users"]?.comparisonSnapshotId).toBeUndefined();
+    expect(Object.values(withoutComparison.datasets)[0]).toMatchObject(completePagination);
+
+    const restored = parseDatasetSessionSnapshot(createDatasetSessionSnapshot(withoutComparison));
+    expect(restored?.reportRunSnapshots).toHaveLength(1);
+    expect(restored?.reportOutputs["inactive-users"]).toMatchObject({
+      records: [],
+      currentScope,
+      currentSnapshotId: current.reportRunSnapshots[0]?.id,
+    });
+
+    const currentDatasetId = Object.keys(withoutComparison.datasets)[0]!;
+    const withoutEither = sessionReducer(withoutComparison, {
+      type: "dataset/remove",
+      datasetId: currentDatasetId,
+    });
+    expect(withoutEither.reportRunSnapshots).toEqual([]);
+    expect(withoutEither.reportOutputs["inactive-users"]).toBeUndefined();
+  });
+
+  it("preserves an empty comparison period and its persisted provenance when current is removed", () => {
+    const comparisonScope = { startDate: "2026-05-01", endDate: "2026-05-31" };
+    const current = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      warnings: [],
+      datasets: [
+        { datasetName: "users", records: [{ user_id: 1 }], pagination: completePagination },
+      ],
+    });
+    const comparison = sessionReducer(current, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "comparison",
+      scope: comparisonScope,
+      warnings: [],
+      datasets: [{ datasetName: "users", records: [], pagination: completePagination }],
+    });
+    const currentDataset = Object.values(comparison.datasets).find(
+      (dataset) => dataset.periodRole === "current",
+    )!;
+
+    const withoutCurrent = sessionReducer(comparison, {
+      type: "dataset/remove",
+      datasetId: currentDataset.id,
+    });
+
+    expect(withoutCurrent.reportRunSnapshots).toHaveLength(1);
+    expect(withoutCurrent.reportRunSnapshots[0]?.periodRole).toBe("comparison");
+    expect(withoutCurrent.reportOutputs["inactive-users"]).toMatchObject({
+      records: [],
+      comparisonRecords: [],
+      comparisonScope,
+      comparisonSnapshotId: comparison.reportRunSnapshots[1]?.id,
+    });
+    expect(withoutCurrent.reportOutputs["inactive-users"]?.currentSnapshotId).toBeUndefined();
+    expect(Object.values(withoutCurrent.datasets)[0]).toMatchObject(completePagination);
+
+    const restored = parseDatasetSessionSnapshot(createDatasetSessionSnapshot(withoutCurrent));
+    expect(restored?.reportRunSnapshots).toHaveLength(1);
+    expect(restored?.reportOutputs["inactive-users"]).toMatchObject({
+      records: [],
+      comparisonRecords: [],
+      comparisonScope,
+      comparisonSnapshotId: comparison.reportRunSnapshots[1]?.id,
+    });
+  });
+
   it("clears credentials and datasets on reset", () => {
     const withData = sessionReducer(createInitialSessionState(), {
       type: "dataset/set",

@@ -472,10 +472,11 @@ function removeDatasetFromReportOutput(
       )?.warnings ?? dataset.warnings ?? [];
 
   if (output.currentSnapshotId === dataset.snapshotId) {
+    const isSnapshotRetained = retainedSnapshotIds.has(dataset.snapshotId);
     const records = pruneDatasetRecords(
       output.records,
       dataset,
-      retainedSnapshotIds.has(dataset.snapshotId),
+      isSnapshotRetained,
       output.reportId,
       dataset.snapshotId,
       remainingDatasets,
@@ -485,7 +486,7 @@ function removeDatasetFromReportOutput(
       records,
     };
 
-    if (records.length === 0) {
+    if (!isSnapshotRetained) {
       delete nextOutput.currentScope;
       delete nextOutput.currentSnapshotId;
     }
@@ -495,21 +496,24 @@ function removeDatasetFromReportOutput(
       retainedReportRunSnapshots,
       removedSnapshotWarnings,
     );
-    return hasReportOutputRecords(refreshedOutput) ? refreshedOutput : null;
+    return hasRetainedReportOutputSnapshot(refreshedOutput, retainedSnapshotIds)
+      ? refreshedOutput
+      : null;
   }
 
   if (output.comparisonSnapshotId === dataset.snapshotId) {
     const nextOutput: ReportOutput = { ...output };
+    const isSnapshotRetained = retainedSnapshotIds.has(dataset.snapshotId);
     const comparisonRecords = pruneDatasetRecords(
       output.comparisonRecords ?? [],
       dataset,
-      retainedSnapshotIds.has(dataset.snapshotId),
+      isSnapshotRetained,
       output.reportId,
       dataset.snapshotId,
       remainingDatasets,
     );
 
-    if (comparisonRecords.length > 0) {
+    if (isSnapshotRetained) {
       nextOutput.comparisonRecords = comparisonRecords;
     } else {
       delete nextOutput.comparisonRecords;
@@ -522,7 +526,9 @@ function removeDatasetFromReportOutput(
       retainedReportRunSnapshots,
       removedSnapshotWarnings,
     );
-    return hasReportOutputRecords(refreshedOutput) ? refreshedOutput : null;
+    return hasRetainedReportOutputSnapshot(refreshedOutput, retainedSnapshotIds)
+      ? refreshedOutput
+      : null;
   }
 
   return output;
@@ -560,8 +566,16 @@ function isUploadedReportOutputTiedToDataset(output: ReportOutput, dataset: Sess
   );
 }
 
-function hasReportOutputRecords(output: ReportOutput): boolean {
-  return output.records.length > 0 || Boolean(output.comparisonRecords?.length);
+function hasRetainedReportOutputSnapshot(
+  output: ReportOutput,
+  retainedSnapshotIds: ReadonlySet<string>,
+): boolean {
+  return (
+    (typeof output.currentSnapshotId === "string" &&
+      retainedSnapshotIds.has(output.currentSnapshotId)) ||
+    (typeof output.comparisonSnapshotId === "string" &&
+      retainedSnapshotIds.has(output.comparisonSnapshotId))
+  );
 }
 
 function pruneDatasetRecords(
