@@ -1559,6 +1559,7 @@ describe("AppShell", () => {
     ["missing pagination", undefined],
     ["more pages available", { pageCount: 1, reachedMaxPages: false, hasMore: true }],
     ["page limit reached", { pageCount: 1, reachedMaxPages: true, hasMore: false }],
+    ["a negative page count", { pageCount: -1, reachedMaxPages: false, hasMore: false }],
   ])("rejects a successful report response with %s evidence", async (_label, pagination) => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -1578,6 +1579,81 @@ describe("AppShell", () => {
             },
           ],
           messages: ["Collected tags for Tag Report."],
+        },
+      }),
+    );
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    const status = await screen.findByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
+    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a successful report response with no datasets", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        ok: true,
+        result: {
+          reportId: "tag-report",
+          reportTitle: "Tag Report",
+          periodRole: "current",
+          scope: {},
+          warnings: [],
+          datasets: [],
+          messages: [],
+        },
+      }),
+    );
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    const status = await screen.findByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
+    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects all datasets when one dataset has invalid pagination evidence", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        ok: true,
+        result: {
+          reportId: "tag-report",
+          reportTitle: "Tag Report",
+          periodRole: "current",
+          scope: {},
+          warnings: [],
+          datasets: [
+            {
+              datasetName: "tags",
+              records: [{ name: "python" }],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+            },
+            {
+              datasetName: "questions",
+              records: [{ question_id: 1 }],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: true },
+            },
+          ],
+          messages: ["Collected tags for Tag Report.", "Collected questions for Tag Report."],
         },
       }),
     );

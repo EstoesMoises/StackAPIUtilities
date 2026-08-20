@@ -714,6 +714,7 @@ function getLiveRunErrorMessage(error: unknown, _reportTitle: string): string {
 function hasCompletePaginationEvidence(datasets: unknown): boolean {
   return (
     Array.isArray(datasets) &&
+    datasets.length > 0 &&
     datasets.every((dataset) => {
       if (!isRecord(dataset) || !isRecord(dataset.pagination)) {
         return false;
