@@ -134,8 +134,8 @@ describe("collectDataset", () => {
       .mockResolvedValueOnce({
         items: [{ tags: ["python"], creation_date: 1_735_689_600 }],
         pageCount: 2,
-        reachedMaxPages: true,
-        hasMore: true,
+        reachedMaxPages: false,
+        hasMore: false,
       })
       .mockResolvedValueOnce({
         items: [{ tags: ["python"], creationDate: "2025-01-01T23:00:00-05:00" }],
@@ -147,15 +147,13 @@ describe("collectDataset", () => {
     await expect(collectDataset("tagLastUsed", clients, {
       collectedDatasets: { tagSmeCounts: [{ name: "python" }] },
       scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
-      pageSize: 50,
-      maxPagesPerDataset: 2,
     })).resolves.toEqual({
       records: [{ tagName: "python", lastUsed: "2025-01-02" }],
-      pagination: { pageCount: 3, reachedMaxPages: true, hasMore: true },
+      pagination: { pageCount: 3, reachedMaxPages: false, hasMore: false },
     });
 
-    expect(clients.v2.getPagedResult).toHaveBeenNthCalledWith(1, "/questions", { pagesize: "50" }, { maxPages: 2 });
-    expect(clients.v2.getPagedResult).toHaveBeenNthCalledWith(2, "/articles", { pagesize: "50" }, { maxPages: 2 });
+    expect(clients.v2.getPagedResult).toHaveBeenNthCalledWith(1, "/questions", { pagesize: "100" });
+    expect(clients.v2.getPagedResult).toHaveBeenNthCalledWith(2, "/articles", { pagesize: "100" });
   });
 
   it("does not fetch last-used content when no known tags were collected", async () => {

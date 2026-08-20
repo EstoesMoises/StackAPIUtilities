@@ -1,27 +1,21 @@
 import { validateCredentialsForUtility } from "../credentials/credentialRules";
-import { getReportRunPresetForSettings } from "../domain/reportRunPresets";
-import { validateApiVolumeSettings } from "../domain/reportScope";
-import type { ApiVolumeSettingsValue, ReportRunPresetId, SessionCredentials } from "../domain/types";
+import type { SessionCredentials } from "../domain/types";
 import {
   runSmeCoverageAnalysis,
   SmeCoverageRunError,
   type SmeCoverageRunResult,
 } from "../utilities/smeCoverage/runner";
-import { DEFAULT_SME_COVERAGE_SETTINGS } from "../utilities/smeCoverage/settings";
 
 interface SmeCoverageRunRequestPayload {
   credentials: SessionCredentials;
-  pageSize?: number;
-  maxPagesPerDataset?: number;
-  runPreset?: ReportRunPresetId;
 }
 
 interface SmeCoverageRunDependencies {
-  runSmeCoverageAnalysis?: (
-    credentials: SessionCredentials,
-    settings: ApiVolumeSettingsValue,
-  ) => Promise<SmeCoverageRunResult>;
+  runSmeCoverageAnalysis?: (credentials: SessionCredentials) => Promise<SmeCoverageRunResult>;
 }
+
+const EXHAUSTIVE_SCOPE_ERROR =
+  "SME Coverage Analyzer accepts credentials only; its scope is all available history.";
 
 export type SmeCoverageRunResponseBody =
   | { ok: true; result: SmeCoverageRunResult }
@@ -36,9 +30,9 @@ export async function handleSmeCoverageRunRequest(
   payload: unknown,
   dependencies: SmeCoverageRunDependencies = {},
 ): Promise<Response> {
-  if (hasDateScopeProperty(payload)) {
+  if (hasUnapprovedPayloadProperty(payload)) {
     return jsonResponse(
-      { ok: false, kind: "validation", error: "SME Coverage Analyzer does not accept a date scope." },
+      { ok: false, kind: "validation", error: EXHAUSTIVE_SCOPE_ERROR },
       400,
     );
   }
@@ -47,15 +41,6 @@ export async function handleSmeCoverageRunRequest(
   if (!request) {
     return jsonResponse(
       { ok: false, kind: "validation", error: "SME Coverage Analyzer run request requires credentials." },
-      400,
-    );
-  }
-
-  const settings = normalizeSettings(request);
-  const volumeValidation = validateApiVolumeSettings(settings);
-  if (!volumeValidation.valid) {
-    return jsonResponse(
-      { ok: false, kind: "validation", error: volumeValidation.messages.join(" ") },
       400,
     );
   }
@@ -70,41 +55,27 @@ export async function handleSmeCoverageRunRequest(
 
   const credentialStrings = snapshotCredentialStrings(request.credentials);
   try {
-    const run = dependencies.runSmeCoverageAnalysis ?? runWithRunnerOptions;
+    const run = dependencies.runSmeCoverageAnalysis ?? runSmeCoverageAnalysis;
     const runnerCredentials = cloneAndFreezeCredentials(request.credentials);
-    const result = await run(runnerCredentials, settings);
+    const result = await run(runnerCredentials);
     return jsonResponse({ ok: true, result }, 200);
   } catch (error) {
     return errorResponse(error, credentialStrings);
   }
 }
 
-async function runWithRunnerOptions(
-  credentials: SessionCredentials,
-  settings: ApiVolumeSettingsValue,
-): Promise<SmeCoverageRunResult> {
-  return runSmeCoverageAnalysis(credentials, { settings });
-}
-
-function normalizeSettings(payload: SmeCoverageRunRequestPayload): ApiVolumeSettingsValue {
-  const pageSize = payload.pageSize ?? DEFAULT_SME_COVERAGE_SETTINGS.pageSize;
-  const maxPagesPerDataset = payload.maxPagesPerDataset ?? DEFAULT_SME_COVERAGE_SETTINGS.maxPagesPerDataset;
-  const runPreset = getReportRunPresetForSettings(pageSize, maxPagesPerDataset)?.id;
-
-  return {
-    pageSize,
-    maxPagesPerDataset,
-    ...(runPreset ? { runPreset } : {}),
-  };
-}
-
 function errorResponse(error: unknown, credentialStrings: readonly string[]): Response {
   if (error instanceof SmeCoverageRunError) {
+    if (error.kind === "unexpected") {
+      return jsonResponse(
+        { ok: false, kind: "unexpected", error: "SME Coverage Analyzer failed unexpectedly." },
+        500,
+      );
+    }
     const status = {
       validation: 400,
       unsupported: 422,
       collection: 502,
-      unexpected: 500,
     }[error.kind];
     const stage = typeof error.stage === "string" && error.stage.trim().length > 0
       ? { stage: redactCredentialValues(error.stage, credentialStrings) }
@@ -126,42 +97,19 @@ function errorResponse(error: unknown, credentialStrings: readonly string[]): Re
   );
 }
 
-function hasDateScopeProperty(value: unknown): boolean {
-  return isRecord(value) && Reflect.ownKeys(value).some((key) =>
-    key === "scope" || key === "startDate" || key === "endDate",
-  );
+function hasUnapprovedPayloadProperty(value: unknown): boolean {
+  return isRecord(value) && Reflect.ownKeys(value).some((key) => key !== "credentials");
 }
 
 function parseSmeCoverageRunRequestPayload(value: unknown): SmeCoverageRunRequestPayload | null {
-  if (!isRecord(value) || !isAllowedPayloadShape(value) || !hasOwnProperty(value, "credentials")) {
+  if (!isRecord(value) || !hasOwnProperty(value, "credentials")) {
     return null;
   }
 
   const credentials = parseSessionCredentials(ownValue(value, "credentials"));
-  const pageSize = ownValue(value, "pageSize");
-  const maxPagesPerDataset = ownValue(value, "maxPagesPerDataset");
-  const runPreset = ownValue(value, "runPreset");
-  if (
-    !credentials ||
-    (pageSize !== undefined && typeof pageSize !== "number") ||
-    (maxPagesPerDataset !== undefined && typeof maxPagesPerDataset !== "number") ||
-    (runPreset !== undefined && !isReportRunPresetId(runPreset))
-  ) {
-    return null;
-  }
+  if (!credentials) return null;
 
-  return {
-    credentials,
-    ...(pageSize !== undefined ? { pageSize } : {}),
-    ...(maxPagesPerDataset !== undefined ? { maxPagesPerDataset } : {}),
-    ...(runPreset !== undefined ? { runPreset } : {}),
-  };
-}
-
-function isAllowedPayloadShape(value: Record<string, unknown>): boolean {
-  return Reflect.ownKeys(value).every((key) =>
-    key === "credentials" || key === "pageSize" || key === "maxPagesPerDataset" || key === "runPreset",
-  );
+  return { credentials };
 }
 
 function parseSessionCredentials(value: unknown): SessionCredentials | null {
@@ -204,10 +152,6 @@ function parseSessionCredentials(value: unknown): SessionCredentials | null {
     ...(oauthScopes !== undefined ? { oauthScopes } : {}),
     ...(accessTokenExpiresAt !== undefined ? { accessTokenExpiresAt } : {}),
   };
-}
-
-function isReportRunPresetId(value: unknown): value is ReportRunPresetId {
-  return value === "quick-sample" || value === "standard" || value === "deep-audit";
 }
 
 function isOptionalAuthSource(value: unknown): value is SessionCredentials["authSource"] | undefined {

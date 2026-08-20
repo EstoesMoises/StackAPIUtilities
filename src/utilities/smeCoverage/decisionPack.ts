@@ -1,27 +1,16 @@
-import type { ReportRunPresetId, ReportWarning } from "../../domain/types";
+import type { ReportWarning } from "../../domain/types";
 import type {
   SmeCoverageAnalysisResult,
   SmeCoverageCompleteness,
   SmeCoverageDecisionPack,
   SmeCoverageEvidenceRow,
   SmeCoverageSnapshot,
-  SmeCoverageSourceStatus,
 } from "./model";
 import { buildSmeCoverageNarrative } from "./narrative";
-
-export const SME_COVERAGE_PARTIAL_SAMPLE_WARNING: Readonly<ReportWarning> = Object.freeze({
-  utilityId: "sme-coverage-analyzer",
-  code: "sme-coverage.partial-sample",
-  message:
-    "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
-});
 
 export interface SmeCoverageSnapshotInput {
   instanceHost: string;
   generatedAt: string;
-  pageSize: number;
-  maxPagesPerDataset: number;
-  runPreset?: ReportRunPresetId;
 }
 
 export interface BuildSmeCoverageDecisionPackInput {
@@ -35,6 +24,7 @@ export function buildSmeCoverageDecisionPack({
   snapshot,
   sourceWarnings,
 }: BuildSmeCoverageDecisionPackInput): SmeCoverageDecisionPack {
+  assertTerminalSourceStatus(analysis);
   const narrative = buildSmeCoverageNarrative(analysis);
   const evidenceBySource = new Map<SmeCoverageEvidenceRow, SmeCoverageEvidenceRow>();
   const evidence = Object.freeze(
@@ -51,18 +41,16 @@ export function buildSmeCoverageDecisionPack({
   });
   const completeness = determineCompleteness(analysis);
   const packSnapshot: SmeCoverageSnapshot = Object.freeze({
-    ...snapshot,
+    instanceHost: snapshot.instanceHost,
+    generatedAt: snapshot.generatedAt,
     scopeLabel: "All-time demand · Current SME coverage",
+    collectionLabel: "All available data collected",
     completeness,
   });
 
   return Object.freeze({
     snapshot: packSnapshot,
-    warnings: copyWarnings(
-      sourceWarnings,
-      buildCanonicalSamplingWarnings(analysis),
-      analysis.warnings,
-    ),
+    warnings: copyWarnings(sourceWarnings, analysis.warnings),
     summary: Object.freeze({ ...analysis.summary }),
     overview: narrative.overview,
     assessment: narrative.assessment,
@@ -72,20 +60,23 @@ export function buildSmeCoverageDecisionPack({
   });
 }
 
+function assertTerminalSourceStatus(analysis: SmeCoverageAnalysisResult): void {
+  for (const source of ["tags", "questions", "tagSmeCounts"] as const) {
+    const pagination = analysis.sourceStatus[source];
+    if (!pagination.reachedMaxPages && !pagination.hasMore) continue;
+    throw new Error(
+      `Cannot build SME coverage decision pack: ${source} collection did not reach terminal pagination. No complete result was produced.`,
+    );
+  }
+}
+
 function determineCompleteness(analysis: SmeCoverageAnalysisResult): SmeCoverageCompleteness {
-  const capped = Object.values(analysis.sourceStatus).some(isCapped);
-  const configuredAsPartialSample = analysis.sampling.configuredAsPartialSample;
-  if (analysis.evidence.length === 0) return capped || configuredAsPartialSample ? "Partial" : "Empty";
+  if (analysis.evidence.length === 0) return "Empty";
 
   const incompleteRow = analysis.evidence.some(
     (row) => row.demandQuality !== "Complete" || row.smeQuality !== "Complete",
   );
-  if (
-    capped ||
-    configuredAsPartialSample ||
-    incompleteRow ||
-    !analysis.methodology.percentileSampleSufficient
-  ) {
+  if (incompleteRow || !analysis.methodology.percentileSampleSufficient) {
     return "Partial";
   }
   return "Complete";
@@ -110,17 +101,4 @@ function copyWarnings(
     warnings.push(Object.freeze({ ...warning }));
   }
   return Object.freeze(warnings);
-}
-
-function buildCanonicalSamplingWarnings(
-  analysis: SmeCoverageAnalysisResult,
-): readonly ReportWarning[] {
-  const capped = Object.values(analysis.sourceStatus).some(isCapped);
-  if (!analysis.sampling.configuredAsPartialSample && !capped) return [];
-
-  return [SME_COVERAGE_PARTIAL_SAMPLE_WARNING];
-}
-
-function isCapped(source: SmeCoverageSourceStatus[keyof SmeCoverageSourceStatus]): boolean {
-  return source.reachedMaxPages || source.hasMore;
 }

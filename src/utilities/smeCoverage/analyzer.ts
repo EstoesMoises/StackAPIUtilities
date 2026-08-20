@@ -1,6 +1,5 @@
 import { chooseDisplayTagName, compareCodeUnits } from "../../domain/tagNormalization";
-import type { ApiVolumeSettingsValue, ReportWarning } from "../../domain/types";
-import { DEFAULT_SME_COVERAGE_SETTINGS } from "./settings";
+import type { ReportWarning } from "../../domain/types";
 import type {
   CoverageTier,
   DemandQuality,
@@ -11,7 +10,6 @@ import type {
   QuestionCountBasis,
   SmeCoverageAnalysisResult,
   SmeCoverageEvidenceRow,
-  SmeCoverageSamplingMetadata,
   SmeCoverageSourceStatus,
   SmeQuality,
 } from "./model";
@@ -20,7 +18,6 @@ export interface AnalyzeSmeCoverageInput {
   demand: NormalizedTagDemandResult;
   smeCounts: NormalizedTagSmeResult;
   sourceStatus: SmeCoverageSourceStatus;
-  settings?: ApiVolumeSettingsValue;
 }
 
 interface JoinedEvidenceRow extends SmeCoverageEvidenceRow {
@@ -81,7 +78,6 @@ export function analyzeSmeCoverage({
   demand,
   smeCounts,
   sourceStatus,
-  settings = DEFAULT_SME_COVERAGE_SETTINGS,
 }: AnalyzeSmeCoverageInput): SmeCoverageAnalysisResult {
   const demandByKey = new Map(demand.rows.map((row) => [row.key, row]));
   const smeByKey = new Map(smeCounts.rows.map((row) => [row.key, row]));
@@ -141,21 +137,8 @@ export function analyzeSmeCoverage({
     },
     findings: { immediateGaps, criticalUnderCoverage, lightCoverage },
     sourceStatus,
-    sampling: buildSamplingMetadata(settings),
     warnings: buildWarnings(evidence, sampleRatios.length),
   };
-}
-
-function buildSamplingMetadata(settings: ApiVolumeSettingsValue): SmeCoverageSamplingMetadata {
-  return Object.freeze({
-    pageSize: settings.pageSize,
-    maxPagesPerDataset: settings.maxPagesPerDataset,
-    runPreset: settings.runPreset,
-    configuredAsPartialSample:
-      settings.runPreset !== "deep-audit" ||
-      settings.pageSize !== DEFAULT_SME_COVERAGE_SETTINGS.pageSize ||
-      settings.maxPagesPerDataset !== DEFAULT_SME_COVERAGE_SETTINGS.maxPagesPerDataset,
-  });
 }
 
 function joinRow(

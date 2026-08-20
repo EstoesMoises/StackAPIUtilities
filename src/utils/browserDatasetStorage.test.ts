@@ -101,7 +101,7 @@ describe("browserDatasetStorage", () => {
     });
 
     await expect(loadPersistedDatasetSession()).resolves.toMatchObject({
-      version: 2,
+      version: 3,
       selectedUtilityId: "sme-coverage-analyzer",
       utilityOutputs: {},
       utilityRunSnapshots: [],
@@ -163,7 +163,7 @@ describe("browserDatasetStorage", () => {
 
 function createSnapshot(): PersistedDatasetSessionSnapshot {
   return {
-    version: 2,
+    version: 3,
     selectedReportId: "tag-report",
     selectedReportIds: ["tag-report"],
     selectedUtilityId: "sme-coverage-analyzer",

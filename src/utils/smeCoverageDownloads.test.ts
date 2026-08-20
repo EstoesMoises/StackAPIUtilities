@@ -62,9 +62,8 @@ function downloadPack(): SmeCoverageDecisionPack {
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: "Complete",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
     },
     warnings: [],
     summary: {

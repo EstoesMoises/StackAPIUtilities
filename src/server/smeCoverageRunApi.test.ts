@@ -22,9 +22,6 @@ const credentialsWithEveryString: SessionCredentials = {
 const result: SmeCoverageRunResult = {
   utilityId: "sme-coverage-analyzer",
   utilityTitle: "SME Coverage Analyzer",
-  pageSize: 100,
-  maxPagesPerDataset: 20,
-  runPreset: "deep-audit",
   datasets: [],
   messages: [],
   warnings: [],
@@ -61,83 +58,53 @@ const result: SmeCoverageRunResult = {
       instanceHost: "soedemo.stackenterprise.co",
       generatedAt: "2026-07-31T00:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: "Complete",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     },
   },
 };
+
+const exhaustiveScopeError =
+  "SME Coverage Analyzer accepts credentials only; its scope is all available history.";
 
 async function responseBody(response: Response) {
   return response.json();
 }
 
 describe("handleSmeCoverageRunRequest", () => {
-  it("uses Deep settings for a credentials-only request", async () => {
+  it("passes only cloned credentials to the runner", async () => {
     const runSmeCoverageAnalysis = vi.fn().mockResolvedValue(result);
 
     const response = await handleSmeCoverageRunRequest({ credentials }, { runSmeCoverageAnalysis });
 
     expect(response.status).toBe(200);
     await expect(responseBody(response)).resolves.toEqual({ ok: true, result });
-    expect(runSmeCoverageAnalysis).toHaveBeenCalledWith(credentials, {
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
-    });
+    expect(runSmeCoverageAnalysis).toHaveBeenCalledOnce();
+    expect(runSmeCoverageAnalysis).toHaveBeenCalledWith(credentials);
   });
 
   it.each([
-    ["Quick", "quick-sample", 50, 1],
-    ["Standard", "standard", 100, 5],
-    ["Deep", "deep-audit", 100, 20],
-    ["custom", undefined, 75, 2],
-  ] as const)("preserves %s volume settings", async (_label, runPreset, pageSize, maxPagesPerDataset) => {
-    const runSmeCoverageAnalysis = vi.fn().mockResolvedValue(result);
-
-    const response = await handleSmeCoverageRunRequest(
-      { credentials, pageSize, maxPagesPerDataset, ...(runPreset ? { runPreset } : {}) },
-      { runSmeCoverageAnalysis },
-    );
-
-    expect(response.status).toBe(200);
-    expect(runSmeCoverageAnalysis).toHaveBeenCalledWith(credentials, {
-      pageSize,
-      maxPagesPerDataset,
-      ...(runPreset ? { runPreset } : {}),
-    });
-  });
-
-  it("clears a requested preset that does not match its numeric settings", async () => {
-    const runSmeCoverageAnalysis = vi.fn().mockResolvedValue(result);
-
-    const response = await handleSmeCoverageRunRequest(
-      { credentials, pageSize: 75, maxPagesPerDataset: 2, runPreset: "quick-sample" },
-      { runSmeCoverageAnalysis },
-    );
-
-    expect(response.status).toBe(200);
-    expect(runSmeCoverageAnalysis).toHaveBeenCalledWith(credentials, {
-      pageSize: 75,
-      maxPagesPerDataset: 2,
-    });
-  });
-
-  it.each([
-    ["a zero page size", { pageSize: 0 }],
-    ["a page size above 100", { pageSize: 101 }],
-    ["zero maximum pages", { maxPagesPerDataset: 0 }],
-  ])("rejects %s before running", async (_label, settings) => {
+    ["pageSize", { pageSize: 100 }],
+    ["maxPagesPerDataset", { maxPagesPerDataset: 20 }],
+    ["runPreset", { runPreset: "deep-audit" }],
+    ["scope", { scope: {} }],
+    ["startDate", { startDate: "2026-07-01" }],
+    ["endDate", { endDate: "2026-07-31" }],
+    ["an extra scope key", { dataset: "questions" }],
+  ])("rejects obsolete or extra %s before running", async (_label, extraProperty) => {
     const runSmeCoverageAnalysis = vi.fn();
 
     const response = await handleSmeCoverageRunRequest(
-      { credentials, ...settings },
+      { credentials, ...extraProperty },
       { runSmeCoverageAnalysis },
     );
 
     expect(response.status).toBe(400);
-    await expect(responseBody(response)).resolves.toMatchObject({ ok: false, kind: "validation" });
+    await expect(responseBody(response)).resolves.toEqual({
+      ok: false,
+      kind: "validation",
+      error: exhaustiveScopeError,
+    });
     expect(runSmeCoverageAnalysis).not.toHaveBeenCalled();
   });
 
@@ -155,31 +122,9 @@ describe("handleSmeCoverageRunRequest", () => {
   });
 
   it.each([
-    ["scope", { scope: {} }],
-    ["startDate", { startDate: "2026-07-01" }],
-    ["endDate", { endDate: "2026-07-31" }],
-  ])("rejects a %s property instead of accepting a date scope", async (_property, dateField) => {
-    const runSmeCoverageAnalysis = vi.fn();
-
-    const response = await handleSmeCoverageRunRequest(
-      { credentials, ...dateField },
-      { runSmeCoverageAnalysis },
-    );
-
-    expect(response.status).toBe(400);
-    await expect(responseBody(response)).resolves.toEqual({
-      ok: false,
-      kind: "validation",
-      error: "SME Coverage Analyzer does not accept a date scope.",
-    });
-    expect(runSmeCoverageAnalysis).not.toHaveBeenCalled();
-  });
-
-  it.each([
     ["validation", 400],
     ["unsupported", 422],
     ["collection", 502],
-    ["unexpected", 500],
   ] as const)("maps a %s runner error to HTTP %i", async (kind, status) => {
     const runSmeCoverageAnalysis = vi.fn().mockRejectedValue(new SmeCoverageRunError(kind, `${kind} failed`));
 
@@ -187,6 +132,24 @@ describe("handleSmeCoverageRunRequest", () => {
 
     expect(response.status).toBe(status);
     await expect(responseBody(response)).resolves.toEqual({ ok: false, kind, error: `${kind} failed` });
+  });
+
+  it("does not expose unexpected runner details or stages", async () => {
+    const sensitiveDetail = "database-password=internal-secret";
+    const runSmeCoverageAnalysis = vi.fn().mockRejectedValue(
+      new SmeCoverageRunError("unexpected", sensitiveDetail, `stage-${sensitiveDetail}`),
+    );
+
+    const response = await handleSmeCoverageRunRequest({ credentials }, { runSmeCoverageAnalysis });
+    const body = await responseBody(response);
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      ok: false,
+      kind: "unexpected",
+      error: "SME Coverage Analyzer failed unexpectedly.",
+    });
+    expect(JSON.stringify(body)).not.toContain(sensitiveDetail);
   });
 
   it("includes a non-empty collection stage", async () => {
@@ -381,11 +344,7 @@ describe("handleSmeCoverageRunRequest", () => {
     const response = await handleSmeCoverageRunRequest(payload, { runSmeCoverageAnalysis });
 
     expect(response.status).toBe(200);
-    expect(runSmeCoverageAnalysis).toHaveBeenCalledWith(credentials, {
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
-    });
+    expect(runSmeCoverageAnalysis).toHaveBeenCalledWith(credentials);
   });
 
   it.each([
@@ -401,6 +360,11 @@ describe("handleSmeCoverageRunRequest", () => {
     const response = await handleSmeCoverageRunRequest(createPayload(), { runSmeCoverageAnalysis });
 
     expect(response.status).toBe(400);
+    await expect(responseBody(response)).resolves.toEqual({
+      ok: false,
+      kind: "validation",
+      error: exhaustiveScopeError,
+    });
     expect(runSmeCoverageAnalysis).not.toHaveBeenCalled();
   });
 });

@@ -55,14 +55,16 @@ export function SmeCoverageDecisionPack({
           <p className="workspace-kicker">Decision pack</p>
           <h2 id="sme-decision-pack-heading">SME coverage result</h2>
         </div>
-        <span className={`sme-completeness-badge sme-completeness-badge__${pack.snapshot.completeness.toLowerCase()}`}>
-          {pack.snapshot.completeness}
+        <span
+          className={`sme-completeness-badge sme-completeness-badge__${pack.snapshot.completeness.toLowerCase()}`}
+        >
+          Analysis quality: {pack.snapshot.completeness}
         </span>
       </div>
 
       {pack.warnings.length > 0 && (
         <section className="sme-warning-stack" role="region" aria-labelledby="sme-warnings-heading">
-          <h3 id="sme-warnings-heading">Completeness warnings</h3>
+          <h3 id="sme-warnings-heading">Evidence notes</h3>
           {pack.warnings.map((warning) => (
             <p className="s-notice s-notice__warning" role="alert" key={`${warning.code}-${warning.message}`}>
               {warning.message}
@@ -75,8 +77,7 @@ export function SmeCoverageDecisionPack({
         <SnapshotItem label="Instance" value={pack.snapshot.instanceHost} />
         <SnapshotItem label="Generated" value={pack.snapshot.generatedAt} />
         <SnapshotItem label="Scope" value={pack.snapshot.scopeLabel} />
-        <SnapshotItem label="Page size" value={pack.snapshot.pageSize.toLocaleString("en-US")} />
-        <SnapshotItem label="Max pages per dataset" value={pack.snapshot.maxPagesPerDataset.toLocaleString("en-US")} />
+        <SnapshotItem label="Collection" value={pack.snapshot.collectionLabel} />
       </dl>
 
       <section className="sme-summary" aria-labelledby="sme-summary-heading">

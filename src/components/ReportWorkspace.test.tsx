@@ -58,6 +58,132 @@ describe("ReportWorkspace", () => {
     expect(screen.getByLabelText("users: 1")).toBeInTheDocument();
   });
 
+  it("communicates exhaustive live collection for the current date scope", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        currentScope={{ startDate: "2026-01-01", endDate: "2026-01-31" }}
+      />,
+    );
+
+    const status = screen.getByRole("status", { name: "Collection status" });
+    expect(status).toHaveTextContent(
+      "All available data collected · 2026-01-01 to 2026-01-31",
+    );
+    expect(status).toHaveClass("s-notice__success");
+    expect(status).not.toHaveClass("s-notice__warning");
+  });
+
+  it("labels legacy live collection without claiming current completeness", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        currentScope={{ startDate: "2026-01-01", endDate: "2026-01-31" }}
+        warnings={[
+          {
+            reportId: "inactive-users",
+            code: "collection.legacy-unverified",
+            message: "Legacy run — completeness not verified under current collection rules.",
+          },
+        ]}
+      />,
+    );
+
+    const status = screen.getByRole("status", { name: "Collection status" });
+    expect(status).toHaveTextContent(
+      "Legacy run — completeness not verified under current collection rules. · 2026-01-01 to 2026-01-31",
+    );
+    expect(status).not.toHaveTextContent("All available data collected");
+    expect(status).toHaveClass("s-notice__warning");
+    expect(status).not.toHaveClass("s-notice__success");
+  });
+
+  it("ignores legacy-like warnings that are noncanonical or owned by another report", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        warnings={[
+          {
+            reportId: "tag-report",
+            code: "collection.legacy-unverified",
+            message: "Legacy run — completeness not verified under current collection rules.",
+          },
+          {
+            reportId: "inactive-users",
+            code: "collection.legacy-unverified",
+            message: "Legacy collection warning with noncanonical copy.",
+          },
+        ]}
+      />,
+    );
+
+    const status = screen.getByRole("status", { name: "Collection status" });
+    expect(status).toHaveTextContent("All available data collected");
+    expect(status).toHaveClass("s-notice__success");
+    expect(status).not.toHaveClass("s-notice__warning");
+  });
+
+  it("appends the comparison scope to live collection status", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        currentScope={{ startDate: "2026-01-01", endDate: "2026-01-31" }}
+        comparisonScope={{ startDate: "2025-01-01", endDate: "2025-01-31" }}
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "Collection status" })).toHaveTextContent(
+      "All available data collected · 2026-01-01 to 2026-01-31 · Compared with 2025-01-01 to 2025-01-31",
+    );
+  });
+
+  it("labels a comparison-only live collection without inventing a current scope", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[]}
+        comparisonRecords={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        comparisonScope={{ startDate: "2025-01-01", endDate: "2025-01-31" }}
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "Collection status" })).toHaveTextContent(
+      "All available data collected · Comparison: 2025-01-01 to 2025-01-31",
+    );
+    expect(screen.getByRole("status", { name: "Collection status" })).not.toHaveTextContent(
+      "All available history",
+    );
+  });
+
+  it("does not claim API collection completeness for uploaded output", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ user_id: 1 }]}
+        outputSource="upload"
+        currentScope={{ startDate: "2026-01-01", endDate: "2026-01-31" }}
+      />,
+    );
+
+    expect(screen.queryByRole("status", { name: "Collection status" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/All available data collected/)).not.toBeInTheDocument();
+  });
+
   it("renders synthetic live interactions with the interactions dashboard", () => {
     render(
       <ReportWorkspace

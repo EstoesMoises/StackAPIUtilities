@@ -1,4 +1,7 @@
 import { reportRegistry } from "./reportRegistry";
+import { getExpectedReportDatasetNames } from "./reportDatasetRequirements";
+import { utilityRegistry } from "./utilityRegistry";
+import { LEGACY_COLLECTION_WARNING, isLegacyCollectionWarning } from "./collectionWarnings";
 import { parseSmeCoverageDecisionPack } from "../utilities/smeCoverage/persistence";
 import type { SmeCoverageStoredOutput } from "../utilities/smeCoverage/model";
 import type {
@@ -6,7 +9,6 @@ import type {
   PeriodScope,
   ReportId,
   ReportOutput,
-  ReportRunPresetId,
   ReportRunSnapshot,
   ReportWarning,
   RunPeriodRole,
@@ -16,7 +18,10 @@ import type {
   UtilityRunSnapshot,
 } from "./types";
 
-export const DATASET_SESSION_PERSISTENCE_VERSION = 2;
+export const DATASET_SESSION_PERSISTENCE_VERSION = 3;
+export { LEGACY_COLLECTION_WARNING } from "./collectionWarnings";
+
+type DatasetSessionPersistenceVersion = 1 | 2 | typeof DATASET_SESSION_PERSISTENCE_VERSION;
 
 export interface PersistedDatasetSessionSnapshot {
   version: typeof DATASET_SESSION_PERSISTENCE_VERSION;
@@ -49,7 +54,7 @@ const knownDatasetNames = new Set<DatasetName>([
 ]);
 const knownReportIds = new Set<ReportId>(reportRegistry.map((report) => report.id));
 const runPeriodRoles = new Set<RunPeriodRole>(["current", "comparison"]);
-const reportRunPresetIds = new Set<ReportRunPresetId>(["quick-sample", "standard", "deep-audit"]);
+const legacyReportRunPresetIds = new Set(["quick-sample", "standard", "deep-audit"]);
 const knownUtilityIds = new Set<UtilityId>(["sme-coverage-analyzer"]);
 const prohibitedPersistedKeys = new Set([
   "credentials",
@@ -74,9 +79,20 @@ const prohibitedPersistedKeys = new Set([
 const omittedJsonValue = Symbol("omitted-json-value");
 
 export function createDatasetSessionSnapshot(state: SessionState): PersistedDatasetSessionSnapshot {
-  const datasets = parseDatasetRecord(state.datasets, true) ?? {};
-  const reportRunSnapshots = parseReportRunSnapshots(state.reportRunSnapshots, datasets);
-  const utilityRunSnapshots = parseUtilityRunSnapshots(state.utilityRunSnapshots, datasets);
+  const parsedDatasets = parseDatasetRecord(state.datasets, true) ?? {};
+  const reportRunSnapshots = parseReportRunSnapshots(
+    state.reportRunSnapshots,
+    parsedDatasets,
+    DATASET_SESSION_PERSISTENCE_VERSION,
+  );
+  const utilityRunSnapshots = parseUtilityRunSnapshots(state.utilityRunSnapshots, parsedDatasets);
+  const datasets = pruneOrphanedCurrentLiveDatasets(
+    parsedDatasets,
+    reportRunSnapshots,
+    utilityRunSnapshots,
+    state.reportRunSnapshots,
+    state.utilityRunSnapshots,
+  );
 
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
@@ -84,9 +100,9 @@ export function createDatasetSessionSnapshot(state: SessionState): PersistedData
     selectedReportIds: normalizeSelectedReportIds(state.selectedReportId, state.selectedReportIds),
     selectedUtilityId: isKnownUtilityId(state.selectedUtilityId) ? state.selectedUtilityId : "sme-coverage-analyzer",
     datasets,
-    reportOutputs: parseReportOutputs(state.reportOutputs, datasets, reportRunSnapshots),
+    reportOutputs: parseReportOutputs(state.reportOutputs, datasets, reportRunSnapshots, false),
     reportRunSnapshots,
-    utilityOutputs: parseUtilityOutputs(state.utilityOutputs),
+    utilityOutputs: parseUtilityOutputs(state.utilityOutputs, utilityRunSnapshots, true),
     utilityRunSnapshots,
     warnings: parseWarnings(state.warnings),
   };
@@ -122,40 +138,61 @@ export function hydrateDatasetSessionState(state: SessionState, value: unknown):
 }
 
 export function parseDatasetSessionSnapshot(value: unknown): PersistedDatasetSessionSnapshot | null {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== DATASET_SESSION_PERSISTENCE_VERSION)) {
+  if (!isRecord(value) || !isDatasetSessionPersistenceVersion(value.version)) {
     return null;
   }
 
-  const isVersion2 = value.version === DATASET_SESSION_PERSISTENCE_VERSION;
+  const storedVersion = value.version;
+  const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
 
   const selectedReportId = isKnownReportId(value.selectedReportId) ? value.selectedReportId : "tag-report";
   const selectedReportIdCandidates = Array.isArray(value.selectedReportIds)
     ? value.selectedReportIds.filter(isKnownReportId)
     : [];
   const selectedReportIds = normalizeSelectedReportIds(selectedReportId, selectedReportIdCandidates);
-  const datasets = parseDatasetRecord(value.datasets, isVersion2);
+  const parsedDatasets = parseDatasetRecord(value.datasets, true);
 
-  if (!datasets) {
+  if (!parsedDatasets) {
     return null;
   }
   if (!isRecord(value.reportOutputs) || !Array.isArray(value.reportRunSnapshots) || !Array.isArray(value.warnings)) {
     return null;
   }
 
-  const reportRunSnapshots = parseReportRunSnapshots(value.reportRunSnapshots, datasets);
-  const utilityRunSnapshots = isVersion2 ? parseUtilityRunSnapshots(value.utilityRunSnapshots, datasets) : [];
+  const datasetsWithLegacyWarnings = isLegacyVersion
+    ? addLegacyCollectionWarningsToLiveReportDatasets(parsedDatasets)
+    : parsedDatasets;
+  const reportRunSnapshots = parseReportRunSnapshots(
+    value.reportRunSnapshots,
+    datasetsWithLegacyWarnings,
+    storedVersion,
+  );
+  const utilityRunSnapshots = parseUtilityRunSnapshots(
+    value.utilityRunSnapshots,
+    datasetsWithLegacyWarnings,
+    storedVersion,
+  );
+  const datasets = isLegacyVersion
+    ? datasetsWithLegacyWarnings
+    : pruneOrphanedCurrentLiveDatasets(
+        datasetsWithLegacyWarnings,
+        reportRunSnapshots,
+        utilityRunSnapshots,
+        value.reportRunSnapshots,
+        value.utilityRunSnapshots,
+      );
 
   return {
     version: DATASET_SESSION_PERSISTENCE_VERSION,
     selectedReportId,
     selectedReportIds,
-    selectedUtilityId: isVersion2 && isKnownUtilityId(value.selectedUtilityId)
+    selectedUtilityId: isKnownUtilityId(value.selectedUtilityId)
       ? value.selectedUtilityId
       : "sme-coverage-analyzer",
     datasets,
-    reportOutputs: parseReportOutputs(value.reportOutputs, datasets, reportRunSnapshots),
+    reportOutputs: parseReportOutputs(value.reportOutputs, datasets, reportRunSnapshots, isLegacyVersion),
     reportRunSnapshots,
-    utilityOutputs: isVersion2 ? parseUtilityOutputs(value.utilityOutputs) : {},
+    utilityOutputs: parseUtilityOutputs(value.utilityOutputs, utilityRunSnapshots, !isLegacyVersion),
     utilityRunSnapshots,
     warnings: parseWarnings(value.warnings),
   };
@@ -185,6 +222,7 @@ function parseReportOutputs(
   value: unknown,
   datasets: Record<string, SessionDataset>,
   reportRunSnapshots: ReportRunSnapshot[],
+  addLegacyWarning: boolean,
 ): Partial<Record<ReportId, ReportOutput>> {
   if (!isRecord(value)) {
     return {};
@@ -200,6 +238,9 @@ function parseReportOutputs(
       parsedOutput?.reportId === key &&
       isReportOutputBackedByDatasetState(parsedOutput, datasets, reportRunSnapshots)
     ) {
+      if (addLegacyWarning && parsedOutput.source === "live-api") {
+        parsedOutput.warnings = appendLegacyCollectionWarning(parsedOutput.warnings, parsedOutput.reportId);
+      }
       outputs[key] = parsedOutput;
     }
   }
@@ -210,23 +251,51 @@ function parseReportOutputs(
 function parseReportRunSnapshots(
   value: unknown,
   datasets: Record<string, SessionDataset>,
+  storedVersion: DatasetSessionPersistenceVersion,
 ): ReportRunSnapshot[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
+  const idCounts = new Map<string, number>();
+  for (const candidate of value) {
+    if (isRecord(candidate) && typeof candidate.id === "string" && candidate.id.length > 0) {
+      idCounts.set(candidate.id, (idCounts.get(candidate.id) ?? 0) + 1);
+    }
+  }
+
   return value.flatMap((snapshot) => {
-    const parsedSnapshot = parseReportRunSnapshot(snapshot, datasets);
+    if (
+      isRecord(snapshot) &&
+      typeof snapshot.id === "string" &&
+      (idCounts.get(snapshot.id) ?? 0) > 1
+    ) {
+      return [];
+    }
+    const parsedSnapshot = parseReportRunSnapshot(snapshot, datasets, storedVersion);
     return parsedSnapshot ? [parsedSnapshot] : [];
   });
 }
 
-function parseUtilityOutputs(value: unknown): Partial<Record<UtilityId, SmeCoverageStoredOutput>> {
+function parseUtilityOutputs(
+  value: unknown,
+  utilityRunSnapshots: UtilityRunSnapshot[],
+  requireCurrentSnapshot: boolean,
+): Partial<Record<UtilityId, SmeCoverageStoredOutput>> {
   if (!isRecord(value)) return {};
   const outputs: Partial<Record<UtilityId, SmeCoverageStoredOutput>> = {};
 
   for (const [key, candidate] of Object.entries(value)) {
-    if (!isKnownUtilityId(key) || !isRecord(candidate) || candidate.utilityId !== key || typeof candidate.loadedAt !== "string") {
+    if (
+      !isKnownUtilityId(key) ||
+      !isRecord(candidate) ||
+      candidate.utilityId !== key ||
+      typeof candidate.loadedAt !== "string" ||
+      (requireCurrentSnapshot &&
+        !utilityRunSnapshots.some(
+          (snapshot) => snapshot.utilityId === key && snapshot.loadedAt === candidate.loadedAt,
+        ))
+    ) {
       continue;
     }
     const decisionPack = parseSmeCoverageDecisionPack(candidate.decisionPack);
@@ -244,6 +313,7 @@ function parseUtilityOutputs(value: unknown): Partial<Record<UtilityId, SmeCover
 function parseUtilityRunSnapshots(
   value: unknown,
   datasets: Record<string, SessionDataset>,
+  storedVersion: DatasetSessionPersistenceVersion = DATASET_SESSION_PERSISTENCE_VERSION,
 ): UtilityRunSnapshot[] {
   if (!Array.isArray(value)) return [];
   const idCounts = new Map<string, number>();
@@ -256,7 +326,7 @@ function parseUtilityRunSnapshots(
     if (isRecord(candidate) && typeof candidate.id === "string" && (idCounts.get(candidate.id) ?? 0) > 1) {
       return [];
     }
-    const snapshot = parseUtilityRunSnapshot(candidate, datasets);
+    const snapshot = parseUtilityRunSnapshot(candidate, datasets, storedVersion);
     return snapshot ? [snapshot] : [];
   });
 }
@@ -264,15 +334,23 @@ function parseUtilityRunSnapshots(
 function parseUtilityRunSnapshot(
   value: unknown,
   datasets: Record<string, SessionDataset>,
+  storedVersion: DatasetSessionPersistenceVersion,
 ): UtilityRunSnapshot | null {
+  const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
+  const requiredDatasets = isRecord(value) && isKnownUtilityId(value.utilityId)
+    ? utilityRegistry.find((utility) => utility.id === value.utilityId)?.requiredDatasets
+    : undefined;
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
     value.id.length === 0 ||
     !isKnownUtilityId(value.utilityId) ||
-    !isNonnegativeInteger(value.pageSize) ||
-    !isNonnegativeInteger(value.maxPagesPerDataset) ||
-    (typeof value.runPreset !== "undefined" && !isReportRunPresetId(value.runPreset)) ||
+    (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
+    (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
+    (isLegacyVersion && typeof value.runPreset !== "undefined" && !isLegacyReportRunPresetId(value.runPreset)) ||
+    (!isLegacyVersion && typeof value.pageSize !== "undefined") ||
+    (!isLegacyVersion && typeof value.maxPagesPerDataset !== "undefined") ||
+    (!isLegacyVersion && typeof value.runPreset !== "undefined") ||
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
     value.datasetIds.length === 0 ||
@@ -283,8 +361,12 @@ function parseUtilityRunSnapshot(
         datasetId.length > 0 &&
         hasOwn(datasets, datasetId) &&
         datasets[datasetId]?.utilityId === value.utilityId &&
-        datasets[datasetId]?.snapshotId === value.id,
+        datasets[datasetId]?.snapshotId === value.id &&
+        (isLegacyVersion ||
+          (datasets[datasetId]?.source === "live-api" && hasTerminalPagination(datasets[datasetId]))),
     ) ||
+    (!isLegacyVersion &&
+      (!requiredDatasets || !hasExactRequiredDatasets(value.datasetIds, datasets, requiredDatasets))) ||
     !Array.isArray(value.warnings)
   ) {
     return null;
@@ -293,13 +375,10 @@ function parseUtilityRunSnapshot(
   const snapshot: UtilityRunSnapshot = {
     id: value.id,
     utilityId: value.utilityId,
-    pageSize: value.pageSize,
-    maxPagesPerDataset: value.maxPagesPerDataset,
     loadedAt: value.loadedAt,
     datasetIds: [...value.datasetIds],
     warnings: parseWarnings(value.warnings),
   };
-  if (isReportRunPresetId(value.runPreset)) snapshot.runPreset = value.runPreset;
   return snapshot;
 }
 
@@ -460,43 +539,84 @@ function isReportOutputBackedByDatasetState(
     );
   }
 
-  const outputSnapshotIds = [output.currentSnapshotId, output.comparisonSnapshotId].filter(
-    (snapshotId): snapshotId is string => typeof snapshotId === "string",
-  );
+  const hasCurrentSnapshot = typeof output.currentSnapshotId === "string";
+  const hasComparisonSnapshot = typeof output.comparisonSnapshotId === "string";
 
-  if (outputSnapshotIds.length === 0) {
+  if (!hasCurrentSnapshot && !hasComparisonSnapshot) return false;
+  if (
+    hasCurrentSnapshot &&
+    !reportRunSnapshots.some(
+      (snapshot) =>
+        snapshot.id === output.currentSnapshotId &&
+        snapshot.reportId === output.reportId &&
+        snapshot.periodRole === "current",
+    )
+  ) {
+    return false;
+  }
+  if (
+    hasComparisonSnapshot &&
+    !reportRunSnapshots.some(
+      (snapshot) =>
+        snapshot.id === output.comparisonSnapshotId &&
+        snapshot.reportId === output.reportId &&
+        snapshot.periodRole === "comparison",
+    )
+  ) {
     return false;
   }
 
-  return outputSnapshotIds.every((snapshotId) =>
-    reportRunSnapshots.some((snapshot) => snapshot.id === snapshotId && snapshot.reportId === output.reportId),
-  );
+  return true;
 }
 
 function parseReportRunSnapshot(
   value: unknown,
   datasets: Record<string, SessionDataset>,
+  storedVersion: DatasetSessionPersistenceVersion,
 ): ReportRunSnapshot | null {
   if (!isRecord(value)) {
     return null;
   }
 
-  const pageSize = value.pageSize;
-  const maxPagesPerDataset = value.maxPagesPerDataset;
+  const isLegacyVersion = storedVersion === 1 || storedVersion === 2;
+  const report = isKnownReportId(value.reportId)
+    ? reportRegistry.find((candidate) => candidate.id === value.reportId)
+    : undefined;
+  const requiredDatasets = report
+    ? getExpectedReportDatasetNames(report.id, report.requiredDatasets)
+    : undefined;
 
   if (
     typeof value.id !== "string" ||
+    value.id.length === 0 ||
     !isKnownReportId(value.reportId) ||
     !isRunPeriodRole(value.periodRole) ||
-    typeof pageSize !== "number" ||
-    !Number.isInteger(pageSize) ||
-    typeof maxPagesPerDataset !== "number" ||
-    !Number.isInteger(maxPagesPerDataset) ||
     typeof value.loadedAt !== "string" ||
     !Array.isArray(value.datasetIds) ||
-    !value.datasetIds.every((datasetId) => typeof datasetId === "string" && hasOwn(datasets, datasetId)) ||
+    value.datasetIds.length === 0 ||
+    new Set(value.datasetIds).size !== value.datasetIds.length ||
+    !value.datasetIds.every((datasetId) => {
+      if (typeof datasetId !== "string" || datasetId.length === 0 || !hasOwn(datasets, datasetId)) {
+        return false;
+      }
+      const dataset = datasets[datasetId];
+      return (
+        dataset?.source === "live-api" &&
+        dataset.snapshotId === value.id &&
+        dataset.reportId === value.reportId &&
+        dataset.periodRole === value.periodRole &&
+        (isLegacyVersion || hasTerminalPagination(dataset))
+      );
+    }) ||
+    (!isLegacyVersion &&
+      (!requiredDatasets || !hasExactRequiredDatasets(value.datasetIds, datasets, requiredDatasets))) ||
     !Array.isArray(value.warnings) ||
-    (typeof value.runPreset !== "undefined" && !isReportRunPresetId(value.runPreset))
+    (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
+    (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
+    (isLegacyVersion && typeof value.runPreset !== "undefined" && !isLegacyReportRunPresetId(value.runPreset)) ||
+    (!isLegacyVersion && typeof value.pageSize !== "undefined") ||
+    (!isLegacyVersion && typeof value.maxPagesPerDataset !== "undefined") ||
+    (!isLegacyVersion && typeof value.runPreset !== "undefined")
   ) {
     return null;
   }
@@ -512,18 +632,106 @@ function parseReportRunSnapshot(
     reportId: value.reportId,
     periodRole: value.periodRole,
     scope,
-    pageSize,
-    maxPagesPerDataset,
     loadedAt: value.loadedAt,
     datasetIds: [...value.datasetIds],
-    warnings: parseWarnings(value.warnings),
+    warnings: isLegacyVersion
+      ? appendLegacyCollectionWarning(parseWarnings(value.warnings), value.reportId)
+      : parseWarnings(value.warnings),
   };
 
-  if (isReportRunPresetId(value.runPreset)) {
-    snapshot.runPreset = value.runPreset;
+  return snapshot;
+}
+
+function hasTerminalPagination(dataset: SessionDataset | undefined): boolean {
+  return (
+    !!dataset &&
+    isNonnegativeInteger(dataset.pageCount) &&
+    dataset.reachedMaxPages === false &&
+    dataset.hasMore === false
+  );
+}
+
+function hasExactRequiredDatasets(
+  datasetIds: unknown[],
+  datasets: Record<string, SessionDataset>,
+  requiredDatasets: readonly DatasetName[],
+): boolean {
+  const datasetNames = datasetIds.flatMap((datasetId) =>
+    typeof datasetId === "string" && hasOwn(datasets, datasetId) ? [datasets[datasetId]!.name] : [],
+  );
+
+  return (
+    datasetNames.length === requiredDatasets.length &&
+    new Set(datasetNames).size === datasetNames.length &&
+    requiredDatasets.every((requiredDataset) => datasetNames.includes(requiredDataset))
+  );
+}
+
+function pruneOrphanedCurrentLiveDatasets(
+  datasets: Record<string, SessionDataset>,
+  reportRunSnapshots: ReportRunSnapshot[],
+  utilityRunSnapshots: UtilityRunSnapshot[],
+  reportRunSnapshotCandidates: unknown,
+  utilityRunSnapshotCandidates: unknown,
+): Record<string, SessionDataset> {
+  const retainedDatasetIds = new Set([
+    ...reportRunSnapshots.flatMap((snapshot) => snapshot.datasetIds),
+    ...utilityRunSnapshots.flatMap((snapshot) => snapshot.datasetIds),
+  ]);
+  const referencedDatasetIds = new Set([
+    ...collectReferencedDatasetIds(reportRunSnapshotCandidates),
+    ...collectReferencedDatasetIds(utilityRunSnapshotCandidates),
+  ]);
+
+  return Object.fromEntries(
+    Object.entries(datasets).filter(([, dataset]) => {
+      const claimsRunOwnership =
+        dataset.source === "live-api" &&
+        (typeof dataset.snapshotId === "string" || referencedDatasetIds.has(dataset.id));
+      return !claimsRunOwnership || retainedDatasetIds.has(dataset.id);
+    }),
+  );
+}
+
+function collectReferencedDatasetIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((candidate) =>
+    isRecord(candidate) && Array.isArray(candidate.datasetIds)
+      ? candidate.datasetIds.filter((datasetId): datasetId is string => typeof datasetId === "string")
+      : [],
+  );
+}
+
+function addLegacyCollectionWarningsToLiveReportDatasets(
+  datasets: Record<string, SessionDataset>,
+): Record<string, SessionDataset> {
+  for (const dataset of Object.values(datasets)) {
+    if (dataset.source === "live-api" && dataset.reportId) {
+      dataset.warnings = appendLegacyCollectionWarning(dataset.warnings, dataset.reportId);
+    }
   }
 
-  return snapshot;
+  return datasets;
+}
+
+function appendLegacyCollectionWarning(
+  warnings: ReportWarning[] | undefined,
+  reportId: ReportId,
+): ReportWarning[] {
+  const existingWarnings = warnings ?? [];
+  const legacyWarning: ReportWarning = { reportId, ...LEGACY_COLLECTION_WARNING };
+  let foundLegacyWarning = false;
+  const deduplicatedWarnings = existingWarnings.filter((warning) => {
+    const matchesLegacyWarning = isLegacyCollectionWarning(warning, reportId);
+
+    if (!matchesLegacyWarning) return true;
+    if (foundLegacyWarning) return false;
+    foundLegacyWarning = true;
+    return true;
+  });
+
+  return foundLegacyWarning ? deduplicatedWarnings : [...deduplicatedWarnings, legacyWarning];
 }
 
 function parseWarning(value: unknown): ReportWarning | null {
@@ -557,6 +765,10 @@ function isKnownReportId(value: unknown): value is ReportId {
   return typeof value === "string" && knownReportIds.has(value as ReportId);
 }
 
+function isDatasetSessionPersistenceVersion(value: unknown): value is DatasetSessionPersistenceVersion {
+  return value === 1 || value === 2 || value === DATASET_SESSION_PERSISTENCE_VERSION;
+}
+
 function isKnownUtilityId(value: unknown): value is UtilityId {
   return typeof value === "string" && knownUtilityIds.has(value as UtilityId);
 }
@@ -569,8 +781,8 @@ function isRunPeriodRole(value: unknown): value is RunPeriodRole {
   return typeof value === "string" && runPeriodRoles.has(value as RunPeriodRole);
 }
 
-function isReportRunPresetId(value: unknown): value is ReportRunPresetId {
-  return typeof value === "string" && reportRunPresetIds.has(value as ReportRunPresetId);
+function isLegacyReportRunPresetId(value: unknown): value is string {
+  return typeof value === "string" && legacyReportRunPresetIds.has(value);
 }
 
 function isNonnegativeInteger(value: unknown): value is number {

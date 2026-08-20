@@ -1,13 +1,7 @@
-import { DEFAULT_REPORT_RUN_PRESET_ID, getReportRunPreset } from "./reportRunPresets";
-import type { ApiVolumeSettingsValue, PeriodScope, ReportRunScope } from "./types";
-
-const defaultPreset = getReportRunPreset(DEFAULT_REPORT_RUN_PRESET_ID);
+import type { PeriodScope, ReportRunScope } from "./types";
 
 export const DEFAULT_REPORT_RUN_SCOPE: ReportRunScope = {
   current: {},
-  pageSize: defaultPreset.pageSize,
-  maxPagesPerDataset: defaultPreset.maxPagesPerDataset,
-  runPreset: defaultPreset.id,
 };
 
 interface ValidationResult {
@@ -15,27 +9,12 @@ interface ValidationResult {
   messages: string[];
 }
 
-type ValidatableReportRunScope = Omit<ReportRunScope, "runPreset"> & Partial<Pick<ReportRunScope, "runPreset">>;
-
-export function validateReportRunScope(scope: ValidatableReportRunScope): ValidationResult {
-  const messages = [...validateApiVolumeSettings(scope).messages];
+export function validateReportRunScope(scope: ReportRunScope): ValidationResult {
+  const messages: string[] = [];
 
   validatePeriod("Current period", scope.current, messages);
   if (scope.comparison) validatePeriod("Comparison period", scope.comparison, messages);
 
-  return { valid: messages.length === 0, messages };
-}
-
-export function validateApiVolumeSettings(
-  settings: Pick<ApiVolumeSettingsValue, "pageSize" | "maxPagesPerDataset">,
-): ValidationResult {
-  const messages: string[] = [];
-  if (!Number.isInteger(settings.pageSize) || settings.pageSize < 1 || settings.pageSize > 100) {
-    messages.push("Page size must be between 1 and 100.");
-  }
-  if (!Number.isInteger(settings.maxPagesPerDataset) || settings.maxPagesPerDataset < 1) {
-    messages.push("Max pages per dataset must be at least 1.");
-  }
   return { valid: messages.length === 0, messages };
 }
 

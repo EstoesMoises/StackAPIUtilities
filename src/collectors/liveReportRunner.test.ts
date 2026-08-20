@@ -53,6 +53,7 @@ describe("runLiveReport", () => {
       {
         datasetName: "users",
         records: [{ user_id: 1, display_name: "Ada" }],
+        pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
       },
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -98,6 +99,7 @@ describe("runLiveReport", () => {
       {
         datasetName: "users",
         records: [{ user_id: 1, display_name: "Ada" }],
+        pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
       },
     ]);
     expect(result.messages).toEqual(["Collected users (1 record) for Inactive Users."]);
@@ -108,107 +110,52 @@ describe("runLiveReport", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toContain("team=example-team");
   });
 
-  it("passes scoped period and volume limits to live dataset requests", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ items: [{ user_id: 1, display_name: "Ada" }], has_more: true }), {
-        status: 200,
-      }),
-    );
+  it("collects every available page with the server-owned page size", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const page = new URL(input.toString()).searchParams.get("page");
+      return Promise.resolve(new Response(JSON.stringify({
+        items: [{ user_id: page === "1" ? 1 : 2 }],
+        has_more: page === "1",
+      }), { status: 200 }));
+    });
 
     const result = await runLiveReport("inactive-users", basicCredentials, {
       periodRole: "current",
       scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
-      pageSize: 50,
-      maxPagesPerDataset: 1,
       fetchFn: fetchMock,
     });
 
     expect(result.periodRole).toBe("current");
     expect(result.scope).toEqual({ startDate: "2026-01-01", endDate: "2026-01-31" });
-    expect(result.pageSize).toBe(50);
-    expect(result.maxPagesPerDataset).toBe(1);
-    expect(result.warnings).toEqual([
-      {
-        reportId: "inactive-users",
-        code: "dataset-page-cap",
-        message:
-          "Users hit the custom API volume page cap (requested up to 50 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
-      },
-    ]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0].toString()).toContain("pagesize=50");
+    expect(result.datasets[0]).toEqual({
+      datasetName: "users",
+      records: [{ user_id: 1 }, { user_id: 2 }],
+      pagination: { pageCount: 2, reachedMaxPages: false, hasMore: false },
+    });
+    expect(result.warnings).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0].toString()).toContain("pagesize=100");
     expect(fetchMock.mock.calls[0][0].toString()).toContain("fromdate=1767225600");
     expect(fetchMock.mock.calls[0][0].toString()).toContain("todate=1769817600");
   });
 
-  it("warns when a preset cap leaves more dataset data available", async () => {
-    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      const url = input.toString();
-      const isTagsDataset = url.includes("/2.3/tags?");
-
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            items: isTagsDataset ? [{ name: "python" }] : itemsForTagReportUrl(url),
-            has_more: isTagsDataset,
-            totalPages: url.includes("/v3/") ? 1 : undefined,
-          }),
-          { status: 200 },
-        ),
-      );
+  it("rejects atomically when a later page fails", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const page = new URL(input.toString()).searchParams.get("page");
+      if (page === "2") {
+        return Promise.resolve(new Response("server error", { status: 500 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        items: [{ user_id: 1 }],
+        has_more: true,
+      }), { status: 200 }));
     });
 
-    const result = await runLiveReport("tag-report", basicCredentials, {
+    await expect(runLiveReport("inactive-users", basicCredentials, {
       fetchFn: fetchMock,
-      pageSize: 50,
-      maxPagesPerDataset: 1,
-      runPreset: "quick-sample",
-    });
-
-    expect(result.runPreset).toBe("quick-sample");
-    expect(result.warnings).toEqual([
-      {
-        reportId: "tag-report",
-        code: "dataset-page-cap",
-        message:
-          "Tags hit the Quick sample page cap (requested up to 50 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
-      },
-    ]);
-  });
-
-  it("clears stale preset labels when custom volume settings do not match the requested preset", async () => {
-    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      const url = input.toString();
-      const isTagsDataset = url.includes("/2.3/tags?");
-
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            items: isTagsDataset ? [{ name: "python" }] : itemsForTagReportUrl(url),
-            has_more: isTagsDataset,
-            totalPages: url.includes("/v3/") ? 1 : undefined,
-          }),
-          { status: 200 },
-        ),
-      );
-    });
-
-    const result = await runLiveReport("tag-report", basicCredentials, {
-      fetchFn: fetchMock,
-      pageSize: 75,
-      maxPagesPerDataset: 2,
-      runPreset: "quick-sample",
-    });
-
-    expect(result.runPreset).toBeUndefined();
-    expect(result.warnings).toEqual([
-      {
-        reportId: "tag-report",
-        code: "dataset-page-cap",
-        message:
-          "Tags hit the custom API volume page cap (requested up to 150 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
-      },
-    ]);
+    })).rejects.toThrow(
+      "Failed to collect users. No complete result was produced. Stack API v2.3 request failed with 500",
+    );
   });
 
   it("runs Tag Report by collecting tag SME records from tags", async () => {
@@ -260,32 +207,6 @@ describe("runLiveReport", () => {
     expect(articleUrls.some((url) => url.includes("todate=1738281600"))).toBe(true);
     expect(questionUrls.filter((url) => !url.includes("fromdate=") && !url.includes("todate="))).toHaveLength(1);
     expect(articleUrls.filter((url) => !url.includes("fromdate=") && !url.includes("todate="))).toHaveLength(1);
-  });
-
-  it("warns when all-time Tag last used data reaches the Quick sample page cap", async () => {
-    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      const url = input.toString();
-      const isLastUsedContent = (url.includes("/questions?") || url.includes("/articles?")) && !url.includes("fromdate=");
-      return Promise.resolve(new Response(JSON.stringify({
-        items: itemsForTagReportUrl(url),
-        has_more: isLastUsedContent,
-        totalPages: 1,
-      }), { status: 200 }));
-    });
-
-    const result = await runLiveReport("tag-report", basicCredentials, {
-      fetchFn: fetchMock,
-      pageSize: 50,
-      maxPagesPerDataset: 1,
-      runPreset: "quick-sample",
-    });
-
-    expect(result.warnings).toContainEqual({
-      reportId: "tag-report",
-      code: "dataset-page-cap",
-      message:
-        "Tag last used hit the Quick sample page cap (requested up to 50 records per dataset). Use Deep audit or Advanced API volume settings for a more complete run.",
-    });
   });
 
   it("runs API User Report by collecting reputation history from users", async () => {
@@ -366,6 +287,11 @@ describe("runLiveReport", () => {
       { source: "Engineering", target: "Product", weight: 1 },
       { source: "Support", target: "Engineering", weight: 1 },
     ]);
+    expect(result.datasets.find((dataset) => dataset.datasetName === "interactions")?.pagination).toEqual({
+      pageCount: 0,
+      reachedMaxPages: false,
+      hasMore: false,
+    });
   });
 });
 

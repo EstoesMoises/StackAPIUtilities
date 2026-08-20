@@ -2,19 +2,14 @@ import type { FetchLike, ThrottleNotice } from "../../api/httpClient";
 import { createLiveCollectorClients } from "../../collectors/liveCollectorClients";
 import { collectDataset, type CollectedDatasetResult } from "../../collectors/liveCollectors";
 import { normalizeInstanceUrl, validateCredentialsForUtility } from "../../credentials/credentialRules";
-import { getReportRunPresetForSettings } from "../../domain/reportRunPresets";
-import { validateApiVolumeSettings } from "../../domain/reportScope";
 import { readQuestionTags, readTagIdentity } from "../../domain/tagNormalization";
-import type {
-  ApiVolumeSettingsValue,
-  ReportRunPresetId,
-  ReportWarning,
-  SessionCredentials,
-} from "../../domain/types";
+import type { ReportWarning, SessionCredentials } from "../../domain/types";
 import { analyzeSmeCoverage } from "./analyzer";
-import { buildSmeCoverageDecisionPack } from "./decisionPack";
+import {
+  buildSmeCoverageDecisionPack,
+  type SmeCoverageSnapshotInput,
+} from "./decisionPack";
 import type { CollectedSource, SmeCoverageDecisionPack, SourcePagination } from "./model";
-import { DEFAULT_SME_COVERAGE_SETTINGS } from "./settings";
 import { normalizeTagDemand } from "./tagDemand";
 import { normalizeTagSmeCounts } from "./tagSmeCounts";
 
@@ -52,9 +47,6 @@ export interface SmeCoverageRunDataset {
 export interface SmeCoverageRunResult {
   readonly utilityId: "sme-coverage-analyzer";
   readonly utilityTitle: "SME Coverage Analyzer";
-  readonly pageSize: number;
-  readonly maxPagesPerDataset: number;
-  readonly runPreset?: ReportRunPresetId;
   readonly datasets: readonly SmeCoverageRunDataset[];
   readonly messages: readonly string[];
   readonly warnings: readonly DeepReadonly<ReportWarning>[];
@@ -62,7 +54,6 @@ export interface SmeCoverageRunResult {
 }
 
 export interface SmeCoverageRunOptions {
-  settings?: ApiVolumeSettingsValue;
   fetchFn?: FetchLike;
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
   clock?: () => Date;
@@ -102,11 +93,7 @@ async function runValidatedSmeCoverageAnalysis(
   options: SmeCoverageRunOptions,
 ): Promise<SmeCoverageRunResult> {
   const now = (options.clock ?? (() => new Date()))();
-  const settings = normalizeSettings(options.settings ?? DEFAULT_SME_COVERAGE_SETTINGS);
-  const messages = [
-    ...validateCredentialsForUtility("sme-coverage-analyzer", credentials, now).messages,
-    ...validateApiVolumeSettings(settings).messages,
-  ];
+  const messages = validateCredentialsForUtility("sme-coverage-analyzer", credentials, now).messages;
   if (messages.length > 0) {
     throw new SmeCoverageRunError("validation", messages.join(" "));
   }
@@ -122,7 +109,7 @@ async function runValidatedSmeCoverageAnalysis(
   const datasets: SmeCoverageRunDataset[] = [];
 
   for (const datasetName of DATASET_NAMES) {
-    const collection = await collectSource(datasetName, clients, settings);
+    const collection = await collectSource(datasetName, clients);
     datasets.push({
       datasetName,
       records: toRecordList(collection.records),
@@ -130,6 +117,26 @@ async function runValidatedSmeCoverageAnalysis(
     });
   }
 
+  const decisionPack = buildSmeCoverageDecisionPackFromDatasets(datasets, {
+    instanceHost: new URL(normalizedInstance.baseUrl).host,
+    generatedAt: now.toISOString(),
+  });
+
+  const result: SmeCoverageRunResult = {
+    utilityId: "sme-coverage-analyzer",
+    utilityTitle: "SME Coverage Analyzer",
+    datasets,
+    messages: datasets.map(formatDatasetMessage),
+    warnings: decisionPack.warnings,
+    decisionPack,
+  };
+  return deepFreezeCopy(result);
+}
+
+export function buildSmeCoverageDecisionPackFromDatasets(
+  datasets: readonly SmeCoverageRunDataset[],
+  snapshot: SmeCoverageSnapshotInput,
+): SmeCoverageDecisionPack {
   validateSourceIdentities(datasets);
 
   const tags = asCollectedSource(getDataset(datasets, "tags"));
@@ -137,66 +144,34 @@ async function runValidatedSmeCoverageAnalysis(
   const tagSmeCounts = asCollectedSource(getDataset(datasets, "tagSmeCounts"));
   const demand = normalizeTagDemand({ tags, questions });
   const smeCounts = normalizeTagSmeCounts(tagSmeCounts);
-  validateSupportedSmeCounts(tags, smeCounts.rows, tagSmeCounts.pagination);
-
-  const sourceStatus = {
-    tags: tags.pagination,
-    questions: questions.pagination,
-    tagSmeCounts: tagSmeCounts.pagination,
-  };
-  const sourceWarnings = [
-    ...buildCapWarnings(datasets),
-    ...demand.warnings,
-    ...smeCounts.warnings,
-  ];
-  const analysis = analyzeSmeCoverage({ demand, smeCounts, sourceStatus, settings });
-  const decisionPack = buildSmeCoverageDecisionPack({
-    analysis,
-    snapshot: {
-      instanceHost: new URL(normalizedInstance.baseUrl).host,
-      generatedAt: now.toISOString(),
-      pageSize: settings.pageSize,
-      maxPagesPerDataset: settings.maxPagesPerDataset,
-      ...(settings.runPreset ? { runPreset: settings.runPreset } : {}),
+  validateSupportedSmeCounts(tags, smeCounts.rows);
+  const analysis = analyzeSmeCoverage({
+    demand,
+    smeCounts,
+    sourceStatus: {
+      tags: tags.pagination,
+      questions: questions.pagination,
+      tagSmeCounts: tagSmeCounts.pagination,
     },
-    sourceWarnings,
   });
 
-  const result: SmeCoverageRunResult = {
-    utilityId: "sme-coverage-analyzer",
-    utilityTitle: "SME Coverage Analyzer",
-    pageSize: settings.pageSize,
-    maxPagesPerDataset: settings.maxPagesPerDataset,
-    datasets,
-    messages: datasets.map(formatDatasetMessage),
-    warnings: decisionPack.warnings,
-    decisionPack,
-    ...(settings.runPreset ? { runPreset: settings.runPreset } : {}),
-  };
-  return deepFreezeCopy(result);
-}
-
-function normalizeSettings(settings: ApiVolumeSettingsValue): ApiVolumeSettingsValue {
-  const runPreset = settings.runPreset
-    ? getReportRunPresetForSettings(settings.pageSize, settings.maxPagesPerDataset)?.id
-    : undefined;
-  return {
-    pageSize: settings.pageSize,
-    maxPagesPerDataset: settings.maxPagesPerDataset,
-    ...(runPreset ? { runPreset } : {}),
-  };
+  return buildSmeCoverageDecisionPack({
+    analysis,
+    snapshot: {
+      instanceHost: snapshot.instanceHost,
+      generatedAt: snapshot.generatedAt,
+    },
+    sourceWarnings: [...demand.warnings, ...smeCounts.warnings],
+  });
 }
 
 async function collectSource(
   datasetName: SmeCoverageDatasetName,
   clients: ReturnType<typeof createLiveCollectorClients>,
-  settings: ApiVolumeSettingsValue,
 ): Promise<CollectedDatasetResult> {
+  let collection: CollectedDatasetResult;
   try {
-    return await collectDataset(datasetName, clients, {
-      pageSize: settings.pageSize,
-      maxPagesPerDataset: settings.maxPagesPerDataset,
-    });
+    collection = await collectDataset(datasetName, clients);
   } catch (error) {
     throw new SmeCoverageRunError(
       "collection",
@@ -205,6 +180,14 @@ async function collectSource(
       error,
     );
   }
+  if (collection.pagination.reachedMaxPages || collection.pagination.hasMore) {
+    throw new SmeCoverageRunError(
+      "collection",
+      `${datasetName} collection did not reach terminal pagination. No complete result was produced.`,
+      datasetName,
+    );
+  }
+  return collection;
 }
 
 function validateSourceIdentities(datasets: readonly SmeCoverageRunDataset[]): void {
@@ -226,7 +209,6 @@ function validateSourceIdentities(datasets: readonly SmeCoverageRunDataset[]): v
 function validateSupportedSmeCounts(
   tags: CollectedSource,
   smeRows: readonly { key: string; smeCount: number | null }[],
-  smePagination: SourcePagination,
 ): void {
   const v2TagKeys = new Set(
     tags.records
@@ -235,7 +217,6 @@ function validateSupportedSmeCounts(
       .map((identity) => identity.key),
   );
   if (v2TagKeys.size === 0) return;
-  if (smePagination.reachedMaxPages || smePagination.hasMore) return;
 
   const numericSmeKeys = new Set(
     smeRows.filter((row) => row.smeCount !== null).map((row) => row.key),
@@ -247,33 +228,6 @@ function validateSupportedSmeCounts(
     "Stack API v3 tags did not provide a matching numeric assigned-SME count for the collected v2 tags. SME coverage cannot be inferred from v2 top answerers.",
     "tagSmeCounts",
   );
-}
-
-function buildCapWarnings(datasets: readonly SmeCoverageRunDataset[]): ReportWarning[] {
-  const warnings: ReportWarning[] = [];
-  for (const dataset of datasets) {
-    if (!dataset.pagination.reachedMaxPages || !dataset.pagination.hasMore) continue;
-    if (dataset.datasetName === "tags") {
-      warnings.push({
-        utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.tags-page-cap",
-        message: "Tags reached the collection page cap; the decision pack covers only the collected tag sample.",
-      });
-    } else if (dataset.datasetName === "questions") {
-      warnings.push({
-        utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.questions-page-cap",
-        message: "Questions reached the collection page cap; page views and demand conclusions use a collected partial sample.",
-      });
-    } else {
-      warnings.push({
-        utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.tag-sme-counts-page-cap",
-        message: "Assigned-SME tag counts reached the collection page cap; unmatched assigned-SME coverage may be unknown.",
-      });
-    }
-  }
-  return warnings;
 }
 
 function getDataset(

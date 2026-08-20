@@ -1,11 +1,9 @@
 import { runLiveReport, type LiveReportRunResult } from "../collectors/liveReportRunner";
 import { validateCredentialsForReport } from "../credentials/credentialRules";
-import { getReportRunPresetForSettings } from "../domain/reportRunPresets";
-import { DEFAULT_REPORT_RUN_SCOPE, validateReportRunScope } from "../domain/reportScope";
+import { validateReportRunScope } from "../domain/reportScope";
 import type {
   PeriodScope,
   ReportId,
-  ReportRunPresetId,
   RunPeriodRole,
   SessionCredentials,
 } from "../domain/types";
@@ -15,9 +13,6 @@ interface ReportRunRequestPayload {
   credentials: SessionCredentials;
   periodRole?: RunPeriodRole;
   scope?: PeriodScope;
-  pageSize?: number;
-  maxPagesPerDataset?: number;
-  runPreset?: ReportRunPresetId;
 }
 
 interface ReportRunDependencies {
@@ -27,9 +22,6 @@ interface ReportRunDependencies {
     options: {
       periodRole: RunPeriodRole;
       scope: PeriodScope;
-      pageSize: number;
-      maxPagesPerDataset: number;
-      runPreset?: ReportRunPresetId;
     },
   ) => Promise<LiveReportRunResult>;
 }
@@ -42,6 +34,13 @@ export async function handleReportRunRequest(
   payload: unknown,
   dependencies: ReportRunDependencies = {},
 ): Promise<Response> {
+  if (hasUnsupportedReportRunKeys(payload)) {
+    return jsonResponse(
+      { ok: false, error: "Report runs accept credentials, a period role, and a date scope only." },
+      400,
+    );
+  }
+
   if (!isReportRunRequestPayload(payload)) {
     return jsonResponse(
       { ok: false, error: "Report run request requires a reportId and credentials." },
@@ -51,14 +50,7 @@ export async function handleReportRunRequest(
 
   const periodRole = payload.periodRole ?? "current";
   const scope = payload.scope ?? {};
-  const pageSize = payload.pageSize ?? DEFAULT_REPORT_RUN_SCOPE.pageSize;
-  const maxPagesPerDataset = payload.maxPagesPerDataset ?? DEFAULT_REPORT_RUN_SCOPE.maxPagesPerDataset;
-  const runPreset = normalizeRunPreset(payload.runPreset, pageSize, maxPagesPerDataset);
-  const validation = validateReportRunScope({
-    current: scope,
-    pageSize,
-    maxPagesPerDataset,
-  });
+  const validation = validateReportRunScope({ current: scope });
 
   if (!validation.valid) {
     return jsonResponse({ ok: false, error: validation.messages.join(" ") }, 400);
@@ -76,9 +68,6 @@ export async function handleReportRunRequest(
       {
         periodRole,
         scope,
-        pageSize,
-        maxPagesPerDataset,
-        runPreset,
       },
     );
 
@@ -100,16 +89,7 @@ function isReportRunRequestPayload(value: unknown): value is ReportRunRequestPay
     return false;
   }
 
-  if (value.scope !== undefined && !isRecord(value.scope)) {
-    return false;
-  }
-
-  if (
-    value.runPreset !== undefined &&
-    value.runPreset !== "quick-sample" &&
-    value.runPreset !== "standard" &&
-    value.runPreset !== "deep-audit"
-  ) {
+  if (value.scope !== undefined && !isPeriodScope(value.scope)) {
     return false;
   }
 
@@ -124,6 +104,26 @@ function isReportRunRequestPayload(value: unknown): value is ReportRunRequestPay
     (value.credentials.oauthScopes === undefined || isStringArray(value.credentials.oauthScopes)) &&
     isOptionalString(value.credentials.accessTokenExpiresAt)
   );
+}
+
+function hasUnsupportedReportRunKeys(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const supportedKeys = new Set(["reportId", "credentials", "periodRole", "scope"]);
+  return Object.keys(value).some((key) => !supportedKeys.has(key));
+}
+
+function isPeriodScope(value: unknown): value is PeriodScope {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const supportedKeys = new Set(["startDate", "endDate"]);
+  return Object.keys(value).every((key) => supportedKeys.has(key)) &&
+    isOptionalString(value.startDate) &&
+    isOptionalString(value.endDate);
 }
 
 function jsonResponse(body: ReportRunResponseBody, status: number): Response {
@@ -154,16 +154,4 @@ function isOptionalString(value: unknown): value is string | undefined {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function normalizeRunPreset(
-  requestedPreset: ReportRunPresetId | undefined,
-  pageSize: number,
-  maxPagesPerDataset: number,
-): ReportRunPresetId | undefined {
-  if (!requestedPreset) {
-    return undefined;
-  }
-
-  return getReportRunPresetForSettings(pageSize, maxPagesPerDataset)?.id;
 }

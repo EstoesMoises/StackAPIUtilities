@@ -2,10 +2,12 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
+import type { DatasetName } from "../domain/types";
 import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
 import {
   completeSmeCoverageDecisionPack,
-  partialSmeCoverageDecisionPack,
+  emptySmeCoverageDecisionPack,
+  insufficientSampleSmeCoverageDecisionPack,
 } from "../test/fixtures/smeCoverageFixtures";
 import {
   clearPersistedDatasetSession,
@@ -272,7 +274,7 @@ describe("AppShell", () => {
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
   });
 
-  it("posts only credentials and API-volume settings, shows progress, and stores the completed utility result", async () => {
+  it("posts credentials only, shows progress, and stores the completed utility result", async () => {
     const user = userEvent.setup();
     const pendingRun = createDeferred<Response>();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
@@ -289,9 +291,6 @@ describe("AppShell", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           credentials: basicBusinessPatCredentials,
-          pageSize: 100,
-          maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
         }),
       });
     });
@@ -309,10 +308,11 @@ describe("AppShell", () => {
     expect(within(datasetsPanel).getAllByText("SME Coverage Analyzer")).toHaveLength(3);
   });
 
-  it("renders partial utility warnings before the executive summary", async () => {
+  it("renders partial utility evidence notes before the executive summary", async () => {
     const user = userEvent.setup();
+    const pack = insufficientSampleSmeCoverageDecisionPack();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(makeSmeCoverageRunBody(partialSmeCoverageDecisionPack(), "partial")),
+      jsonResponse(makeSmeCoverageRunBody(pack, "partial")),
     );
 
     render(<App />);
@@ -321,23 +321,20 @@ describe("AppShell", () => {
     await openSmeCoverageAnalyzer(user);
     await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
 
-    const warning = await screen.findByText("Question evidence reached the configured collection cap.");
-    const overview = screen.getByText(
-      "This prepared result is partial; interpret priority findings with the warnings above.",
-    );
-    expect(warning.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const evidenceNote = await screen.findByText(pack.warnings[0]!.message);
+    const overview = screen.getByText(pack.overview);
+    expect(
+      evidenceNote.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("replaces the active utility pack on rerun while retaining six supporting datasets", async () => {
     const user = userEvent.setup();
     const firstPack = completeSmeCoverageDecisionPack();
-    const secondPack = {
-      ...completeSmeCoverageDecisionPack(),
-      overview: "The second prepared decision pack is active.",
-    };
+    const secondPack = persistableEmptySmeCoverageDecisionPack();
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse(makeSmeCoverageRunBody(firstPack, "first")))
-      .mockResolvedValueOnce(jsonResponse(makeSmeCoverageRunBody(secondPack, "second")));
+      .mockResolvedValueOnce(jsonResponse(makeSmeCoverageRunBody(secondPack, "second", true)));
 
     render(<App />);
 
@@ -359,7 +356,7 @@ describe("AppShell", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockReturnValueOnce(olderRun.promise)
       .mockReturnValueOnce(newerRun.promise);
-    const freshPack = { ...completeSmeCoverageDecisionPack(), overview: "Fresh utility result." };
+    const freshPack = persistableEmptySmeCoverageDecisionPack();
 
     render(<App />);
 
@@ -373,18 +370,18 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
-    newerRun.resolve(jsonResponse(makeSmeCoverageRunBody(freshPack, "fresh")));
-    expect(await screen.findByText("Fresh utility result.")).toBeInTheDocument();
+    newerRun.resolve(jsonResponse(makeSmeCoverageRunBody(freshPack, "fresh", true)));
+    expect(await screen.findByText(freshPack.overview)).toBeInTheDocument();
 
     await act(async () => {
       olderRun.resolve(
-        jsonResponse(makeSmeCoverageRunBody({ ...completeSmeCoverageDecisionPack(), overview: "Stale utility result." }, "stale")),
+        jsonResponse(makeSmeCoverageRunBody(completeSmeCoverageDecisionPack(), "stale")),
       );
       await olderRun.promise;
     });
 
-    expect(screen.getByText("Fresh utility result.")).toBeInTheDocument();
-    expect(screen.queryByText("Stale utility result.")).not.toBeInTheDocument();
+    expect(screen.getByText(freshPack.overview)).toBeInTheDocument();
+    expect(screen.queryByText(completeSmeCoverageDecisionPack().overview)).not.toBeInTheDocument();
     expect(screen.getByText("3 datasets")).toBeInTheDocument();
   });
 
@@ -423,10 +420,95 @@ describe("AppShell", () => {
     expect(saved?.datasets).toBeDefined();
   });
 
+  it.each([
+    ["a missing source dataset", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.datasets = body.result.datasets.slice(0, 2);
+    }],
+    ["a duplicate source dataset", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.datasets = [...body.result.datasets, body.result.datasets[0]!];
+    }],
+    ["nonterminal pagination", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.datasets[1] = {
+        ...body.result.datasets[1]!,
+        pagination: { pageCount: 1, reachedMaxPages: false, hasMore: true },
+      };
+    }],
+    ["malformed pagination", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.datasets[1] = {
+        ...body.result.datasets[1]!,
+        pagination: { pageCount: -1, reachedMaxPages: false, hasMore: false },
+      };
+    }],
+    ["a malformed decision pack", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.decisionPack = {} as typeof body.result.decisionPack;
+    }],
+    ["malformed methodology", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.decisionPack = {
+        ...body.result.decisionPack,
+        methodology: {} as typeof body.result.decisionPack.methodology,
+      };
+    }],
+    ["a malformed evidence row", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.decisionPack = {
+        ...body.result.decisionPack,
+        evidence: [{}] as unknown as typeof body.result.decisionPack.evidence,
+      };
+    }],
+    ["a negative evidence metric", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).evidence[0].pageViews = -1;
+    }],
+    ["a percentile above 100", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).evidence[1].coveragePercentile = 101;
+    }],
+    ["a summary that does not match the evidence", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).summary.tagsAnalyzed += 1;
+    }],
+    ["a finding that does not match the evidence", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      const pack = mutableSmeDecisionPack(body);
+      pack.findings.immediateGaps[0] = {
+        ...pack.findings.immediateGaps[0],
+        reason: "Tampered finding.",
+      };
+    }],
+    ["an invalid evidence tier", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).evidence[0].coverageTier = "Impossible";
+    }],
+    ["incoherent methodology", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).methodology.coveredActiveSampleSize += 1;
+    }],
+    ["an evidence ratio that does not match its inputs", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).evidence[1].pageViewsPerSme += 1;
+    }],
+    ["a completeness label that does not match the evidence", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      mutableSmeDecisionPack(body).snapshot.completeness = "Partial";
+    }],
+    ["source records that do not match the pack", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.datasets[1]!.records = [{ question_id: "tampered", tags: ["unrelated"], view_count: 1 }];
+    }],
+  ])("fails visibly without publishing a utility result containing %s", async (_label, mutate) => {
+    const user = userEvent.setup();
+    const body = makeSmeCoverageRunBody(completeSmeCoverageDecisionPack(), "invalid");
+    mutate(body);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await openSmeCoverageAnalyzer(user);
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
+
+    expect(await screen.findByRole("heading", { name: "SME Coverage Analyzer failed" })).toBeInTheDocument();
+    expect(screen.getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Highest-demand critical gaps" })).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
   it("hydrates persisted browser datasets without credentials", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -443,6 +525,9 @@ describe("AppShell", () => {
           source: "live-api",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageCount: 1,
+          reachedMaxPages: false,
+          hasMore: false,
         },
       },
       reportOutputs: {
@@ -463,8 +548,6 @@ describe("AppShell", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
@@ -486,65 +569,51 @@ describe("AppShell", () => {
     expect(within(datasetsPanel).getByRole("button", { name: "Flush stored datasets" })).toBeInTheDocument();
   });
 
-  it("uses a restored Tag Report run preset for the next live run", async () => {
+  it("restores a selected report date scope without requiring a legacy preset", async () => {
     const user = userEvent.setup();
+    const persistedCurrent = makePersistedTagReportRun("current", {}, "snapshot-1", [
+      { name: "python", totalPageViews: 500, questionCount: 4 },
+    ]);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(makeTagReportRunBody("Collected restored-preset tags for Tag Report.")),
     );
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "tag-report",
       selectedReportIds: ["tag-report"],
       selectedUtilityId: "sme-coverage-analyzer",
       utilityOutputs: {},
       utilityRunSnapshots: [],
-      datasets: {
-        "dataset-1": {
-          id: "dataset-1",
-          snapshotId: "snapshot-1",
-          reportId: "tag-report",
-          name: "tags",
-          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
-          loadedAt: "2026-07-09T12:00:00.000Z",
-          source: "live-api",
-          periodRole: "current",
-        },
-      },
+      datasets: persistedCurrent.datasets,
       reportOutputs: {},
-      reportRunSnapshots: [
-        {
-          id: "snapshot-1",
-          reportId: "tag-report",
-          periodRole: "current",
-          scope: {},
-          pageSize: 100,
-          maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
-          loadedAt: "2026-07-09T12:00:00.000Z",
-          datasetIds: ["dataset-1"],
-          warnings: [],
-        },
-      ],
+      reportRunSnapshots: [persistedCurrent.snapshot],
       warnings: [],
     });
 
     render(<App />);
 
-    expect(await screen.findByText("1 dataset")).toBeInTheDocument();
+    expect(await screen.findByText("7 datasets")).toBeInTheDocument();
     await saveBasicBusinessCredentials(user);
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
-      runPreset: "deep-audit",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
+      periodRole: "current",
+      scope: {},
     });
   });
 
   it("uses restored current and comparison scopes for the next paired Tag Report run", async () => {
     const user = userEvent.setup();
+    const currentScope = { startDate: "2026-07-01", endDate: "2026-07-08" };
+    const comparisonScope = { startDate: "2026-06-01", endDate: "2026-06-08" };
+    const persistedCurrent = makePersistedTagReportRun("current", currentScope, "current-snapshot", [
+      { name: "python", totalPageViews: 500, questionCount: 4 },
+    ]);
+    const persistedComparison = makePersistedTagReportRun("comparison", comparisonScope, "comparison-snapshot", [
+      { name: "javascript", totalPageViews: 250, questionCount: 2 },
+    ]);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const payload = JSON.parse(String(init?.body));
 
@@ -555,52 +624,24 @@ describe("AppShell", () => {
           reportTitle: "Tag Report",
           periodRole: payload.periodRole,
           scope: payload.scope,
-          pageSize: payload.pageSize,
-          maxPagesPerDataset: payload.maxPagesPerDataset,
-          runPreset: payload.runPreset,
           warnings: [],
-          datasets: [
-            {
-              datasetName: "tags",
-              records:
-                payload.periodRole === "comparison"
-                  ? [{ name: "javascript", totalPageViews: 250, questionCount: 2 }]
-                  : [{ name: "python", totalPageViews: 500, questionCount: 4 }],
-            },
-          ],
+          datasets: makeCompleteTagReportDatasets(
+            payload.periodRole === "comparison"
+              ? [{ name: "javascript", totalPageViews: 250, questionCount: 2 }]
+              : [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          ),
           messages: [`Collected ${payload.periodRole} tags for Tag Report.`],
         },
       });
     });
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "tag-report",
       selectedReportIds: ["tag-report"],
       selectedUtilityId: "sme-coverage-analyzer",
       utilityOutputs: {},
       utilityRunSnapshots: [],
-      datasets: {
-        "current-tags": {
-          id: "current-tags",
-          snapshotId: "current-snapshot",
-          reportId: "tag-report",
-          name: "tags",
-          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
-          loadedAt: "2026-07-09T12:00:00.000Z",
-          source: "live-api",
-          periodRole: "current",
-        },
-        "comparison-tags": {
-          id: "comparison-tags",
-          snapshotId: "comparison-snapshot",
-          reportId: "tag-report",
-          name: "tags",
-          records: [{ name: "javascript", totalPageViews: 250, questionCount: 2 }],
-          loadedAt: "2026-07-09T12:00:00.000Z",
-          source: "live-api",
-          periodRole: "comparison",
-        },
-      },
+      datasets: { ...persistedCurrent.datasets, ...persistedComparison.datasets },
       reportOutputs: {
         "tag-report": {
           reportId: "tag-report",
@@ -616,38 +657,13 @@ describe("AppShell", () => {
           comparisonSnapshotId: "comparison-snapshot",
         },
       },
-      reportRunSnapshots: [
-        {
-          id: "current-snapshot",
-          reportId: "tag-report",
-          periodRole: "current",
-          scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
-          pageSize: 100,
-          maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
-          loadedAt: "2026-07-09T12:00:00.000Z",
-          datasetIds: ["current-tags"],
-          warnings: [],
-        },
-        {
-          id: "comparison-snapshot",
-          reportId: "tag-report",
-          periodRole: "comparison",
-          scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
-          pageSize: 100,
-          maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
-          loadedAt: "2026-07-09T12:00:00.000Z",
-          datasetIds: ["comparison-tags"],
-          warnings: [],
-        },
-      ],
+      reportRunSnapshots: [persistedCurrent.snapshot, persistedComparison.snapshot],
       warnings: [],
     });
 
     render(<App />);
 
-    expect(await screen.findByText("2 datasets")).toBeInTheDocument();
+    expect(await screen.findByText("14 datasets")).toBeInTheDocument();
     await saveBasicBusinessCredentials(user);
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
@@ -658,17 +674,17 @@ describe("AppShell", () => {
     expect(currentRunBody).toMatchObject({
       periodRole: "current",
       scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
-      runPreset: "deep-audit",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
     });
+    expect(currentRunBody).not.toHaveProperty("runPreset");
+    expect(currentRunBody).not.toHaveProperty("pageSize");
+    expect(currentRunBody).not.toHaveProperty("maxPagesPerDataset");
     expect(comparisonRunBody).toMatchObject({
       periodRole: "comparison",
       scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
-      runPreset: "deep-audit",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
     });
+    expect(comparisonRunBody).not.toHaveProperty("runPreset");
+    expect(comparisonRunBody).not.toHaveProperty("pageSize");
+    expect(comparisonRunBody).not.toHaveProperty("maxPagesPerDataset");
   });
 
   it("persists live API datasets without credentials or run queue state", async () => {
@@ -681,13 +697,12 @@ describe("AppShell", () => {
           reportTitle: "Inactive Users",
           periodRole: "current",
           scope: {},
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           warnings: [],
           datasets: [
             {
               datasetName: "users",
               records: [{ user_id: 1, display_name: "Ada" }],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
             },
           ],
           messages: ["Collected users (1 record) for Inactive Users."],
@@ -713,7 +728,7 @@ describe("AppShell", () => {
     const saveCalls = savePersistedDatasetSessionMock.mock.calls;
     const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0] as unknown as Record<string, unknown>;
     expect(savedSnapshot).toMatchObject({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -727,7 +742,7 @@ describe("AppShell", () => {
   it("flushes current and persisted datasets in bulk", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -744,6 +759,9 @@ describe("AppShell", () => {
           source: "live-api",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageCount: 1,
+          reachedMaxPages: false,
+          hasMore: false,
         },
       },
       reportOutputs: {
@@ -764,8 +782,6 @@ describe("AppShell", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
@@ -856,7 +872,7 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 2,
+        version: 3,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
         selectedUtilityId: "sme-coverage-analyzer",
@@ -872,6 +888,9 @@ describe("AppShell", () => {
             loadedAt: "2026-07-09T12:00:00.000Z",
             source: "live-api",
             periodRole: "current",
+            pageCount: 1,
+            reachedMaxPages: false,
+            hasMore: false,
           },
         },
         reportOutputs: {
@@ -891,8 +910,6 @@ describe("AppShell", () => {
             reportId: "inactive-users",
             periodRole: "current",
             scope: {},
-            pageSize: 100,
-            maxPagesPerDataset: 5,
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
@@ -931,7 +948,7 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 2,
+        version: 3,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
         selectedUtilityId: "sme-coverage-analyzer",
@@ -947,6 +964,9 @@ describe("AppShell", () => {
             loadedAt: "2026-07-09T12:00:00.000Z",
             source: "live-api",
             periodRole: "current",
+            pageCount: 1,
+            reachedMaxPages: false,
+            hasMore: false,
           },
         },
         reportOutputs: {
@@ -966,8 +986,6 @@ describe("AppShell", () => {
             reportId: "inactive-users",
             periodRole: "current",
             scope: {},
-            pageSize: 100,
-            maxPagesPerDataset: 5,
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
@@ -1006,7 +1024,7 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 2,
+        version: 3,
         selectedReportId: "inactive-users",
         selectedReportIds: ["inactive-users"],
         selectedUtilityId: "sme-coverage-analyzer",
@@ -1022,6 +1040,9 @@ describe("AppShell", () => {
             loadedAt: "2026-07-09T12:00:00.000Z",
             source: "live-api",
             periodRole: "current",
+            pageCount: 1,
+            reachedMaxPages: false,
+            hasMore: false,
           },
         },
         reportOutputs: {
@@ -1041,8 +1062,6 @@ describe("AppShell", () => {
             reportId: "inactive-users",
             periodRole: "current",
             scope: {},
-            pageSize: 100,
-            maxPagesPerDataset: 5,
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
@@ -1074,30 +1093,46 @@ describe("AppShell", () => {
 
     await act(async () => {
       loadDeferred.resolve({
-        version: 2,
-        selectedReportId: "data-export",
-        selectedReportIds: ["data-export"],
+        version: 3,
+        selectedReportId: "community-members",
+        selectedReportIds: ["community-members"],
         selectedUtilityId: "sme-coverage-analyzer",
         utilityOutputs: {},
         utilityRunSnapshots: [],
         datasets: {
-          "dataset-1": {
-            id: "dataset-1",
+          "dataset-communities": {
+            id: "dataset-communities",
             snapshotId: "snapshot-1",
-            reportId: "data-export",
-            name: "dataExport",
+            reportId: "community-members",
+            name: "communities",
             records: [{ id: 1, value: "persisted" }],
             loadedAt: "2026-07-09T12:00:00.000Z",
             source: "live-api",
             periodRole: "current",
+            pageCount: 1,
+            reachedMaxPages: false,
+            hasMore: false,
+          },
+          "dataset-users": {
+            id: "dataset-users",
+            snapshotId: "snapshot-1",
+            reportId: "community-members",
+            name: "users",
+            records: [],
+            loadedAt: "2026-07-09T12:00:00.000Z",
+            source: "live-api",
+            periodRole: "current",
+            pageCount: 0,
+            reachedMaxPages: false,
+            hasMore: false,
           },
         },
         reportOutputs: {
-          "data-export": {
-            reportId: "data-export",
-            datasetName: "dataExport",
+          "community-members": {
+            reportId: "community-members",
+            datasetName: "communities",
             fileName: "Live API run",
-            records: [{ datasetName: "dataExport", id: 1, value: "persisted" }],
+            records: [{ datasetName: "communities", id: 1, value: "persisted" }],
             loadedAt: "2026-07-09T12:00:00.000Z",
             source: "live-api",
             currentSnapshotId: "snapshot-1",
@@ -1106,13 +1141,11 @@ describe("AppShell", () => {
         reportRunSnapshots: [
           {
             id: "snapshot-1",
-            reportId: "data-export",
+            reportId: "community-members",
             periodRole: "current",
             scope: {},
-            pageSize: 100,
-            maxPagesPerDataset: 5,
             loadedAt: "2026-07-09T12:00:00.000Z",
-            datasetIds: ["dataset-1"],
+            datasetIds: ["dataset-communities", "dataset-users"],
             warnings: [],
           },
         ],
@@ -1122,25 +1155,25 @@ describe("AppShell", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText("1 dataset")).toBeInTheDocument();
+    expect(screen.getByText("2 datasets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Inactive Users" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Data Export" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Community Members" })).toHaveAttribute("aria-pressed", "false");
     expect(clearPersistedDatasetSessionMock).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Datasets" }));
 
     const datasetsPanel = screen.getByRole("region", { name: "Datasets" });
-    expect(within(datasetsPanel).getByText("Data Export")).toBeInTheDocument();
-    expect(within(datasetsPanel).getByText("dataExport")).toBeInTheDocument();
+    expect(within(datasetsPanel).getAllByText("Community Members")).toHaveLength(2);
+    expect(within(datasetsPanel).getByText("communities")).toBeInTheDocument();
   });
 
-  it("does not persist removed report output records when another dataset remains", async () => {
+  it("does not persist an incomplete report run after one required dataset is deleted", async () => {
     const user = userEvent.setup();
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
-      version: 2,
-      selectedReportId: "inactive-users",
-      selectedReportIds: ["inactive-users"],
+      version: 3,
+      selectedReportId: "community-members",
+      selectedReportIds: ["community-members"],
       selectedUtilityId: "sme-coverage-analyzer",
       utilityOutputs: {},
       utilityRunSnapshots: [],
@@ -1148,34 +1181,40 @@ describe("AppShell", () => {
         "dataset-users": {
           id: "dataset-users",
           snapshotId: "snapshot-1",
-          reportId: "inactive-users",
+          reportId: "community-members",
           name: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
           loadedAt: "2026-07-09T12:00:00.000Z",
           source: "live-api",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageCount: 1,
+          reachedMaxPages: false,
+          hasMore: false,
         },
-        "dataset-tags": {
-          id: "dataset-tags",
+        "dataset-communities": {
+          id: "dataset-communities",
           snapshotId: "snapshot-1",
-          reportId: "inactive-users",
-          name: "tags",
+          reportId: "community-members",
+          name: "communities",
           records: [{ name: "python" }],
           loadedAt: "2026-07-09T12:00:00.000Z",
           source: "live-api",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageCount: 1,
+          reachedMaxPages: false,
+          hasMore: false,
         },
       },
       reportOutputs: {
-        "inactive-users": {
-          reportId: "inactive-users",
+        "community-members": {
+          reportId: "community-members",
           datasetName: "users",
           fileName: "Live API run",
           records: [
             { datasetName: "users", user_id: 1, display_name: "Ada" },
-            { datasetName: "tags", name: "python" },
+            { datasetName: "communities", name: "python" },
           ],
           loadedAt: "2026-07-09T12:00:00.000Z",
           source: "live-api",
@@ -1186,13 +1225,11 @@ describe("AppShell", () => {
       reportRunSnapshots: [
         {
           id: "snapshot-1",
-          reportId: "inactive-users",
+          reportId: "community-members",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
-          datasetIds: ["dataset-users", "dataset-tags"],
+          datasetIds: ["dataset-users", "dataset-communities"],
           warnings: [],
         },
       ],
@@ -1213,9 +1250,10 @@ describe("AppShell", () => {
 
     const saveCalls = savePersistedDatasetSessionMock.mock.calls;
     const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0];
-    expect(savedSnapshot?.datasets).toHaveProperty("dataset-tags");
+    expect(savedSnapshot?.datasets).toHaveProperty("dataset-communities");
+    expect(savedSnapshot?.datasets["dataset-communities"]).not.toHaveProperty("snapshotId");
     expect(savedSnapshot?.datasets).not.toHaveProperty("dataset-users");
-    expect(JSON.stringify(savedSnapshot?.reportOutputs)).toContain("python");
+    expect(savedSnapshot?.reportOutputs).toEqual({});
     expect(JSON.stringify(savedSnapshot?.reportOutputs)).not.toContain("Ada");
   });
 
@@ -1380,13 +1418,12 @@ describe("AppShell", () => {
           reportTitle: "Inactive Users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           warnings: [],
           datasets: [
             {
               datasetName: "users",
               records: [{ user_id: 1, display_name: "Ada" }],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
             },
           ],
           messages: ["Collected users (1 record) for Inactive Users."],
@@ -1404,6 +1441,8 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.type(screen.getByLabelText("Current start date"), "2026-06-01");
+    await user.type(screen.getByLabelText("Current end date"), "2026-06-30");
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
@@ -1412,9 +1451,7 @@ describe("AppShell", () => {
       reportId: "inactive-users",
       credentials: basicBusinessPatCredentials,
       periodRole: "current",
-      scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 5,
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
     });
     expect(screen.getByText("1 dataset")).toBeInTheDocument();
     expect(screen.getAllByText("users").length).toBeGreaterThanOrEqual(1);
@@ -1439,6 +1476,27 @@ describe("AppShell", () => {
     expect(screen.getByText("Ada")).toBeInTheDocument();
   });
 
+  it("omits a cleared date from the requested and returned report scope", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(makeInactiveUsersReportRunBody("current", {})),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    const startDate = screen.getByLabelText("Current start date");
+    await user.type(startDate, "2026-06-01");
+    await user.clear(startDate);
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ scope: {} });
+    expect(screen.getByText("1 dataset")).toBeInTheDocument();
+  });
+
   it("runs Tag Report through the server-backed live API route", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -1449,8 +1507,6 @@ describe("AppShell", () => {
           reportTitle: "Tag Report",
           periodRole: "current",
           scope: {},
-          pageSize: 100,
-          maxPagesPerDataset: 20,
           warnings: [
             {
               reportId: "tag-report",
@@ -1459,11 +1515,13 @@ describe("AppShell", () => {
             },
           ],
           datasets: [
-            { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
-            { datasetName: "users", records: [{ user_id: 1 }] },
-            { datasetName: "questions", records: [{ question_id: 10, tags: ["python"], answer_count: 1 }] },
-            { datasetName: "articles", records: [{ article_id: 20 }] },
-            { datasetName: "tagSmes", records: [{ tagName: "python", user_id: 1 }] },
+            { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "users", records: [{ user_id: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "questions", records: [{ question_id: 10, tags: ["python"], answer_count: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "articles", records: [{ article_id: 20 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "tagSmes", records: [{ tagName: "python", user_id: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "tagSmeCounts", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "tagLastUsed", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
           ],
           messages: ["Collected tagSmes (1 record) for Tag Report."],
         },
@@ -1479,18 +1537,17 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Scripts" }));
-    await user.click(screen.getByRole("radio", { name: "Deep audit" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
     expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      reportId: "tag-report",
       credentials: basicBusinessPatCredentials,
-      runPreset: "deep-audit",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
+      periodRole: "current",
+      scope: {},
     });
-    expect(screen.getByText("5 datasets")).toBeInTheDocument();
+    expect(screen.getByText("7 datasets")).toBeInTheDocument();
     expect(screen.getByText("Questions hit the configured page cap; results may be partial.")).toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
@@ -1524,7 +1581,7 @@ describe("AppShell", () => {
       "50",
     );
     expect(
-      within(status).getByText("Running Tag Report current period live API collection..."),
+      within(status).getByText("Collecting all available data for Tag Report…"),
     ).toBeInTheDocument();
 
     pendingRun.resolve(jsonResponse({
@@ -1534,16 +1591,274 @@ describe("AppShell", () => {
         reportTitle: "Tag Report",
         periodRole: "current",
         scope: {},
-        pageSize: 100,
-        maxPagesPerDataset: 20,
         warnings: [],
-        datasets: [
-          { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
-        ],
+        datasets: makeCompleteTagReportDatasets([
+          { name: "python", totalPageViews: 500, questionCount: 4 },
+        ]),
         messages: ["Collected tags (1 record) for Tag Report."],
       },
     }));
     expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["Collection failed.", "Collection failed. No complete result was produced."],
+    [
+      "Collection failed. No complete result was produced.",
+      "Collection failed. No complete result was produced.",
+    ],
+    [
+      "No complete result was produced. Upstream timeout.",
+      "Upstream timeout. No complete result was produced.",
+    ],
+  ])("ends report errors with a single completion disclaimer", async (error, expectedMessage) => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: false, error }));
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    expect(await screen.findByText(expectedMessage)).toBeInTheDocument();
+    expect(screen.getByText(expectedMessage).textContent?.match(/No complete result was produced\./g)).toHaveLength(1);
+  });
+
+  it.each([
+    ["missing pagination", undefined],
+    ["more pages available", { pageCount: 1, reachedMaxPages: false, hasMore: true }],
+    ["page limit reached", { pageCount: 1, reachedMaxPages: true, hasMore: false }],
+    ["a negative page count", { pageCount: -1, reachedMaxPages: false, hasMore: false }],
+  ])("rejects a successful report response with %s evidence", async (_label, pagination) => {
+    const user = userEvent.setup();
+    const datasets = makeCompleteTagReportDatasets([{ name: "python" }]);
+    if (pagination) {
+      datasets[0]!.pagination = pagination;
+    } else {
+      delete (datasets[0] as Partial<(typeof datasets)[number]>).pagination;
+    }
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        ok: true,
+        result: {
+          reportId: "tag-report",
+          reportTitle: "Tag Report",
+          periodRole: "current",
+          scope: {},
+          warnings: [],
+          datasets,
+          messages: ["Collected tags for Tag Report."],
+        },
+      }),
+    );
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    const status = await screen.findByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
+    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a successful report response with no datasets", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        ok: true,
+        result: {
+          reportId: "tag-report",
+          reportTitle: "Tag Report",
+          periodRole: "current",
+          scope: {},
+          warnings: [],
+          datasets: [],
+          messages: [],
+        },
+      }),
+    );
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    const status = await screen.findByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
+    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects all datasets when one dataset has invalid pagination evidence", async () => {
+    const user = userEvent.setup();
+    const datasets = makeCompleteTagReportDatasets([{ name: "python" }]);
+    datasets.find((dataset) => dataset.datasetName === "questions")!.pagination = {
+      pageCount: 1,
+      reachedMaxPages: false,
+      hasMore: true,
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        ok: true,
+        result: {
+          reportId: "tag-report",
+          reportTitle: "Tag Report",
+          periodRole: "current",
+          scope: {},
+          warnings: [],
+          datasets,
+          messages: ["Collected tags for Tag Report.", "Collected questions for Tag Report."],
+        },
+      }),
+    );
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    const status = await screen.findByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
+    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a missing required dataset", (body: ReturnType<typeof makeInactiveUsersReportRunBody>) => {
+      body.result.datasets = [];
+    }],
+    ["a duplicate required dataset", (body: ReturnType<typeof makeInactiveUsersReportRunBody>) => {
+      body.result.datasets = [...body.result.datasets, body.result.datasets[0]!];
+    }],
+    ["an extra dataset", (body: ReturnType<typeof makeInactiveUsersReportRunBody>) => {
+      body.result.datasets.push({
+        datasetName: "tags",
+        records: [],
+        pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+      } as unknown as (typeof body.result.datasets)[number]);
+    }],
+    ["the wrong report", (body: ReturnType<typeof makeInactiveUsersReportRunBody>) => {
+      body.result.reportId = "tag-report";
+    }],
+    ["the wrong period role", (body: ReturnType<typeof makeInactiveUsersReportRunBody>) => {
+      body.result.periodRole = "comparison";
+    }],
+    ["the wrong scope", (body: ReturnType<typeof makeInactiveUsersReportRunBody>) => {
+      body.result.scope = { startDate: "2025-01-01" };
+    }],
+    ["malformed records", (body: ReturnType<typeof makeInactiveUsersReportRunBody>) => {
+      body.result.datasets[0]!.records = null as unknown as { user_id: number }[];
+    }],
+    ["malformed messages", (body: ReturnType<typeof makeInactiveUsersReportRunBody>) => {
+      body.result.messages = null as unknown as string[];
+    }],
+  ])("rejects a report success envelope containing %s", async (_label, mutate) => {
+    const user = userEvent.setup();
+    const body = makeInactiveUsersReportRunBody("current", {});
+    mutate(body);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    const status = await screen.findByRole("region", { name: "Run status" });
+    expect(within(status).getByRole("heading", { name: "Inactive Users run failed" })).toBeInTheDocument();
+    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts the known synthetic output dataset for the Interactions report", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        reportId: "interactions",
+        reportTitle: "Interactions",
+        periodRole: "current",
+        scope: {},
+        warnings: [],
+        datasets: ["users", "questions", "answers", "comments", "interactions"].map((datasetName) => ({
+          datasetName,
+          records: [],
+          pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+        })),
+        messages: ["Built interactions (0 records) for Interactions."],
+      },
+    }));
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Interactions" }));
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    expect(await screen.findByText("Live API run completed for Interactions.")).toBeInTheDocument();
+    expect(screen.getByText("5 datasets")).toBeInTheDocument();
+  });
+
+  it("does not request a comparison period when the current period fails", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ ok: false, error: "Current collection failed." }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByLabelText("Enable comparison period"));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run both periods" }));
+
+    expect(await screen.findByRole("heading", { name: "Inactive Users run failed" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("publishes neither period when comparison fails after current is staged", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(makeInactiveUsersReportRunBody("current", {})))
+      .mockResolvedValueOnce(jsonResponse({ ok: false, error: "Comparison collection failed." }));
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Inactive Users" }));
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByLabelText("Enable comparison period"));
+    savePersistedDatasetSessionMock.mockClear();
+    await user.click(screen.getByRole("button", { name: "Run both periods" }));
+
+    expect(await screen.findByRole("heading", { name: "Inactive Users run failed" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
+    expect(screen.queryByText("Live API run completed for Inactive Users.")).not.toBeInTheDocument();
+    expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
   });
 
   it("ignores an older live run completion after a newer run starts", async () => {
@@ -1571,7 +1886,7 @@ describe("AppShell", () => {
 
     const status = screen.getByRole("region", { name: "Run status" });
     expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
-    expect(within(status).getByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+    expect(within(status).getByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
 
@@ -1608,7 +1923,7 @@ describe("AppShell", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const status = screen.getByRole("region", { name: "Run status" });
     expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
-    expect(within(status).getByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+    expect(within(status).getByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
     expect(screen.queryByText("Collected stale run-both tags for Tag Report.")).not.toBeInTheDocument();
   });
 
@@ -1623,12 +1938,12 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    expect(await screen.findByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+    expect(await screen.findByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
 
     expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
-    expect(screen.queryByText("Running Tag Report current period live API collection...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collecting all available data for Tag Report…")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Run status" })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -1636,7 +1951,7 @@ describe("AppShell", () => {
       await pendingRun.promise;
     });
 
-    expect(screen.queryByText("Running Tag Report current period live API collection...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collecting all available data for Tag Report…")).not.toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
   });
@@ -1685,8 +2000,6 @@ describe("AppShell", () => {
           reportTitle: "Inactive Users",
           periodRole,
           scope: payload.scope,
-          pageSize: payload.pageSize,
-          maxPagesPerDataset: payload.maxPagesPerDataset,
           warnings: [],
           datasets: [
             {
@@ -1698,6 +2011,7 @@ describe("AppShell", () => {
                       { user_id: 1, display_name: "Ada" },
                       { user_id: 2, display_name: "Linus" },
                     ],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
             },
           ],
           messages: [`Collected users for ${periodRole}.`],
@@ -1733,6 +2047,12 @@ describe("AppShell", () => {
       credentials: basicBusinessPatCredentials,
       periodRole: "comparison",
     });
+    expect(screen.getByText("2 datasets")).toBeInTheDocument();
+    expect(screen.getByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
+    await waitFor(() => expect(savePersistedDatasetSessionMock).toHaveBeenCalled());
+    const saveCalls = savePersistedDatasetSessionMock.mock.calls;
+    const saved = saveCalls[saveCalls.length - 1]?.[0];
+    expect(saved?.reportRunSnapshots.map((snapshot) => snapshot.periodRole)).toEqual(["current", "comparison"]);
   });
 
   it("saves credentials for the current browser session", async () => {
@@ -1827,18 +2147,36 @@ function makeSmeCoverageRunBody(
   empty = false,
 ) {
   const pagination = { pageCount: empty ? 0 : 1, reachedMaxPages: false, hasMore: false };
+  const evidence = empty ? [] : decisionPack.evidence;
+  const tags = evidence.map((row) => ({ name: row.tagName, count: row.questionCount ?? 0 }));
+  const questions = evidence.flatMap((row, rowIndex) => {
+    if (
+      row.demandQuality !== "Complete" ||
+      !Number.isInteger(row.questionCount) ||
+      row.questionCount === null ||
+      row.questionCount < 0 ||
+      row.pageViews === null
+    ) {
+      return [];
+    }
+    return Array.from({ length: row.questionCount }, (_, questionIndex) => ({
+      question_id: `${marker}-${rowIndex}-${questionIndex}`,
+      tags: [row.tagName],
+      view_count: questionIndex === 0 ? row.pageViews : 0,
+    }));
+  });
+  const tagSmeCounts = evidence.flatMap((row) => row.smeCount === null
+    ? []
+    : [{ name: row.tagName, subjectMatterExpertCount: row.smeCount }]);
   return {
     ok: true as const,
     result: {
       utilityId: "sme-coverage-analyzer" as const,
       utilityTitle: "SME Coverage Analyzer" as const,
-      pageSize: decisionPack.snapshot.pageSize,
-      maxPagesPerDataset: decisionPack.snapshot.maxPagesPerDataset,
-      runPreset: decisionPack.snapshot.runPreset,
       datasets: [
-        { datasetName: "tags" as const, records: empty ? [] : [{ name: marker }], pagination },
-        { datasetName: "questions" as const, records: empty ? [] : [{ question_id: marker }], pagination },
-        { datasetName: "tagSmeCounts" as const, records: empty ? [] : [{ name: marker }], pagination },
+        { datasetName: "tags" as const, records: tags, pagination },
+        { datasetName: "questions" as const, records: questions, pagination },
+        { datasetName: "tagSmeCounts" as const, records: tagSmeCounts, pagination },
       ],
       messages: [],
       warnings: [...decisionPack.warnings],
@@ -1847,63 +2185,76 @@ function makeSmeCoverageRunBody(
   };
 }
 
+function mutableSmeDecisionPack(body: ReturnType<typeof makeSmeCoverageRunBody>): Record<string, any> {
+  const decisionPack = structuredClone(body.result.decisionPack);
+  body.result.decisionPack = decisionPack;
+  return decisionPack as unknown as Record<string, any>;
+}
+
 function makePersistedUtilitySnapshot(decisionPack: ReturnType<typeof completeSmeCoverageDecisionPack>) {
+  const loadedAt = "2026-07-30T12:00:00.000Z";
+  const snapshotId = "utility-snapshot";
+  const pagination = { pageCount: 0, reachedMaxPages: false, hasMore: false };
+  const datasets = {
+    "utility-tags": {
+      id: "utility-tags",
+      snapshotId,
+      utilityId: "sme-coverage-analyzer" as const,
+      name: "tags" as const,
+      records: [],
+      loadedAt,
+      source: "live-api" as const,
+      ...pagination,
+    },
+    "utility-questions": {
+      id: "utility-questions",
+      snapshotId,
+      utilityId: "sme-coverage-analyzer" as const,
+      name: "questions" as const,
+      records: [],
+      loadedAt,
+      source: "live-api" as const,
+      ...pagination,
+    },
+    "utility-tag-sme-counts": {
+      id: "utility-tag-sme-counts",
+      snapshotId,
+      utilityId: "sme-coverage-analyzer" as const,
+      name: "tagSmeCounts" as const,
+      records: [],
+      loadedAt,
+      source: "live-api" as const,
+      ...pagination,
+    },
+  };
   return {
-    version: 2 as const,
+    version: 3 as const,
     selectedReportId: "tag-report" as const,
     selectedReportIds: ["tag-report" as const],
     selectedUtilityId: "sme-coverage-analyzer" as const,
-    datasets: {},
+    datasets,
     reportOutputs: {},
     reportRunSnapshots: [],
     utilityOutputs: {
       "sme-coverage-analyzer": {
         utilityId: "sme-coverage-analyzer" as const,
-        loadedAt: "2026-07-30T12:00:00.000Z",
+        loadedAt,
         decisionPack,
       },
     },
-    utilityRunSnapshots: [],
+    utilityRunSnapshots: [{
+      id: snapshotId,
+      utilityId: "sme-coverage-analyzer" as const,
+      loadedAt,
+      datasetIds: Object.keys(datasets),
+      warnings: [],
+    }],
     warnings: [],
   };
 }
 
 function persistableEmptySmeCoverageDecisionPack(): ReturnType<typeof completeSmeCoverageDecisionPack> {
-  return {
-    snapshot: {
-      instanceHost: "example.stackenterprise.co",
-      generatedAt: "2026-07-30T12:00:00.000Z",
-      scopeLabel: "All-time demand · Current SME coverage",
-      completeness: "Empty",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
-    },
-    warnings: [],
-    summary: {
-      tagsAnalyzed: 0,
-      tagsWithSmes: 0,
-      immediateGaps: 0,
-      criticalUnderCoverage: 0,
-      lightCoverage: 0,
-      unknownRows: 0,
-    },
-    overview: "No tags were available.",
-    assessment: "No assessment can be made.",
-    findings: { immediateGaps: [], criticalUnderCoverage: [], lightCoverage: [] },
-    methodology: {
-      activityQuestionMinimum: 1,
-      activityPageViewThresholdExclusive: 25,
-      activeTagMedianPageViews: null,
-      coveredActiveSampleSize: 0,
-      p75PageViewsPerSme: null,
-      p90PageViewsPerSme: null,
-      percentileSampleSufficient: false,
-      ratioFormula: "pageViews / smeCount",
-      roundingRule: "Nearest whole page view for display; unrounded for calculation",
-    },
-    evidence: [],
-  };
+  return emptySmeCoverageDecisionPack();
 }
 
 function makeTagReportRunBody(message: string) {
@@ -1914,13 +2265,105 @@ function makeTagReportRunBody(message: string) {
       reportTitle: "Tag Report",
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 20,
       warnings: [],
       datasets: [
-        { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+        },
+        { datasetName: "users", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "questions", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "articles", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "tagSmes", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "tagSmeCounts", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "tagLastUsed", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
       ],
       messages: [message],
+    },
+  };
+}
+
+function makeCompleteTagReportDatasets(
+  tagRecords: Record<string, unknown>[],
+  tagPagination = { pageCount: 1, reachedMaxPages: false, hasMore: false },
+): Array<{
+  datasetName: DatasetName;
+  records: Record<string, unknown>[];
+  pagination: { pageCount: number; reachedMaxPages: boolean; hasMore: boolean };
+}> {
+  const emptyPagination = { pageCount: 0, reachedMaxPages: false, hasMore: false };
+  return [
+    { datasetName: "tags", records: tagRecords, pagination: tagPagination },
+    { datasetName: "users", records: [], pagination: emptyPagination },
+    { datasetName: "questions", records: [], pagination: emptyPagination },
+    { datasetName: "articles", records: [], pagination: emptyPagination },
+    { datasetName: "tagSmes", records: [], pagination: emptyPagination },
+    { datasetName: "tagSmeCounts", records: [], pagination: emptyPagination },
+    { datasetName: "tagLastUsed", records: [], pagination: emptyPagination },
+  ];
+}
+
+function makePersistedTagReportRun(
+  periodRole: "current" | "comparison",
+  scope: { startDate?: string; endDate?: string },
+  snapshotId: string,
+  tagRecords: Record<string, unknown>[],
+) {
+  const loadedAt = "2026-07-09T12:00:00.000Z";
+  const datasets = Object.fromEntries(
+    makeCompleteTagReportDatasets(tagRecords).map((dataset) => {
+      const id = `${snapshotId}-${dataset.datasetName}`;
+      return [id, {
+        id,
+        snapshotId,
+        reportId: "tag-report" as const,
+        name: dataset.datasetName,
+        records: dataset.records,
+        loadedAt,
+        source: "live-api" as const,
+        periodRole,
+        scope,
+        pageCount: dataset.pagination.pageCount,
+        reachedMaxPages: dataset.pagination.reachedMaxPages,
+        hasMore: dataset.pagination.hasMore,
+      }];
+    }),
+  );
+  return {
+    datasets,
+    snapshot: {
+      id: snapshotId,
+      reportId: "tag-report" as const,
+      periodRole,
+      scope,
+      loadedAt,
+      datasetIds: Object.keys(datasets),
+      warnings: [],
+    },
+  };
+}
+
+function makeInactiveUsersReportRunBody(
+  periodRole: "current" | "comparison",
+  scope: { startDate?: string; endDate?: string },
+) {
+  return {
+    ok: true as const,
+    result: {
+      reportId: "inactive-users" as "inactive-users" | "tag-report",
+      reportTitle: "Inactive Users",
+      periodRole,
+      scope,
+      warnings: [],
+      datasets: [
+        {
+          datasetName: "users",
+          records: [{ user_id: periodRole === "current" ? 1 : 2 }],
+          pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+        },
+      ],
+      messages: [`Collected users for ${periodRole}.`],
     },
   };
 }

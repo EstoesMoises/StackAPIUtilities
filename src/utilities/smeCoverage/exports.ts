@@ -14,8 +14,9 @@ export const SME_COVERAGE_EVIDENCE_CSV_HEADERS = [
   "recommended_action",
   "demand_quality",
   "sme_quality",
-  "result_completeness",
-  "completeness_warnings",
+  "collection_status",
+  "analysis_quality",
+  "evidence_notes",
 ] as const;
 
 export function buildSmeCoverageEvidenceCsv(pack: SmeCoverageDecisionPack): string {
@@ -33,12 +34,10 @@ export function buildSmeCoverageMarkdown(pack: SmeCoverageDecisionPack): string 
     `- Instance host: ${pack.snapshot.instanceHost}`,
     `- Generated at: ${pack.snapshot.generatedAt}`,
     `- Scope: ${pack.snapshot.scopeLabel}`,
-    `- Completeness: ${pack.snapshot.completeness}`,
-    `- Page size: ${pack.snapshot.pageSize}`,
-    `- Maximum pages per dataset: ${pack.snapshot.maxPagesPerDataset}`,
-    `- Run preset: ${pack.snapshot.runPreset ?? "Unavailable"}`,
+    `- Collection: ${pack.snapshot.collectionLabel}`,
+    `- Analysis quality: ${pack.snapshot.completeness}`,
     "",
-    "## Completeness warnings",
+    "## Evidence notes",
     ...renderWarnings(pack),
     "",
     "## Executive summary",
@@ -102,15 +101,16 @@ function toCsvRecord(
     recommended_action: row.recommendedAction,
     demand_quality: row.demandQuality,
     sme_quality: row.smeQuality,
-    result_completeness: pack.snapshot.completeness,
-    completeness_warnings: pack.warnings
+    collection_status: pack.snapshot.collectionLabel,
+    analysis_quality: pack.snapshot.completeness,
+    evidence_notes: pack.warnings
       .map((warning) => `${warning.code}: ${warning.message}`)
       .join(" | "),
   };
 }
 
 function renderWarnings(pack: SmeCoverageDecisionPack): readonly string[] {
-  if (pack.warnings.length === 0) return ["No completeness warnings are listed in this decision pack."];
+  if (pack.warnings.length === 0) return ["No evidence notes are listed in this decision pack."];
   return pack.warnings.map((warning) => `- ${warning.code}: ${warning.message}`);
 }
 
