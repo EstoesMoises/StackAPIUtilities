@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { formatPeriodLabel } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
 import type { PeriodScope, ReportId, ReportRunScope, ReportWarning, RunPeriodRole } from "../domain/types";
 import { DataTable } from "./DataTable";
@@ -80,7 +81,7 @@ export function ReportWorkspace({
           render full script outputs. Loaded datasets stay in this browser until removed.
         </p>
       </div>
-      <ReportScopePanel reportId={reportId} scope={scope} onChange={onScopeChange} />
+      <ReportScopePanel scope={scope} onChange={onScopeChange} />
       <div className="run-controls">
         <button
           className="s-btn s-btn__filled report-run-primary"
@@ -108,6 +109,17 @@ export function ReportWorkspace({
           </>
         )}
       </div>
+      {outputSource === "live-api" && (
+        <div
+          className="collection-status s-notice s-notice__success mt16"
+          role="status"
+          aria-label="Collection status"
+        >
+          <strong>All available data collected</strong>
+          <span> · {formatPeriodLabel(currentScope ?? {})}</span>
+          {comparisonScope && <span> · Compared with {formatPeriodLabel(comparisonScope)}</span>}
+        </div>
+      )}
       <div className="s-navigation s-navigation__muted report-tabs" role="tablist">
         <button
           className="s-navigation--item"

@@ -1,10 +1,10 @@
 import { hydrateDatasetSessionState } from "./datasetPersistence";
+import type { DatasetPaginationMetadata } from "../collectors/liveCollectors";
 import type {
   DatasetName,
   PeriodScope,
   ReportId,
   ReportOutput,
-  ReportRunPresetId,
   ReportWarning,
   RunPeriodRole,
   SessionCredentials,
@@ -18,6 +18,7 @@ import type { SmeCoverageRunResult } from "../utilities/smeCoverage/runner";
 interface LiveDatasetPayload {
   datasetName: DatasetName;
   records: Record<string, unknown>[];
+  pagination: DatasetPaginationMetadata;
 }
 
 type SessionAction =
@@ -32,9 +33,6 @@ type SessionAction =
       reportId: ReportId;
       periodRole: RunPeriodRole;
       scope: PeriodScope;
-      pageSize: number;
-      maxPagesPerDataset: number;
-      runPreset?: ReportRunPresetId;
       warnings: ReportWarning[];
       datasets: LiveDatasetPayload[];
     }
@@ -140,6 +138,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
 
       action.datasets.forEach((dataset, index) => {
         const datasetId = createDatasetId(snapshotId, dataset.datasetName, String(index));
+        const pagination = dataset.pagination ?? { pageCount: 0, reachedMaxPages: false, hasMore: false };
         datasetIds.push(datasetId);
         liveDatasets[datasetId] = {
           id: datasetId,
@@ -152,6 +151,9 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           periodRole: action.periodRole,
           scope: action.scope,
           warnings: action.warnings,
+          pageCount: pagination.pageCount,
+          reachedMaxPages: pagination.reachedMaxPages,
+          hasMore: pagination.hasMore,
         };
       });
 
@@ -207,9 +209,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
             reportId: action.reportId,
             periodRole: action.periodRole,
             scope: action.scope,
-            pageSize: action.pageSize,
-            maxPagesPerDataset: action.maxPagesPerDataset,
-            runPreset: action.runPreset,
             loadedAt,
             datasetIds,
             warnings: action.warnings,

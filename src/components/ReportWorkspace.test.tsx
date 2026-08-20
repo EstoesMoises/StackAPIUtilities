@@ -58,6 +58,54 @@ describe("ReportWorkspace", () => {
     expect(screen.getByLabelText("users: 1")).toBeInTheDocument();
   });
 
+  it("communicates exhaustive live collection for the current date scope", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        currentScope={{ startDate: "2026-01-01", endDate: "2026-01-31" }}
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "Collection status" })).toHaveTextContent(
+      "All available data collected · 2026-01-01 to 2026-01-31",
+    );
+  });
+
+  it("appends the comparison scope to live collection status", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ datasetName: "users", user_id: 1 }]}
+        outputSource="live-api"
+        currentScope={{ startDate: "2026-01-01", endDate: "2026-01-31" }}
+        comparisonScope={{ startDate: "2025-01-01", endDate: "2025-01-31" }}
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "Collection status" })).toHaveTextContent(
+      "All available data collected · 2026-01-01 to 2026-01-31 · Compared with 2025-01-01 to 2025-01-31",
+    );
+  });
+
+  it("does not claim API collection completeness for uploaded output", () => {
+    render(
+      <ReportWorkspace
+        {...defaultWorkspaceProps()}
+        reportId="inactive-users"
+        records={[{ user_id: 1 }]}
+        outputSource="upload"
+        currentScope={{ startDate: "2026-01-01", endDate: "2026-01-31" }}
+      />,
+    );
+
+    expect(screen.queryByRole("status", { name: "Collection status" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/All available data collected/)).not.toBeInTheDocument();
+  });
+
   it("renders synthetic live interactions with the interactions dashboard", () => {
     render(
       <ReportWorkspace

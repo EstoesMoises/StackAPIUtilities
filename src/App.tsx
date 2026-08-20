@@ -307,7 +307,7 @@ export function App() {
         id: `${state.selectedReportId}-live-running`,
         reportId: state.selectedReportId,
         status: "running",
-        message: `Running ${report.title} ${periodRole} period live API collection...`,
+        message: `Collecting all available data for ${report.title}…`,
       },
     ]);
     const runId = startActiveRun();
@@ -315,7 +315,6 @@ export function App() {
 
     try {
       const periodScope = periodRole === "comparison" ? reportScope.comparison ?? {} : reportScope.current;
-      const runPreset = state.selectedReportId === "tag-report" ? reportScope.runPreset : undefined;
       const response = await fetch("/api/reports/run", {
         method: "POST",
         headers: {
@@ -326,9 +325,6 @@ export function App() {
           credentials: state.credentials,
           periodRole,
           scope: periodScope,
-          pageSize: reportScope.pageSize,
-          maxPagesPerDataset: reportScope.maxPagesPerDataset,
-          runPreset,
         }),
       });
       const body = (await response.json()) as ReportRunResponseBody;
@@ -348,9 +344,6 @@ export function App() {
         reportId: result.reportId,
         periodRole: result.periodRole,
         scope: result.scope,
-        pageSize: result.pageSize,
-        maxPagesPerDataset: result.maxPagesPerDataset,
-        runPreset: result.runPreset,
         warnings: result.warnings,
         datasets: result.datasets,
       });
@@ -656,7 +649,7 @@ function restoreReportScopeFromSnapshot(
     selectedRunSnapshots.comparison ??
     findLatestSelectedReportRunSnapshot(snapshot);
 
-  if (!runSnapshot?.runPreset) {
+  if (!runSnapshot) {
     return currentScope;
   }
 
@@ -668,9 +661,6 @@ function restoreReportScopeFromSnapshot(
     comparison:
       selectedRunSnapshots.comparison?.scope ??
       (runSnapshot.periodRole === "comparison" ? runSnapshot.scope : currentScope.comparison),
-    pageSize: runSnapshot.pageSize,
-    maxPagesPerDataset: runSnapshot.maxPagesPerDataset,
-    runPreset: runSnapshot.runPreset,
   };
 }
 
@@ -688,13 +678,13 @@ function findReportRunSnapshotById(snapshot: PersistedDatasetSessionSnapshot, sn
     return undefined;
   }
 
-  return snapshot.reportRunSnapshots.find((runSnapshot) => runSnapshot.id === snapshotId && runSnapshot.runPreset);
+  return snapshot.reportRunSnapshots.find((runSnapshot) => runSnapshot.id === snapshotId);
 }
 
 function findLatestSelectedReportRunSnapshot(snapshot: PersistedDatasetSessionSnapshot) {
   return [...snapshot.reportRunSnapshots]
     .reverse()
-    .find((runSnapshot) => runSnapshot.reportId === snapshot.selectedReportId && runSnapshot.runPreset);
+    .find((runSnapshot) => runSnapshot.reportId === snapshot.selectedReportId);
 }
 
 function renderWriteToolPanel(toolId: WriteToolId, credentials: SessionCredentials | null) {
@@ -708,9 +698,11 @@ function renderWriteToolPanel(toolId: WriteToolId, credentials: SessionCredentia
 }
 
 function getLiveRunErrorMessage(error: unknown, _reportTitle: string): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
+  const message = error instanceof Error ? error.message : "Live API run failed.";
+  const completionDisclaimer = "No complete result was produced.";
+  const messageWithoutDisclaimer = message.split(completionDisclaimer).join("").trim();
 
-  return "Live API run failed.";
+  return messageWithoutDisclaimer === ""
+    ? completionDisclaimer
+    : `${messageWithoutDisclaimer} ${completionDisclaimer}`;
 }

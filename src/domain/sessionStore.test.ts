@@ -31,6 +31,8 @@ if (typeof globalThis.sessionStorage === "undefined") {
   });
 }
 
+const completePagination = { pageCount: 1, reachedMaxPages: false, hasMore: false };
+
 describe("sessionStore", () => {
   it("starts with the tag report selected and empty session data", () => {
     expect(createInitialSessionState()).toEqual({
@@ -252,13 +254,12 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "current",
       scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
-      pageSize: 50,
-      maxPagesPerDataset: 2,
       warnings: [],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: { pageCount: 3, reachedMaxPages: false, hasMore: false },
         },
       ],
     });
@@ -269,16 +270,16 @@ describe("sessionStore", () => {
     expect(dataset?.periodRole).toBe("current");
     expect(dataset?.scope).toEqual({ startDate: "2026-01-01", endDate: "2026-01-31" });
     expect(dataset?.records).toEqual([{ user_id: 1, display_name: "Ada" }]);
+    expect(dataset).toMatchObject({ pageCount: 3, reachedMaxPages: false, hasMore: false });
     expect(state.reportRunSnapshots).toHaveLength(1);
-    expect(state.reportRunSnapshots[0]).toEqual(
-      expect.objectContaining({
-        reportId: "inactive-users",
-        periodRole: "current",
-        scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
-        pageSize: 50,
-        maxPagesPerDataset: 2,
-      }),
-    );
+    expect(state.reportRunSnapshots[0]).toMatchObject({
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
+    });
+    expect(state.reportRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(state.reportRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(state.reportRunSnapshots[0]).not.toHaveProperty("runPreset");
     expect(state.reportOutputs["inactive-users"]?.source).toBe("live-api");
     expect(state.reportOutputs["inactive-users"]?.records).toEqual([
       { datasetName: "users", user_id: 1, display_name: "Ada" },
@@ -298,18 +299,17 @@ describe("sessionStore", () => {
       reportId: "tag-report",
       periodRole: "current",
       scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "standard",
       warnings,
       datasets: [
         {
           datasetName: "tags",
           records: [{ name: "python", totalPageViews: 350, tagWatchers: 12 }],
+          pagination: completePagination,
         },
         {
           datasetName: "tagSmeCounts",
           records: [{ id: 42, name: "PYTHON", creationDate: "2014-05-13T12:00:00Z" }],
+          pagination: completePagination,
         },
         {
           datasetName: "questions",
@@ -324,14 +324,17 @@ describe("sessionStore", () => {
               first_answer_creation_date: 1_700_007_200,
             },
           ],
+          pagination: completePagination,
         },
         {
           datasetName: "tagSmes",
           records: [{ tagName: "python", user_id: 1 }],
+          pagination: completePagination,
         },
         {
           datasetName: "tagLastUsed",
           records: [{ tagName: "python", lastUsed: "2026-08-18" }],
+          pagination: completePagination,
         },
       ],
     });
@@ -357,32 +360,26 @@ describe("sessionStore", () => {
     expect(state.reportRunSnapshots[0]?.warnings).toEqual(warnings);
   });
 
-  it("persists the selected run preset on live snapshots", () => {
+  it("keeps report snapshots free of legacy volume and preset fields", () => {
     const state = sessionReducer(createInitialSessionState(), {
       type: "live/loaded",
       reportId: "tag-report",
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
       warnings: [],
       datasets: [
         {
           datasetName: "tags",
           records: [{ name: "python" }],
+          pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
         },
       ],
     });
 
-    expect(state.reportRunSnapshots[0]).toEqual(
-      expect.objectContaining({
-        reportId: "tag-report",
-        pageSize: 100,
-        maxPagesPerDataset: 20,
-        runPreset: "deep-audit",
-      }),
-    );
+    expect(state.reportRunSnapshots[0]).toMatchObject({ reportId: "tag-report" });
+    expect(state.reportRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(state.reportRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(state.reportRunSnapshots[0]).not.toHaveProperty("runPreset");
   });
 
   it("removes transformed live output rows when removing their backing dataset", () => {
@@ -391,14 +388,12 @@ describe("sessionStore", () => {
       reportId: "tag-report",
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "standard",
       warnings: [],
       datasets: [
         {
           datasetName: "tags",
           records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          pagination: completePagination,
         },
       ],
     });
@@ -428,14 +423,12 @@ describe("sessionStore", () => {
       reportId: "tag-report",
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "standard",
       warnings: [],
       datasets: [
         {
           datasetName: "tags",
           records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          pagination: completePagination,
         },
         {
           datasetName: "questions",
@@ -447,6 +440,7 @@ describe("sessionStore", () => {
               view_count: 25,
             },
           ],
+          pagination: completePagination,
         },
       ],
     });
@@ -487,14 +481,12 @@ describe("sessionStore", () => {
       reportId: "tag-report",
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "standard",
       warnings: [],
       datasets: [
         {
           datasetName: "tags",
           records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          pagination: completePagination,
         },
         {
           datasetName: "questions",
@@ -506,10 +498,12 @@ describe("sessionStore", () => {
               view_count: 25,
             },
           ],
+          pagination: completePagination,
         },
         {
           datasetName: "tagSmes",
           records: [{ tagName: "python", user_id: 1 }],
+          pagination: completePagination,
         },
       ],
     });
@@ -549,13 +543,12 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "current",
       scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-      pageSize: 25,
-      maxPagesPerDataset: 1,
       warnings: [],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: completePagination,
         },
       ],
     });
@@ -564,13 +557,12 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "comparison",
       scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
-      pageSize: 25,
-      maxPagesPerDataset: 1,
       warnings: [],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 2, display_name: "Grace" }],
+          pagination: completePagination,
         },
       ],
     });
@@ -605,40 +597,32 @@ describe("sessionStore", () => {
       reportId: "tag-report",
       periodRole: "current",
       scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-      pageSize: 100,
-      maxPagesPerDataset: 20,
       warnings: [currentWarning],
-      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 100 }] }],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 100 }], pagination: completePagination }],
     });
     const comparisonWithoutWarning = sessionReducer(currentWithWarning, {
       type: "live/loaded",
       reportId: "tag-report",
       periodRole: "comparison",
       scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
-      pageSize: 100,
-      maxPagesPerDataset: 20,
       warnings: [],
-      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 90 }] }],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 90 }], pagination: completePagination }],
     });
     const comparisonWithWarning = sessionReducer(comparisonWithoutWarning, {
       type: "live/loaded",
       reportId: "tag-report",
       periodRole: "comparison",
       scope: { startDate: "2026-04-01", endDate: "2026-04-30" },
-      pageSize: 100,
-      maxPagesPerDataset: 20,
       warnings: [comparisonWarning, comparisonWarning],
-      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 80 }] }],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 80 }], pagination: completePagination }],
     });
     const currentRerunWithoutWarning = sessionReducer(comparisonWithWarning, {
       type: "live/loaded",
       reportId: "tag-report",
       periodRole: "current",
       scope: { startDate: "2026-07-01", endDate: "2026-07-31" },
-      pageSize: 100,
-      maxPagesPerDataset: 20,
       warnings: [],
-      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 120 }] }],
+      datasets: [{ datasetName: "tags", records: [{ name: "python", totalPageViews: 120 }], pagination: completePagination }],
     });
 
     expect(comparisonWithoutWarning.reportOutputs["tag-report"]?.warnings).toEqual([currentWarning]);
@@ -667,17 +651,17 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "current",
       scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
-      pageSize: 50,
-      maxPagesPerDataset: 2,
       warnings: [],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: completePagination,
         },
         {
           datasetName: "tags",
           records: [{ name: "python" }],
+          pagination: completePagination,
         },
       ],
     });
@@ -709,17 +693,17 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "current",
       scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
-      pageSize: 50,
-      maxPagesPerDataset: 2,
       warnings: [{ reportId: "inactive-users", code: "dataset-cap-reached", message: "Partial data." }],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: completePagination,
         },
         {
           datasetName: "tags",
           records: [{ name: "python" }],
+          pagination: completePagination,
         },
       ],
     });
@@ -753,13 +737,12 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "current",
       scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-      pageSize: 50,
-      maxPagesPerDataset: 2,
       warnings: [],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: completePagination,
         },
       ],
     });
@@ -768,13 +751,12 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "comparison",
       scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
-      pageSize: 50,
-      maxPagesPerDataset: 2,
       warnings: [],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 2, display_name: "Grace" }],
+          pagination: completePagination,
         },
       ],
     });
@@ -808,13 +790,12 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "current",
       scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-      pageSize: 50,
-      maxPagesPerDataset: 2,
       warnings: [],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: completePagination,
         },
       ],
     });
@@ -823,13 +804,12 @@ describe("sessionStore", () => {
       reportId: "inactive-users",
       periodRole: "comparison",
       scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
-      pageSize: 50,
-      maxPagesPerDataset: 2,
       warnings: [],
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 2, display_name: "Grace" }],
+          pagination: completePagination,
         },
       ],
     });

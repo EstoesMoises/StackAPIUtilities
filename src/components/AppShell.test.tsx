@@ -468,7 +468,7 @@ describe("AppShell", () => {
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
-        },
+        } as never,
       ],
       warnings: [],
     });
@@ -486,7 +486,7 @@ describe("AppShell", () => {
     expect(within(datasetsPanel).getByRole("button", { name: "Flush stored datasets" })).toBeInTheDocument();
   });
 
-  it("uses a restored Tag Report run preset for the next live run", async () => {
+  it("restores a selected report date scope without requiring a legacy preset", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(makeTagReportRunBody("Collected restored-preset tags for Tag Report.")),
@@ -519,11 +519,10 @@ describe("AppShell", () => {
           scope: {},
           pageSize: 100,
           maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
-        },
+        } as never,
       ],
       warnings: [],
     });
@@ -537,9 +536,8 @@ describe("AppShell", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
-      runPreset: "deep-audit",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
+      periodRole: "current",
+      scope: {},
     });
   });
 
@@ -555,9 +553,6 @@ describe("AppShell", () => {
           reportTitle: "Tag Report",
           periodRole: payload.periodRole,
           scope: payload.scope,
-          pageSize: payload.pageSize,
-          maxPagesPerDataset: payload.maxPagesPerDataset,
-          runPreset: payload.runPreset,
           warnings: [],
           datasets: [
             {
@@ -566,6 +561,7 @@ describe("AppShell", () => {
                 payload.periodRole === "comparison"
                   ? [{ name: "javascript", totalPageViews: 250, questionCount: 2 }]
                   : [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
             },
           ],
           messages: [`Collected ${payload.periodRole} tags for Tag Report.`],
@@ -624,11 +620,10 @@ describe("AppShell", () => {
           scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
           pageSize: 100,
           maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["current-tags"],
           warnings: [],
-        },
+        } as never,
         {
           id: "comparison-snapshot",
           reportId: "tag-report",
@@ -636,11 +631,10 @@ describe("AppShell", () => {
           scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
           pageSize: 100,
           maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["comparison-tags"],
           warnings: [],
-        },
+        } as never,
       ],
       warnings: [],
     });
@@ -658,17 +652,17 @@ describe("AppShell", () => {
     expect(currentRunBody).toMatchObject({
       periodRole: "current",
       scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
-      runPreset: "deep-audit",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
     });
+    expect(currentRunBody).not.toHaveProperty("runPreset");
+    expect(currentRunBody).not.toHaveProperty("pageSize");
+    expect(currentRunBody).not.toHaveProperty("maxPagesPerDataset");
     expect(comparisonRunBody).toMatchObject({
       periodRole: "comparison",
       scope: { startDate: "2026-06-01", endDate: "2026-06-08" },
-      runPreset: "deep-audit",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
     });
+    expect(comparisonRunBody).not.toHaveProperty("runPreset");
+    expect(comparisonRunBody).not.toHaveProperty("pageSize");
+    expect(comparisonRunBody).not.toHaveProperty("maxPagesPerDataset");
   });
 
   it("persists live API datasets without credentials or run queue state", async () => {
@@ -681,13 +675,12 @@ describe("AppShell", () => {
           reportTitle: "Inactive Users",
           periodRole: "current",
           scope: {},
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           warnings: [],
           datasets: [
             {
               datasetName: "users",
               records: [{ user_id: 1, display_name: "Ada" }],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
             },
           ],
           messages: ["Collected users (1 record) for Inactive Users."],
@@ -769,7 +762,7 @@ describe("AppShell", () => {
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
-        },
+        } as never,
       ],
       warnings: [],
     });
@@ -896,7 +889,7 @@ describe("AppShell", () => {
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
-          },
+          } as never,
         ],
         warnings: [],
       });
@@ -971,7 +964,7 @@ describe("AppShell", () => {
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
-          },
+          } as never,
         ],
         warnings: [],
       });
@@ -1046,7 +1039,7 @@ describe("AppShell", () => {
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["stale-dataset"],
             warnings: [],
-          },
+          } as never,
         ],
         warnings: [],
       });
@@ -1114,7 +1107,7 @@ describe("AppShell", () => {
             loadedAt: "2026-07-09T12:00:00.000Z",
             datasetIds: ["dataset-1"],
             warnings: [],
-          },
+          } as never,
         ],
         warnings: [],
       });
@@ -1194,7 +1187,7 @@ describe("AppShell", () => {
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-users", "dataset-tags"],
           warnings: [],
-        },
+        } as never,
       ],
       warnings: [],
     });
@@ -1380,13 +1373,12 @@ describe("AppShell", () => {
           reportTitle: "Inactive Users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           warnings: [],
           datasets: [
             {
               datasetName: "users",
               records: [{ user_id: 1, display_name: "Ada" }],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
             },
           ],
           messages: ["Collected users (1 record) for Inactive Users."],
@@ -1413,8 +1405,6 @@ describe("AppShell", () => {
       credentials: basicBusinessPatCredentials,
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 5,
     });
     expect(screen.getByText("1 dataset")).toBeInTheDocument();
     expect(screen.getAllByText("users").length).toBeGreaterThanOrEqual(1);
@@ -1449,8 +1439,6 @@ describe("AppShell", () => {
           reportTitle: "Tag Report",
           periodRole: "current",
           scope: {},
-          pageSize: 100,
-          maxPagesPerDataset: 20,
           warnings: [
             {
               reportId: "tag-report",
@@ -1459,11 +1447,11 @@ describe("AppShell", () => {
             },
           ],
           datasets: [
-            { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
-            { datasetName: "users", records: [{ user_id: 1 }] },
-            { datasetName: "questions", records: [{ question_id: 10, tags: ["python"], answer_count: 1 }] },
-            { datasetName: "articles", records: [{ article_id: 20 }] },
-            { datasetName: "tagSmes", records: [{ tagName: "python", user_id: 1 }] },
+            { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "users", records: [{ user_id: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "questions", records: [{ question_id: 10, tags: ["python"], answer_count: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "articles", records: [{ article_id: 20 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "tagSmes", records: [{ tagName: "python", user_id: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
           ],
           messages: ["Collected tagSmes (1 record) for Tag Report."],
         },
@@ -1479,16 +1467,15 @@ describe("AppShell", () => {
     await user.type(screen.getByLabelText("Personal access token"), "pat-token");
     await user.click(screen.getByRole("button", { name: "Save session credentials" }));
     await user.click(screen.getByRole("button", { name: "Scripts" }));
-    await user.click(screen.getByRole("radio", { name: "Deep audit" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
     expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      reportId: "tag-report",
       credentials: basicBusinessPatCredentials,
-      runPreset: "deep-audit",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
+      periodRole: "current",
+      scope: {},
     });
     expect(screen.getByText("5 datasets")).toBeInTheDocument();
     expect(screen.getByText("Questions hit the configured page cap; results may be partial.")).toBeInTheDocument();
@@ -1524,7 +1511,7 @@ describe("AppShell", () => {
       "50",
     );
     expect(
-      within(status).getByText("Running Tag Report current period live API collection..."),
+      within(status).getByText("Collecting all available data for Tag Report…"),
     ).toBeInTheDocument();
 
     pendingRun.resolve(jsonResponse({
@@ -1534,16 +1521,38 @@ describe("AppShell", () => {
         reportTitle: "Tag Report",
         periodRole: "current",
         scope: {},
-        pageSize: 100,
-        maxPagesPerDataset: 20,
         warnings: [],
         datasets: [
-          { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
+          { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
         ],
         messages: ["Collected tags (1 record) for Tag Report."],
       },
     }));
     expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["Collection failed.", "Collection failed. No complete result was produced."],
+    [
+      "Collection failed. No complete result was produced.",
+      "Collection failed. No complete result was produced.",
+    ],
+    [
+      "No complete result was produced. Upstream timeout.",
+      "Upstream timeout. No complete result was produced.",
+    ],
+  ])("ends report errors with a single completion disclaimer", async (error, expectedMessage) => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: false, error }));
+
+    render(<App />);
+
+    await saveBasicBusinessCredentials(user);
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByRole("button", { name: "Run current period" }));
+
+    expect(await screen.findByText(expectedMessage)).toBeInTheDocument();
+    expect(screen.getByText(expectedMessage).textContent?.match(/No complete result was produced\./g)).toHaveLength(1);
   });
 
   it("ignores an older live run completion after a newer run starts", async () => {
@@ -1571,7 +1580,7 @@ describe("AppShell", () => {
 
     const status = screen.getByRole("region", { name: "Run status" });
     expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
-    expect(within(status).getByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+    expect(within(status).getByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
 
@@ -1608,7 +1617,7 @@ describe("AppShell", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const status = screen.getByRole("region", { name: "Run status" });
     expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
-    expect(within(status).getByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+    expect(within(status).getByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
     expect(screen.queryByText("Collected stale run-both tags for Tag Report.")).not.toBeInTheDocument();
   });
 
@@ -1623,12 +1632,12 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    expect(await screen.findByText("Running Tag Report current period live API collection...")).toBeInTheDocument();
+    expect(await screen.findByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
 
     expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
-    expect(screen.queryByText("Running Tag Report current period live API collection...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collecting all available data for Tag Report…")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Run status" })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -1636,7 +1645,7 @@ describe("AppShell", () => {
       await pendingRun.promise;
     });
 
-    expect(screen.queryByText("Running Tag Report current period live API collection...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collecting all available data for Tag Report…")).not.toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
   });
@@ -1685,8 +1694,6 @@ describe("AppShell", () => {
           reportTitle: "Inactive Users",
           periodRole,
           scope: payload.scope,
-          pageSize: payload.pageSize,
-          maxPagesPerDataset: payload.maxPagesPerDataset,
           warnings: [],
           datasets: [
             {
@@ -1698,6 +1705,7 @@ describe("AppShell", () => {
                       { user_id: 1, display_name: "Ada" },
                       { user_id: 2, display_name: "Linus" },
                     ],
+              pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
             },
           ],
           messages: [`Collected users for ${periodRole}.`],
@@ -1914,11 +1922,13 @@ function makeTagReportRunBody(message: string) {
       reportTitle: "Tag Report",
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 20,
       warnings: [],
       datasets: [
-        { datasetName: "tags", records: [{ name: "python", totalPageViews: 500, questionCount: 4 }] },
+        {
+          datasetName: "tags",
+          records: [{ name: "python", totalPageViews: 500, questionCount: 4 }],
+          pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
+        },
       ],
       messages: [message],
     },
