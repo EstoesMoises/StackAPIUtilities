@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import { GET as handleOAuthPkceCallbackRouteGet } from "../app/api/oauth/pkce/callback/route";
+import { GET as handleOAuthPkceConfigRouteGet } from "../app/api/oauth/pkce/config/route";
 import { POST as handleOAuthPkceStartRoutePost } from "../app/api/oauth/pkce/start/route";
 import {
   OAUTH_PKCE_COOKIE_NAME,
@@ -8,6 +9,7 @@ import {
   decodePendingOAuthCookie,
   encodePendingOAuthCookie,
   handleOAuthPkceCallbackRequest,
+  handleOAuthPkcePublicConfigRequest,
   handleOAuthPkceStartRequest,
 } from "./oauthPkceApi";
 
@@ -95,7 +97,238 @@ async function withRedirectUriEnv<T>(
   }
 }
 
+async function withOAuthRedirectConfigEnv<T>(
+  {
+    publicOrigin,
+    nextPublicOrigin,
+    redirectUri,
+  }: {
+    publicOrigin?: string;
+    nextPublicOrigin?: string;
+    redirectUri?: string;
+  },
+  callback: () => Promise<T>,
+): Promise<T> {
+  const previousPublicOrigin = process.env[publicOriginEnvKey];
+  const previousNextPublicOrigin = process.env[nextPublicOriginEnvKey];
+  const previousRedirectUri = process.env[redirectUriEnvKey];
+
+  const environment = [
+    [publicOriginEnvKey, publicOrigin],
+    [nextPublicOriginEnvKey, nextPublicOrigin],
+    [redirectUriEnvKey, redirectUri],
+  ] as const;
+
+  for (const [key, value] of environment) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await callback();
+  } finally {
+    const previousEnvironment = [
+      [publicOriginEnvKey, previousPublicOrigin],
+      [nextPublicOriginEnvKey, previousNextPublicOrigin],
+      [redirectUriEnvKey, previousRedirectUri],
+    ] as const;
+
+    for (const [key, value] of previousEnvironment) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 describe("oauthPkceApi", () => {
+  it("returns the default OAuth callback URL without creating a cookie", async () => {
+    const result = handleOAuthPkcePublicConfigRequest({ origin });
+
+    expect(result.response.status).toBe(200);
+    await expect(result.response.json()).resolves.toEqual({
+      ok: true,
+      redirectUri: `${origin}/api/oauth/pkce/callback`,
+    });
+    expect(result.cookie).toBeUndefined();
+    expect(result.clearCookie).toBeUndefined();
+  });
+
+  it("returns a configured HTTPS public origin OAuth callback URL", async () => {
+    const result = handleOAuthPkcePublicConfigRequest({
+      origin: "https://internal.example.net",
+      publicOrigin: "https://utilities.example.com",
+    });
+
+    expect(result.response.status).toBe(200);
+    await expect(result.response.json()).resolves.toEqual({
+      ok: true,
+      redirectUri: "https://utilities.example.com/api/oauth/pkce/callback",
+    });
+  });
+
+  it("returns the exact configured OAuth redirect URI, including redirectmeto", async () => {
+    const result = handleOAuthPkcePublicConfigRequest({
+      origin: redirectmetoOrigin,
+      redirectUri: redirectmetoCallbackUri,
+    });
+
+    expect(result.response.status).toBe(200);
+    await expect(result.response.json()).resolves.toEqual({
+      ok: true,
+      redirectUri: redirectmetoCallbackUri,
+    });
+  });
+
+  it("rejects unsafe explicit redirect URIs and configured public origins", async () => {
+    const unsafeResults = [
+      handleOAuthPkcePublicConfigRequest({
+        origin,
+        redirectUri: "http://redirectmeto.com/https://evil.example/api/oauth/pkce/callback",
+      }),
+      handleOAuthPkcePublicConfigRequest({
+        origin,
+        publicOrigin: "http://utilities.example.com",
+      }),
+    ];
+
+    for (const result of unsafeResults) {
+      expect(result.response.status).toBe(400);
+      await expect(result.response.json()).resolves.toEqual({
+        ok: false,
+        error: "OAuth redirect URL is not configured safely.",
+      });
+      expect(result.cookie).toBeUndefined();
+      expect(result.clearCookie).toBeUndefined();
+    }
+  });
+
+  it("keeps public config redirects aligned with OAuth start authorization URLs", async () => {
+    const dependencies = [
+      { origin },
+      {
+        origin: "https://internal.example.net",
+        publicOrigin: "https://utilities.example.com",
+      },
+      { origin: redirectmetoOrigin, redirectUri: redirectmetoCallbackUri },
+    ];
+
+    for (const dependency of dependencies) {
+      const configResult = handleOAuthPkcePublicConfigRequest(dependency);
+      const startResult = await handleOAuthPkceStartRequest(
+        {
+          baseUrl: "https://demo.stackenterprise.co",
+          clientId: "client-123",
+          scopes: ["write_access"],
+        },
+        { ...dependency, now: () => now },
+      );
+      const configBody = await configResult.response.json();
+      const startBody = await startResult.response.json();
+
+      expect(configBody).toEqual({
+        ok: true,
+        redirectUri: new URL(startBody.authorizationUrl).searchParams.get("redirect_uri"),
+      });
+    }
+  });
+
+  it("preserves public config response security headers and does not set cookies in the Next route", async () => {
+    await withOAuthRedirectConfigEnv({}, async () => {
+      const response = await handleOAuthPkceConfigRouteGet(
+        new Request(`${origin}/api/oauth/pkce/config`) as NextRequest,
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        ok: true,
+        redirectUri: `${origin}/api/oauth/pkce/callback`,
+      });
+      expect(response.headers.get("Content-Type")).toBe("application/json");
+      expect(response.headers.get("Cache-Control")).toBe("no-store, private");
+      expect(response.headers.get("Pragma")).toBe("no-cache");
+      expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+      expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+      expect(response.headers.get("set-cookie")).toBeNull();
+    });
+  });
+
+  it("uses start route environment precedence for the public config route", async () => {
+    await withOAuthRedirectConfigEnv(
+      {
+        publicOrigin: "https://primary.example.com",
+        nextPublicOrigin: "https://fallback.example.com",
+      },
+      async () => {
+        const response = await handleOAuthPkceConfigRouteGet(
+          new Request("https://internal.example.net/api/oauth/pkce/config") as NextRequest,
+        );
+
+        await expect(response.json()).resolves.toEqual({
+          ok: true,
+          redirectUri: "https://primary.example.com/api/oauth/pkce/callback",
+        });
+      },
+    );
+
+    await withOAuthRedirectConfigEnv(
+      { nextPublicOrigin: "https://fallback.example.com" },
+      async () => {
+        const response = await handleOAuthPkceConfigRouteGet(
+          new Request("https://internal.example.net/api/oauth/pkce/config") as NextRequest,
+        );
+
+        await expect(response.json()).resolves.toEqual({
+          ok: true,
+          redirectUri: "https://fallback.example.com/api/oauth/pkce/callback",
+        });
+      },
+    );
+  });
+
+  it("uses the configured redirect URI environment value in the public config route", async () => {
+    await withOAuthRedirectConfigEnv({ redirectUri: redirectmetoCallbackUri }, async () => {
+      const response = await handleOAuthPkceConfigRouteGet(
+        new Request(`${redirectmetoOrigin}/api/oauth/pkce/config`) as NextRequest,
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        ok: true,
+        redirectUri: redirectmetoCallbackUri,
+      });
+      expect(response.headers.get("set-cookie")).toBeNull();
+    });
+  });
+
+  it("preserves safe public config errors and security headers in the Next route", async () => {
+    await withOAuthRedirectConfigEnv(
+      { publicOrigin: "http://utilities.example.com" },
+      async () => {
+        const response = await handleOAuthPkceConfigRouteGet(
+          new Request(`${origin}/api/oauth/pkce/config`) as NextRequest,
+        );
+
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toEqual({
+          ok: false,
+          error: "OAuth redirect URL is not configured safely.",
+        });
+        expect(response.headers.get("Content-Type")).toBe("application/json");
+        expect(response.headers.get("Cache-Control")).toBe("no-store, private");
+        expect(response.headers.get("Pragma")).toBe("no-cache");
+        expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+        expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+        expect(response.headers.get("set-cookie")).toBeNull();
+      },
+    );
+  });
+
   it("starts OAuth and creates a pending transaction cookie", async () => {
     const result = await handleOAuthPkceStartRequest(
       {

@@ -1,4 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
+import { normalizeOAuthBaseUrl } from "./enterpriseOAuthTarget";
+
+export {
+  isSupportedEnterpriseOAuthTarget,
+  normalizeOAuthBaseUrl,
+} from "./enterpriseOAuthTarget";
 
 export const OAUTH_SCOPE_WRITE_ACCESS = "write_access";
 export const OAUTH_SCOPE_NO_EXPIRY = "no_expiry";
@@ -57,25 +63,6 @@ export function buildEnterpriseAuthorizationUrl(input: EnterpriseAuthorizationUr
 
 export function buildEnterpriseTokenEndpointUrl(baseUrl: string): URL {
   return new URL("/oauth/access_token/json", normalizeOAuthBaseUrl(baseUrl));
-}
-
-export function isSupportedEnterpriseOAuthTarget(baseUrl: string): boolean {
-  try {
-    const url = new URL(baseUrl);
-    const hostname = url.hostname.toLowerCase();
-
-    return (
-      url.protocol === "https:" &&
-      (hostname === "stackenterprise.co" || hostname.endsWith(".stackenterprise.co"))
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function normalizeOAuthBaseUrl(baseUrl: string): string {
-  const url = new URL(baseUrl);
-  return `${url.protocol}//${url.host}`;
 }
 
 function toBase64Url(bytes: Buffer): string {

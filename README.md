@@ -48,9 +48,21 @@ direct users to upload existing CSV or JSON outputs.
 
 ## Credentials
 
-Credentials are session-only and memory-only; the app does not persist access
-tokens, API keys, PATs, OAuth client IDs, OAuth metadata, or OAuth state in
-browser storage.
+The app keeps access tokens, API keys, and PATs session-only and in memory. OAuth
+authorization codes and client secrets are not persisted. The server-mediated
+PKCE flow temporarily stores OAuth state, the verifier, and pending transaction
+details in a protected cookie for at most 10 minutes. That cookie is `HttpOnly`,
+`SameSite=Lax`, `Secure` when applicable, scoped to `/api/oauth/pkce`, and cleared
+after the callback succeeds or fails. None of these sensitive values enter the
+customer-profile IndexedDB database.
+
+For Stack Enterprise OAuth, users may explicitly save browser-local customer
+profiles containing only a customer name, Enterprise instance URL, OAuth client
+ID, and the non-expiring-token preference. The server-controlled OAuth redirect
+URL is displayed read-only and is never overridden by a saved profile. Saved
+customer profiles survive refreshes and browser restarts until the user deletes
+them or clears browser site data. Dataset flushing and session reset do not remove
+customer profiles.
 
 Loaded Script datasets and Utility supporting datasets and decision packs are
 stored locally in this browser by default. Use the Datasets panel to remove

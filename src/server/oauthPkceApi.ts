@@ -22,6 +22,7 @@ const OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS = 15_000;
 const OAUTH_RESULT_MESSAGE_TYPE = "stack-api-oauth-pkce-result";
 const START_REQUEST_ERROR =
   "Enterprise OAuth requires a Stack Enterprise HTTPS instance URL and OAuth client ID.";
+const PUBLIC_CONFIG_REQUEST_ERROR = "OAuth redirect URL is not configured safely.";
 const TOKEN_EXCHANGE_NETWORK_ERROR =
   "OAuth token exchange failed. Check the Enterprise instance and try again.";
 const SUPPORTED_REQUESTED_SCOPES = new Set<string>([OAUTH_SCOPE_WRITE_ACCESS]);
@@ -59,6 +60,10 @@ export interface OAuthCookieInstruction {
 
 export type OAuthPkceStartResponseBody =
   | { ok: true; authorizationUrl: string }
+  | { ok: false; error: string };
+
+export type OAuthPkcePublicConfigResponseBody =
+  | { ok: true; redirectUri: string }
   | { ok: false; error: string };
 
 export interface OAuthPkceRouteResult {
@@ -159,6 +164,26 @@ export async function handleOAuthPkceStartRequest(
       path: OAUTH_PKCE_COOKIE_PATH,
       maxAge: OAUTH_PKCE_COOKIE_MAX_AGE_SECONDS,
     },
+  };
+}
+
+export function handleOAuthPkcePublicConfigRequest(
+  dependencies: Pick<OAuthPkceDependencies, "origin" | "publicOrigin" | "redirectUri">,
+): OAuthPkceRouteResult {
+  const redirectTarget = resolveOAuthRedirectTarget(
+    dependencies.redirectUri,
+    dependencies.publicOrigin,
+    dependencies.origin ?? "http://127.0.0.1:3000",
+  );
+
+  if (redirectTarget === null) {
+    return {
+      response: jsonResponse({ ok: false, error: PUBLIC_CONFIG_REQUEST_ERROR }, 400),
+    };
+  }
+
+  return {
+    response: jsonResponse({ ok: true, redirectUri: redirectTarget.redirectUri }, 200),
   };
 }
 
@@ -358,7 +383,10 @@ function callbackHtml(message: unknown): Response {
   );
 }
 
-function jsonResponse(body: OAuthPkceStartResponseBody, status: number): Response {
+function jsonResponse(
+  body: OAuthPkceStartResponseBody | OAuthPkcePublicConfigResponseBody,
+  status: number,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: OAUTH_JSON_SECURITY_HEADERS,

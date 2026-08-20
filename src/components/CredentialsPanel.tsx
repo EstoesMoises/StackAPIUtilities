@@ -1,7 +1,16 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import {
+  isOAuthCustomerProfileDraftDirty,
+  toOAuthCustomerProfileDraft,
+  type OAuthCustomerProfile,
+  type OAuthCustomerProfileDraft,
+  type OAuthCustomerProfileErrors,
+} from "../domain/oauthCustomerProfiles";
 import { reportRegistry } from "../domain/reportRegistry";
 import { utilityRegistry } from "../domain/utilityRegistry";
 import type { InstanceType, ReportId, SessionCredentials, UtilityId } from "../domain/types";
+import { useOAuthCustomerProfiles } from "../hooks/useOAuthCustomerProfiles";
+import { OAuthCustomerProfileManager } from "./OAuthCustomerProfileManager";
 import { writeTools, type WriteToolId } from "./WriteToolsCatalog";
 
 export type CredentialWorkflow =
@@ -17,6 +26,7 @@ interface CredentialsPanelProps {
 
 interface CredentialsDraft {
   instanceType: InstanceType;
+  customerName: string;
   baseUrl: string;
   apiKey: string;
   accessToken: string;
@@ -31,6 +41,10 @@ type OAuthMessage =
 
 type OAuthStartResponse =
   | { ok: true; authorizationUrl: string }
+  | { ok: false; error: string };
+
+type OAuthPublicConfigResponse =
+  | { ok: true; redirectUri: string }
   | { ok: false; error: string };
 
 type ValidOAuthCredential = SessionCredentials & {
@@ -49,6 +63,11 @@ interface PendingOAuthFlow {
 
 const OAUTH_CREDENTIAL_ERROR = "Unable to save Enterprise OAuth credentials. Try again.";
 const OAUTH_START_ERROR = "Unable to start Enterprise OAuth. Try again.";
+const OAUTH_CONFIG_ERROR =
+  "OAuth redirect URL could not be loaded. Check the server OAuth configuration.";
+const OAUTH_COPY_ERROR = "Redirect URL was not copied. Copy it manually from the field.";
+const PROFILE_BASE_URL_ERROR_ID = "oauth-profile-base-url-error";
+const PROFILE_CLIENT_ID_ERROR_ID = "oauth-profile-client-id-error";
 
 const credentialLabels: Record<string, string> = {
   "api-key": "API key",
@@ -69,8 +88,10 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       : reportRegistry.find((candidate) => candidate.id === workflow.reportId)!;
   const oauthScopes = workflow.kind === "write-tool" ? [...writeTool!.oauthScopes] : [];
   const isTagReport = workflow.kind === "report" && workflow.reportId === "tag-report";
+  const customerProfiles = useOAuthCustomerProfiles();
   const [draft, setDraft] = useState<CredentialsDraft>({
     instanceType: credentials?.instanceType ?? "basic-business",
+    customerName: "",
     baseUrl: credentials?.baseUrl ?? "",
     apiKey: credentials?.apiKey ?? "",
     accessToken:
@@ -82,9 +103,111 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   const [saved, setSaved] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [oauthPending, setOauthPending] = useState(false);
+  const [profileErrors, setProfileErrors] = useState<OAuthCustomerProfileErrors>({});
+  const [redirectUri, setRedirectUri] = useState("");
+  const [redirectStatus, setRedirectStatus] = useState<string | null>(null);
   const pendingOAuthFlowRef = useRef<PendingOAuthFlow | null>(null);
   const oauthPendingRef = useRef(false);
   const nextOAuthFlowIdRef = useRef(0);
+  const profileBackedDraftEditedRef = useRef(false);
+  const instanceTypeEditedRef = useRef(false);
+  const restoredProfileAppliedRef = useRef(false);
+  const configRequestedRef = useRef(false);
+  const mountedRef = useRef(false);
+  const isEnterprise = draft.instanceType === "enterprise";
+  const profileTargetBusy = customerProfiles.busy || oauthPending;
+  const profileDraft: OAuthCustomerProfileDraft = {
+    customerName: draft.customerName,
+    baseUrl: draft.baseUrl,
+    oauthClientId: draft.oauthClientId,
+    includeNoExpiry: draft.includeNoExpiry,
+  };
+  const profileDirty = customerProfiles.selectedProfile
+    ? isOAuthCustomerProfileDraftDirty(customerProfiles.selectedProfile, profileDraft)
+    : Boolean(
+        draft.customerName.trim() ||
+        draft.baseUrl.trim() ||
+        draft.oauthClientId.trim() ||
+        draft.includeNoExpiry
+      );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isEnterprise || configRequestedRef.current) {
+      return;
+    }
+
+    configRequestedRef.current = true;
+    void fetch("/api/oauth/pkce/config")
+      .then((response) => response.json())
+      .then((value: unknown) => {
+        if (!mountedRef.current) {
+          return;
+        }
+        if (!isOAuthPublicConfigResponse(value)) {
+          setRedirectStatus(OAUTH_CONFIG_ERROR);
+          return;
+        }
+        if (value.ok) {
+          setRedirectUri(value.redirectUri);
+          return;
+        }
+        setRedirectStatus(OAUTH_CONFIG_ERROR);
+      })
+      .catch(() => {
+        if (mountedRef.current) {
+          setRedirectStatus(OAUTH_CONFIG_ERROR);
+        }
+      });
+  }, [isEnterprise]);
+
+  useEffect(() => {
+    if (!customerProfiles.ready || restoredProfileAppliedRef.current) {
+      return;
+    }
+    restoredProfileAppliedRef.current = true;
+    const keepExplicitBasicLane =
+      instanceTypeEditedRef.current && draft.instanceType === "basic-business";
+
+    if (credentials?.instanceType === "enterprise") {
+      const matchingSessionProfile = customerProfiles.profiles.find(
+        (profile) =>
+          canonicalizeEnterpriseBaseUrl(profile.baseUrl) ===
+            canonicalizeEnterpriseBaseUrl(credentials.baseUrl) &&
+          profile.oauthClientId === (credentials.oauthClientId ?? ""),
+      );
+
+      if (matchingSessionProfile) {
+        if (matchingSessionProfile.id !== customerProfiles.selectedProfileId) {
+          void customerProfiles.selectProfile(matchingSessionProfile.id);
+        }
+        if (!profileBackedDraftEditedRef.current && !keepExplicitBasicLane) {
+          applyProfile(matchingSessionProfile);
+        }
+      } else if (customerProfiles.selectedProfileId !== undefined) {
+        void customerProfiles.selectProfile(undefined);
+      }
+      return;
+    }
+
+    if (
+      profileBackedDraftEditedRef.current ||
+      keepExplicitBasicLane ||
+      !customerProfiles.selectedProfile
+    ) {
+      return;
+    }
+
+    if (credentials === null || draft.instanceType === "enterprise") {
+      applyProfile(customerProfiles.selectedProfile);
+    }
+  }, [customerProfiles.ready]);
 
   useEffect(() => {
     function handleOAuthMessage(event: MessageEvent) {
@@ -152,10 +275,111 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   function updateDraft<Field extends keyof CredentialsDraft>(
     field: Field,
     value: CredentialsDraft[Field],
+    markProfileEdited = true,
   ) {
+    const isProfileField =
+      field === "customerName" ||
+      field === "baseUrl" ||
+      field === "oauthClientId" ||
+      field === "includeNoExpiry";
+    if (markProfileEdited && isProfileField) {
+      profileBackedDraftEditedRef.current = true;
+    }
     setSaved(false);
     setOauthError(null);
+    if (isProfileField) {
+      setProfileErrors((current) => ({
+        ...current,
+        [field as keyof OAuthCustomerProfileDraft]: undefined,
+      }));
+    }
     setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  function applyProfile(profile: OAuthCustomerProfile) {
+    const values = toOAuthCustomerProfileDraft(profile);
+    setDraft((current) => ({ ...current, instanceType: "enterprise", ...values }));
+    profileBackedDraftEditedRef.current = false;
+    setSaved(false);
+    setOauthError(null);
+    setProfileErrors({});
+  }
+
+  function clearProfileDraft() {
+    setDraft((current) => ({
+      ...current,
+      customerName: "",
+      baseUrl: "",
+      oauthClientId: "",
+      includeNoExpiry: false,
+    }));
+    profileBackedDraftEditedRef.current = false;
+    setSaved(false);
+    setOauthError(null);
+    setProfileErrors({});
+  }
+
+  function handleInstanceTypeChange(instanceType: InstanceType) {
+    instanceTypeEditedRef.current = true;
+    updateDraft("instanceType", instanceType, false);
+    if (instanceType !== "enterprise") {
+      setProfileErrors({});
+      return;
+    }
+    if (
+      customerProfiles.selectedProfile &&
+      !profileBackedDraftEditedRef.current
+    ) {
+      applyProfile(customerProfiles.selectedProfile);
+    }
+  }
+
+  function handleProfileSelection(profileId?: string) {
+    const preferenceWrite = customerProfiles.selectProfile(profileId);
+    const profile = customerProfiles.profiles.find((candidate) => candidate.id === profileId);
+    if (profile) {
+      applyProfile(profile);
+    } else {
+      clearProfileDraft();
+    }
+    void preferenceWrite;
+  }
+
+  async function handleProfileSave() {
+    const result = await customerProfiles.createProfile(profileDraft);
+    if (!result.ok) {
+      setProfileErrors(result.errors);
+      return;
+    }
+    applyProfile(result.profile);
+  }
+
+  async function handleProfileUpdate() {
+    const result = await customerProfiles.updateProfile(profileDraft);
+    if (!result.ok) {
+      setProfileErrors(result.errors);
+      return;
+    }
+    applyProfile(result.profile);
+  }
+
+  async function handleProfileDelete() {
+    if (await customerProfiles.deleteSelectedProfile()) {
+      clearProfileDraft();
+    }
+  }
+
+  async function handleCopyRedirectUri() {
+    try {
+      await navigator.clipboard.writeText(redirectUri);
+      if (mountedRef.current) {
+        setRedirectStatus("Redirect URL copied.");
+      }
+    } catch {
+      if (mountedRef.current) {
+        setRedirectStatus(OAUTH_COPY_ERROR);
+      }
+    }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -279,8 +503,6 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
     setOauthError(null);
   }
 
-  const isEnterprise = draft.instanceType === "enterprise";
-
   return (
     <section className="workspace-panel" aria-labelledby="credentials-heading">
       <div className="workspace-header">
@@ -331,9 +553,8 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
           <select
             className="s-select"
             value={draft.instanceType}
-            onChange={(event) =>
-              updateDraft("instanceType", event.currentTarget.value as InstanceType)
-            }
+            disabled={profileTargetBusy}
+            onChange={(event) => handleInstanceTypeChange(event.currentTarget.value as InstanceType)}
           >
             <option value="basic-business">Basic / Business</option>
             <option value="enterprise">Enterprise</option>
@@ -343,14 +564,40 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
           <span className="d-block fs-caption tt-uppercase fc-light mb4">Instance URL</span>
           <input
             className="s-input"
+            aria-describedby={
+              isEnterprise && profileErrors.baseUrl ? PROFILE_BASE_URL_ERROR_ID : undefined
+            }
+            aria-invalid={isEnterprise && profileErrors.baseUrl ? true : undefined}
             value={draft.baseUrl}
+            disabled={profileTargetBusy}
             onChange={(event) => updateDraft("baseUrl", event.currentTarget.value)}
             placeholder="https://stackoverflowteams.com/c/team-name"
             required
           />
         </label>
+        {isEnterprise && profileErrors.baseUrl && (
+          <p className="oauth-profile-error" id={PROFILE_BASE_URL_ERROR_ID} role="alert">
+            {profileErrors.baseUrl}
+          </p>
+        )}
         {isEnterprise ? (
           <>
+            <OAuthCustomerProfileManager
+              profiles={customerProfiles.profiles}
+              selectedProfileId={customerProfiles.selectedProfileId}
+              customerName={draft.customerName}
+              dirty={profileDirty}
+              ready={customerProfiles.ready}
+              available={customerProfiles.available}
+              busy={profileTargetBusy}
+              errors={profileErrors}
+              warning={customerProfiles.warning}
+              onCustomerNameChange={(value) => updateDraft("customerName", value)}
+              onSelect={handleProfileSelection}
+              onSave={() => void handleProfileSave()}
+              onUpdate={() => void handleProfileUpdate()}
+              onDelete={() => void handleProfileDelete()}
+            />
             <label className="d-block">
               <span className="d-block fs-caption tt-uppercase fc-light mb4">API key</span>
               <input
@@ -378,15 +625,52 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
               <span className="d-block fs-caption tt-uppercase fc-light mb4">OAuth Client ID</span>
               <input
                 className="s-input"
+                aria-describedby={
+                  profileErrors.oauthClientId ? PROFILE_CLIENT_ID_ERROR_ID : undefined
+                }
+                aria-invalid={profileErrors.oauthClientId ? true : undefined}
                 value={draft.oauthClientId}
+                disabled={profileTargetBusy}
                 onChange={(event) => updateDraft("oauthClientId", event.currentTarget.value)}
               />
             </label>
+            {profileErrors.oauthClientId && (
+              <p className="oauth-profile-error" id={PROFILE_CLIENT_ID_ERROR_ID} role="alert">
+                {profileErrors.oauthClientId}
+              </p>
+            )}
+            <div className="oauth-redirect-row">
+              <label className="d-block">
+                <span className="d-block fs-caption tt-uppercase fc-light mb4">
+                  OAuth redirect URL
+                </span>
+                <input
+                  className="s-input"
+                  aria-label="OAuth redirect URL"
+                  value={redirectUri}
+                  readOnly
+                />
+              </label>
+              <button
+                className="s-btn"
+                type="button"
+                onClick={() => void handleCopyRedirectUri()}
+                disabled={!redirectUri}
+              >
+                Copy redirect URL
+              </button>
+            </div>
+            {redirectStatus && (
+              <p className="oauth-status" role="status">
+                {redirectStatus}
+              </p>
+            )}
             <div className="oauth-connect-panel">
               <label className="d-flex ai-center g8">
                 <input
                   type="checkbox"
                   checked={draft.includeNoExpiry}
+                  disabled={profileTargetBusy}
                   onChange={(event) => updateDraft("includeNoExpiry", event.currentTarget.checked)}
                 />
                 <span>Request non-expiring token</span>
@@ -476,6 +760,28 @@ function isOAuthStartResponse(value: unknown): value is OAuthStartResponse {
 
   if (response.ok === true) {
     return typeof response.authorizationUrl === "string";
+  }
+
+  if (response.ok === false) {
+    return typeof response.error === "string";
+  }
+
+  return false;
+}
+
+function isOAuthPublicConfigResponse(value: unknown): value is OAuthPublicConfigResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const response = value as {
+    ok?: unknown;
+    redirectUri?: unknown;
+    error?: unknown;
+  };
+
+  if (response.ok === true) {
+    return typeof response.redirectUri === "string" && response.redirectUri.length > 0;
   }
 
   if (response.ok === false) {
