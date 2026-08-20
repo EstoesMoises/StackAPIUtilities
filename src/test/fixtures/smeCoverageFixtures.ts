@@ -154,10 +154,8 @@ export function completeSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: "Complete",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     },
     warnings: [],
     summary: {
@@ -198,8 +196,6 @@ export function partialSmeCoverageDecisionPack(): SmeCoverageDecisionPack {
     snapshot: {
       ...pack.snapshot,
       completeness: "Partial",
-      maxPagesPerDataset: 5,
-      runPreset: "standard",
     },
     warnings: [
       {
@@ -229,11 +225,9 @@ export function warninglessPartialSmeCoverageDecisionPack(): SmeCoverageDecision
     snapshot: {
       ...pack.snapshot,
       completeness: "Partial",
-      maxPagesPerDataset: 5,
-      runPreset: "standard",
     },
     warnings: [],
-    overview: "The prepared Standard result is partial and its conclusions require qualification.",
+    overview: "The prepared result is partial and its conclusions require qualification.",
     assessment: "Review the prepared evidence and partial result context before assigning owners.",
   };
 }

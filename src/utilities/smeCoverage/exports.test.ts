@@ -3,7 +3,7 @@ import type { SmeCoverageDecisionPack } from "./model";
 import { buildSmeCoverageEvidenceCsv, buildSmeCoverageMarkdown } from "./exports";
 
 const csvHeader =
-  "tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality,result_completeness,completeness_warnings";
+  "tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality,collection_status,analysis_quality,evidence_notes";
 
 describe("SME coverage exports", () => {
   it("serializes canonical evidence rows in fixed CSV columns without rounding ratios", () => {
@@ -12,8 +12,8 @@ describe("SME coverage exports", () => {
     expect(csv).toBe(
       [
         csvHeader,
-        'first-tag,1234.567,9,Partial question sample,1,1234.567,80,Critical under-coverage,"Demand, sample-based","Assign ""one"" SME",Partial sample,Complete,Partial,questions.partial: This analysis is a partial sample.',
-        "second-tag,,,Unavailable,,,,Unknown,Unavailable,Validate source data,Invalid,Unknown,Partial,questions.partial: This analysis is a partial sample.",
+        'first-tag,1234.567,9,Partial question sample,1,1234.567,80,Critical under-coverage,"Demand, sample-based","Assign ""one"" SME",Partial sample,Complete,All available data collected,Partial,questions.partial: This analysis is a partial sample.',
+        "second-tag,,,Unavailable,,,,Unknown,Unavailable,Validate source data,Invalid,Unknown,All available data collected,Partial,questions.partial: This analysis is a partial sample.",
       ].join("\n"),
     );
   });
@@ -27,7 +27,7 @@ describe("SME coverage exports", () => {
     const sections = [
       "# SME Coverage Decision Pack",
       "## Snapshot",
-      "## Completeness warnings",
+      "## Evidence notes",
       "## Executive summary",
       "## Copy-ready assessment",
       "## Immediate no-SME risks",
@@ -41,6 +41,11 @@ describe("SME coverage exports", () => {
       expect(markdown.indexOf(sections[index]!)).toBeGreaterThan(markdown.indexOf(sections[index - 1]!));
     }
     expect(markdown).toContain("This analysis is a partial sample.");
+    expect(markdown).toContain("- Collection: All available data collected");
+    expect(markdown).toContain("- Analysis quality: Partial");
+    expect(markdown).not.toContain("Page size");
+    expect(markdown).not.toContain("Maximum pages");
+    expect(markdown).not.toContain("Run preset");
     expect(markdown).toContain("- Tags analyzed: 2");
     expect(markdown).toContain("Question-count basis: Partial question sample");
     expect(markdown).toContain("Page views per SME: 1,235");
@@ -66,10 +71,8 @@ function partialPack(): SmeCoverageDecisionPack {
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: "Partial",
-      pageSize: 100,
-      maxPagesPerDataset: 5,
-      runPreset: "standard",
     },
     warnings: [
       {

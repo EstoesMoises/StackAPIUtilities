@@ -29,7 +29,6 @@ import type {
 } from "./domain/types";
 import type { ReportRunResponseBody } from "./server/reportRunApi";
 import type { SmeCoverageRunResponseBody } from "./server/smeCoverageRunApi";
-import { DEFAULT_SME_COVERAGE_SETTINGS } from "./utilities/smeCoverage/settings";
 import {
   clearPersistedDatasetSession,
   loadPersistedDatasetSession,
@@ -50,7 +49,6 @@ export function App() {
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
   const [runProgress, setRunProgress] = useState<ReportRunProgress | undefined>();
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
-  const [smeCoverageSettings, setSmeCoverageSettings] = useState(DEFAULT_SME_COVERAGE_SETTINGS);
   const [smeCoverageRunState, setSmeCoverageRunState] = useState<SmeCoverageRunUiState>({ status: "idle" });
   const [credentialContext, setCredentialContext] = useState<CredentialWorkflow>({
     kind: "report",
@@ -443,12 +441,7 @@ export function App() {
       const response = await fetch("/api/utilities/sme-coverage/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          credentials: state.credentials,
-          pageSize: smeCoverageSettings.pageSize,
-          maxPagesPerDataset: smeCoverageSettings.maxPagesPerDataset,
-          ...(smeCoverageSettings.runPreset ? { runPreset: smeCoverageSettings.runPreset } : {}),
-        }),
+        body: JSON.stringify({ credentials: state.credentials }),
       });
       const body = (await response.json()) as SmeCoverageRunResponseBody;
 
@@ -586,8 +579,6 @@ export function App() {
       {activePanel === "write-tools" && renderWriteToolPanel(selectedWriteToolId, state.credentials)}
       {activePanel === "utilities" && (
         <SmeCoverageWorkspace
-          settings={smeCoverageSettings}
-          onSettingsChange={setSmeCoverageSettings}
           onRun={queueSmeCoverageRun}
           runState={smeCoverageRunState}
           decisionPack={selectedUtilityOutput?.decisionPack}

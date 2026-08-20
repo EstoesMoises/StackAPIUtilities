@@ -272,7 +272,7 @@ describe("AppShell", () => {
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
   });
 
-  it("posts only credentials and API-volume settings, shows progress, and stores the completed utility result", async () => {
+  it("posts credentials only, shows progress, and stores the completed utility result", async () => {
     const user = userEvent.setup();
     const pendingRun = createDeferred<Response>();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
@@ -289,9 +289,6 @@ describe("AppShell", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           credentials: basicBusinessPatCredentials,
-          pageSize: 100,
-          maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
         }),
       });
     });
@@ -1938,9 +1935,6 @@ function makeSmeCoverageRunBody(
     result: {
       utilityId: "sme-coverage-analyzer" as const,
       utilityTitle: "SME Coverage Analyzer" as const,
-      pageSize: decisionPack.snapshot.pageSize,
-      maxPagesPerDataset: decisionPack.snapshot.maxPagesPerDataset,
-      runPreset: decisionPack.snapshot.runPreset,
       datasets: [
         { datasetName: "tags" as const, records: empty ? [] : [{ name: marker }], pagination },
         { datasetName: "questions" as const, records: empty ? [] : [{ question_id: marker }], pagination },
@@ -1980,10 +1974,8 @@ function persistableEmptySmeCoverageDecisionPack(): ReturnType<typeof completeSm
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: "Empty",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     },
     warnings: [],
     summary: {

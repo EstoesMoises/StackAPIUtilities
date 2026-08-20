@@ -28,7 +28,7 @@ describe("SmeCoverageDecisionPack", () => {
     const pack = partialSmeCoverageDecisionPack();
     render(<SmeCoverageDecisionPack pack={pack} onRunAgain={vi.fn()} />);
 
-    const warningStack = screen.getByRole("region", { name: "Completeness warnings" });
+    const warningStack = screen.getByRole("region", { name: "Evidence notes" });
     const summary = screen.getByRole("heading", { name: "Executive summary" });
     expect(
       warningStack.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -39,7 +39,12 @@ describe("SmeCoverageDecisionPack", () => {
     expect(screen.getByText("example.stackenterprise.co")).toBeInTheDocument();
     expect(screen.getByText("2026-07-30T12:00:00.000Z")).toBeInTheDocument();
     expect(screen.getByText("All-time demand · Current SME coverage")).toBeInTheDocument();
-    expect(screen.getByText("Partial", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
+    expect(screen.getByText("All available data collected")).toBeInTheDocument();
+    expect(
+      screen.getByText("Analysis quality: Partial", { selector: ".sme-completeness-badge" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Page size")).not.toBeInTheDocument();
+    expect(screen.queryByText("Max pages per dataset")).not.toBeInTheDocument();
 
     for (const [label, value] of [
       ["Tags analyzed", "4"],
@@ -70,16 +75,16 @@ describe("SmeCoverageDecisionPack", () => {
     const { rerender } = render(
       <SmeCoverageDecisionPack pack={completeSmeCoverageDecisionPack()} onRunAgain={vi.fn()} />,
     );
-    expect(screen.getByText("Complete", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Completeness warnings" })).not.toBeInTheDocument();
+    expect(screen.getByText("Analysis quality: Complete", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Evidence notes" })).not.toBeInTheDocument();
 
     rerender(<SmeCoverageDecisionPack pack={partialSmeCoverageDecisionPack()} onRunAgain={vi.fn()} />);
-    expect(screen.getByText("Partial", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Completeness warnings" })).toBeInTheDocument();
+    expect(screen.getByText("Analysis quality: Partial", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Evidence notes" })).toBeInTheDocument();
 
     rerender(<SmeCoverageDecisionPack pack={emptySmeCoverageDecisionPack()} onRunAgain={vi.fn()} />);
-    expect(screen.getByText("Empty", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Completeness warnings" })).not.toBeInTheDocument();
+    expect(screen.getByText("Analysis quality: Empty", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Evidence notes" })).not.toBeInTheDocument();
     expect(screen.getByText(/no evidence rows were available/i)).toBeInTheDocument();
 
     rerender(
@@ -96,7 +101,7 @@ describe("SmeCoverageDecisionPack", () => {
     render(<SmeCoverageDecisionPack pack={pack} onRunAgain={vi.fn()} />);
 
     expect(pack.warnings).toEqual([]);
-    expect(screen.queryByRole("region", { name: "Completeness warnings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Evidence notes" })).not.toBeInTheDocument();
     expect(screen.queryByText(/qualify its conclusions/i)).not.toBeInTheDocument();
     expect(screen.getByText(pack.overview)).toBeInTheDocument();
     expect(screen.getByText(pack.assessment)).toBeInTheDocument();
