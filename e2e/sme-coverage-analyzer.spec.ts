@@ -68,9 +68,6 @@ const canonicalDecisionPack = deriveDecisionPack(mockedDatasets);
 const completeSmeCoverageRunResult: SmeCoverageRunResult = {
   utilityId: "sme-coverage-analyzer",
   utilityTitle: "SME Coverage Analyzer",
-  pageSize: 100,
-  maxPagesPerDataset: 20,
-  runPreset: "deep-audit",
   datasets: mockedDatasets,
   messages: [
     "Collected tags (7 records) for SME Coverage Analyzer.",
@@ -86,6 +83,7 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   page,
 }) => {
   let reportRouteCalls = 0;
+  let utilityRequestPayload: unknown;
   let releaseUtilityResponse: () => void = () => undefined;
   const utilityResponseGate = new Promise<void>((resolve) => {
     releaseUtilityResponse = resolve;
@@ -102,6 +100,7 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   expect(parseSmeCoverageDecisionPack(completeSmeCoverageRunResult.decisionPack)).not.toBeNull();
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await routeUtilityRun(page, async (route) => {
+    utilityRequestPayload = route.request().postDataJSON();
     await utilityResponseGate;
     await fulfillUtilityRun(route);
   });
@@ -116,7 +115,9 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   await page.getByRole("button", { name: "SME Coverage Analyzer", exact: true }).click();
   const workspace = page.getByRole("main", { name: "Workspace" });
 
-  await expect(page.getByRole("radio", { name: "Deep audit" })).toBeChecked();
+  await expect(page.getByRole("radio")).toHaveCount(0);
+  await expect(page.getByRole("spinbutton")).toHaveCount(0);
+  await expect(page.getByText(/collects all available evidence automatically/i)).toBeVisible();
   await expect(
     workspace.getByText("All-time demand · Current SME coverage", { exact: true }),
   ).toBeVisible();
@@ -137,6 +138,14 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   await expect(
     page.getByLabel("Analysis snapshot").getByText("stackoverflowteams.com", { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByLabel("Analysis snapshot").getByText("Collection", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Analysis snapshot").getByText("All available data collected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Analysis quality: Partial", { exact: true })).toBeVisible();
+  expect(Object.keys(utilityRequestPayload as Record<string, unknown>)).toEqual(["credentials"]);
   const immediateFindingRegion = page.getByRole("region", {
     name: "Immediate no-SME risks",
     exact: true,
@@ -182,7 +191,7 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   expectInOrder(markdown, [
     "# SME Coverage Decision Pack",
     "## Snapshot",
-    "## Completeness warnings",
+    "## Evidence notes",
     "## Executive summary",
     "## Copy-ready assessment",
     "## Immediate no-SME risks",
@@ -190,6 +199,9 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
     "## Light SME coverage",
     "## Methodology",
   ]);
+  expect(markdown).toContain("- Collection: All available data collected");
+  expect(markdown).toContain("- Analysis quality: Partial");
+  expect(markdown).not.toContain("## Completeness warnings");
 
   const csvDownloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download CSV" }).click();
@@ -199,10 +211,10 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   );
   const csvLines = (await readDownload(csvDownload)).trimEnd().split("\n");
   expect(csvLines[0]).toBe(
-    "tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality,result_completeness,completeness_warnings",
+    "tag_name,page_views,question_count,question_count_basis,sme_count,page_views_per_sme,coverage_percentile,coverage_tier,reason,recommended_action,demand_quality,sme_quality,collection_status,analysis_quality,evidence_notes",
   );
   expect(csvLines[1]).toBe(
-    "zeta-runtime,1200,4,Complete question enumeration,0,,,Immediate gap,Active tag has no assigned SMEs.,Assign or confirm at least one SME.,Complete,Complete,Partial,sme-coverage.unknown-sme-coverage: Assigned-SME coverage is unavailable for 1 tag: `unknown-source`.",
+    "zeta-runtime,1200,4,Complete question enumeration,0,,,Immediate gap,Active tag has no assigned SMEs.,Assign or confirm at least one SME.,Complete,Complete,All available data collected,Partial,sme-coverage.unknown-sme-coverage: Assigned-SME coverage is unavailable for 1 tag: `unknown-source`.",
   );
   const unknownCells = csvLines.find((line) => line.startsWith("unknown-source,"))?.split(",");
   expect(unknownCells).toEqual([
@@ -218,9 +230,11 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
     "Rerun or inspect the v3 tag source.",
     "Complete",
     "Unknown",
+    "All available data collected",
     "Partial",
     "sme-coverage.unknown-sme-coverage: Assigned-SME coverage is unavailable for 1 tag: `unknown-source`.",
   ]);
+  expect(csvLines[0]).not.toMatch(/result_completeness|completeness_warnings/);
   expect(reportRouteCalls).toBe(0);
 });
 
@@ -312,20 +326,12 @@ function deriveDecisionPack(datasets: SmeCoverageRunResult["datasets"]): SmeCove
     demand,
     smeCounts,
     sourceStatus,
-    settings: {
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
-    },
   });
   return buildSmeCoverageDecisionPack({
     analysis,
     snapshot: {
       instanceHost: "stackoverflowteams.com",
       generatedAt: "2026-07-30T12:00:00.000Z",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     },
     sourceWarnings: [...demand.warnings, ...smeCounts.warnings],
   });

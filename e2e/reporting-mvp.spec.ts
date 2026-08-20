@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, and datasets", async ({ page }) => {
   await page.goto("/");
@@ -23,31 +23,80 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
   await expect(page.getByText("No datasets loaded or stored in this browser.")).toBeVisible();
 });
 
-test("Tag Report exposes guided preset details", async ({ page }) => {
+test("Tag Report collects every available page for the selected date scope", async ({ page }) => {
+  let requestPayload: unknown;
+  await page.route("**/api/reports/run", async (route) => {
+    requestPayload = route.request().postDataJSON();
+    await fulfillTwoPageTagReport(route);
+  });
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Tag Report" })).toBeVisible();
-  const recordCoverage = page.getByRole("group", { name: "Record coverage" });
+  await expect(page.getByLabel("Current start date")).toBeVisible();
+  await expect(page.getByLabel("Current end date")).toBeVisible();
+  await expect(page.getByRole("radio")).toHaveCount(0);
+  await expect(page.getByText(/collects all available data for the selected dates/i)).toBeVisible();
 
-  await expect(recordCoverage).toBeVisible();
-  await expect(
-    recordCoverage.locator(".preset-option-records").filter({
-      hasText: "Up to 500 each",
-    }),
-  ).toBeVisible();
-  await expect(
-    recordCoverage.locator(".preset-option-records-detail").filter({
-      hasText: "Users, tags, questions, articles",
-    }),
-  ).toHaveCount(3);
-  await expect(
-    page.getByText("SME detail is separate: up to 500 top-answerer records for each collected tag"),
-  ).toBeVisible();
+  await page.getByLabel("Current start date").fill("2026-07-01");
+  await page.getByLabel("Current end date").fill("2026-07-31");
+  await saveBasicBusinessCredentials(page);
+  await page.getByRole("button", { name: "Scripts", exact: true }).click();
+  await page.getByRole("button", { name: "Run current period" }).click();
 
-  await page.getByRole("radio", { name: "Deep audit" }).check();
-  await expect(
-    recordCoverage.locator(".preset-option-records").filter({
-      hasText: "Up to 2,000 each",
-    }),
-  ).toBeVisible();
+  const collectionStatus = page.getByRole("status", { name: "Collection status" });
+  await expect(collectionStatus).toContainText("All available data collected");
+  await expect(collectionStatus).toContainText("2026-07-01 to 2026-07-31");
+  await page.getByRole("tab", { name: "Raw Table" }).click();
+  await expect(page.getByRole("cell", { name: "page-one-tag", exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "page-two-tag", exact: true })).toBeVisible();
+
+  expect(requestPayload).toMatchObject({
+    reportId: "tag-report",
+    periodRole: "current",
+    scope: { startDate: "2026-07-01", endDate: "2026-07-31" },
+  });
+  expect(Object.keys(requestPayload as Record<string, unknown>).sort()).toEqual([
+    "credentials",
+    "periodRole",
+    "reportId",
+    "scope",
+  ]);
 });
+
+async function saveBasicBusinessCredentials(page: Page) {
+  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByLabel("Instance URL").fill("https://stackoverflowteams.com/c/example-team");
+  await page.getByLabel("Personal access token").fill("pat-token");
+  await page.getByRole("button", { name: "Save session credentials" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Credentials saved for this browser session." }),
+  ).toBeVisible();
+}
+
+async function fulfillTwoPageTagReport(route: Route) {
+  await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      ok: true,
+      result: {
+        reportId: "tag-report",
+        reportTitle: "Tag Report",
+        periodRole: "current",
+        scope: { startDate: "2026-07-01", endDate: "2026-07-31" },
+        datasets: [
+          {
+            datasetName: "tags",
+            records: [
+              { name: "page-one-tag", count: 2 },
+              { name: "page-two-tag", count: 3 },
+            ],
+            pagination: { pageCount: 2, reachedMaxPages: false, hasMore: false },
+          },
+        ],
+        messages: ["Collected tags (2 records) for Tag Report."],
+        warnings: [],
+      },
+    }),
+  });
+}

@@ -17,8 +17,8 @@ read-only Scripts are:
 Tag Report includes the stable Enterprise API v3 tag ID and tag creation date.
 Its `last_used` value is the latest UTC `creation_date` among questions or
 articles that currently carry the tag, not tag assignment, edit, or general
-activity time. Last-used collection scans all fetched history even when health
-metrics are date-scoped; API cap warnings mean the result may be incomplete.
+activity time. Last-used collection scans all available history even when health
+metrics are date-scoped.
 
 Utilities answer defined operational questions directly from API data. The SME
 Coverage Analyzer produces an evidence-first decision pack for the question:
@@ -28,9 +28,13 @@ uploaded report.
 
 The analyzer's three-source pipeline collects all-time v2 tags and questions plus
 v3 tags. Only the v3 `subjectMatterExpertCount` field represents assigned-SME
-coverage. V2 top answerers are never used as the assigned-SME denominator. Deep
-audit is the default collection setting; Quick, Standard, and custom capped runs
-are partial samples and label their conclusions accordingly.
+coverage. V2 top answerers are never used as the assigned-SME denominator.
+
+Live Script runs collect every API page available for the selected date scope.
+The SME Coverage Analyzer does the same for its fixed all-time scope. Pagination,
+page size, rate-limit backoff, and retries are handled automatically. If
+collection cannot finish, the run fails and no partial result is published as
+complete.
 
 Uploaded Script outputs are parsed locally in the browser and rendered as
 dashboards plus raw tables. Script datasets, Utility decision packs, and Utility
@@ -38,6 +42,15 @@ supporting datasets are stored browser-locally by default so they can survive
 refreshes, tab closes, and browser restarts until the user removes individual
 datasets or flushes all stored datasets from the Datasets panel. Credentials
 remain in memory only and are never included in persisted or exported results.
+Browser-saved Script outputs and SME decision packs created before exhaustive
+collection was introduced are retained, but display `Legacy run — completeness
+not verified under current collection rules` instead of claiming complete
+collection.
+
+SME evidence CSV exports intentionally use `collection_status`,
+`analysis_quality`, and `evidence_notes`. These replace the former
+`result_completeness` and `completeness_warnings` headers so collection status is
+not confused with the quality of the available evidence.
 
 Live Script execution uses the same-origin Next.js route at `/api/reports/run`.
 SME Coverage Analyzer execution uses the same-origin route at
