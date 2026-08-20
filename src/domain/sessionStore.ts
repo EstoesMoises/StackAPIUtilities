@@ -303,6 +303,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         reportOutputs: removeReportOutputsForDataset(
           state.reportOutputs,
           removedDataset,
+          state.reportRunSnapshots,
           reportRunSnapshots,
           remainingDatasets,
         ),
@@ -350,6 +351,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
 function removeReportOutputsForDataset(
   reportOutputs: SessionState["reportOutputs"],
   removedDataset: SessionDataset,
+  previousReportRunSnapshots: SessionState["reportRunSnapshots"],
   retainedReportRunSnapshots: SessionState["reportRunSnapshots"],
   remainingDatasets: SessionState["datasets"],
 ): SessionState["reportOutputs"] {
@@ -367,6 +369,7 @@ function removeReportOutputsForDataset(
       output,
       removedDataset,
       retainedSnapshotIds,
+      previousReportRunSnapshots,
       retainedReportRunSnapshots,
       remainingDatasets,
     );
@@ -385,6 +388,7 @@ function removeDatasetFromReportOutput(
   output: ReportOutput,
   dataset: SessionDataset,
   retainedSnapshotIds: ReadonlySet<string>,
+  previousReportRunSnapshots: SessionState["reportRunSnapshots"],
   retainedReportRunSnapshots: SessionState["reportRunSnapshots"],
   remainingDatasets: SessionState["datasets"],
 ): ReportOutput | null {
@@ -395,6 +399,11 @@ function removeDatasetFromReportOutput(
   if (!dataset.snapshotId) {
     return output;
   }
+  const removedSnapshotWarnings = retainedSnapshotIds.has(dataset.snapshotId)
+    ? []
+    : previousReportRunSnapshots.find(
+        (snapshot) => snapshot.id === dataset.snapshotId && snapshot.reportId === output.reportId,
+      )?.warnings ?? dataset.warnings ?? [];
 
   if (output.currentSnapshotId === dataset.snapshotId) {
     const records = pruneDatasetRecords(
@@ -415,7 +424,11 @@ function removeDatasetFromReportOutput(
       delete nextOutput.currentSnapshotId;
     }
 
-    const refreshedOutput = refreshReportOutputWarnings(nextOutput, retainedReportRunSnapshots);
+    const refreshedOutput = refreshReportOutputWarnings(
+      nextOutput,
+      retainedReportRunSnapshots,
+      removedSnapshotWarnings,
+    );
     return hasReportOutputRecords(refreshedOutput) ? refreshedOutput : null;
   }
 
@@ -438,7 +451,11 @@ function removeDatasetFromReportOutput(
       delete nextOutput.comparisonSnapshotId;
     }
 
-    const refreshedOutput = refreshReportOutputWarnings(nextOutput, retainedReportRunSnapshots);
+    const refreshedOutput = refreshReportOutputWarnings(
+      nextOutput,
+      retainedReportRunSnapshots,
+      removedSnapshotWarnings,
+    );
     return hasReportOutputRecords(refreshedOutput) ? refreshedOutput : null;
   }
 
@@ -448,17 +465,22 @@ function removeDatasetFromReportOutput(
 function refreshReportOutputWarnings(
   output: ReportOutput,
   reportRunSnapshots: SessionState["reportRunSnapshots"],
+  removedSnapshotWarnings: ReportWarning[],
 ): ReportOutput {
-  const warnings = [output.currentSnapshotId, output.comparisonSnapshotId].flatMap((snapshotId) => {
+  const retainedSnapshotWarnings = [output.currentSnapshotId, output.comparisonSnapshotId].flatMap((snapshotId) => {
     if (!snapshotId) return [];
     return reportRunSnapshots.find(
       (snapshot) => snapshot.id === snapshotId && snapshot.reportId === output.reportId,
     )?.warnings ?? [];
   });
+  const snapshotWarnings = [...retainedSnapshotWarnings, ...removedSnapshotWarnings];
+  const outputSpecificWarnings = (output.warnings ?? []).filter(
+    (warning) => !snapshotWarnings.some((snapshotWarning) => isSameWarning(warning, snapshotWarning)),
+  );
 
   return {
     ...output,
-    warnings: dedupeWarnings(warnings),
+    warnings: dedupeWarnings([...outputSpecificWarnings, ...retainedSnapshotWarnings]),
   };
 }
 

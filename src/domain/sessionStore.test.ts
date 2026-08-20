@@ -699,6 +699,11 @@ describe("sessionStore", () => {
         message: "Retain this warning only with its exhaustive snapshot.",
       };
       const legacyWarning = { reportId: "inactive-users" as const, ...LEGACY_COLLECTION_WARNING };
+      const outputOnlyWarning = {
+        reportId: "inactive-users" as const,
+        code: "output-only-warning",
+        message: "Preserve this output-specific warning.",
+      };
       const hydrated = sessionReducer(createInitialSessionState(), {
         type: "session/hydratePersistentDatasets",
         snapshot: createLegacyPeriodSnapshot(legacyRole),
@@ -719,22 +724,137 @@ describe("sessionStore", () => {
           },
         ],
       });
-      const datasetToRemove = Object.values(mixed.datasets).find(
+      const mixedOutput = mixed.reportOutputs["inactive-users"]!;
+      const mixedWithOutputWarnings = {
+        ...mixed,
+        reportOutputs: {
+          ...mixed.reportOutputs,
+          "inactive-users": {
+            ...mixedOutput,
+            warnings: [...(mixedOutput.warnings ?? []), outputOnlyWarning, outputOnlyWarning],
+          },
+        },
+      };
+      const datasetToRemove = Object.values(mixedWithOutputWarnings.datasets).find(
         (dataset) => dataset.periodRole === removedRole,
       );
 
       expect(datasetToRemove).toBeDefined();
-      const remaining = sessionReducer(mixed, {
+      const remaining = sessionReducer(mixedWithOutputWarnings, {
         type: "dataset/remove",
         datasetId: datasetToRemove?.id ?? "",
       });
 
       expect(remaining.reportRunSnapshots).toHaveLength(1);
       expect(remaining.reportOutputs["inactive-users"]?.warnings).toEqual(
-        removedRole === legacyRole ? [exhaustiveWarning] : [legacyWarning],
+        removedRole === legacyRole
+          ? [outputOnlyWarning, exhaustiveWarning]
+          : [outputOnlyWarning, legacyWarning],
       );
     },
   );
+
+  it("preserves output-only warnings when a multi-dataset snapshot remains", () => {
+    const snapshotWarning = {
+      reportId: "inactive-users" as const,
+      code: "snapshot-warning",
+      message: "Keep this with the retained snapshot.",
+    };
+    const outputOnlyWarning = {
+      reportId: "inactive-users" as const,
+      code: "output-only-warning",
+      message: "Keep this with the report output.",
+    };
+    const state = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      warnings: [snapshotWarning],
+      datasets: [
+        { datasetName: "users", records: [{ user_id: 1 }], pagination: completePagination },
+        { datasetName: "tags", records: [{ name: "python" }], pagination: completePagination },
+      ],
+    });
+    const output = state.reportOutputs["inactive-users"]!;
+    const stateWithOutputWarnings = {
+      ...state,
+      reportOutputs: {
+        ...state.reportOutputs,
+        "inactive-users": {
+          ...output,
+          warnings: [snapshotWarning, outputOnlyWarning, outputOnlyWarning],
+        },
+      },
+    };
+    const usersDataset = Object.values(stateWithOutputWarnings.datasets).find(
+      (dataset) => dataset.name === "users",
+    );
+
+    const remaining = sessionReducer(stateWithOutputWarnings, {
+      type: "dataset/remove",
+      datasetId: usersDataset?.id ?? "",
+    });
+
+    expect(remaining.reportRunSnapshots).toHaveLength(1);
+    expect(remaining.reportOutputs["inactive-users"]?.warnings).toEqual([
+      outputOnlyWarning,
+      snapshotWarning,
+    ]);
+  });
+
+  it("drops a warning owned only by a removed snapshot while preserving output-only warnings", () => {
+    const snapshotOnlyWarning = {
+      reportId: "inactive-users" as const,
+      code: "snapshot-only-warning",
+      message: "Drop this with the removed snapshot.",
+    };
+    const outputOnlyWarning = {
+      reportId: "inactive-users" as const,
+      code: "output-only-warning",
+      message: "Keep this with the report output.",
+    };
+    const current = sessionReducer(createInitialSessionState(), {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "current",
+      scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+      warnings: [],
+      datasets: [{ datasetName: "users", records: [{ user_id: 1 }], pagination: completePagination }],
+    });
+    const mixed = sessionReducer(current, {
+      type: "live/loaded",
+      reportId: "inactive-users",
+      periodRole: "comparison",
+      scope: { startDate: "2026-05-01", endDate: "2026-05-31" },
+      warnings: [],
+      datasets: [{ datasetName: "users", records: [{ user_id: 2 }], pagination: completePagination }],
+    });
+    const currentSnapshotId = mixed.reportOutputs["inactive-users"]?.currentSnapshotId;
+    const stateWithSnapshotWarning = {
+      ...mixed,
+      reportRunSnapshots: mixed.reportRunSnapshots.map((snapshot) =>
+        snapshot.id === currentSnapshotId ? { ...snapshot, warnings: [snapshotOnlyWarning] } : snapshot,
+      ),
+      reportOutputs: {
+        ...mixed.reportOutputs,
+        "inactive-users": {
+          ...mixed.reportOutputs["inactive-users"]!,
+          warnings: [snapshotOnlyWarning, outputOnlyWarning],
+        },
+      },
+    };
+    const currentDataset = Object.values(stateWithSnapshotWarning.datasets).find(
+      (dataset) => dataset.periodRole === "current",
+    );
+
+    const remaining = sessionReducer(stateWithSnapshotWarning, {
+      type: "dataset/remove",
+      datasetId: currentDataset?.id ?? "",
+    });
+
+    expect(remaining.reportOutputs["inactive-users"]?.warnings).toEqual([outputOnlyWarning]);
+  });
 
   it("removes a managed dataset from the active session", () => {
     const withDataset = sessionReducer(createInitialSessionState(), {
