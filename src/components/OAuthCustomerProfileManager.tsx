@@ -73,7 +73,7 @@ export function OAuthCustomerProfileManager({
     <fieldset className="oauth-profile-manager" aria-busy={busy || undefined}>
       <legend>Saved customer profiles</legend>
       <p className="oauth-status">
-        Customer profiles store only non-sensitive OAuth settings in this browser.
+        Customer profiles store OAuth settings and an optional API key in this browser.
       </p>
 
       <div className="oauth-profile-grid">

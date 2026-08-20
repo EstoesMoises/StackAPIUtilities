@@ -303,7 +303,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByRole("button", { name: "Delete customer" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel Enterprise OAuth" })).toBeEnabled();
-    expect(screen.getByLabelText("API key")).toBeEnabled();
+    expect(screen.getByLabelText("API key")).toBeDisabled();
     expect(screen.getByLabelText("Access token (optional)")).toBeEnabled();
 
     await user.selectOptions(savedCustomer, "profile-2");
@@ -333,6 +333,7 @@ describe("CredentialsPanel", () => {
     await waitFor(() => {
       expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
         baseUrl: "https://demo.stackenterprise.co",
+        apiKey: "profile-api-key",
         oauthClientId: "client-123",
         accessToken: "oauth-token",
         authSource: "oauth-pkce",
@@ -799,6 +800,7 @@ describe("CredentialsPanel", () => {
       "https://demo.stackenterprise.co",
     );
     expect(screen.getByLabelText("OAuth Client ID")).toHaveValue("client-123");
+    expect(screen.getByLabelText("API key")).toHaveValue("profile-api-key");
     expect(screen.getByLabelText("Request non-expiring token")).not.toBeChecked();
     expect(open).not.toHaveBeenCalled();
   });
@@ -830,6 +832,7 @@ describe("CredentialsPanel", () => {
       expect(screen.getByLabelText("Saved customer")).toHaveValue("matching-profile");
     });
     expect(screen.getByLabelText("Customer name")).toHaveValue("Matching Customer");
+    expect(screen.getByLabelText("API key")).toHaveValue("profile-api-key");
     expect(screen.getByLabelText("Request non-expiring token")).toBeChecked();
     expect(profileStorageMocks.saveLastSelectedProfileId).toHaveBeenCalledWith(
       "matching-profile",
@@ -970,12 +973,14 @@ describe("CredentialsPanel", () => {
       customerName: "Second Customer",
       baseUrl: "https://second.stackenterprise.co",
       oauthClientId: "client-2",
+      apiKey: "second-key",
     });
     const thirdProfile = enterpriseProfile({
       id: "profile-3",
       customerName: "Third Customer",
       baseUrl: "https://third.stackenterprise.co",
       oauthClientId: "client-3",
+      apiKey: "third-key",
       includeNoExpiry: true,
     });
     installProfileStorage({
@@ -999,6 +1004,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Instance URL")).toHaveValue(
       "https://second.stackenterprise.co",
     );
+    expect(screen.getByLabelText("API key")).toHaveValue("second-key");
 
     await user.selectOptions(screen.getByLabelText("Saved customer"), "profile-3");
     expect(screen.getByLabelText("Saved customer")).toHaveValue("profile-3");
@@ -1006,6 +1012,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Instance URL")).toHaveValue(
       "https://third.stackenterprise.co",
     );
+    expect(screen.getByLabelText("API key")).toHaveValue("third-key");
     expect(screen.getByLabelText("Request non-expiring token")).toBeChecked();
 
     firstPreferenceWrite.resolve();
@@ -1014,7 +1021,7 @@ describe("CredentialsPanel", () => {
     });
   });
 
-  it("saves only the strict non-sensitive customer profile draft", async () => {
+  it("saves only the strict allowlisted customer profile draft", async () => {
     mockOAuthEndpoints();
     installProfileStorage();
     const onSave = vi.fn();
@@ -1041,9 +1048,11 @@ describe("CredentialsPanel", () => {
       customerName: "Demo Customer",
       baseUrl: "https://demo.stackenterprise.co",
       oauthClientId: "client-123",
+      apiKey: "secret-api-key",
       includeNoExpiry: true,
     });
     expect(Object.keys(savedProfile).sort()).toEqual([
+      "apiKey",
       "baseUrl",
       "createdAt",
       "customerName",
@@ -1054,27 +1063,28 @@ describe("CredentialsPanel", () => {
       "updatedAt",
     ]);
     expect(JSON.stringify(savedProfile)).not.toMatch(
-      /accessToken|apiKey|pat|oauthScopes|authSource|authorizationCode|verifier|state/i,
+      /accessToken|pat|oauthScopes|authSource|authorizationCode|verifier|state/i,
     );
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it("updates and deletes a profile without clearing secrets or saving the session", async () => {
+  it("clears a successfully deleted profile key without changing the saved session", async () => {
     mockOAuthEndpoints();
     installProfileStorage({
       profiles: [enterpriseProfile()],
       lastSelectedProfileId: "profile-1",
     });
     const onSave = vi.fn();
+    const credentials: SessionCredentials = {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      apiKey: "secret-api-key",
+      accessToken: "secret-access-token",
+      authSource: "manual-enterprise-token",
+      oauthClientId: "client-123",
+    };
     renderCredentialsPanel({
-      credentials: {
-        instanceType: "enterprise",
-        baseUrl: "https://demo.stackenterprise.co",
-        apiKey: "secret-api-key",
-        accessToken: "secret-access-token",
-        authSource: "manual-enterprise-token",
-        oauthClientId: "client-123",
-      },
+      credentials,
       onSave,
     });
     const user = userEvent.setup();
@@ -1090,7 +1100,7 @@ describe("CredentialsPanel", () => {
         expect.objectContaining({ id: "profile-1", customerName: "Renamed Customer" }),
       );
     });
-    expect(screen.getByLabelText("API key")).toHaveValue("secret-api-key");
+    expect(screen.getByLabelText("API key")).toHaveValue("profile-api-key");
     expect(screen.getByLabelText("Access token (optional)")).toHaveValue(
       "secret-access-token",
     );
@@ -1103,10 +1113,18 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Instance URL")).toHaveValue("");
     expect(screen.getByLabelText("OAuth Client ID")).toHaveValue("");
     expect(screen.getByLabelText("Request non-expiring token")).not.toBeChecked();
-    expect(screen.getByLabelText("API key")).toHaveValue("secret-api-key");
+    expect(screen.getByLabelText("API key")).toHaveValue("");
     expect(screen.getByLabelText("Access token (optional)")).toHaveValue(
       "secret-access-token",
     );
+    expect(credentials).toEqual({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      apiKey: "secret-api-key",
+      accessToken: "secret-access-token",
+      authSource: "manual-enterprise-token",
+      oauthClientId: "client-123",
+    });
     expect(onSave).not.toHaveBeenCalled();
   });
 
@@ -1136,10 +1154,39 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Customer name")).toHaveValue("");
     expect(screen.getByLabelText("Instance URL")).toHaveValue("");
     expect(screen.getByLabelText("OAuth Client ID")).toHaveValue("");
-    expect(screen.getByLabelText("API key")).toHaveValue("secret-api-key");
+    expect(screen.getByLabelText("API key")).toHaveValue("");
     expect(screen.getByLabelText("Access token (optional)")).toHaveValue(
       "secret-access-token",
     );
+  });
+
+  it("marks a selected profile dirty when its API key is edited", async () => {
+    mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [enterpriseProfile()],
+      lastSelectedProfileId: "profile-1",
+    });
+    renderCredentialsPanel();
+    const user = userEvent.setup();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("API key")).toHaveValue("profile-api-key");
+    });
+    await user.type(screen.getByLabelText("API key"), "-edited");
+
+    expect(screen.getByText("Unsaved customer profile changes.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update customer" })).toBeEnabled();
+  });
+
+  it("masks the profile-backed API key", async () => {
+    mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [enterpriseProfile()],
+      lastSelectedProfileId: "profile-1",
+    });
+    renderCredentialsPanel();
+
+    expect(await screen.findByLabelText("API key")).toHaveAttribute("type", "password");
   });
 
   it("associates profile URL and client ID validation errors with their fields", async () => {
@@ -1410,7 +1457,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Instance URL")).toBeDisabled();
     expect(screen.getByLabelText("OAuth Client ID")).toBeDisabled();
     expect(screen.getByLabelText("Request non-expiring token")).toBeDisabled();
-    expect(screen.getByLabelText("API key")).toBeEnabled();
+    expect(screen.getByLabelText("API key")).toBeDisabled();
     expect(screen.getByLabelText("Access token (optional)")).toBeEnabled();
     expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeEnabled();
 
@@ -1419,6 +1466,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Instance URL")).toBeEnabled();
     expect(screen.getByLabelText("OAuth Client ID")).toBeEnabled();
     expect(screen.getByLabelText("Request non-expiring token")).toBeEnabled();
+    expect(screen.getByLabelText("API key")).toBeEnabled();
   });
 
   it("locks all external profile fields during a pending update and re-enables them", async () => {
@@ -1442,12 +1490,13 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Instance URL")).toBeDisabled();
     expect(screen.getByLabelText("OAuth Client ID")).toBeDisabled();
     expect(screen.getByLabelText("Request non-expiring token")).toBeDisabled();
-    expect(screen.getByLabelText("API key")).toBeEnabled();
+    expect(screen.getByLabelText("API key")).toBeDisabled();
     expect(screen.getByLabelText("Access token (optional)")).toBeEnabled();
     expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeEnabled();
 
     update.resolve();
     await waitFor(() => expect(screen.getByLabelText("Instance type")).toBeEnabled());
+    expect(screen.getByLabelText("API key")).toBeEnabled();
   });
 
   it("starts profile OAuth with only workflow scopes and no profile metadata override", async () => {
@@ -1474,7 +1523,7 @@ describe("CredentialsPanel", () => {
       scopes: ["write_access"],
       includeNoExpiry: true,
     });
-    expect(String(startCall?.[1]?.body)).not.toMatch(/redirect|customerName/i);
+    expect(String(startCall?.[1]?.body)).not.toMatch(/redirect|customerName|apiKey/i);
     expect(profileStorageMocks.saveProfile).not.toHaveBeenCalled();
     expect(profileStorageMocks.saveProfileAndSelect).not.toHaveBeenCalled();
   });
@@ -1567,11 +1616,12 @@ function enterpriseProfile(
   overrides: Partial<OAuthCustomerProfile> = {},
 ): OAuthCustomerProfile {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: "profile-1",
     customerName: "Demo Customer",
     baseUrl: "https://demo.stackenterprise.co",
     oauthClientId: "client-123",
+    apiKey: "profile-api-key",
     includeNoExpiry: false,
     createdAt: "2026-08-19T12:00:00.000Z",
     updatedAt: "2026-08-19T12:00:00.000Z",
@@ -1589,7 +1639,7 @@ function installProfileStorage(options: {
     available: options.available ?? true,
     profiles: options.profiles ?? [],
     preferences: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       ...(options.lastSelectedProfileId
         ? { lastSelectedProfileId: options.lastSelectedProfileId }
         : {}),
@@ -1613,7 +1663,7 @@ function installDeferredProfileStorage() {
         available: true,
         profiles,
         preferences: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           ...(lastSelectedProfileId ? { lastSelectedProfileId } : {}),
         },
         malformedProfileCount: 0,

@@ -120,6 +120,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
     customerName: draft.customerName,
     baseUrl: draft.baseUrl,
     oauthClientId: draft.oauthClientId,
+    apiKey: draft.apiKey,
     includeNoExpiry: draft.includeNoExpiry,
   };
   const profileDirty = customerProfiles.selectedProfile
@@ -128,6 +129,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
         draft.customerName.trim() ||
         draft.baseUrl.trim() ||
         draft.oauthClientId.trim() ||
+        draft.apiKey.trim() ||
         draft.includeNoExpiry
       );
 
@@ -281,6 +283,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       field === "customerName" ||
       field === "baseUrl" ||
       field === "oauthClientId" ||
+      field === "apiKey" ||
       field === "includeNoExpiry";
     if (markProfileEdited && isProfileField) {
       profileBackedDraftEditedRef.current = true;
@@ -311,6 +314,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       customerName: "",
       baseUrl: "",
       oauthClientId: "",
+      apiKey: "",
       includeNoExpiry: false,
     }));
     profileBackedDraftEditedRef.current = false;
@@ -602,7 +606,10 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
               <span className="d-block fs-caption tt-uppercase fc-light mb4">API key</span>
               <input
                 className="s-input"
+                type="password"
+                autoComplete="off"
                 value={draft.apiKey}
+                disabled={profileTargetBusy}
                 onChange={(event) => updateDraft("apiKey", event.currentTarget.value)}
               />
             </label>
