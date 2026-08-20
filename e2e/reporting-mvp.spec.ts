@@ -206,6 +206,36 @@ async function fulfillTagReport(
             records: options.records,
             pagination: options.pagination,
           },
+          {
+            datasetName: "users",
+            records: [],
+            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+          },
+          {
+            datasetName: "questions",
+            records: [],
+            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+          },
+          {
+            datasetName: "articles",
+            records: [],
+            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+          },
+          {
+            datasetName: "tagSmes",
+            records: [],
+            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+          },
+          {
+            datasetName: "tagSmeCounts",
+            records: [],
+            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+          },
+          {
+            datasetName: "tagLastUsed",
+            records: [],
+            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+          },
         ],
         messages: [`Collected tags (${options.records.length} records) for Tag Report.`],
         warnings: [],

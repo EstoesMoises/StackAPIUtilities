@@ -19,6 +19,8 @@ import { DEFAULT_REPORT_RUN_SCOPE } from "./domain/reportScope";
 import { reportRegistry } from "./domain/reportRegistry";
 import { createInitialSessionState, sessionReducer } from "./domain/sessionStore";
 import type {
+  DatasetName,
+  PeriodScope,
   ReportId,
   ReportRunProgress,
   ReportRunScope,
@@ -27,8 +29,8 @@ import type {
   SessionCredentials,
   UtilityId,
 } from "./domain/types";
-import type { ReportRunResponseBody } from "./server/reportRunApi";
-import type { SmeCoverageRunResponseBody } from "./server/smeCoverageRunApi";
+import type { LiveReportRunResult } from "./collectors/liveReportRunner";
+import { isTerminalSmeCoverageResult } from "./utilities/smeCoverage/runtimeValidation";
 import {
   clearPersistedDatasetSession,
   loadPersistedDatasetSession,
@@ -269,7 +271,7 @@ export function App() {
     setActivePanel("write-tools");
   }
 
-  async function queueSelectedReportRun(periodRole: RunPeriodRole = "current") {
+  function prepareSelectedReportRun() {
     const report = reportRegistry.find((candidate) => candidate.id === state.selectedReportId)!;
     if (!state.credentials) {
       clearActiveRunProgress();
@@ -282,7 +284,7 @@ export function App() {
         },
       ]);
       setActivePanel("credentials");
-      return false;
+      return undefined;
     }
 
     const validation = validateCredentialsForReport(state.selectedReportId, state.credentials);
@@ -297,9 +299,23 @@ export function App() {
         })),
       );
       setActivePanel("credentials");
-      return false;
+      return undefined;
     }
 
+    return report;
+  }
+
+  async function queueSelectedReportRun(periodRole: RunPeriodRole = "current") {
+    const report = prepareSelectedReportRun();
+    if (!report) return;
+
+    await executeSelectedReportRuns(report, [periodRole]);
+  }
+
+  async function executeSelectedReportRuns(
+    report: (typeof reportRegistry)[number],
+    periodRoles: readonly RunPeriodRole[],
+  ) {
     setRunQueue([
       {
         id: `${state.selectedReportId}-live-running`,
@@ -312,83 +328,83 @@ export function App() {
     setRunProgress(createRunningProgress(report.title));
 
     try {
-      const periodScope = periodRole === "comparison" ? reportScope.comparison ?? {} : reportScope.current;
-      const response = await fetch("/api/reports/run", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          reportId: state.selectedReportId,
-          credentials: state.credentials,
-          periodRole,
-          scope: periodScope,
-        }),
-      });
-      const body = (await response.json()) as ReportRunResponseBody;
+      const stagedResults: LiveReportRunResult[] = [];
+      for (const periodRole of periodRoles) {
+        const configuredScope = periodRole === "comparison" ? reportScope.comparison ?? {} : reportScope.current;
+        const periodScope = normalizePeriodScope(configuredScope);
+        const response = await fetch("/api/reports/run", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            reportId: report.id,
+            credentials: state.credentials,
+            periodRole,
+            scope: periodScope,
+          }),
+        });
+        const body: unknown = await response.json();
 
-      if (!body.ok) {
-        throw new Error(body.error);
+        if (!isRecord(body) || body.ok !== true) {
+          throw new Error(isRecord(body) && typeof body.error === "string" ? body.error : "Live API run failed.");
+        }
+        if (!isActiveRun(runId)) return;
+        const expectedDatasets = getExpectedResultDatasetNames(report.id, report.requiredDatasets);
+        if (!isValidReportRunResult(body.result, report.id, periodRole, periodScope, expectedDatasets)) {
+          throw new Error("Report result did not match the complete requested run.");
+        }
+        stagedResults.push(body.result);
       }
 
-      if (!isActiveRun(runId)) {
-        return false;
-      }
-
-      const result = body.result;
-      if (!hasCompletePaginationEvidence(result.datasets)) {
-        throw new Error("Report result did not include complete pagination evidence.");
-      }
-
+      if (!isActiveRun(runId)) return;
       markDatasetContentChanged();
-      dispatch({
-        type: "live/loaded",
-        reportId: result.reportId,
-        periodRole: result.periodRole,
-        scope: result.scope,
-        warnings: result.warnings,
-        datasets: result.datasets,
-      });
+      for (const result of stagedResults) {
+        dispatch({
+          type: "live/loaded",
+          reportId: result.reportId,
+          periodRole: result.periodRole,
+          scope: result.scope,
+          warnings: result.warnings,
+          datasets: result.datasets,
+        });
+      }
       setRunProgress(createSucceededProgress(report.title));
       setRunQueue([
-        ...result.messages.map((message, index) => ({
-          id: `${state.selectedReportId}-live-dataset-${index}`,
-          reportId: state.selectedReportId,
+        ...stagedResults.flatMap((result) => result.messages).map((message, index) => ({
+          id: `${report.id}-live-dataset-${index}`,
+          reportId: report.id,
           status: "succeeded" as const,
           message,
         })),
         {
-          id: `${state.selectedReportId}-live-complete`,
-          reportId: state.selectedReportId,
+          id: `${report.id}-live-complete`,
+          reportId: report.id,
           status: "succeeded",
           message: `Live API run completed for ${report.title}.`,
         },
       ]);
       setActivePanel("report");
-      return true;
     } catch (error) {
-      if (!isActiveRun(runId)) {
-        return false;
-      }
+      if (!isActiveRun(runId)) return;
 
       setRunProgress(createFailedProgress(report.title));
       setRunQueue([
         {
-          id: `${state.selectedReportId}-live-failed`,
-          reportId: state.selectedReportId,
+          id: `${report.id}-live-failed`,
+          reportId: report.id,
           status: "failed",
           message: getLiveRunErrorMessage(error, report.title),
         },
       ]);
-      return true;
     }
   }
 
   async function queueBothReportRuns() {
-    const currentRunHandled = await queueSelectedReportRun("current");
-    if (currentRunHandled && reportScope.comparison) {
-      await queueSelectedReportRun("comparison");
-    }
+    const report = prepareSelectedReportRun();
+    if (!report || !reportScope.comparison) return;
+
+    await executeSelectedReportRuns(report, ["current", "comparison"]);
   }
 
   async function queueSmeCoverageRun() {
@@ -443,18 +459,30 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ credentials: state.credentials }),
       });
-      const body = (await response.json()) as SmeCoverageRunResponseBody;
+      const body: unknown = await response.json();
 
       if (!isActiveRun(runId)) {
         return;
       }
 
-      if (!body.ok) {
+      if (!isRecord(body) || body.ok !== true) {
+        const errorKind = isRecord(body) && isSmeCoverageErrorKind(body.kind) ? body.kind : "unexpected";
         setSmeCoverageRunState({
           status: "failed",
-          kind: body.kind,
-          stage: body.stage,
-          error: body.error,
+          kind: errorKind,
+          stage: isRecord(body) && typeof body.stage === "string" ? body.stage : undefined,
+          error: isRecord(body) && typeof body.error === "string"
+            ? body.error
+            : "SME Coverage Analyzer returned an invalid response. No complete result was produced.",
+        });
+        return;
+      }
+
+      if (!isTerminalSmeCoverageResult(body.result)) {
+        setSmeCoverageRunState({
+          status: "failed",
+          kind: "unexpected",
+          error: "SME Coverage Analyzer returned an incomplete result. No complete result was produced.",
         });
         return;
       }
@@ -702,25 +730,79 @@ function getLiveRunErrorMessage(error: unknown, _reportTitle: string): string {
     : `${messageWithoutDisclaimer} ${completionDisclaimer}`;
 }
 
-function hasCompletePaginationEvidence(datasets: unknown): boolean {
-  return (
-    Array.isArray(datasets) &&
-    datasets.length > 0 &&
-    datasets.every((dataset) => {
-      if (!isRecord(dataset) || !isRecord(dataset.pagination)) {
-        return false;
-      }
+function isValidReportRunResult(
+  value: unknown,
+  reportId: ReportId,
+  periodRole: RunPeriodRole,
+  scope: PeriodScope,
+  requiredDatasets: readonly DatasetName[],
+): value is LiveReportRunResult {
+  if (!isRecord(value)) return false;
+  if (value.reportId !== reportId || value.periodRole !== periodRole || !hasExactScope(value.scope, scope)) {
+    return false;
+  }
+  if (typeof value.reportTitle !== "string" || !isStringArray(value.messages) || !isReportWarningArray(value.warnings, reportId)) {
+    return false;
+  }
+  if (!Array.isArray(value.datasets) || value.datasets.length !== requiredDatasets.length) return false;
 
-      const { pageCount, reachedMaxPages, hasMore } = dataset.pagination;
-      return (
-        typeof pageCount === "number" &&
-        Number.isInteger(pageCount) &&
-        pageCount >= 0 &&
-        reachedMaxPages === false &&
-        hasMore === false
-      );
-    })
+  const seen = new Set<string>();
+  for (const dataset of value.datasets) {
+    if (!isRecord(dataset) || typeof dataset.datasetName !== "string") return false;
+    if (!requiredDatasets.includes(dataset.datasetName as DatasetName) || seen.has(dataset.datasetName)) return false;
+    seen.add(dataset.datasetName);
+    if (!Array.isArray(dataset.records) || !dataset.records.every(isRecord)) return false;
+    if (!isRecord(dataset.pagination)) return false;
+    const { pageCount, reachedMaxPages, hasMore } = dataset.pagination;
+    if (!Number.isInteger(pageCount) || (pageCount as number) < 0 || reachedMaxPages !== false || hasMore !== false) {
+      return false;
+    }
+  }
+
+  return requiredDatasets.every((datasetName) => seen.has(datasetName));
+}
+
+function getExpectedResultDatasetNames(
+  reportId: ReportId,
+  requiredDatasets: readonly DatasetName[],
+): readonly DatasetName[] {
+  return reportId === "interactions" ? [...requiredDatasets, "interactions"] : requiredDatasets;
+}
+
+function normalizePeriodScope(scope: PeriodScope): PeriodScope {
+  return {
+    ...(typeof scope.startDate === "string" ? { startDate: scope.startDate } : {}),
+    ...(typeof scope.endDate === "string" ? { endDate: scope.endDate } : {}),
+  };
+}
+
+function hasExactScope(value: unknown, expected: PeriodScope): value is PeriodScope {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  return (
+    keys.length === expectedKeys.length &&
+    keys.every((key, index) => key === expectedKeys[index]) &&
+    keys.every((key) => (key === "startDate" || key === "endDate") && typeof value[key] === "string" && value[key] === expected[key])
   );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isReportWarningArray(value: unknown, reportId: ReportId): boolean {
+  return Array.isArray(value) && value.every((warning) => (
+    isRecord(warning) &&
+    typeof warning.code === "string" &&
+    typeof warning.message === "string" &&
+    (warning.reportId === undefined || warning.reportId === reportId) &&
+    warning.utilityId === undefined
+  ));
+}
+
+function isSmeCoverageErrorKind(value: unknown): value is NonNullable<SmeCoverageRunUiState["kind"]> {
+  return value === "validation" || value === "collection" || value === "unsupported" || value === "unexpected";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

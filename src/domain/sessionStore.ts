@@ -14,6 +14,7 @@ import type {
 } from "./types";
 import { buildTagHealthRowsFromLiveRecords } from "../reports/tagReport";
 import type { SmeCoverageRunResult } from "../utilities/smeCoverage/runner";
+import { isTerminalSmeCoverageResult } from "../utilities/smeCoverage/runtimeValidation";
 
 interface LiveDatasetPayload {
   datasetName: DatasetName;
@@ -344,18 +345,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     default:
       return state;
   }
-}
-
-function isTerminalSmeCoverageResult(result: SmeCoverageRunResult): boolean {
-  const requiredDatasetNames = ["tags", "questions", "tagSmeCounts"] as const;
-  return (
-    result.decisionPack.snapshot.collectionLabel === "All available data collected" &&
-    result.datasets.length === requiredDatasetNames.length &&
-    requiredDatasetNames.every((datasetName) => {
-      const matches = result.datasets.filter((dataset) => dataset.datasetName === datasetName);
-      return matches.length === 1 && !matches[0]!.pagination.reachedMaxPages && !matches[0]!.pagination.hasMore;
-    })
-  );
 }
 
 function removeReportOutputsForDataset(
