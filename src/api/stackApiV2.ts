@@ -4,12 +4,15 @@ import {
   DEFAULT_PAGINATION_SAFETY_LIMIT,
 } from "./paginationSafety";
 
+type WaitFn = (seconds: number) => Promise<void>;
+
 interface StackApiV2ClientOptions {
   apiV2Url: string;
   teamSlug: string | null;
   headers?: HeadersInit;
   fetchFn?: FetchLike;
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
+  waitFn?: WaitFn;
   paginationSafetyLimit?: number;
 }
 
@@ -31,12 +34,16 @@ export interface StackApiPagedResult<T> {
   hasMore: boolean;
 }
 
+const waitSeconds: WaitFn = (seconds) =>
+  new Promise((resolve) => setTimeout(resolve, seconds * 1_000));
+
 export class StackApiV2Client {
   private readonly apiV2Url: string;
   private readonly teamSlug: string | null;
   private readonly headers: HeadersInit;
   private readonly fetchFn: FetchLike;
   private readonly onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
+  private readonly waitFn: WaitFn;
   private readonly paginationSafetyLimit: number;
 
   constructor(options: StackApiV2ClientOptions) {
@@ -45,6 +52,7 @@ export class StackApiV2Client {
     this.headers = options.headers ?? {};
     this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.onThrottle = options.onThrottle;
+    this.waitFn = options.waitFn ?? waitSeconds;
     this.paginationSafetyLimit = options.paginationSafetyLimit ?? DEFAULT_PAGINATION_SAFETY_LIMIT;
   }
 
@@ -78,7 +86,9 @@ export class StackApiV2Client {
       );
 
       items.push(...body.items);
-      await this.notifyBackoff(body);
+      if (body.has_more && page < maxPages) {
+        await this.honorBackoff(body);
+      }
 
       hasMore = body.has_more;
       pageCount += 1;
@@ -108,12 +118,16 @@ export class StackApiV2Client {
     return url;
   }
 
-  private async notifyBackoff<T>(body: StackApiV2Page<T>): Promise<void> {
-    if (!this.onThrottle || typeof body.backoff !== "number") {
+  private async honorBackoff<T>(body: StackApiV2Page<T>): Promise<void> {
+    if (typeof body.backoff !== "number") {
       return;
     }
 
-    await this.onThrottle({ kind: "backoff", seconds: body.backoff, remaining: body.quota_remaining });
+    if (this.onThrottle) {
+      await this.onThrottle({ kind: "backoff", seconds: body.backoff, remaining: body.quota_remaining });
+    }
+
+    await this.waitFn(body.backoff);
   }
 }
 
@@ -132,7 +146,33 @@ function validatePaginationEnvelope<T>(
     throw invalidPaginationEnvelope(path, page);
   }
 
-  return value as unknown as StackApiV2Page<T>;
+  const backoff = readOptionalNonNegativeSafeInteger(value, "backoff", path, page);
+  const quotaRemaining = readOptionalNonNegativeSafeInteger(value, "quota_remaining", path, page);
+
+  return {
+    items: value.items as T[],
+    has_more: value.has_more,
+    backoff,
+    quota_remaining: quotaRemaining,
+  };
+}
+
+function readOptionalNonNegativeSafeInteger(
+  value: Record<string, unknown>,
+  key: "backoff" | "quota_remaining",
+  path: string,
+  page: number,
+): number | undefined {
+  if (!hasOwn(value, key)) {
+    return undefined;
+  }
+
+  const fieldValue = value[key];
+  if (typeof fieldValue !== "number" || !Number.isSafeInteger(fieldValue) || fieldValue < 0) {
+    throw invalidPaginationEnvelope(path, page);
+  }
+
+  return fieldValue;
 }
 
 function invalidPaginationEnvelope(path: string, page: number): Error {

@@ -29,6 +29,84 @@ describe("StackApiV2Client", () => {
     expect(fetchMock.mock.calls[1][0].toString()).toContain("page=2");
   });
 
+  it("waits for a backoff before requesting the next page without a throttle callback", async () => {
+    let releaseWait: (() => void) | undefined;
+    const waitFn = vi.fn(() => new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responseWithJson({
+        items: [{ id: 1 }],
+        has_more: true,
+        backoff: 3,
+        quota_remaining: 99,
+      }))
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: 2 }], has_more: false }));
+    const client = new StackApiV2Client({
+      apiV2Url: "https://api.stackoverflowteams.com/2.3",
+      teamSlug: "example-team",
+      fetchFn: fetchMock,
+      waitFn,
+    });
+
+    const result = client.getPagedItems("/users");
+    await vi.waitFor(() => expect(waitFn).toHaveBeenCalledWith(3));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    releaseWait?.();
+    await expect(result).resolves.toEqual([{ id: 1 }, { id: 2 }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("notifies, waits once, and then requests the next page", async () => {
+    const events: string[] = [];
+    const fetchMock = vi.fn(async () => {
+      const page = fetchMock.mock.calls.length;
+      events.push(`fetch-${page}`);
+      return page === 1
+        ? responseWithJson({ items: [{ id: 1 }], has_more: true, backoff: 4, quota_remaining: 12 })
+        : responseWithJson({ items: [{ id: 2 }], has_more: false, backoff: 9, quota_remaining: 11 });
+    });
+    const onThrottle = vi.fn(async () => {
+      events.push("notify");
+    });
+    const waitFn = vi.fn(async () => {
+      events.push("wait");
+    });
+    const client = new StackApiV2Client({
+      apiV2Url: "https://api.stackoverflowteams.com/2.3",
+      teamSlug: "example-team",
+      fetchFn: fetchMock,
+      onThrottle,
+      waitFn,
+    });
+
+    await expect(client.getPagedItems("/users")).resolves.toEqual([{ id: 1 }, { id: 2 }]);
+
+    expect(onThrottle).toHaveBeenCalledTimes(1);
+    expect(onThrottle).toHaveBeenCalledWith({ kind: "backoff", seconds: 4, remaining: 12 });
+    expect(waitFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).toHaveBeenCalledWith(4);
+    expect(events).toEqual(["fetch-1", "notify", "wait", "fetch-2"]);
+  });
+
+  it("does not wait when a non-terminal page has no backoff", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: 1 }], has_more: true }))
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: 2 }], has_more: false }));
+    const client = new StackApiV2Client({
+      apiV2Url: "https://api.stackoverflowteams.com/2.3",
+      teamSlug: "example-team",
+      fetchFn: fetchMock,
+      waitFn,
+    });
+
+    await client.getPagedItems("/users");
+
+    expect(waitFn).not.toHaveBeenCalled();
+  });
+
   it("stops pagination at the requested max pages", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ id: 1 }], has_more: true }), { status: 200 }))
@@ -93,6 +171,30 @@ describe("StackApiV2Client", () => {
       apiV2Url: "https://api.stackoverflowteams.com/2.3",
       teamSlug: "example-team",
       fetchFn: vi.fn().mockResolvedValue(responseWithJson(body)),
+    });
+
+    await expect(client.getPagedItems("/users")).rejects.toThrow(
+      "Stack API v2.3 returned an invalid pagination envelope for /users page 1. No complete result was produced.",
+    );
+  });
+
+  it.each([
+    ["a string backoff", { backoff: "2" }],
+    ["a negative backoff", { backoff: -1 }],
+    ["a fractional backoff", { backoff: 1.5 }],
+    ["a non-finite backoff", { backoff: Number.NaN }],
+    ["a negative quota", { quota_remaining: -1 }],
+    ["a fractional quota", { quota_remaining: 1.5 }],
+    ["a non-finite quota", { quota_remaining: Number.POSITIVE_INFINITY }],
+  ])("fails closed when page 1 has %s", async (_label, optionalFields) => {
+    const client = new StackApiV2Client({
+      apiV2Url: "https://api.stackoverflowteams.com/2.3",
+      teamSlug: "example-team",
+      fetchFn: vi.fn().mockResolvedValue(responseWithJson({
+        items: [],
+        has_more: false,
+        ...optionalFields,
+      })),
     });
 
     await expect(client.getPagedItems("/users")).rejects.toThrow(
