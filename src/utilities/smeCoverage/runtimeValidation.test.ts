@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { completeSmeCoverageDecisionPack } from "../../test/fixtures/smeCoverageFixtures";
+import { analyzeSmeCoverage } from "./analyzer";
+import { buildSmeCoverageDecisionPack } from "./decisionPack";
+import type { CollectedSource } from "./model";
+import { normalizeTagDemand } from "./tagDemand";
+import { normalizeTagSmeCounts } from "./tagSmeCounts";
 import {
   isTerminalSmeCoverageResult,
   parseTerminalSmeCoverageResult,
@@ -51,19 +55,98 @@ describe("isTerminalSmeCoverageResult", () => {
     expect(parsed?.decisionPack).not.toHaveProperty("credentials");
     expect(parsed?.decisionPack.evidence[0]).not.toHaveProperty("accessToken");
   });
+
+  it("rejects a stale pack after a returned source record changes", () => {
+    const result = makeResult();
+    result.datasets[1].records[0].view_count = 999;
+
+    expect(isTerminalSmeCoverageResult(result)).toBe(false);
+  });
+
+  it("rejects a different well-formed pack whose evidence and methodology came from other sources", () => {
+    const result = makeResult();
+    const other = makeResult({ firstQuestionViews: 900 });
+    result.decisionPack = other.decisionPack;
+    result.warnings = other.warnings;
+
+    expect(isTerminalSmeCoverageResult(result)).toBe(false);
+  });
+
+  it("rejects a different well-formed pack whose summary came from other sources", () => {
+    const result = makeResult();
+    const other = makeResult({ includeExtraTag: true });
+    result.decisionPack = other.decisionPack;
+    result.warnings = other.warnings;
+
+    expect(isTerminalSmeCoverageResult(result)).toBe(false);
+  });
 });
 
-function makeResult(): Record<string, any> {
+function makeResult(
+  options: { firstQuestionViews?: number; includeExtraTag?: boolean } = {},
+): Record<string, any> {
+  const pagination = { pageCount: 1, reachedMaxPages: false, hasMore: false };
+  const tags: CollectedSource = {
+    records: [
+      { name: "python", count: 1 },
+      { name: "typescript", count: 1 },
+      { name: "go", count: 1 },
+      { name: "rust", count: 1 },
+      { name: "java", count: 1 },
+      { name: "csharp", count: 1 },
+      ...(options.includeExtraTag ? [{ name: "kotlin", count: 1 }] : []),
+    ],
+    pagination,
+  };
+  const questions: CollectedSource = {
+    records: [
+      { question_id: 1, tags: ["python"], view_count: options.firstQuestionViews ?? 500 },
+      { question_id: 2, tags: ["typescript"], view_count: 400 },
+      { question_id: 3, tags: ["go"], view_count: 300 },
+      { question_id: 4, tags: ["rust"], view_count: 200 },
+      { question_id: 5, tags: ["java"], view_count: 100 },
+      { question_id: 6, tags: ["csharp"], view_count: 50 },
+      ...(options.includeExtraTag ? [{ question_id: 7, tags: ["kotlin"], view_count: 25 }] : []),
+    ],
+    pagination,
+  };
+  const tagSmeCounts: CollectedSource = {
+    records: [
+      { name: "python", subjectMatterExpertCount: 0 },
+      { name: "typescript", subjectMatterExpertCount: 1 },
+      { name: "go", subjectMatterExpertCount: 2 },
+      { name: "rust", subjectMatterExpertCount: 2 },
+      { name: "java", subjectMatterExpertCount: 4 },
+      { name: "csharp", subjectMatterExpertCount: 5 },
+      ...(options.includeExtraTag ? [{ name: "kotlin", subjectMatterExpertCount: 5 }] : []),
+    ],
+    pagination,
+  };
+  const demand = normalizeTagDemand({ tags, questions });
+  const smeCounts = normalizeTagSmeCounts(tagSmeCounts);
+  const analysis = analyzeSmeCoverage({
+    demand,
+    smeCounts,
+    sourceStatus: { tags: pagination, questions: pagination, tagSmeCounts: pagination },
+  });
+  const decisionPack = buildSmeCoverageDecisionPack({
+    analysis,
+    snapshot: {
+      instanceHost: "example.stackenterprise.co",
+      generatedAt: "2026-07-30T12:00:00.000Z",
+    },
+    sourceWarnings: [...demand.warnings, ...smeCounts.warnings],
+  });
   return {
     utilityId: "sme-coverage-analyzer",
     utilityTitle: "SME Coverage Analyzer",
-    datasets: ["tags", "questions", "tagSmeCounts"].map((datasetName) => ({
-      datasetName,
-      records: [],
-      pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-    })),
+    datasets: [
+      { datasetName: "tags", ...tags },
+      { datasetName: "questions", ...questions },
+      { datasetName: "tagSmeCounts", ...tagSmeCounts },
+    ],
     messages: [],
-    warnings: [],
-    decisionPack: completeSmeCoverageDecisionPack(),
+    warnings: decisionPack.warnings,
+    decisionPack,
   };
 }

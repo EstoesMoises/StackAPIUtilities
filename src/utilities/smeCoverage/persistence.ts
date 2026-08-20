@@ -77,7 +77,7 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
     !findingListMatchesEvidenceTier(criticalUnderCoverage, evidence, "Critical under-coverage") ||
     !findingListMatchesEvidenceTier(lightCoverage, evidence, "Light coverage") ||
     !summaryMatchesEvidence(summary, evidence) ||
-    !isCoherentDecisionPack(snapshot.value, methodology, evidence)
+    !isCoherentDecisionPack(snapshot.value, methodology, evidence, !snapshot.legacy)
   ) {
     return null;
   }
@@ -369,6 +369,7 @@ function isCoherentDecisionPack(
   snapshot: SmeCoverageSnapshot,
   methodology: SmeCoverageMethodology,
   evidence: readonly SmeCoverageEvidenceRow[],
+  enforceCurrentCompleteness: boolean,
 ): boolean {
   const activePageViews = evidence
     .filter(isActiveEvidenceRow)
@@ -412,6 +413,12 @@ function isCoherentDecisionPack(
     if (row.coverageTier !== expectedTier) return false;
   }
 
+  if (
+    !enforceCurrentCompleteness &&
+    snapshot.completeness === "Partial"
+  ) {
+    return true;
+  }
   if (evidence.length === 0) return snapshot.completeness === "Empty";
   const expectedCompleteness = percentileSampleSufficient &&
     evidence.every((row) => row.demandQuality === "Complete" && row.smeQuality === "Complete")

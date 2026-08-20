@@ -5,7 +5,10 @@ import { normalizeInstanceUrl, validateCredentialsForUtility } from "../../crede
 import { readQuestionTags, readTagIdentity } from "../../domain/tagNormalization";
 import type { ReportWarning, SessionCredentials } from "../../domain/types";
 import { analyzeSmeCoverage } from "./analyzer";
-import { buildSmeCoverageDecisionPack } from "./decisionPack";
+import {
+  buildSmeCoverageDecisionPack,
+  type SmeCoverageSnapshotInput,
+} from "./decisionPack";
 import type { CollectedSource, SmeCoverageDecisionPack, SourcePagination } from "./model";
 import { normalizeTagDemand } from "./tagDemand";
 import { normalizeTagSmeCounts } from "./tagSmeCounts";
@@ -114,29 +117,9 @@ async function runValidatedSmeCoverageAnalysis(
     });
   }
 
-  validateSourceIdentities(datasets);
-
-  const tags = asCollectedSource(getDataset(datasets, "tags"));
-  const questions = asCollectedSource(getDataset(datasets, "questions"));
-  const tagSmeCounts = asCollectedSource(getDataset(datasets, "tagSmeCounts"));
-  const demand = normalizeTagDemand({ tags, questions });
-  const smeCounts = normalizeTagSmeCounts(tagSmeCounts);
-  validateSupportedSmeCounts(tags, smeCounts.rows);
-
-  const sourceStatus = {
-    tags: tags.pagination,
-    questions: questions.pagination,
-    tagSmeCounts: tagSmeCounts.pagination,
-  };
-  const sourceWarnings = [...demand.warnings, ...smeCounts.warnings];
-  const analysis = analyzeSmeCoverage({ demand, smeCounts, sourceStatus });
-  const decisionPack = buildSmeCoverageDecisionPack({
-    analysis,
-    snapshot: {
-      instanceHost: new URL(normalizedInstance.baseUrl).host,
-      generatedAt: now.toISOString(),
-    },
-    sourceWarnings,
+  const decisionPack = buildSmeCoverageDecisionPackFromDatasets(datasets, {
+    instanceHost: new URL(normalizedInstance.baseUrl).host,
+    generatedAt: now.toISOString(),
   });
 
   const result: SmeCoverageRunResult = {
@@ -148,6 +131,38 @@ async function runValidatedSmeCoverageAnalysis(
     decisionPack,
   };
   return deepFreezeCopy(result);
+}
+
+export function buildSmeCoverageDecisionPackFromDatasets(
+  datasets: readonly SmeCoverageRunDataset[],
+  snapshot: SmeCoverageSnapshotInput,
+): SmeCoverageDecisionPack {
+  validateSourceIdentities(datasets);
+
+  const tags = asCollectedSource(getDataset(datasets, "tags"));
+  const questions = asCollectedSource(getDataset(datasets, "questions"));
+  const tagSmeCounts = asCollectedSource(getDataset(datasets, "tagSmeCounts"));
+  const demand = normalizeTagDemand({ tags, questions });
+  const smeCounts = normalizeTagSmeCounts(tagSmeCounts);
+  validateSupportedSmeCounts(tags, smeCounts.rows);
+  const analysis = analyzeSmeCoverage({
+    demand,
+    smeCounts,
+    sourceStatus: {
+      tags: tags.pagination,
+      questions: questions.pagination,
+      tagSmeCounts: tagSmeCounts.pagination,
+    },
+  });
+
+  return buildSmeCoverageDecisionPack({
+    analysis,
+    snapshot: {
+      instanceHost: snapshot.instanceHost,
+      generatedAt: snapshot.generatedAt,
+    },
+    sourceWarnings: [...demand.warnings, ...smeCounts.warnings],
+  });
 }
 
 async function collectSource(

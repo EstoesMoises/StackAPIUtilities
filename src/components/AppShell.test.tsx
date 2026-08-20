@@ -6,7 +6,8 @@ import type { DatasetName } from "../domain/types";
 import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
 import {
   completeSmeCoverageDecisionPack,
-  partialSmeCoverageDecisionPack,
+  emptySmeCoverageDecisionPack,
+  insufficientSampleSmeCoverageDecisionPack,
 } from "../test/fixtures/smeCoverageFixtures";
 import {
   clearPersistedDatasetSession,
@@ -309,7 +310,7 @@ describe("AppShell", () => {
 
   it("renders partial utility evidence notes before the executive summary", async () => {
     const user = userEvent.setup();
-    const pack = partialSmeCoverageDecisionPack();
+    const pack = insufficientSampleSmeCoverageDecisionPack();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(makeSmeCoverageRunBody(pack, "partial")),
     );
@@ -330,13 +331,10 @@ describe("AppShell", () => {
   it("replaces the active utility pack on rerun while retaining six supporting datasets", async () => {
     const user = userEvent.setup();
     const firstPack = completeSmeCoverageDecisionPack();
-    const secondPack = {
-      ...completeSmeCoverageDecisionPack(),
-      overview: "The second prepared decision pack is active.",
-    };
+    const secondPack = persistableEmptySmeCoverageDecisionPack();
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse(makeSmeCoverageRunBody(firstPack, "first")))
-      .mockResolvedValueOnce(jsonResponse(makeSmeCoverageRunBody(secondPack, "second")));
+      .mockResolvedValueOnce(jsonResponse(makeSmeCoverageRunBody(secondPack, "second", true)));
 
     render(<App />);
 
@@ -358,7 +356,7 @@ describe("AppShell", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockReturnValueOnce(olderRun.promise)
       .mockReturnValueOnce(newerRun.promise);
-    const freshPack = { ...completeSmeCoverageDecisionPack(), overview: "Fresh utility result." };
+    const freshPack = persistableEmptySmeCoverageDecisionPack();
 
     render(<App />);
 
@@ -372,18 +370,18 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
-    newerRun.resolve(jsonResponse(makeSmeCoverageRunBody(freshPack, "fresh")));
-    expect(await screen.findByText("Fresh utility result.")).toBeInTheDocument();
+    newerRun.resolve(jsonResponse(makeSmeCoverageRunBody(freshPack, "fresh", true)));
+    expect(await screen.findByText(freshPack.overview)).toBeInTheDocument();
 
     await act(async () => {
       olderRun.resolve(
-        jsonResponse(makeSmeCoverageRunBody({ ...completeSmeCoverageDecisionPack(), overview: "Stale utility result." }, "stale")),
+        jsonResponse(makeSmeCoverageRunBody(completeSmeCoverageDecisionPack(), "stale")),
       );
       await olderRun.promise;
     });
 
-    expect(screen.getByText("Fresh utility result.")).toBeInTheDocument();
-    expect(screen.queryByText("Stale utility result.")).not.toBeInTheDocument();
+    expect(screen.getByText(freshPack.overview)).toBeInTheDocument();
+    expect(screen.queryByText(completeSmeCoverageDecisionPack().overview)).not.toBeInTheDocument();
     expect(screen.getByText("3 datasets")).toBeInTheDocument();
   });
 
@@ -483,6 +481,9 @@ describe("AppShell", () => {
     }],
     ["a completeness label that does not match the evidence", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
       mutableSmeDecisionPack(body).snapshot.completeness = "Partial";
+    }],
+    ["source records that do not match the pack", (body: ReturnType<typeof makeSmeCoverageRunBody>) => {
+      body.result.datasets[1]!.records = [{ question_id: "tampered", tags: ["unrelated"], view_count: 1 }];
     }],
   ])("fails visibly without publishing a utility result containing %s", async (_label, mutate) => {
     const user = userEvent.setup();
@@ -1249,7 +1250,8 @@ describe("AppShell", () => {
 
     const saveCalls = savePersistedDatasetSessionMock.mock.calls;
     const savedSnapshot = saveCalls[saveCalls.length - 1]?.[0];
-    expect(savedSnapshot?.datasets).not.toHaveProperty("dataset-communities");
+    expect(savedSnapshot?.datasets).toHaveProperty("dataset-communities");
+    expect(savedSnapshot?.datasets["dataset-communities"]).not.toHaveProperty("snapshotId");
     expect(savedSnapshot?.datasets).not.toHaveProperty("dataset-users");
     expect(savedSnapshot?.reportOutputs).toEqual({});
     expect(JSON.stringify(savedSnapshot?.reportOutputs)).not.toContain("Ada");
@@ -2145,15 +2147,36 @@ function makeSmeCoverageRunBody(
   empty = false,
 ) {
   const pagination = { pageCount: empty ? 0 : 1, reachedMaxPages: false, hasMore: false };
+  const evidence = empty ? [] : decisionPack.evidence;
+  const tags = evidence.map((row) => ({ name: row.tagName, count: row.questionCount ?? 0 }));
+  const questions = evidence.flatMap((row, rowIndex) => {
+    if (
+      row.demandQuality !== "Complete" ||
+      !Number.isInteger(row.questionCount) ||
+      row.questionCount === null ||
+      row.questionCount < 0 ||
+      row.pageViews === null
+    ) {
+      return [];
+    }
+    return Array.from({ length: row.questionCount }, (_, questionIndex) => ({
+      question_id: `${marker}-${rowIndex}-${questionIndex}`,
+      tags: [row.tagName],
+      view_count: questionIndex === 0 ? row.pageViews : 0,
+    }));
+  });
+  const tagSmeCounts = evidence.flatMap((row) => row.smeCount === null
+    ? []
+    : [{ name: row.tagName, subjectMatterExpertCount: row.smeCount }]);
   return {
     ok: true as const,
     result: {
       utilityId: "sme-coverage-analyzer" as const,
       utilityTitle: "SME Coverage Analyzer" as const,
       datasets: [
-        { datasetName: "tags" as const, records: empty ? [] : [{ name: marker }], pagination },
-        { datasetName: "questions" as const, records: empty ? [] : [{ question_id: marker }], pagination },
-        { datasetName: "tagSmeCounts" as const, records: empty ? [] : [{ name: marker }], pagination },
+        { datasetName: "tags" as const, records: tags, pagination },
+        { datasetName: "questions" as const, records: questions, pagination },
+        { datasetName: "tagSmeCounts" as const, records: tagSmeCounts, pagination },
       ],
       messages: [],
       warnings: [...decisionPack.warnings],
@@ -2231,39 +2254,7 @@ function makePersistedUtilitySnapshot(decisionPack: ReturnType<typeof completeSm
 }
 
 function persistableEmptySmeCoverageDecisionPack(): ReturnType<typeof completeSmeCoverageDecisionPack> {
-  return {
-    snapshot: {
-      instanceHost: "example.stackenterprise.co",
-      generatedAt: "2026-07-30T12:00:00.000Z",
-      scopeLabel: "All-time demand · Current SME coverage",
-      collectionLabel: "All available data collected",
-      completeness: "Empty",
-    },
-    warnings: [],
-    summary: {
-      tagsAnalyzed: 0,
-      tagsWithSmes: 0,
-      immediateGaps: 0,
-      criticalUnderCoverage: 0,
-      lightCoverage: 0,
-      unknownRows: 0,
-    },
-    overview: "No tags were available.",
-    assessment: "No assessment can be made.",
-    findings: { immediateGaps: [], criticalUnderCoverage: [], lightCoverage: [] },
-    methodology: {
-      activityQuestionMinimum: 1,
-      activityPageViewThresholdExclusive: 25,
-      activeTagMedianPageViews: null,
-      coveredActiveSampleSize: 0,
-      p75PageViewsPerSme: null,
-      p90PageViewsPerSme: null,
-      percentileSampleSufficient: false,
-      ratioFormula: "pageViews / smeCount",
-      roundingRule: "Nearest whole page view for display; unrounded for calculation",
-    },
-    evidence: [],
-  };
+  return emptySmeCoverageDecisionPack();
 }
 
 function makeTagReportRunBody(message: string) {

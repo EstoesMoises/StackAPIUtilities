@@ -1,8 +1,9 @@
 import type { ReportWarning } from "../../domain/types";
 import { parseCurrentSmeCoverageDecisionPack } from "./persistence";
-import type {
-  SmeCoverageRunDataset,
-  SmeCoverageRunResult,
+import {
+  buildSmeCoverageDecisionPackFromDatasets,
+  type SmeCoverageRunDataset,
+  type SmeCoverageRunResult,
 } from "./runner";
 
 const REQUIRED_DATASETS = ["tags", "questions", "tagSmeCounts"] as const;
@@ -40,6 +41,17 @@ export function parseTerminalSmeCoverageResult(value: unknown): SmeCoverageRunRe
     return null;
   }
 
+  let expectedPack;
+  try {
+    expectedPack = buildSmeCoverageDecisionPackFromDatasets(datasets, {
+      instanceHost: decisionPack.snapshot.instanceHost,
+      generatedAt: decisionPack.snapshot.generatedAt,
+    });
+  } catch {
+    return null;
+  }
+  if (!isDeepEqual(decisionPack, expectedPack)) return null;
+
   return {
     utilityId: "sme-coverage-analyzer",
     utilityTitle: "SME Coverage Analyzer",
@@ -48,6 +60,21 @@ export function parseTerminalSmeCoverageResult(value: unknown): SmeCoverageRunRe
     warnings: decisionPack.warnings,
     decisionPack,
   };
+}
+
+function isDeepEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => isDeepEqual(item, right[index]));
+  }
+  if (!isRecord(left) || !isRecord(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && isDeepEqual(left[key], right[key]));
 }
 
 function warningsMatch(left: readonly ReportWarning[], right: readonly ReportWarning[]): boolean {

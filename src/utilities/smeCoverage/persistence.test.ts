@@ -76,6 +76,84 @@ describe("parseSmeCoverageDecisionPack", () => {
     expect(parsed?.warnings).toContainEqual(canonicalLegacyCollectionWarning);
   });
 
+  it("preserves historical Partial completeness for a complete-looking legacy pack only", () => {
+    const legacy = structuredClone(createDecisionPack()) as Record<string, any>;
+    legacy.snapshot.collectionLabel = legacyCollectionLabel;
+    legacy.snapshot.completeness = "Partial";
+
+    const parsed = parseSmeCoverageDecisionPack(legacy);
+
+    expect(parsed?.snapshot.completeness).toBe("Partial");
+    expect(parsed?.snapshot.collectionLabel).toBe(legacyCollectionLabel);
+    expect(parsed?.warnings).toContainEqual(canonicalLegacyCollectionWarning);
+
+    const current = structuredClone(legacy) as Record<string, any>;
+    current.snapshot.collectionLabel = "All available data collected";
+    current.warnings = current.warnings.filter(
+      (warning: Record<string, unknown>) => warning.code !== canonicalLegacyCollectionWarning.code,
+    );
+    expect(parseSmeCoverageDecisionPack(current)).toBeNull();
+  });
+
+  it.each([
+    ["Empty with evidence", "Empty"],
+    ["Complete without sufficient evidence", "Complete"],
+  ])("rejects legacy %s", (_label, completeness) => {
+    const legacy = structuredClone(createDecisionPack()) as Record<string, any>;
+    legacy.snapshot.collectionLabel = legacyCollectionLabel;
+    legacy.snapshot.completeness = completeness;
+    if (completeness === "Complete") {
+      legacy.evidence = [];
+      legacy.findings = { immediateGaps: [], criticalUnderCoverage: [], lightCoverage: [] };
+      legacy.summary = {
+        tagsAnalyzed: 0,
+        tagsWithSmes: 0,
+        immediateGaps: 0,
+        criticalUnderCoverage: 0,
+        lightCoverage: 0,
+        unknownRows: 0,
+      };
+      legacy.methodology = {
+        ...legacy.methodology,
+        activeTagMedianPageViews: null,
+        coveredActiveSampleSize: 0,
+        p75PageViewsPerSme: null,
+        p90PageViewsPerSme: null,
+        percentileSampleSufficient: false,
+      };
+    }
+
+    expect(parseSmeCoverageDecisionPack(legacy)).toBeNull();
+  });
+
+  it("preserves historical Partial completeness for an empty legacy capped run", () => {
+    const legacy = structuredClone(createDecisionPack()) as Record<string, any>;
+    legacy.snapshot.collectionLabel = legacyCollectionLabel;
+    legacy.snapshot.completeness = "Partial";
+    legacy.evidence = [];
+    legacy.findings = { immediateGaps: [], criticalUnderCoverage: [], lightCoverage: [] };
+    legacy.summary = {
+      tagsAnalyzed: 0,
+      tagsWithSmes: 0,
+      immediateGaps: 0,
+      criticalUnderCoverage: 0,
+      lightCoverage: 0,
+      unknownRows: 0,
+    };
+    legacy.methodology = {
+      ...legacy.methodology,
+      activeTagMedianPageViews: null,
+      coveredActiveSampleSize: 0,
+      p75PageViewsPerSme: null,
+      p90PageViewsPerSme: null,
+      percentileSampleSufficient: false,
+    };
+
+    const parsed = parseSmeCoverageDecisionPack(legacy);
+    expect(parsed?.snapshot.completeness).toBe("Partial");
+    expect(parsed?.warnings).toContainEqual(canonicalLegacyCollectionWarning);
+  });
+
   it("rejects a current exhaustive pack carrying the canonical legacy warning", () => {
     const current = structuredClone(createDecisionPack()) as Record<string, any>;
     current.warnings.push(canonicalLegacyCollectionWarning);
