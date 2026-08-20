@@ -1,4 +1,8 @@
 import { type FetchLike, type ThrottleNotice, readJsonResponse } from "./httpClient";
+import {
+  assertSafePaginationPage,
+  DEFAULT_PAGINATION_SAFETY_LIMIT,
+} from "./paginationSafety";
 
 interface StackApiV2ClientOptions {
   apiV2Url: string;
@@ -6,6 +10,7 @@ interface StackApiV2ClientOptions {
   headers?: HeadersInit;
   fetchFn?: FetchLike;
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
+  paginationSafetyLimit?: number;
 }
 
 interface StackApiV2Page<T> {
@@ -32,6 +37,7 @@ export class StackApiV2Client {
   private readonly headers: HeadersInit;
   private readonly fetchFn: FetchLike;
   private readonly onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
+  private readonly paginationSafetyLimit: number;
 
   constructor(options: StackApiV2ClientOptions) {
     this.apiV2Url = options.apiV2Url.replace(/\/+$/, "");
@@ -39,6 +45,7 @@ export class StackApiV2Client {
     this.headers = options.headers ?? {};
     this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.onThrottle = options.onThrottle;
+    this.paginationSafetyLimit = options.paginationSafetyLimit ?? DEFAULT_PAGINATION_SAFETY_LIMIT;
   }
 
   async getPagedItems<T = unknown>(
@@ -61,6 +68,7 @@ export class StackApiV2Client {
     const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
 
     while (hasMore && page <= maxPages) {
+      assertSafePaginationPage("Stack API v2.3", path, page, this.paginationSafetyLimit);
       const url = this.buildUrl(path, { ...query, page: String(page) });
       const response = await this.fetchFn(url, { headers: this.headers });
       const body = await readJsonResponse<StackApiV2Page<T>>(response, "Stack API v2.3");

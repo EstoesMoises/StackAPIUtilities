@@ -1,4 +1,8 @@
 import { type FetchLike, type ThrottleNotice, readJsonResponse } from "./httpClient";
+import {
+  assertSafePaginationPage,
+  DEFAULT_PAGINATION_SAFETY_LIMIT,
+} from "./paginationSafety";
 
 type WaitFn = (seconds: number) => Promise<void>;
 type NowFn = () => number;
@@ -10,6 +14,7 @@ interface StackApiV3ClientOptions {
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
   waitFn?: WaitFn;
   nowFn?: NowFn;
+  paginationSafetyLimit?: number;
 }
 
 interface StackApiV3Page<T> {
@@ -80,6 +85,7 @@ export class StackApiV3Client {
   private readonly onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
   private readonly waitFn: WaitFn;
   private readonly nowFn: NowFn;
+  private readonly paginationSafetyLimit: number;
 
   constructor(options: StackApiV3ClientOptions) {
     this.apiV3Url = options.apiV3Url.replace(/\/+$/, "");
@@ -88,6 +94,7 @@ export class StackApiV3Client {
     this.onThrottle = options.onThrottle;
     this.waitFn = options.waitFn ?? waitSeconds;
     this.nowFn = options.nowFn ?? (() => Date.now());
+    this.paginationSafetyLimit = options.paginationSafetyLimit ?? DEFAULT_PAGINATION_SAFETY_LIMIT;
   }
 
   async getPagedItems<T = unknown>(
@@ -111,6 +118,7 @@ export class StackApiV3Client {
     const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
 
     do {
+      assertSafePaginationPage("Stack API v3", path, page, this.paginationSafetyLimit);
       const url = this.buildUrl(path, { ...query, page: String(page) });
       const response = await this.readResponse(url);
 

@@ -39,6 +39,22 @@ describe("StackApiV3Client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("fails closed when pagination exceeds the internal safety limit", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ items: [{ id: "tag" }], totalPages: 99 }), { status: 200 }));
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: fetchMock,
+      paginationSafetyLimit: 2,
+    });
+
+    await expect(client.getPagedItems("/tags")).rejects.toThrow(
+      "exceeded the internal safety limit of 2 pages. No complete result was produced.",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("returns pagination metadata when max pages leaves more v3 data available", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({ items: [{ id: "a" }], totalPages: 3 }), { status: 200 }),
