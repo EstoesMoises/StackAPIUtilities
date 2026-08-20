@@ -308,8 +308,9 @@ describe("AppShell", () => {
 
   it("renders partial utility evidence notes before the executive summary", async () => {
     const user = userEvent.setup();
+    const pack = partialSmeCoverageDecisionPack();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(makeSmeCoverageRunBody(partialSmeCoverageDecisionPack(), "partial")),
+      jsonResponse(makeSmeCoverageRunBody(pack, "partial")),
     );
 
     render(<App />);
@@ -318,12 +319,8 @@ describe("AppShell", () => {
     await openSmeCoverageAnalyzer(user);
     await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
 
-    const evidenceNote = await screen.findByText(
-      "Demand evidence is unavailable or invalid for unknown-source; review that row before qualifying conclusions.",
-    );
-    const overview = screen.getByText(
-      "Analysis quality is Partial because one evidence row has unavailable demand and SME data. Review the evidence notes before qualifying conclusions.",
-    );
+    const evidenceNote = await screen.findByText(pack.warnings[0]!.message);
+    const overview = screen.getByText(pack.overview);
     expect(
       evidenceNote.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

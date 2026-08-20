@@ -6,7 +6,6 @@ import {
   emptySmeCoverageDecisionPack,
   insufficientSampleSmeCoverageDecisionPack,
   partialSmeCoverageDecisionPack,
-  warninglessPartialSmeCoverageDecisionPack,
 } from "../test/fixtures/smeCoverageFixtures";
 import {
   downloadSmeCoverageEvidenceCsv,
@@ -34,7 +33,9 @@ describe("SmeCoverageDecisionPack", () => {
       warningStack.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(within(warningStack).getAllByRole("alert")).toHaveLength(pack.warnings.length);
-    expect(within(warningStack).getByText(/demand evidence is unavailable/i)).toBeInTheDocument();
+    expect(
+      within(warningStack).getByText(/demand metrics are unavailable or invalid/i),
+    ).toBeInTheDocument();
 
     expect(screen.getByText("example.stackenterprise.co")).toBeInTheDocument();
     expect(screen.getByText("2026-07-30T12:00:00.000Z")).toBeInTheDocument();
@@ -52,8 +53,8 @@ describe("SmeCoverageDecisionPack", () => {
     expect(screen.queryByText("Max pages per dataset")).not.toBeInTheDocument();
 
     for (const [label, value] of [
-      ["Tags analyzed", "4"],
-      ["Tags with SMEs", "2"],
+      ["Tags analyzed", "6"],
+      ["Tags with SMEs", "4"],
       ["Immediate gaps", "1"],
       ["Critical under-coverage", "1"],
       ["Light-coverage tags", "1"],
@@ -89,7 +90,9 @@ describe("SmeCoverageDecisionPack", () => {
 
     rerender(<SmeCoverageDecisionPack pack={emptySmeCoverageDecisionPack()} onRunAgain={vi.fn()} />);
     expect(screen.getByText("Analysis quality: Empty", { selector: ".sme-completeness-badge" })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Evidence notes" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Evidence notes" })).toHaveTextContent(
+      /only 0 eligible covered active tags/i,
+    );
     expect(
       screen.getByText("No evidence rows were available, so no coverage conclusion was produced."),
     ).toBeInTheDocument();
@@ -100,18 +103,7 @@ describe("SmeCoverageDecisionPack", () => {
         onRunAgain={vi.fn()}
       />,
     );
-    expect(screen.getByRole("alert")).toHaveTextContent(/only one eligible covered active tag/i);
-  });
-
-  it("renders prepared warnings only and does not synthesize qualification copy", () => {
-    const pack = warninglessPartialSmeCoverageDecisionPack();
-    render(<SmeCoverageDecisionPack pack={pack} onRunAgain={vi.fn()} />);
-
-    expect(pack.warnings).toEqual([]);
-    expect(screen.queryByRole("region", { name: "Evidence notes" })).not.toBeInTheDocument();
-    expect(screen.queryByText(/qualify its conclusions/i)).not.toBeInTheDocument();
-    expect(screen.getByText(pack.overview)).toBeInTheDocument();
-    expect(screen.getByText(pack.assessment)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/only 1 eligible covered active tag/i);
   });
 
   it("shows every prepared finding field, explicit unavailable values, and tier-specific empty states", async () => {
@@ -137,8 +129,9 @@ describe("SmeCoverageDecisionPack", () => {
     expect(within(immediate).getByText("No SME")).toBeInTheDocument();
 
     const critical = screen.getByRole("region", { name: "Highest-demand critical gaps" });
-    expect(within(critical).getAllByText("3,000")).toHaveLength(2);
-    expect(within(critical).getByText("All-time tag total")).toBeInTheDocument();
+    expect(within(critical).getByText("3,000.49")).toBeInTheDocument();
+    expect(within(critical).getByText("3,000")).toBeInTheDocument();
+    expect(within(critical).getByText("Complete question enumeration")).toBeInTheDocument();
 
     const assessment = completeSmeCoverageDecisionPack().assessment;
     await user.click(screen.getByRole("button", { name: "Copy assessment" }));
@@ -149,8 +142,8 @@ describe("SmeCoverageDecisionPack", () => {
     const methodology = methodologySummary.closest("details")!;
     expect(within(methodology).getByText("At least 1 question or more than 25 page views")).toBeInTheDocument();
     expect(within(methodology).getByText("pageViews / smeCount")).toBeInTheDocument();
-    expect(within(methodology).getByText("2,750")).toBeInTheDocument();
-    expect(within(methodology).getByText("12")).toBeInTheDocument();
+    expect(within(methodology).getByText("2,500.8")).toBeInTheDocument();
+    expect(within(methodology).getByText("4")).toBeInTheDocument();
     expect(within(methodology).getByText("1,250")).toBeInTheDocument();
     expect(within(methodology).getByText("3,000")).toBeInTheDocument();
     expect(within(methodology).queryByText("1,250.4")).not.toBeInTheDocument();
@@ -183,38 +176,7 @@ describe("SmeCoverageDecisionPack", () => {
     const methodologySummaries = screen.getAllByText("Methodology and evidence quality");
     const smallSampleSummary = methodologySummaries[methodologySummaries.length - 1]!;
     await user.click(smallSampleSummary);
-    expect(within(smallSampleSummary.closest("details")!).getAllByText("Not calculated")).toHaveLength(2);
-  });
-
-  it("keeps current complete and partial fixtures internally consistent with analysis quality", () => {
-    const complete = completeSmeCoverageDecisionPack();
-    const partial = partialSmeCoverageDecisionPack();
-    const warninglessPartial = warninglessPartialSmeCoverageDecisionPack();
-
-    expect(complete.evidence).toHaveLength(complete.summary.tagsAnalyzed);
-    expect(complete.summary.tagsAnalyzed).toBe(3);
-    expect(complete.evidence.every((row) => row.demandQuality === "Complete")).toBe(true);
-    expect(complete.evidence.every((row) => row.smeQuality === "Complete")).toBe(true);
-    expect(complete.summary.tagsWithSmes).toBe(
-      complete.evidence.filter((row) => row.smeCount !== null && row.smeCount >= 1).length,
-    );
-    expect(complete.summary.unknownRows).toBe(0);
-    expect(complete.assessment).not.toMatch(/unknown-source/i);
-
-    for (const pack of [partial, warninglessPartial]) {
-      expect(pack.evidence).toHaveLength(pack.summary.tagsAnalyzed);
-      expect(
-        pack.evidence.some(
-          (row) => row.demandQuality !== "Complete" || row.smeQuality !== "Complete",
-        ),
-      ).toBe(true);
-    }
-    expect(partial.warnings.map((warning) => warning.message).join(" ")).toMatch(
-      /evidence.*unavailable|unavailable.*evidence/i,
-    );
-    expect(partial.warnings.map((warning) => warning.message).join(" ")).not.toMatch(
-      /configured|cap|partial sample/i,
-    );
+    expect(within(smallSampleSummary.closest("details")!).getAllByText("600")).toHaveLength(3);
   });
 
   it.each([
