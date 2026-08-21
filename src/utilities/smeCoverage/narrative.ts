@@ -18,7 +18,6 @@ export function buildSmeCoverageNarrative(analysis: SmeCoverageAnalysisResult): 
   const sourceSampleCapped =
     isCapped(analysis.sourceStatus.tags) || isCapped(analysis.sourceStatus.tagSmeCounts);
   const sampleNotes = buildSampleNotes(
-    analysis.sampling.configuredAsPartialSample,
     questionSampleCapped,
     sourceSampleCapped,
   );
@@ -109,16 +108,12 @@ function buildOverview(
 }
 
 function buildSampleNotes(
-  configuredAsPartialSample: boolean,
   questionSampleCapped: boolean,
   sourceSampleCapped: boolean,
 ): string[] {
   const notes: string[] = [];
-  if (configuredAsPartialSample || questionSampleCapped || sourceSampleCapped) {
+  if (questionSampleCapped || sourceSampleCapped) {
     notes.push("This analysis is a partial sample.");
-  }
-  if (configuredAsPartialSample) {
-    notes.push("The configured API volume settings are not the Deep audit defaults.");
   }
   if (questionSampleCapped) {
     notes.push("Demand conclusions use collected-sample page views from a partial sample.");

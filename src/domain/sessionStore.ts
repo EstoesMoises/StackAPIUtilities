@@ -1,10 +1,11 @@
 import { hydrateDatasetSessionState } from "./datasetPersistence";
+import { isLegacyCollectionWarning } from "./collectionWarnings";
+import type { DatasetPaginationMetadata } from "../collectors/liveCollectors";
 import type {
   DatasetName,
   PeriodScope,
   ReportId,
   ReportOutput,
-  ReportRunPresetId,
   ReportWarning,
   RunPeriodRole,
   SessionCredentials,
@@ -14,10 +15,12 @@ import type {
 } from "./types";
 import { buildTagHealthRowsFromLiveRecords } from "../reports/tagReport";
 import type { SmeCoverageRunResult } from "../utilities/smeCoverage/runner";
+import { parseTerminalSmeCoverageResult } from "../utilities/smeCoverage/runtimeValidation";
 
 interface LiveDatasetPayload {
   datasetName: DatasetName;
   records: Record<string, unknown>[];
+  pagination: DatasetPaginationMetadata;
 }
 
 type SessionAction =
@@ -32,9 +35,6 @@ type SessionAction =
       reportId: ReportId;
       periodRole: RunPeriodRole;
       scope: PeriodScope;
-      pageSize: number;
-      maxPagesPerDataset: number;
-      runPreset?: ReportRunPresetId;
       warnings: ReportWarning[];
       datasets: LiveDatasetPayload[];
     }
@@ -129,7 +129,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       }
 
       const loadedAt = new Date().toISOString();
-      const snapshotId = createSnapshotId(action.reportId, action.periodRole, loadedAt);
+      const snapshotId = createSnapshotId(state, action.reportId, action.periodRole, loadedAt);
       const liveDatasets: Record<string, SessionDataset> = {};
       const datasetIds: string[] = [];
       const reportRecords = action.datasets.flatMap(({ datasetName, records }) =>
@@ -152,6 +152,9 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           periodRole: action.periodRole,
           scope: action.scope,
           warnings: action.warnings,
+          pageCount: dataset.pagination.pageCount,
+          reachedMaxPages: dataset.pagination.reachedMaxPages,
+          hasMore: dataset.pagination.hasMore,
         };
       });
 
@@ -207,9 +210,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
             reportId: action.reportId,
             periodRole: action.periodRole,
             scope: action.scope,
-            pageSize: action.pageSize,
-            maxPagesPerDataset: action.maxPagesPerDataset,
-            runPreset: action.runPreset,
             loadedAt,
             datasetIds,
             warnings: action.warnings,
@@ -223,7 +223,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       };
     }
     case "utility/loaded": {
-      const { result } = action;
+      const result = parseTerminalSmeCoverageResult(action.result);
+      if (!result) return state;
       const loadedAt = new Date().toISOString();
       const snapshotId = createUtilitySnapshotId(state, result.utilityId, loadedAt);
       const liveDatasets: Record<string, SessionDataset> = {};
@@ -268,9 +269,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           {
             id: snapshotId,
             utilityId: result.utilityId,
-            pageSize: result.pageSize,
-            maxPagesPerDataset: result.maxPagesPerDataset,
-            ...(result.runPreset ? { runPreset: result.runPreset } : {}),
             loadedAt,
             datasetIds,
             warnings,
@@ -286,33 +284,74 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         return state;
       }
 
+      const invalidatedReportSnapshotIds = new Set(
+        state.reportRunSnapshots
+          .filter(
+            (snapshot) =>
+              snapshot.datasetIds.includes(action.datasetId) &&
+              !snapshot.warnings.some((warning) => isLegacyCollectionWarning(warning, snapshot.reportId)),
+          )
+          .map((snapshot) => snapshot.id),
+      );
+      const invalidatedUtilitySnapshotIds = new Set(
+        state.utilityRunSnapshots
+          .filter(
+            (snapshot) =>
+              snapshot.datasetIds.includes(action.datasetId) &&
+              snapshot.datasetIds.every((datasetId) => hasTerminalDatasetPagination(state.datasets[datasetId])),
+          )
+          .map((snapshot) => snapshot.id),
+      );
+      const datasets = detachDatasetsFromInvalidatedSnapshots(
+        remainingDatasets,
+        new Set([...invalidatedReportSnapshotIds, ...invalidatedUtilitySnapshotIds]),
+      );
       const reportRunSnapshots = state.reportRunSnapshots
+        .filter((snapshot) => !invalidatedReportSnapshotIds.has(snapshot.id))
         .map((snapshot) => ({
           ...snapshot,
           datasetIds: snapshot.datasetIds.filter((datasetId) => datasetId !== action.datasetId),
         }))
         .filter((snapshot) => snapshot.datasetIds.length > 0);
       const utilityRunSnapshots = state.utilityRunSnapshots
+        .filter((snapshot) => !invalidatedUtilitySnapshotIds.has(snapshot.id))
         .map((snapshot) => ({
           ...snapshot,
           datasetIds: snapshot.datasetIds.filter((datasetId) => datasetId !== action.datasetId),
         }))
         .filter((snapshot) => snapshot.datasetIds.length > 0);
+      const utilityOutputs = { ...state.utilityOutputs };
+      (Object.keys(utilityOutputs) as UtilityId[]).forEach((utilityId) => {
+        const output = utilityOutputs[utilityId];
+        if (!output) return;
+
+        for (let index = state.utilityRunSnapshots.length - 1; index >= 0; index -= 1) {
+          const snapshot = state.utilityRunSnapshots[index];
+          if (snapshot?.utilityId === utilityId && snapshot.loadedAt === output.loadedAt) {
+            if (invalidatedUtilitySnapshotIds.has(snapshot.id)) {
+              delete utilityOutputs[utilityId];
+            }
+            break;
+          }
+        }
+      });
 
       return {
         ...state,
-        datasets: remainingDatasets,
+        datasets,
         reportOutputs: removeReportOutputsForDataset(
           state.reportOutputs,
           removedDataset,
+          state.reportRunSnapshots,
           reportRunSnapshots,
-          remainingDatasets,
+          datasets,
         ),
         reportRunSnapshots,
+        utilityOutputs,
         utilityRunSnapshots,
         warnings: pruneWarningsForRemainingDatasetState(
           state.warnings,
-          remainingDatasets,
+          datasets,
           reportRunSnapshots,
           utilityRunSnapshots,
         ),
@@ -349,9 +388,36 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
   }
 }
 
+function hasTerminalDatasetPagination(dataset: SessionDataset | undefined): boolean {
+  return (
+    !!dataset &&
+    Number.isInteger(dataset.pageCount) &&
+    (dataset.pageCount ?? -1) >= 0 &&
+    dataset.reachedMaxPages === false &&
+    dataset.hasMore === false
+  );
+}
+
+function detachDatasetsFromInvalidatedSnapshots(
+  datasets: SessionState["datasets"],
+  invalidatedSnapshotIds: ReadonlySet<string>,
+): SessionState["datasets"] {
+  return Object.fromEntries(
+    Object.entries(datasets).map(([datasetId, dataset]) => {
+      if (!dataset.snapshotId || !invalidatedSnapshotIds.has(dataset.snapshotId)) {
+        return [datasetId, dataset];
+      }
+
+      const { snapshotId: _snapshotId, ...detachedDataset } = dataset;
+      return [datasetId, detachedDataset];
+    }),
+  );
+}
+
 function removeReportOutputsForDataset(
   reportOutputs: SessionState["reportOutputs"],
   removedDataset: SessionDataset,
+  previousReportRunSnapshots: SessionState["reportRunSnapshots"],
   retainedReportRunSnapshots: SessionState["reportRunSnapshots"],
   remainingDatasets: SessionState["datasets"],
 ): SessionState["reportOutputs"] {
@@ -365,7 +431,14 @@ function removeReportOutputsForDataset(
       continue;
     }
 
-    const nextOutput = removeDatasetFromReportOutput(output, removedDataset, retainedSnapshotIds, remainingDatasets);
+    const nextOutput = removeDatasetFromReportOutput(
+      output,
+      removedDataset,
+      retainedSnapshotIds,
+      previousReportRunSnapshots,
+      retainedReportRunSnapshots,
+      remainingDatasets,
+    );
 
     if (nextOutput) {
       nextReportOutputs[reportId] = nextOutput;
@@ -381,6 +454,8 @@ function removeDatasetFromReportOutput(
   output: ReportOutput,
   dataset: SessionDataset,
   retainedSnapshotIds: ReadonlySet<string>,
+  previousReportRunSnapshots: SessionState["reportRunSnapshots"],
+  retainedReportRunSnapshots: SessionState["reportRunSnapshots"],
   remainingDatasets: SessionState["datasets"],
 ): ReportOutput | null {
   if (isUploadedReportOutputTiedToDataset(output, dataset)) {
@@ -390,12 +465,18 @@ function removeDatasetFromReportOutput(
   if (!dataset.snapshotId) {
     return output;
   }
+  const removedSnapshotWarnings = retainedSnapshotIds.has(dataset.snapshotId)
+    ? []
+    : previousReportRunSnapshots.find(
+        (snapshot) => snapshot.id === dataset.snapshotId && snapshot.reportId === output.reportId,
+      )?.warnings ?? dataset.warnings ?? [];
 
   if (output.currentSnapshotId === dataset.snapshotId) {
+    const isSnapshotRetained = retainedSnapshotIds.has(dataset.snapshotId);
     const records = pruneDatasetRecords(
       output.records,
       dataset,
-      retainedSnapshotIds.has(dataset.snapshotId),
+      isSnapshotRetained,
       output.reportId,
       dataset.snapshotId,
       remainingDatasets,
@@ -405,26 +486,34 @@ function removeDatasetFromReportOutput(
       records,
     };
 
-    if (records.length === 0) {
+    if (!isSnapshotRetained) {
       delete nextOutput.currentScope;
       delete nextOutput.currentSnapshotId;
     }
 
-    return hasReportOutputRecords(nextOutput) ? nextOutput : null;
+    const refreshedOutput = refreshReportOutputWarnings(
+      nextOutput,
+      retainedReportRunSnapshots,
+      removedSnapshotWarnings,
+    );
+    return hasRetainedReportOutputSnapshot(refreshedOutput, retainedSnapshotIds)
+      ? refreshedOutput
+      : null;
   }
 
   if (output.comparisonSnapshotId === dataset.snapshotId) {
     const nextOutput: ReportOutput = { ...output };
+    const isSnapshotRetained = retainedSnapshotIds.has(dataset.snapshotId);
     const comparisonRecords = pruneDatasetRecords(
       output.comparisonRecords ?? [],
       dataset,
-      retainedSnapshotIds.has(dataset.snapshotId),
+      isSnapshotRetained,
       output.reportId,
       dataset.snapshotId,
       remainingDatasets,
     );
 
-    if (comparisonRecords.length > 0) {
+    if (isSnapshotRetained) {
       nextOutput.comparisonRecords = comparisonRecords;
     } else {
       delete nextOutput.comparisonRecords;
@@ -432,10 +521,39 @@ function removeDatasetFromReportOutput(
       delete nextOutput.comparisonSnapshotId;
     }
 
-    return hasReportOutputRecords(nextOutput) ? nextOutput : null;
+    const refreshedOutput = refreshReportOutputWarnings(
+      nextOutput,
+      retainedReportRunSnapshots,
+      removedSnapshotWarnings,
+    );
+    return hasRetainedReportOutputSnapshot(refreshedOutput, retainedSnapshotIds)
+      ? refreshedOutput
+      : null;
   }
 
   return output;
+}
+
+function refreshReportOutputWarnings(
+  output: ReportOutput,
+  reportRunSnapshots: SessionState["reportRunSnapshots"],
+  removedSnapshotWarnings: ReportWarning[],
+): ReportOutput {
+  const retainedSnapshotWarnings = [output.currentSnapshotId, output.comparisonSnapshotId].flatMap((snapshotId) => {
+    if (!snapshotId) return [];
+    return reportRunSnapshots.find(
+      (snapshot) => snapshot.id === snapshotId && snapshot.reportId === output.reportId,
+    )?.warnings ?? [];
+  });
+  const snapshotWarnings = [...retainedSnapshotWarnings, ...removedSnapshotWarnings];
+  const outputSpecificWarnings = (output.warnings ?? []).filter(
+    (warning) => !snapshotWarnings.some((snapshotWarning) => isSameWarning(warning, snapshotWarning)),
+  );
+
+  return {
+    ...output,
+    warnings: dedupeWarnings([...outputSpecificWarnings, ...retainedSnapshotWarnings]),
+  };
 }
 
 function isUploadedReportOutputTiedToDataset(output: ReportOutput, dataset: SessionDataset): boolean {
@@ -448,8 +566,16 @@ function isUploadedReportOutputTiedToDataset(output: ReportOutput, dataset: Sess
   );
 }
 
-function hasReportOutputRecords(output: ReportOutput): boolean {
-  return output.records.length > 0 || Boolean(output.comparisonRecords?.length);
+function hasRetainedReportOutputSnapshot(
+  output: ReportOutput,
+  retainedSnapshotIds: ReadonlySet<string>,
+): boolean {
+  return (
+    (typeof output.currentSnapshotId === "string" &&
+      retainedSnapshotIds.has(output.currentSnapshotId)) ||
+    (typeof output.comparisonSnapshotId === "string" &&
+      retainedSnapshotIds.has(output.comparisonSnapshotId))
+  );
 }
 
 function pruneDatasetRecords(
@@ -460,12 +586,12 @@ function pruneDatasetRecords(
   snapshotId: string,
   remainingDatasets: SessionState["datasets"],
 ): Record<string, unknown>[] {
-  if (records.some((record) => Object.prototype.hasOwnProperty.call(record, "datasetName"))) {
-    return records.filter((record) => record.datasetName !== dataset.name);
-  }
-
   if (!isSnapshotRetained) {
     return [];
+  }
+
+  if (records.some((record) => Object.prototype.hasOwnProperty.call(record, "datasetName"))) {
+    return records.filter((record) => record.datasetName !== dataset.name);
   }
 
   return buildVisibleReportRecordsForSnapshot(reportId, snapshotId, remainingDatasets);
@@ -559,23 +685,44 @@ function storeUploadedDataset(
   };
 }
 
-function createSnapshotId(reportId: ReportId, periodRole: RunPeriodRole, loadedAt: string): string {
-  return createDatasetId("snapshot", reportId, periodRole, loadedAt);
+function createSnapshotId(
+  state: SessionState,
+  reportId: ReportId,
+  periodRole: RunPeriodRole,
+  loadedAt: string,
+): string {
+  const baseId = createDatasetId("snapshot", reportId, periodRole, loadedAt);
+  let suffix = 0;
+  let candidate = baseId;
+
+  while (hasSnapshotIdConflict(state, candidate)) {
+    suffix += 1;
+    candidate = createDatasetId(baseId, String(suffix));
+  }
+  return candidate;
 }
 
 function createUtilitySnapshotId(state: SessionState, utilityId: UtilityId, loadedAt: string): string {
   let suffix = state.utilityRunSnapshots.length;
   let candidate = createDatasetId("utility-snapshot", utilityId, loadedAt, String(suffix));
-  const existingSnapshotIds = new Set([
-    ...state.utilityRunSnapshots.map((snapshot) => snapshot.id),
-    ...Object.values(state.datasets).flatMap((dataset) => dataset.snapshotId ? [dataset.snapshotId] : []),
-  ]);
-
-  while (existingSnapshotIds.has(candidate)) {
+  while (hasSnapshotIdConflict(state, candidate)) {
     suffix += 1;
     candidate = createDatasetId("utility-snapshot", utilityId, loadedAt, String(suffix));
   }
   return candidate;
+}
+
+function hasSnapshotIdConflict(state: SessionState, candidate: string): boolean {
+  return (
+    state.reportRunSnapshots.some((snapshot) => snapshot.id === candidate) ||
+    state.utilityRunSnapshots.some((snapshot) => snapshot.id === candidate) ||
+    Object.values(state.datasets).some(
+      (dataset) =>
+        dataset.snapshotId === candidate ||
+        dataset.id === candidate ||
+        dataset.id.startsWith(`${candidate}__`),
+    )
+  );
 }
 
 function createDatasetId(...parts: string[]): string {

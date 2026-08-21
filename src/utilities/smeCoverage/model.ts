@@ -1,4 +1,4 @@
-import type { ReportRunPresetId, ReportWarning } from "../../domain/types";
+import type { ReportWarning } from "../../domain/types";
 
 export type QuestionCountBasis =
   | "Complete question enumeration"
@@ -33,13 +33,6 @@ export interface SmeCoverageSourceStatus {
   tags: SourcePagination;
   questions: SourcePagination;
   tagSmeCounts: SourcePagination;
-}
-
-export interface SmeCoverageSamplingMetadata {
-  readonly pageSize: number;
-  readonly maxPagesPerDataset: number;
-  readonly runPreset?: ReportRunPresetId;
-  readonly configuredAsPartialSample: boolean;
 }
 
 export interface NormalizedTagDemandRow {
@@ -114,7 +107,6 @@ export interface SmeCoverageAnalysisResult {
     lightCoverage: readonly SmeCoverageEvidenceRow[];
   };
   sourceStatus: SmeCoverageSourceStatus;
-  sampling: SmeCoverageSamplingMetadata;
   warnings: readonly ReportWarning[];
 }
 
@@ -124,10 +116,10 @@ export interface SmeCoverageSnapshot {
   readonly instanceHost: string;
   readonly generatedAt: string;
   readonly scopeLabel: "All-time demand · Current SME coverage";
+  readonly collectionLabel:
+    | "All available data collected"
+    | "Legacy run — completeness not verified under current collection rules";
   readonly completeness: SmeCoverageCompleteness;
-  readonly pageSize: number;
-  readonly maxPagesPerDataset: number;
-  readonly runPreset?: ReportRunPresetId;
 }
 
 export interface SmeCoverageDecisionPack {

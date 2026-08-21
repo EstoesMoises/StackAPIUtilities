@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { isLegacyCollectionWarning } from "../domain/collectionWarnings";
+import { formatPeriodLabel } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
 import type { PeriodScope, ReportId, ReportRunScope, ReportWarning, RunPeriodRole } from "../domain/types";
 import { DataTable } from "./DataTable";
@@ -40,6 +42,7 @@ export function ReportWorkspace({
   const report = reportRegistry.find((candidate) => candidate.id === reportId)!;
   const comparisonEnabled = scope.comparison !== undefined;
   const canDownloadTagHealth = reportId === "tag-report" && records.length > 0;
+  const legacyCollection = warnings?.some((warning) => isLegacyCollectionWarning(warning, reportId)) ?? false;
 
   function downloadTagHealthCsv() {
     downloadReportCsv({
@@ -80,7 +83,7 @@ export function ReportWorkspace({
           render full script outputs. Loaded datasets stay in this browser until removed.
         </p>
       </div>
-      <ReportScopePanel reportId={reportId} scope={scope} onChange={onScopeChange} />
+      <ReportScopePanel scope={scope} onChange={onScopeChange} />
       <div className="run-controls">
         <button
           className="s-btn s-btn__filled report-run-primary"
@@ -108,6 +111,29 @@ export function ReportWorkspace({
           </>
         )}
       </div>
+      {outputSource === "live-api" && (
+        <div
+          className={`collection-status s-notice ${
+            legacyCollection ? "s-notice__warning" : "s-notice__success"
+          } mt16`}
+          role="status"
+          aria-label="Collection status"
+        >
+          <strong>
+            {legacyCollection
+              ? "Legacy run — completeness not verified under current collection rules."
+              : "All available data collected"}
+          </strong>
+          {currentScope ? (
+            <>
+              <span> · {formatPeriodLabel(currentScope)}</span>
+              {comparisonScope && <span> · Compared with {formatPeriodLabel(comparisonScope)}</span>}
+            </>
+          ) : comparisonScope ? (
+            <span> · Comparison: {formatPeriodLabel(comparisonScope)}</span>
+          ) : null}
+        </div>
+      )}
       <div className="s-navigation s-navigation__muted report-tabs" role="tablist">
         <button
           className="s-navigation--item"

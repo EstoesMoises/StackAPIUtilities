@@ -1,4 +1,8 @@
 import { type FetchLike, type ThrottleNotice, readJsonResponse } from "./httpClient";
+import {
+  assertSafePaginationPage,
+  DEFAULT_PAGINATION_SAFETY_LIMIT,
+} from "./paginationSafety";
 
 type WaitFn = (seconds: number) => Promise<void>;
 type NowFn = () => number;
@@ -10,11 +14,12 @@ interface StackApiV3ClientOptions {
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
   waitFn?: WaitFn;
   nowFn?: NowFn;
+  paginationSafetyLimit?: number;
 }
 
-interface StackApiV3Page<T> {
-  items?: T[];
-  totalPages?: number;
+interface ValidatedStackApiV3Page<T> {
+  items: T[];
+  totalPages: number | null;
 }
 
 export interface StackApiV3UserSummary {
@@ -80,6 +85,7 @@ export class StackApiV3Client {
   private readonly onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
   private readonly waitFn: WaitFn;
   private readonly nowFn: NowFn;
+  private readonly paginationSafetyLimit: number;
 
   constructor(options: StackApiV3ClientOptions) {
     this.apiV3Url = options.apiV3Url.replace(/\/+$/, "");
@@ -88,6 +94,7 @@ export class StackApiV3Client {
     this.onThrottle = options.onThrottle;
     this.waitFn = options.waitFn ?? waitSeconds;
     this.nowFn = options.nowFn ?? (() => Date.now());
+    this.paginationSafetyLimit = options.paginationSafetyLimit ?? DEFAULT_PAGINATION_SAFETY_LIMIT;
   }
 
   async getPagedItems<T = unknown>(
@@ -111,16 +118,20 @@ export class StackApiV3Client {
     const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
 
     do {
+      assertSafePaginationPage("Stack API v3", path, page, this.paginationSafetyLimit);
       const url = this.buildUrl(path, { ...query, page: String(page) });
       const response = await this.readResponse(url);
 
-      const body = await readJsonResponse<StackApiV3Page<T>>(response, "Stack API v3");
-      const pageItems = body.items ?? [];
+      const body: ValidatedStackApiV3Page<T> = validatePaginationEnvelope<T>(
+        await readJsonResponse<unknown>(response, "Stack API v3"),
+        path,
+        page,
+        totalPages,
+      );
+      const pageItems = body.items;
       items.push(...pageItems);
       lastPageItemCount = pageItems.length;
-      totalPages = typeof body.totalPages === "number" && Number.isFinite(body.totalPages)
-        ? body.totalPages
-        : totalPages;
+      totalPages = body.totalPages;
       pageCount += 1;
       page += 1;
     } while (shouldFetchNextPage({ page, totalPages, maxPages, lastPageItemCount }));
@@ -249,6 +260,60 @@ export class StackApiV3Client {
       await this.onThrottle({ kind: "token-bucket", seconds: secondsUntilRefill, remaining: callsLeft });
     }
   }
+}
+
+function validatePaginationEnvelope<T>(
+  value: unknown,
+  path: string,
+  page: number,
+  knownTotalPages: number | null,
+): ValidatedStackApiV3Page<T> {
+  if (!isRecord(value) || !hasOwn(value, "items") || !Array.isArray(value.items)) {
+    throw invalidPaginationEnvelope(path, page);
+  }
+
+  let suppliedTotalPages: number | null = null;
+  if (hasOwn(value, "totalPages")) {
+    const rawTotalPages = value.totalPages;
+    if (
+      typeof rawTotalPages !== "number" ||
+      !Number.isFinite(rawTotalPages) ||
+      !Number.isInteger(rawTotalPages) ||
+      rawTotalPages < 0
+    ) {
+      throw invalidPaginationEnvelope(path, page);
+    }
+    suppliedTotalPages = rawTotalPages;
+  }
+
+  if (
+    knownTotalPages !== null &&
+    suppliedTotalPages !== null &&
+    suppliedTotalPages !== knownTotalPages
+  ) {
+    throw invalidPaginationEnvelope(path, page);
+  }
+
+  const totalPages: number | null = suppliedTotalPages ?? knownTotalPages;
+  if (value.items.length > 0 && totalPages !== null && page > totalPages) {
+    throw invalidPaginationEnvelope(path, page);
+  }
+
+  return { items: value.items as T[], totalPages };
+}
+
+function invalidPaginationEnvelope(path: string, page: number): Error {
+  return new Error(
+    `Stack API v3 returned an invalid pagination envelope for ${path} page ${page}. No complete result was produced.`,
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(value: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function getRetryDelaySeconds(headers: Headers, nowMs: number): number {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ApiVolumeSettingsValue, ReportWarning } from "../../domain/types";
+import type { ReportWarning } from "../../domain/types";
 import {
   completeSmeCoverageSourceStatus,
   narrativeDemandRows,
@@ -9,28 +9,22 @@ import {
 } from "../../test/fixtures/smeCoverageFixtures";
 import { analyzeSmeCoverage } from "./analyzer";
 import { buildSmeCoverageDecisionPack } from "./decisionPack";
-import { buildSmeCoverageMarkdown } from "./exports";
 import type { SmeCoverageAnalysisResult, SmeCoverageSourceStatus } from "./model";
 
 const snapshot = {
   instanceHost: "example.stackenterprise.co",
   generatedAt: "2026-07-30T12:00:00.000Z",
-  pageSize: 100,
-  maxPagesPerDataset: 20,
-  runPreset: "deep-audit" as const,
 };
 
 function analyze(
   demandRows = narrativeDemandRows,
   smeRows = narrativeSmeRows,
   sourceStatus: SmeCoverageSourceStatus = completeSmeCoverageSourceStatus,
-  settings?: ApiVolumeSettingsValue,
 ): SmeCoverageAnalysisResult {
   return analyzeSmeCoverage({
     demand: { rows: demandRows, warnings: [] },
     smeCounts: { rows: smeRows, warnings: [] },
     sourceStatus,
-    settings,
   });
 }
 
@@ -55,10 +49,8 @@ describe("buildSmeCoverageDecisionPack", () => {
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: "Complete",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     });
     expect(pack.summary).toEqual(analysis.summary);
     expect(pack.methodology).toEqual(analysis.methodology);
@@ -73,52 +65,35 @@ describe("buildSmeCoverageDecisionPack", () => {
     expect(Object.isFrozen(pack.findings.criticalUnderCoverage)).toBe(true);
   });
 
+  it("does not copy legacy technical settings from a structurally wider snapshot input", () => {
+    const legacySnapshotInput = {
+      ...snapshot,
+      pageSize: 100,
+      maxPagesPerDataset: 20,
+      runPreset: "deep-audit",
+    };
+
+    const pack = buildSmeCoverageDecisionPack({
+      analysis: analyze(),
+      snapshot: legacySnapshotInput,
+      sourceWarnings: [],
+    });
+
+    expect(pack.snapshot).not.toHaveProperty("pageSize");
+    expect(pack.snapshot).not.toHaveProperty("maxPagesPerDataset");
+    expect(pack.snapshot).not.toHaveProperty("runPreset");
+  });
+
   it.each(["tags", "questions", "tagSmeCounts"] as const)(
-    "marks a %s source cap Partial from source status rather than warning copy",
+    "rejects nonterminal %s source metadata before constructing a pack",
     (source) => {
       const analysis = analyze(narrativeDemandRows, narrativeSmeRows, capped(source));
 
-      const pack = buildSmeCoverageDecisionPack({
-        analysis,
-        snapshot,
-        sourceWarnings: [warning("misleading.copy", "Everything was complete.")],
-      });
-
-      expect(pack.snapshot.completeness).toBe("Partial");
-      expect(pack.warnings).toContainEqual({
-        utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.partial-sample",
-        message: "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
-      });
+      expect(() => buildSmeCoverageDecisionPack({ analysis, snapshot, sourceWarnings: [] })).toThrow(
+        `Cannot build SME coverage decision pack: ${source} collection did not reach terminal pagination. No complete result was produced.`,
+      );
     },
   );
-
-  it.each([
-    ["Quick sample", { pageSize: 50, maxPagesPerDataset: 1, runPreset: "quick-sample" }],
-    ["Standard", { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" }],
-    ["custom", { pageSize: 75, maxPagesPerDataset: 7 }],
-  ] as const)("canonically qualifies a non-capped %s run as a partial sample", (_label, settings) => {
-    const analysis = analyze(
-      narrativeDemandRows,
-      narrativeSmeRows,
-      completeSmeCoverageSourceStatus,
-      settings,
-    );
-
-    const pack = buildSmeCoverageDecisionPack({ analysis, snapshot, sourceWarnings: [] });
-
-    expect(pack.snapshot.completeness).toBe("Partial");
-    expect(pack.warnings).toContainEqual({
-      utilityId: "sme-coverage-analyzer",
-      code: "sme-coverage.partial-sample",
-      message: "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
-    });
-    expect(pack.overview).toContain("partial sample");
-    expect(pack.assessment).toContain("partial sample");
-    expect(buildSmeCoverageMarkdown(pack)).toContain(
-      "- sme-coverage.partial-sample: This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
-    );
-  });
 
   it.each([
     {
@@ -151,33 +126,6 @@ describe("buildSmeCoverageDecisionPack", () => {
       lightCoverage: 0,
       unknownRows: 0,
     });
-  });
-
-  it("marks capped zero evidence Partial instead of Empty", () => {
-    const pack = buildSmeCoverageDecisionPack({
-      analysis: analyze([], [], capped("tags")),
-      snapshot,
-      sourceWarnings: [],
-    });
-
-    expect(pack.snapshot.completeness).toBe("Partial");
-  });
-
-  it("marks zero evidence from a configured partial run Partial instead of Empty", () => {
-    const pack = buildSmeCoverageDecisionPack({
-      analysis: analyze(
-        [],
-        [],
-        completeSmeCoverageSourceStatus,
-        { pageSize: 100, maxPagesPerDataset: 5, runPreset: "standard" },
-      ),
-      snapshot,
-      sourceWarnings: [],
-    });
-
-    expect(pack.snapshot.completeness).toBe("Partial");
-    expect(pack.overview).toContain("partial sample");
-    expect(pack.assessment).toContain("partial sample");
   });
 
   it("deduplicates source warnings before analysis warnings in stable source order", () => {

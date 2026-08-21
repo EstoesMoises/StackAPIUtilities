@@ -1,5 +1,6 @@
 import { reportRegistry } from "../../domain/reportRegistry";
-import type { ReportId, ReportRunPresetId, ReportWarning } from "../../domain/types";
+import { LEGACY_COLLECTION_WARNING } from "../../domain/collectionWarnings";
+import type { ReportId, ReportWarning } from "../../domain/types";
 import type {
   CoverageTier,
   DemandQuality,
@@ -12,8 +13,6 @@ import type {
   SmeCoverageSummary,
   SmeQuality,
 } from "./model";
-import { SME_COVERAGE_PARTIAL_SAMPLE_WARNING } from "./decisionPack";
-import { DEFAULT_SME_COVERAGE_SETTINGS } from "./settings";
 
 const completenessValues = new Set<SmeCoverageCompleteness>(["Complete", "Partial", "Empty"]);
 const questionCountBases = new Set<QuestionCountBasis>([
@@ -33,8 +32,10 @@ const coverageTiers = new Set<CoverageTier>([
   "Low-demand uncovered",
   "Unknown",
 ]);
-const reportRunPresetIds = new Set<ReportRunPresetId>(["quick-sample", "standard", "deep-audit"]);
+const legacyReportRunPresetIds = new Set(["quick-sample", "standard", "deep-audit"]);
 const reportIds = new Set<ReportId>(reportRegistry.map((report) => report.id));
+const exhaustiveCollectionLabel = "All available data collected";
+const legacyCollectionLabel = "Legacy run — completeness not verified under current collection rules";
 
 export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisionPack | null {
   if (!isRecord(value) || typeof value.overview !== "string" || typeof value.assessment !== "string") {
@@ -48,6 +49,9 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
   const evidence = parseEvidence(value.evidence);
 
   if (!snapshot || !warnings || !summary || !methodology || !evidence || !isRecord(value.findings)) {
+    return null;
+  }
+  if (!snapshot.legacy && warnings.some(isCanonicalLegacyCollectionWarning)) {
     return null;
   }
 
@@ -73,14 +77,14 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
     !findingListMatchesEvidenceTier(criticalUnderCoverage, evidence, "Critical under-coverage") ||
     !findingListMatchesEvidenceTier(lightCoverage, evidence, "Light coverage") ||
     !summaryMatchesEvidence(summary, evidence) ||
-    !isCoherentDecisionPack(snapshot, methodology, evidence, value.overview, value.assessment)
+    !isCoherentDecisionPack(snapshot.value, methodology, evidence, !snapshot.legacy)
   ) {
     return null;
   }
 
   return Object.freeze({
-    snapshot,
-    warnings: migratePartialSampleWarnings(snapshot, warnings),
+    snapshot: snapshot.value,
+    warnings: normalizeLegacyCollectionWarnings(warnings, snapshot.legacy),
     summary,
     overview: value.overview,
     assessment: value.assessment,
@@ -90,88 +94,87 @@ export function parseSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisio
   });
 }
 
-const analyzerWarningCodes = new Set([
-  "sme-coverage.invalid-demand",
-  "sme-coverage.unknown-sme-coverage",
-  "sme-coverage.insufficient-covered-sample",
-]);
-const sourceCapWarningCodes = new Set([
-  "sme-coverage.tags-page-cap",
-  "sme-coverage.questions-page-cap",
-  "sme-coverage.tag-sme-counts-page-cap",
-]);
-
-function migratePartialSampleWarnings(
-  snapshot: SmeCoverageSnapshot,
-  warnings: readonly ReportWarning[],
-): readonly ReportWarning[] {
-  if (snapshot.completeness !== "Partial") return warnings;
-
-  const hasPartialSampleWarning = warnings.some(
-    (warning) =>
-      isSmeCoverageMigrationCandidate(warning) &&
-      warning.code === SME_COVERAGE_PARTIAL_SAMPLE_WARNING.code,
-  );
-  const hasSourceCapWarning = warnings.some(
-    (warning) =>
-      isSmeCoverageMigrationCandidate(warning) && sourceCapWarningCodes.has(warning.code),
-  );
+export function parseCurrentSmeCoverageDecisionPack(value: unknown): SmeCoverageDecisionPack | null {
   if (
-    !hasPartialSampleWarning &&
-    !hasSourceCapWarning &&
-    !isConfiguredPartialSample(snapshot)
+    !isRecord(value) ||
+    !isRecord(value.snapshot) ||
+    value.snapshot.collectionLabel !== exhaustiveCollectionLabel
   ) {
-    return warnings;
+    return null;
   }
-
-  const migrated = warnings.filter(
-    (warning) =>
-      !isSmeCoverageMigrationCandidate(warning) ||
-      warning.code !== SME_COVERAGE_PARTIAL_SAMPLE_WARNING.code,
-  );
-  const analyzerWarningIndex = migrated.findIndex(
-    (warning) =>
-      isSmeCoverageMigrationCandidate(warning) && analyzerWarningCodes.has(warning.code),
-  );
-  migrated.splice(
-    analyzerWarningIndex === -1 ? migrated.length : analyzerWarningIndex,
-    0,
-    SME_COVERAGE_PARTIAL_SAMPLE_WARNING,
-  );
-  return Object.freeze(migrated);
+  return parseSmeCoverageDecisionPack(value);
 }
 
-function isSmeCoverageMigrationCandidate(warning: ReportWarning): boolean {
+function normalizeLegacyCollectionWarnings(
+  warnings: readonly ReportWarning[],
+  legacy: boolean,
+): readonly ReportWarning[] {
+  if (!legacy) return warnings;
+
+  const normalized: ReportWarning[] = [];
+  let foundCanonical = false;
+  for (const warning of warnings) {
+    if (isCanonicalLegacyCollectionWarning(warning)) {
+      if (foundCanonical) continue;
+      foundCanonical = true;
+    }
+    normalized.push(warning);
+  }
+  if (!foundCanonical) {
+    normalized.push(Object.freeze({
+      utilityId: "sme-coverage-analyzer",
+      ...LEGACY_COLLECTION_WARNING,
+    }));
+  }
+  return Object.freeze(normalized);
+}
+
+function isCanonicalLegacyCollectionWarning(warning: ReportWarning): boolean {
   return (
-    typeof warning.reportId === "undefined" &&
-    (typeof warning.utilityId === "undefined" || warning.utilityId === "sme-coverage-analyzer")
+    warning.utilityId === "sme-coverage-analyzer" &&
+    warning.code === LEGACY_COLLECTION_WARNING.code &&
+    warning.message === LEGACY_COLLECTION_WARNING.message
   );
 }
 
-function parseSnapshot(value: unknown): SmeCoverageSnapshot | null {
+function parseSnapshot(value: unknown): { value: SmeCoverageSnapshot; legacy: boolean } | null {
   if (
     !isRecord(value) ||
     typeof value.instanceHost !== "string" ||
     typeof value.generatedAt !== "string" ||
     value.scopeLabel !== "All-time demand · Current SME coverage" ||
-    !isSetMember(value.completeness, completenessValues) ||
-    !isNonnegativeFinite(value.pageSize) ||
-    !isNonnegativeFinite(value.maxPagesPerDataset) ||
-    (typeof value.runPreset !== "undefined" && !isSetMember(value.runPreset, reportRunPresetIds))
+    !isSetMember(value.completeness, completenessValues)
   ) {
     return null;
   }
 
-  const snapshot = {
+  const hasCollectionLabel = typeof value.collectionLabel !== "undefined";
+  const legacy = !hasCollectionLabel || value.collectionLabel === legacyCollectionLabel;
+  if (hasCollectionLabel) {
+    if (
+      (value.collectionLabel !== exhaustiveCollectionLabel && value.collectionLabel !== legacyCollectionLabel) ||
+      typeof value.pageSize !== "undefined" ||
+      typeof value.maxPagesPerDataset !== "undefined" ||
+      typeof value.runPreset !== "undefined"
+    ) {
+      return null;
+    }
+  } else if (
+    !isPositiveInteger(value.pageSize) ||
+    !isPositiveInteger(value.maxPagesPerDataset) ||
+    (typeof value.runPreset !== "undefined" && !isSetMember(value.runPreset, legacyReportRunPresetIds))
+  ) {
+    return null;
+  }
+
+  const snapshot: SmeCoverageSnapshot = {
     instanceHost: value.instanceHost,
     generatedAt: value.generatedAt,
     scopeLabel: "All-time demand · Current SME coverage",
+    collectionLabel: legacy ? legacyCollectionLabel : exhaustiveCollectionLabel,
     completeness: value.completeness,
-    pageSize: value.pageSize,
-    maxPagesPerDataset: value.maxPagesPerDataset,
-    ...(isSetMember(value.runPreset, reportRunPresetIds) ? { runPreset: value.runPreset } : {}),
-  } satisfies SmeCoverageSnapshot;
-  return Object.freeze(snapshot);
+  };
+  return { value: Object.freeze(snapshot), legacy };
 }
 
 function parseSummary(value: unknown): SmeCoverageSummary | null {
@@ -366,8 +369,7 @@ function isCoherentDecisionPack(
   snapshot: SmeCoverageSnapshot,
   methodology: SmeCoverageMethodology,
   evidence: readonly SmeCoverageEvidenceRow[],
-  overview: string,
-  assessment: string,
+  enforceCurrentCompleteness: boolean,
 ): boolean {
   const activePageViews = evidence
     .filter(isActiveEvidenceRow)
@@ -411,32 +413,18 @@ function isCoherentDecisionPack(
     if (row.coverageTier !== expectedTier) return false;
   }
 
-  const configuredAsPartialSample = isConfiguredPartialSample(snapshot);
-  if (configuredAsPartialSample) {
-    return (
-      snapshot.completeness === "Partial" &&
-      overview.includes("partial sample") &&
-      assessment.includes("partial sample")
-    );
+  if (
+    !enforceCurrentCompleteness &&
+    snapshot.completeness === "Partial"
+  ) {
+    return true;
   }
-
-  if (evidence.length === 0) return snapshot.completeness !== "Complete";
-  if (snapshot.completeness === "Empty") return false;
-  if (snapshot.completeness === "Complete") {
-    return (
-      percentileSampleSufficient &&
-      evidence.every((row) => row.demandQuality === "Complete" && row.smeQuality === "Complete")
-    );
-  }
-  return true;
-}
-
-function isConfiguredPartialSample(snapshot: SmeCoverageSnapshot): boolean {
-  return (
-    snapshot.runPreset !== DEFAULT_SME_COVERAGE_SETTINGS.runPreset ||
-    snapshot.pageSize !== DEFAULT_SME_COVERAGE_SETTINGS.pageSize ||
-    snapshot.maxPagesPerDataset !== DEFAULT_SME_COVERAGE_SETTINGS.maxPagesPerDataset
-  );
+  if (evidence.length === 0) return snapshot.completeness === "Empty";
+  const expectedCompleteness = percentileSampleSufficient &&
+    evidence.every((row) => row.demandQuality === "Complete" && row.smeQuality === "Complete")
+    ? "Complete"
+    : "Partial";
+  return snapshot.completeness === expectedCompleteness;
 }
 
 function isActiveEvidenceRow(row: SmeCoverageEvidenceRow): boolean {
@@ -532,6 +520,10 @@ function isNonnegativeFinite(value: unknown): value is number {
 
 function isNonnegativeInteger(value: unknown): value is number {
   return isNonnegativeFinite(value) && Number.isInteger(value);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isNonnegativeInteger(value) && value >= 1;
 }
 
 function isNullableNonnegativeFinite(value: unknown): value is number | null {

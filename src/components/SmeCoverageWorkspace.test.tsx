@@ -2,7 +2,6 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { completeSmeCoverageDecisionPack } from "../test/fixtures/smeCoverageFixtures";
-import { DEFAULT_SME_COVERAGE_SETTINGS } from "../utilities/smeCoverage/settings";
 import { SmeCoverageWorkspace } from "./SmeCoverageWorkspace";
 
 vi.mock("../utils/smeCoverageDownloads", () => ({
@@ -14,8 +13,6 @@ describe("SmeCoverageWorkspace", () => {
   it("presents a read-only all-time utility without Script, upload, or date prerequisites", () => {
     render(
       <SmeCoverageWorkspace
-        settings={DEFAULT_SME_COVERAGE_SETTINGS}
-        onSettingsChange={vi.fn()}
         onRun={vi.fn()}
         runState={{ status: "idle" }}
       />,
@@ -29,6 +26,22 @@ describe("SmeCoverageWorkspace", () => {
     expect(screen.getByText(/transparent hybrid rules/i)).toBeInTheDocument();
     expect(screen.getByText(/requires both API lanes/i)).toBeInTheDocument();
     expect(screen.getByText(/do not need to run a Script first or provide an upload/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /collects all available evidence automatically.*large instances can take longer.*API pagination and rate limits are handled for you/i,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    for (const retiredTerm of [
+      /Quick sample/i,
+      /Standard report/i,
+      /Deep audit/i,
+      /Page size/i,
+      /Max pages/i,
+      /record coverage/i,
+    ]) {
+      expect(screen.queryByText(retiredTerm)).not.toBeInTheDocument();
+    }
     expect(screen.queryByLabelText(/date/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/prior Script run|upload required/i)).not.toBeInTheDocument();
   });
@@ -39,8 +52,6 @@ describe("SmeCoverageWorkspace", () => {
     const decisionPack = completeSmeCoverageDecisionPack();
     const { rerender } = render(
       <SmeCoverageWorkspace
-        settings={DEFAULT_SME_COVERAGE_SETTINGS}
-        onSettingsChange={vi.fn()}
         onRun={onRun}
         runState={{ status: "idle" }}
         decisionPack={decisionPack}
@@ -57,8 +68,6 @@ describe("SmeCoverageWorkspace", () => {
 
     rerender(
       <SmeCoverageWorkspace
-        settings={DEFAULT_SME_COVERAGE_SETTINGS}
-        onSettingsChange={vi.fn()}
         onRun={onRun}
         runState={{ status: "running" }}
         decisionPack={decisionPack}
@@ -69,8 +78,6 @@ describe("SmeCoverageWorkspace", () => {
 
     rerender(
       <SmeCoverageWorkspace
-        settings={DEFAULT_SME_COVERAGE_SETTINGS}
-        onSettingsChange={vi.fn()}
         onRun={onRun}
         runState={{ status: "succeeded" }}
         decisionPack={decisionPack}
@@ -93,8 +100,6 @@ describe("SmeCoverageWorkspace", () => {
       assessment: "A newly prepared assessment.",
     };
     const props = {
-      settings: DEFAULT_SME_COVERAGE_SETTINGS,
-      onSettingsChange: vi.fn(),
       onRun: vi.fn(),
       runState: { status: "succeeded" as const },
     };

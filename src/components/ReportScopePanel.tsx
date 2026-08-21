@@ -1,30 +1,14 @@
-import { useEffect, useState } from "react";
-import {
-  getMaxRecordsForSettings,
-  getPrimaryGroupRecordDetail,
-  getPrimaryGroupRecordSummary,
-  getReportRunPresetDisclosure,
-  getReportRunPresetForSettings,
-  getReportRunPresetRecordSummary,
-} from "../domain/reportRunPresets";
 import { validateReportRunScope } from "../domain/reportScope";
-import type { ReportId, ReportRunScope } from "../domain/types";
-import { ApiVolumeSettings } from "./ApiVolumeSettings";
+import type { ReportRunScope } from "../domain/types";
 
 interface ReportScopePanelProps {
-  reportId: ReportId;
   scope: ReportRunScope;
   onChange: (scope: ReportRunScope) => void;
 }
 
-export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanelProps) {
+export function ReportScopePanel({ scope, onChange }: ReportScopePanelProps) {
   const validation = validateReportRunScope(scope);
   const comparisonEnabled = scope.comparison !== undefined;
-  const isTagReport = reportId === "tag-report";
-  const selectedPreset = getReportRunPresetForSettings(scope.pageSize, scope.maxPagesPerDataset);
-  const selectedVolumeSummary = selectedPreset
-    ? getReportRunPresetRecordSummary(selectedPreset.id)
-    : getCustomVolumeSummary(scope);
 
   function updateCurrent(field: "startDate" | "endDate", value: string) {
     onChange({
@@ -40,46 +24,12 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
     });
   }
 
-  function updateNumber(field: "pageSize" | "maxPagesPerDataset", value: string) {
-    const parsedValue = Number.parseInt(value, 10);
-    const nextScope = {
-      ...scope,
-      [field]: parsedValue,
-    };
-    const matchingPreset = getReportRunPresetForSettings(nextScope.pageSize, nextScope.maxPagesPerDataset);
-
-    onChange({
-      ...nextScope,
-      runPreset: matchingPreset?.id,
-    });
-  }
-
   function toggleComparison(enabled: boolean) {
     onChange({
       ...scope,
       comparison: enabled ? scope.comparison ?? {} : undefined,
     });
   }
-
-  const volumeControls = (
-    <>
-      <ScopeNumberField
-        field="pageSize"
-        label="Page size"
-        max={100}
-        min={1}
-        value={scope.pageSize}
-        onChange={updateNumber}
-      />
-      <ScopeNumberField
-        field="maxPagesPerDataset"
-        label="Max pages per dataset"
-        min={1}
-        value={scope.maxPagesPerDataset}
-        onChange={updateNumber}
-      />
-    </>
-  );
 
   return (
     <section className="report-scope-panel" aria-labelledby="report-scope-heading">
@@ -91,6 +41,10 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
           </h3>
         </div>
       </div>
+      <p className="scope-help">
+        Each run collects all available data for the selected dates. Large instances can take longer while the API
+        pages and rate limits are handled automatically. Leave both dates blank to collect all available history.
+      </p>
       <div className="scope-grid">
         <label className="scope-field">
           <span>Current start date</span>
@@ -112,28 +66,7 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
             onChange={(event) => updateCurrent("endDate", event.currentTarget.value)}
           />
         </label>
-        {!isTagReport && volumeControls}
       </div>
-      {isTagReport && (
-        <>
-          <ApiVolumeSettings
-            value={scope}
-            radioName="tag-report-run-preset"
-            helpText="Choose the amount of Tag Report data to collect. Higher record limits reduce the chance of partial results, but can take longer to run."
-            recordDetail={getPrimaryGroupRecordDetail()}
-            getDisclosure={getReportRunPresetDisclosure}
-            onChange={(value) => onChange({ ...scope, ...value })}
-          />
-          {!selectedPreset && (
-            <p className="preset-custom-note" role="status">
-              {selectedVolumeSummary}. Technical settings: pageSize{" "}
-              {Number.isNaN(scope.pageSize) ? "unset" : scope.pageSize} and maxPagesPerDataset{" "}
-              {Number.isNaN(scope.maxPagesPerDataset) ? "unset" : scope.maxPagesPerDataset}. Select a
-              preset above to restore its defaults.
-            </p>
-          )}
-        </>
-      )}
       <label className="scope-comparison-toggle">
         <input
           type="checkbox"
@@ -178,60 +111,4 @@ export function ReportScopePanel({ reportId, scope, onChange }: ReportScopePanel
 
 function normalizeOptionalValue(value: string): string | undefined {
   return value.trim() === "" ? undefined : value;
-}
-
-function getCustomVolumeSummary(scope: ReportRunScope): string {
-  if (!Number.isFinite(scope.pageSize) || !Number.isFinite(scope.maxPagesPerDataset)) {
-    return "Custom record coverage is incomplete";
-  }
-
-  const recordsPerDataGroup = getMaxRecordsForSettings(scope.pageSize, scope.maxPagesPerDataset);
-  const primaryGroupSummary = getPrimaryGroupRecordSummary(recordsPerDataGroup);
-  const primaryGroupDetail = getPrimaryGroupRecordDetail().toLowerCase();
-  const smeRecordLimit = recordsPerDataGroup.toLocaleString("en-US");
-
-  return [
-    `Custom record coverage: ${primaryGroupSummary} for ${primaryGroupDetail}.`,
-    `SME detail is separate and can add up to ${smeRecordLimit} top-answerer records for each collected tag`,
-  ].join(" ");
-}
-
-interface ScopeNumberFieldProps {
-  field: "pageSize" | "maxPagesPerDataset";
-  label: string;
-  min: number;
-  max?: number;
-  value: number;
-  onChange: (field: "pageSize" | "maxPagesPerDataset", value: string) => void;
-}
-
-function ScopeNumberField({ field, label, min, max, value, onChange }: ScopeNumberFieldProps) {
-  const [draft, setDraft] = useState(formatNumberInputValue(value));
-
-  useEffect(() => {
-    setDraft(formatNumberInputValue(value));
-  }, [value]);
-
-  return (
-    <label className="scope-field">
-      <span>{label}</span>
-      <input
-        className="s-input"
-        type="number"
-        min={min}
-        max={max}
-        aria-label={label}
-        value={draft}
-        onChange={(event) => {
-          const nextValue = event.currentTarget.value;
-          setDraft(nextValue);
-          onChange(field, nextValue);
-        }}
-      />
-    </label>
-  );
-}
-
-function formatNumberInputValue(value: number): string {
-  return Number.isNaN(value) ? "" : String(value);
 }

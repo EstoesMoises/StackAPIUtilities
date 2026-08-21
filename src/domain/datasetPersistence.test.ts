@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SessionState } from "./types";
 import {
+  DATASET_SESSION_PERSISTENCE_VERSION,
+  LEGACY_COLLECTION_WARNING,
   createDatasetSessionSnapshot,
   hydrateDatasetSessionState,
   parseDatasetSessionSnapshot,
@@ -27,6 +29,7 @@ describe("datasetPersistence", () => {
       datasets: {
         "dataset-1": {
           id: "dataset-1",
+          snapshotId: "snapshot-1",
           name: "users",
           records: [{ user_id: 1 }],
           loadedAt: "2026-07-09T12:00:00.000Z",
@@ -34,6 +37,9 @@ describe("datasetPersistence", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageCount: 1,
+          reachedMaxPages: false,
+          hasMore: false,
         },
       },
       reportOutputs: {
@@ -54,8 +60,6 @@ describe("datasetPersistence", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [],
@@ -75,7 +79,7 @@ describe("datasetPersistence", () => {
     const snapshot = createDatasetSessionSnapshot(state);
 
     expect(snapshot).toEqual({
-      version: 2,
+      version: 3,
       selectedReportId: "inactive-users",
       selectedReportIds: ["inactive-users"],
       selectedUtilityId: "sme-coverage-analyzer",
@@ -120,6 +124,7 @@ describe("datasetPersistence", () => {
       datasets: {
         "dataset-1": {
           id: "dataset-1",
+          snapshotId: "snapshot-1",
           name: "users",
           records: [{ user_id: 1 }],
           loadedAt: "2026-07-09T12:00:00.000Z",
@@ -127,6 +132,9 @@ describe("datasetPersistence", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageCount: 1,
+          reachedMaxPages: false,
+          hasMore: false,
           warnings: [
             {
               reportId: "inactive-users",
@@ -169,8 +177,6 @@ describe("datasetPersistence", () => {
           reportId: "inactive-users",
           periodRole: "current",
           scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
-          pageSize: 100,
-          maxPagesPerDataset: 5,
           loadedAt: "2026-07-09T12:00:00.000Z",
           datasetIds: ["dataset-1"],
           warnings: [
@@ -400,7 +406,7 @@ describe("datasetPersistence", () => {
     expect(hydrated.utilityRunSnapshots).toEqual([]);
   });
 
-  it("migrates a valid report-only version 1 snapshot to normalized version 2 utility defaults", () => {
+  it("migrates a valid report-only version 1 snapshot to normalized version 3 utility defaults", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 1,
       selectedReportId: "tag-report",
@@ -412,11 +418,346 @@ describe("datasetPersistence", () => {
     });
 
     expect(parsed).toMatchObject({
-      version: 2,
+      version: 3,
       selectedUtilityId: "sme-coverage-analyzer",
       utilityOutputs: {},
       utilityRunSnapshots: [],
     });
+  });
+
+  it("migrates a version 2 live report to version 3 without legacy collection controls", () => {
+    const parsed = parseDatasetSessionSnapshot(createLegacyLiveReportSnapshot(2));
+    const legacyWarning = {
+      reportId: "inactive-users",
+      ...LEGACY_COLLECTION_WARNING,
+    };
+
+    expect(parsed?.version).toBe(DATASET_SESSION_PERSISTENCE_VERSION);
+    expect(parsed?.reportRunSnapshots).toEqual([
+      {
+        id: "snapshot-1",
+        reportId: "inactive-users",
+        periodRole: "current",
+        scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        datasetIds: ["dataset-1"],
+        warnings: [legacyWarning],
+      },
+    ]);
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("runPreset");
+    expect(parsed?.datasets["dataset-1"]?.warnings).toEqual([
+      {
+        reportId: "inactive-users",
+        code: "dataset-cap-reached",
+        message: "Original dataset warning.",
+      },
+      legacyWarning,
+    ]);
+    expect(parsed?.reportOutputs["inactive-users"]?.warnings).toEqual([
+      {
+        reportId: "inactive-users",
+        code: "output-cap-reached",
+        message: "Original output warning.",
+      },
+      legacyWarning,
+    ]);
+  });
+
+  it("labels hydrated version 1 live report outputs and datasets as legacy", () => {
+    const hydrated = hydrateDatasetSessionState(
+      createInitialSessionState(),
+      createLegacyLiveReportSnapshot(1),
+    );
+    const legacyWarning = {
+      reportId: "inactive-users",
+      ...LEGACY_COLLECTION_WARNING,
+    };
+
+    expect(hydrated.datasets["dataset-1"]?.warnings).toContainEqual(legacyWarning);
+    expect(hydrated.reportOutputs["inactive-users"]?.warnings).toContainEqual(legacyWarning);
+    expect(hydrated.reportRunSnapshots[0]?.warnings).toContainEqual(legacyWarning);
+  });
+
+  it.each([1, 2] as const)(
+    "deduplicates matching legacy warnings in version %s live report outputs and datasets",
+    (version) => {
+      const persisted = createLegacyLiveReportSnapshot(version);
+      const datasets = persisted.datasets as Record<string, Record<string, unknown>>;
+      const outputs = persisted.reportOutputs as Record<string, Record<string, unknown>>;
+      const snapshots = persisted.reportRunSnapshots as Record<string, unknown>[];
+      const legacyWarning = {
+        reportId: "inactive-users",
+        ...LEGACY_COLLECTION_WARNING,
+      };
+      const firstWarning = {
+        reportId: "inactive-users",
+        code: "first-warning",
+        message: "First original warning.",
+      };
+      const lastWarning = {
+        reportId: "inactive-users",
+        code: "last-warning",
+        message: "Last original warning.",
+      };
+      datasets["dataset-1"]!.warnings = [firstWarning, legacyWarning, lastWarning, legacyWarning];
+      outputs["inactive-users"]!.warnings = [firstWarning, legacyWarning, lastWarning, legacyWarning];
+      snapshots[0]!.warnings = [firstWarning, legacyWarning, lastWarning, legacyWarning];
+
+      const parsed = parseDatasetSessionSnapshot(persisted);
+
+      expect(parsed?.datasets["dataset-1"]?.warnings).toEqual([
+        firstWarning,
+        legacyWarning,
+        lastWarning,
+      ]);
+      expect(parsed?.reportOutputs["inactive-users"]?.warnings).toEqual([
+        firstWarning,
+        legacyWarning,
+        lastWarning,
+      ]);
+      expect(parsed?.reportRunSnapshots[0]?.warnings).toEqual([
+        firstWarning,
+        legacyWarning,
+        lastWarning,
+      ]);
+    },
+  );
+
+  it.each([1, 2] as const)(
+    "restores a version %s custom-volume utility snapshot without a preset id",
+    (version) => {
+      const legacySnapshot = createUtilityRunSnapshotValue();
+      delete legacySnapshot.runPreset;
+      legacySnapshot.pageSize = 75;
+      legacySnapshot.maxPagesPerDataset = 7;
+      const value = createUtilitySnapshotValue([legacySnapshot]);
+      value.version = version;
+
+      expect(parseDatasetSessionSnapshot(value)?.utilityRunSnapshots).toEqual([
+        {
+          id: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          datasetIds: ["utility-dataset"],
+          warnings: [],
+        },
+      ]);
+    },
+  );
+
+  it("does not label legacy uploaded outputs or datasets as unverified live collections", () => {
+    const parsed = parseDatasetSessionSnapshot({
+      version: 2,
+      selectedReportId: "tag-report",
+      selectedReportIds: ["tag-report"],
+      selectedUtilityId: "sme-coverage-analyzer",
+      datasets: {
+        upload: {
+          id: "upload",
+          reportId: "tag-report",
+          name: "tags",
+          records: [{ tagName: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+          fileName: "tags.csv",
+          warnings: [{ reportId: "tag-report", code: "upload-warning", message: "Keep me." }],
+        },
+      },
+      reportOutputs: {
+        "tag-report": {
+          reportId: "tag-report",
+          datasetName: "tags",
+          fileName: "tags.csv",
+          records: [{ tagName: "python" }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "upload",
+          warnings: [{ reportId: "tag-report", code: "upload-warning", message: "Keep me." }],
+        },
+      },
+      reportRunSnapshots: [],
+      utilityOutputs: {},
+      utilityRunSnapshots: [],
+      warnings: [],
+    });
+
+    expect(parsed?.datasets.upload?.warnings).toEqual([
+      { reportId: "tag-report", code: "upload-warning", message: "Keep me." },
+    ]);
+    expect(parsed?.reportOutputs["tag-report"]?.warnings).toEqual([
+      { reportId: "tag-report", code: "upload-warning", message: "Keep me." },
+    ]);
+  });
+
+  it("round-trips version 3 live reports without legacy labels or collection controls", () => {
+    const state: SessionState = {
+      ...createInitialSessionState(),
+      selectedReportId: "inactive-users",
+      selectedReportIds: ["inactive-users"],
+      datasets: {
+        "dataset-1": {
+          id: "dataset-1",
+          snapshotId: "snapshot-1",
+          reportId: "inactive-users",
+          name: "users",
+          records: [{ user_id: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          pageCount: 1,
+          reachedMaxPages: false,
+          hasMore: false,
+        },
+      },
+      reportOutputs: {
+        "inactive-users": {
+          reportId: "inactive-users",
+          datasetName: "users",
+          fileName: "Live API run",
+          records: [{ datasetName: "users", user_id: 1 }],
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          source: "live-api",
+          currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          currentSnapshotId: "snapshot-1",
+        },
+      },
+      reportRunSnapshots: [
+        {
+          id: "snapshot-1",
+          reportId: "inactive-users",
+          periodRole: "current",
+          scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+          loadedAt: "2026-07-09T12:00:00.000Z",
+          datasetIds: ["dataset-1"],
+          warnings: [],
+        },
+      ],
+    };
+
+    const snapshot = createDatasetSessionSnapshot(state);
+    const parsed = parseDatasetSessionSnapshot(snapshot);
+
+    expect(snapshot.version).toBe(DATASET_SESSION_PERSISTENCE_VERSION);
+    expect(parsed).toEqual(snapshot);
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(parsed?.reportRunSnapshots[0]).not.toHaveProperty("runPreset");
+    expect(parsed?.datasets["dataset-1"]?.warnings).toBeUndefined();
+    expect(parsed?.reportOutputs["inactive-users"]?.warnings).toBeUndefined();
+  });
+
+  it.each([
+    ["missing pagination evidence", {}],
+    ["more pages available", { pageCount: 1, reachedMaxPages: false, hasMore: true }],
+    ["the page cap reached", { pageCount: 1, reachedMaxPages: true, hasMore: false }],
+  ])("drops a version 3 report run with %s without leaking its datasets", (_label, pagination) => {
+    const value = createCurrentReportSnapshotValue(["users"]);
+    const datasets = value.datasets as Record<string, Record<string, unknown>>;
+    delete datasets["dataset-1"]!.pageCount;
+    delete datasets["dataset-1"]!.reachedMaxPages;
+    delete datasets["dataset-1"]!.hasMore;
+    Object.assign(datasets["dataset-1"]!, pagination);
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
+    expect(parsed?.datasets).toEqual({});
+  });
+
+  it("round-trips a complete version 3 Interactions snapshot with its synthetic result dataset", () => {
+    const value = createCurrentReportSnapshotValue(
+      ["users", "questions", "answers", "comments", "interactions"],
+      "interactions",
+    );
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.reportRunSnapshots).toHaveLength(1);
+    expect(parsed?.reportOutputs.interactions).toBeDefined();
+    expect(Object.values(parsed?.datasets ?? {}).map((dataset) => dataset.name)).toEqual([
+      "users",
+      "questions",
+      "answers",
+      "comments",
+      "interactions",
+    ]);
+  });
+
+  it.each([
+    ["a missing synthetic result dataset", ["users", "questions", "answers", "comments"]],
+    ["a missing required source dataset", ["users", "questions", "answers", "interactions"]],
+    ["a duplicate synthetic result dataset", ["users", "questions", "answers", "comments", "interactions", "interactions"]],
+    ["an arbitrary extra dataset", ["users", "questions", "answers", "comments", "interactions", "tags"]],
+  ])("drops a version 3 Interactions report run with %s", (_label, datasetNames) => {
+    const parsed = parseDatasetSessionSnapshot(
+      createCurrentReportSnapshotValue(datasetNames, "interactions"),
+    );
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
+    expect(parsed?.datasets).toEqual({});
+  });
+
+  it("drops a version 3 report run for a registry entry with no required datasets", () => {
+    const parsed = parseDatasetSessionSnapshot(
+      createCurrentReportSnapshotValue(["users"], "webhook-report"),
+    );
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
+    expect(parsed?.datasets).toEqual({});
+  });
+
+  it.each(["snapshotId", "reportId"])(
+    "does not leak a rejected version 3 report dataset missing %s",
+    (field) => {
+      const value = createCurrentReportSnapshotValue(["users"]);
+      const datasets = value.datasets as Record<string, Record<string, unknown>>;
+      delete datasets["dataset-1"]![field];
+
+      const parsed = parseDatasetSessionSnapshot(value);
+
+      expect(parsed?.reportRunSnapshots).toEqual([]);
+      expect(parsed?.reportOutputs).toEqual({});
+      expect(parsed?.datasets).toEqual({});
+    },
+  );
+
+  it("keeps version 2 live report runs with missing or nonterminal pagination evidence as legacy-unverified", () => {
+    const value = createLegacyLiveReportSnapshot(2);
+    const datasets = value.datasets as Record<string, Record<string, unknown>>;
+    datasets["dataset-1"]!.reachedMaxPages = true;
+    datasets["dataset-1"]!.hasMore = true;
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.datasets["dataset-1"]?.warnings).toContainEqual({
+      reportId: "inactive-users",
+      ...LEGACY_COLLECTION_WARNING,
+    });
+    expect(parsed?.reportRunSnapshots).toHaveLength(1);
+    expect(parsed?.reportOutputs["inactive-users"]?.warnings).toContainEqual({
+      reportId: "inactive-users",
+      ...LEGACY_COLLECTION_WARNING,
+    });
+  });
+
+  it.each([
+    ["negative page size", "pageSize", -1],
+    ["fractional page limit", "maxPagesPerDataset", 1.5],
+    ["unknown preset", "runPreset", "unbounded"],
+  ])("drops a legacy report snapshot with %s", (_label, field, invalidValue) => {
+    const value = createLegacyLiveReportSnapshot(2);
+    const [snapshot] = value.reportRunSnapshots as Record<string, unknown>[];
+    snapshot[field] = invalidValue;
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
   });
 
   it("persists and restores utility output and provenance without memory-only secrets", () => {
@@ -434,6 +775,30 @@ describe("datasetPersistence", () => {
         oauthScopes: ["secret-scope"],
       },
       datasets: {
+        "utility-tags": {
+          id: "utility-tags",
+          snapshotId: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          name: "tags",
+          records: [],
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          source: "live-api",
+          pageCount: 0,
+          reachedMaxPages: false,
+          hasMore: false,
+        },
+        "utility-questions": {
+          id: "utility-questions",
+          snapshotId: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          name: "questions",
+          records: [],
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          source: "live-api",
+          pageCount: 0,
+          reachedMaxPages: false,
+          hasMore: false,
+        },
         "utility-dataset": {
           id: "utility-dataset",
           snapshotId: "utility-snapshot",
@@ -460,11 +825,8 @@ describe("datasetPersistence", () => {
         {
           id: "utility-snapshot",
           utilityId: "sme-coverage-analyzer",
-          pageSize: 100,
-          maxPagesPerDataset: 20,
-          runPreset: "deep-audit",
           loadedAt: "2026-07-30T12:00:00.000Z",
-          datasetIds: ["utility-dataset"],
+          datasetIds: ["utility-tags", "utility-questions", "utility-dataset"],
           warnings: [],
           progress: { stage: "secret-progress" },
         },
@@ -476,20 +838,87 @@ describe("datasetPersistence", () => {
     const restored = parseDatasetSessionSnapshot(snapshot);
     const serialized = JSON.stringify(snapshot);
 
-    expect(snapshot.version).toBe(2);
+    expect(snapshot.version).toBe(3);
     expect(restored?.utilityOutputs["sme-coverage-analyzer"]?.decisionPack).toEqual(pack);
     expect(restored?.utilityRunSnapshots[0]).toMatchObject({
       id: "utility-snapshot",
-      datasetIds: ["utility-dataset"],
-      pageSize: 100,
-      maxPagesPerDataset: 20,
+      datasetIds: ["utility-tags", "utility-questions", "utility-dataset"],
     });
+    expect(restored?.utilityRunSnapshots[0]).not.toHaveProperty("pageSize");
+    expect(restored?.utilityRunSnapshots[0]).not.toHaveProperty("maxPagesPerDataset");
+    expect(restored?.utilityRunSnapshots[0]).not.toHaveProperty("runPreset");
     expect(serialized).not.toMatch(
       /"(?:credentials|apiKey|accessToken|pat|authSource|oauthClientId|oauthScopes|runQueue|progress)"/,
     );
   });
 
-  it("migrates a legacy configured-partial v2 utility pack through parse and hydration exports", () => {
+  it.each([
+    ["missing pagination evidence", {}],
+    ["more pages available", { pageCount: 1, reachedMaxPages: false, hasMore: true }],
+    ["the page cap reached", { pageCount: 1, reachedMaxPages: true, hasMore: false }],
+  ])("drops a version 3 utility result with %s", (_label, pagination) => {
+    const value = createCurrentUtilitySnapshotValue();
+    const datasets = value.datasets as Record<string, Record<string, unknown>>;
+    delete datasets["utility-tags"]!.pageCount;
+    delete datasets["utility-tags"]!.reachedMaxPages;
+    delete datasets["utility-tags"]!.hasMore;
+    Object.assign(datasets["utility-tags"]!, pagination);
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.utilityRunSnapshots).toEqual([]);
+    expect(parsed?.utilityOutputs).toEqual({});
+    expect(parsed?.datasets).toEqual({});
+  });
+
+  it.each([
+    ["a missing required dataset", ["tags", "questions"]],
+    ["a duplicate required dataset", ["tags", "questions", "tagSmeCounts", "tagSmeCounts"]],
+    ["an extra dataset", ["tags", "questions", "tagSmeCounts", "users"]],
+  ])("drops a version 3 utility result with %s", (_label, datasetNames) => {
+    const parsed = parseDatasetSessionSnapshot(createCurrentUtilitySnapshotValue(datasetNames));
+
+    expect(parsed?.utilityRunSnapshots).toEqual([]);
+    expect(parsed?.utilityOutputs).toEqual({});
+    expect(parsed?.datasets).toEqual({});
+  });
+
+  it.each(["snapshotId", "utilityId"])(
+    "does not leak a rejected version 3 utility dataset missing %s",
+    (field) => {
+      const value = createCurrentUtilitySnapshotValue();
+      const datasets = value.datasets as Record<string, Record<string, unknown>>;
+      delete datasets["utility-tags"]![field];
+
+      const parsed = parseDatasetSessionSnapshot(value);
+
+      expect(parsed?.utilityRunSnapshots).toEqual([]);
+      expect(parsed?.utilityOutputs).toEqual({});
+      expect(parsed?.datasets).toEqual({});
+    },
+  );
+
+  it.each([1, 2] as const)(
+    "validates then discards version %s utility collection settings",
+    (version) => {
+      const value = createUtilitySnapshotValue([createUtilityRunSnapshotValue()]);
+      value.version = version;
+
+      const parsed = parseDatasetSessionSnapshot(value);
+
+      expect(parsed?.utilityRunSnapshots).toEqual([
+        {
+          id: "utility-snapshot",
+          utilityId: "sme-coverage-analyzer",
+          loadedAt: "2026-07-30T12:00:00.000Z",
+          datasetIds: ["utility-dataset"],
+          warnings: [],
+        },
+      ]);
+    },
+  );
+
+  it("migrates a legacy v2 utility pack with its original cap warning and provenance label", () => {
     const legacyPack = createLegacyConfiguredPartialUtilityPack();
     const persisted = createVersion2SnapshotValue({
       utilityOutputs: {
@@ -506,22 +935,29 @@ describe("datasetPersistence", () => {
     const parsedPack = parsed?.utilityOutputs["sme-coverage-analyzer"]?.decisionPack;
     const hydratedPack = hydrated.utilityOutputs["sme-coverage-analyzer"]?.decisionPack;
 
-    expect(parsed?.version).toBe(2);
+    expect(parsed?.version).toBe(3);
     expect(parsedPack).toEqual(hydratedPack);
+    expect(parsedPack?.snapshot.collectionLabel).toBe(
+      "Legacy run — completeness not verified under current collection rules",
+    );
     expect(parsedPack?.warnings).toEqual([
       {
         utilityId: "sme-coverage-analyzer",
-        code: "sme-coverage.partial-sample",
-        message:
-          "This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+        code: "sme-coverage.questions-page-cap",
+        message: "Questions reached the historical collection page cap.",
+      },
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "collection.legacy-unverified",
+        message: "Legacy run — completeness not verified under current collection rules.",
       },
     ]);
     expect(Object.isFrozen(parsedPack)).toBe(true);
     expect(buildSmeCoverageMarkdown(parsedPack!)).toContain(
-      "- sme-coverage.partial-sample: This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+      "- Collection: Legacy run — completeness not verified under current collection rules",
     );
-    expect(buildSmeCoverageEvidenceCsv(parsedPack!).split("\n")[1]).toBe(
-      "python,100,1,Complete question enumeration,0,,,Immediate gap,Active tag has no assigned SMEs.,Assign or confirm at least one SME.,Complete,Complete,Partial,sme-coverage.partial-sample: This decision pack is a partial sample because configured limits or source caps limited the analyzed evidence.",
+    expect(buildSmeCoverageEvidenceCsv(parsedPack!)).toContain(
+      "collection.legacy-unverified: Legacy run — completeness not verified under current collection rules.",
     );
   });
 
@@ -692,6 +1128,7 @@ describe("datasetPersistence", () => {
       datasets: {
         "dataset-1": {
           id: "dataset-1",
+          snapshotId: "snapshot-1",
           name: "users",
           records: [{ user_id: 1 }],
           loadedAt: "2026-07-09T12:00:00.000Z",
@@ -944,7 +1381,70 @@ describe("datasetPersistence", () => {
     expect(parsed?.reportRunSnapshots).toEqual([]);
   });
 
-  it("preserves valid run preset metadata on persisted report run snapshots", () => {
+  it.each([
+    ["empty snapshot id", (value: Record<string, unknown>) => {
+      const snapshots = value.reportRunSnapshots as Record<string, unknown>[];
+      snapshots[0]!.id = "";
+    }],
+    ["duplicate snapshot ids", (value: Record<string, unknown>) => {
+      const snapshots = value.reportRunSnapshots as Record<string, unknown>[];
+      snapshots.push({ ...snapshots[0] });
+    }],
+    ["empty dataset ids", (value: Record<string, unknown>) => {
+      const snapshots = value.reportRunSnapshots as Record<string, unknown>[];
+      snapshots[0]!.datasetIds = [];
+    }],
+    ["duplicate dataset ids", (value: Record<string, unknown>) => {
+      const snapshots = value.reportRunSnapshots as Record<string, unknown>[];
+      snapshots[0]!.datasetIds = ["dataset-1", "dataset-1"];
+    }],
+  ])("drops live report provenance with %s", (_label, mutate) => {
+    const value = createLegacyLiveReportSnapshot(2);
+    mutate(value);
+
+    const parsed = parseDatasetSessionSnapshot(value);
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
+  });
+
+  it.each([
+    ["cross-report ownership", "reportId", "tag-report"],
+    ["uploaded source", "source", "upload"],
+    ["different snapshot", "snapshotId", "snapshot-2"],
+    ["different period", "periodRole", "comparison"],
+  ])("drops live report provenance when a linked dataset has %s", (_label, field, value) => {
+    const persisted = createLegacyLiveReportSnapshot(2);
+    const datasets = persisted.datasets as Record<string, Record<string, unknown>>;
+    datasets["dataset-1"]![field] = value;
+
+    const parsed = parseDatasetSessionSnapshot(persisted);
+
+    expect(parsed?.reportRunSnapshots).toEqual([]);
+    expect(parsed?.reportOutputs).toEqual({});
+  });
+
+  it.each(["currentSnapshotId", "comparisonSnapshotId"] as const)(
+    "drops live output when %s references a snapshot with the wrong period role",
+    (snapshotField) => {
+      const persisted = createLegacyLiveReportSnapshot(2);
+      const datasets = persisted.datasets as Record<string, Record<string, unknown>>;
+      const outputs = persisted.reportOutputs as Record<string, Record<string, unknown>>;
+      const snapshots = persisted.reportRunSnapshots as Record<string, unknown>[];
+      const expectedSnapshotRole = snapshotField === "currentSnapshotId" ? "comparison" : "current";
+      snapshots[0]!.periodRole = expectedSnapshotRole;
+      datasets["dataset-1"]!.periodRole = expectedSnapshotRole;
+      delete outputs["inactive-users"]!.currentSnapshotId;
+      outputs["inactive-users"]![snapshotField] = "snapshot-1";
+
+      const parsed = parseDatasetSessionSnapshot(persisted);
+
+      expect(parsed?.reportRunSnapshots).toHaveLength(1);
+      expect(parsed?.reportOutputs).toEqual({});
+    },
+  );
+
+  it("validates and discards legacy collection metadata on persisted report run snapshots", () => {
     const parsed = parseDatasetSessionSnapshot({
       version: 1,
       selectedReportId: "tag-report",
@@ -979,12 +1479,20 @@ describe("datasetPersistence", () => {
       warnings: [],
     });
 
-    expect(parsed?.reportRunSnapshots[0]).toEqual(
-      expect.objectContaining({
-        id: "snapshot-1",
-        runPreset: "deep-audit",
-      }),
-    );
+    expect(parsed?.reportRunSnapshots[0]).toEqual({
+      id: "snapshot-1",
+      reportId: "tag-report",
+      periodRole: "current",
+      scope: {},
+      loadedAt: "2026-07-09T12:00:00.000Z",
+      datasetIds: ["dataset-1"],
+      warnings: [
+        {
+          reportId: "tag-report",
+          ...LEGACY_COLLECTION_WARNING,
+        },
+      ],
+    });
   });
 
   it("rejects persisted datasets with unsafe prototype keys", () => {
@@ -1033,10 +1541,8 @@ function createPersistedUtilityPack(): SmeCoverageDecisionPack {
       instanceHost: "example.stackenterprise.co",
       generatedAt: "2026-07-30T12:00:00.000Z",
       scopeLabel: "All-time demand · Current SME coverage",
+      collectionLabel: "All available data collected",
       completeness: "Empty",
-      pageSize: 100,
-      maxPagesPerDataset: 20,
-      runPreset: "deep-audit",
     },
     warnings: [],
     summary: {
@@ -1065,7 +1571,7 @@ function createPersistedUtilityPack(): SmeCoverageDecisionPack {
   };
 }
 
-function createLegacyConfiguredPartialUtilityPack(): SmeCoverageDecisionPack {
+function createLegacyConfiguredPartialUtilityPack(): Record<string, unknown> {
   const row = {
     tagName: "python",
     pageViews: 100,
@@ -1090,7 +1596,13 @@ function createLegacyConfiguredPartialUtilityPack(): SmeCoverageDecisionPack {
       maxPagesPerDataset: 1,
       runPreset: "quick-sample",
     },
-    warnings: [],
+    warnings: [
+      {
+        utilityId: "sme-coverage-analyzer",
+        code: "sme-coverage.questions-page-cap",
+        message: "Questions reached the historical collection page cap.",
+      },
+    ],
     summary: {
       tagsAnalyzed: 1,
       tagsWithSmes: 0,
@@ -1130,6 +1642,189 @@ function createVersion2SnapshotValue(overrides: Record<string, unknown> = {}): R
     utilityRunSnapshots: [],
     warnings: [],
     ...overrides,
+  };
+}
+
+function createCurrentReportSnapshotValue(
+  datasetNames: string[],
+  reportId = "inactive-users",
+): Record<string, unknown> {
+  const loadedAt = "2026-07-30T12:00:00.000Z";
+  const snapshotId = "current-report-snapshot";
+  const datasets = Object.fromEntries(
+    datasetNames.map((name, index) => {
+      const id = `dataset-${index + 1}`;
+      return [
+        id,
+        {
+          id,
+          snapshotId,
+          reportId,
+          name,
+          records: [],
+          loadedAt,
+          source: "live-api",
+          periodRole: "current",
+          scope: {},
+          pageCount: 0,
+          reachedMaxPages: false,
+          hasMore: false,
+        },
+      ];
+    }),
+  );
+
+  return {
+    version: 3,
+    selectedReportId: reportId,
+    selectedReportIds: [reportId],
+    selectedUtilityId: "sme-coverage-analyzer",
+    datasets,
+    reportOutputs: {
+      [reportId]: {
+        reportId,
+        datasetName: datasetNames[0] ?? "users",
+        fileName: "Live API run",
+        records: [],
+        loadedAt,
+        source: "live-api",
+        currentScope: {},
+        currentSnapshotId: snapshotId,
+      },
+    },
+    reportRunSnapshots: [
+      {
+        id: snapshotId,
+        reportId,
+        periodRole: "current",
+        scope: {},
+        loadedAt,
+        datasetIds: Object.keys(datasets),
+        warnings: [],
+      },
+    ],
+    utilityOutputs: {},
+    utilityRunSnapshots: [],
+    warnings: [],
+  };
+}
+
+function createCurrentUtilitySnapshotValue(
+  datasetNames: string[] = ["tags", "questions", "tagSmeCounts"],
+): Record<string, unknown> {
+  const loadedAt = "2026-07-30T12:00:00.000Z";
+  const snapshotId = "current-utility-snapshot";
+  const datasets = Object.fromEntries(
+    datasetNames.map((name, index) => {
+      const id = index === 0 ? "utility-tags" : `utility-dataset-${index + 1}`;
+      return [
+        id,
+        {
+          id,
+          snapshotId,
+          utilityId: "sme-coverage-analyzer",
+          name,
+          records: [],
+          loadedAt,
+          source: "live-api",
+          pageCount: 0,
+          reachedMaxPages: false,
+          hasMore: false,
+        },
+      ];
+    }),
+  );
+
+  return {
+    version: 3,
+    selectedReportId: "tag-report",
+    selectedReportIds: ["tag-report"],
+    selectedUtilityId: "sme-coverage-analyzer",
+    datasets,
+    reportOutputs: {},
+    reportRunSnapshots: [],
+    utilityOutputs: {
+      "sme-coverage-analyzer": {
+        utilityId: "sme-coverage-analyzer",
+        loadedAt,
+        decisionPack: createPersistedUtilityPack(),
+      },
+    },
+    utilityRunSnapshots: [
+      {
+        id: snapshotId,
+        utilityId: "sme-coverage-analyzer",
+        loadedAt,
+        datasetIds: Object.keys(datasets),
+        warnings: [],
+      },
+    ],
+    warnings: [],
+  };
+}
+
+function createLegacyLiveReportSnapshot(version: 1 | 2): Record<string, unknown> {
+  return {
+    version,
+    selectedReportId: "inactive-users",
+    selectedReportIds: ["inactive-users"],
+    selectedUtilityId: "sme-coverage-analyzer",
+    datasets: {
+      "dataset-1": {
+        id: "dataset-1",
+        snapshotId: "snapshot-1",
+        reportId: "inactive-users",
+        name: "users",
+        records: [{ user_id: 1 }],
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        source: "live-api",
+        periodRole: "current",
+        scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        warnings: [
+          {
+            reportId: "inactive-users",
+            code: "dataset-cap-reached",
+            message: "Original dataset warning.",
+          },
+        ],
+      },
+    },
+    reportOutputs: {
+      "inactive-users": {
+        reportId: "inactive-users",
+        datasetName: "users",
+        fileName: "Live API run",
+        records: [{ datasetName: "users", user_id: 1 }],
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        source: "live-api",
+        currentScope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        currentSnapshotId: "snapshot-1",
+        warnings: [
+          {
+            reportId: "inactive-users",
+            code: "output-cap-reached",
+            message: "Original output warning.",
+          },
+        ],
+      },
+    },
+    reportRunSnapshots: [
+      {
+        id: "snapshot-1",
+        reportId: "inactive-users",
+        periodRole: "current",
+        scope: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        pageSize: 100,
+        maxPagesPerDataset: 20,
+        runPreset: "standard",
+        loadedAt: "2026-07-09T12:00:00.000Z",
+        datasetIds: ["dataset-1"],
+        warnings: [],
+      },
+    ],
+    utilityOutputs: {},
+    utilityRunSnapshots: [],
+    warnings: [],
   };
 }
 

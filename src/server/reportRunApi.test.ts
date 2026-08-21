@@ -18,13 +18,12 @@ describe("handleReportRunRequest", () => {
       reportId: "inactive-users",
       reportTitle: "Inactive Users",
       periodRole: "current",
-      scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 5,
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
         },
       ],
       messages: ["Collected users (1 record) for Inactive Users."],
@@ -37,9 +36,7 @@ describe("handleReportRunRequest", () => {
         reportId: "inactive-users",
         credentials,
         periodRole: "current",
-        scope: {},
-        pageSize: 100,
-        maxPagesPerDataset: 5,
+        scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
       },
       { runLiveReport },
     );
@@ -48,98 +45,27 @@ describe("handleReportRunRequest", () => {
     await expect(response.json()).resolves.toEqual({ ok: true, result });
     expect(runLiveReport).toHaveBeenCalledWith("inactive-users", credentials, {
       periodRole: "current",
-      scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 5,
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
     });
   });
 
-  it("forwards a valid run preset into the live runner", async () => {
-    const result: LiveReportRunResult = {
-      reportId: "tag-report",
-      reportTitle: "Tag Report",
-      periodRole: "current",
-      scope: {},
-      pageSize: 50,
-      maxPagesPerDataset: 1,
-      runPreset: "quick-sample",
-      datasets: [],
-      messages: [],
-      warnings: [],
-    };
-    const runLiveReport = vi.fn().mockResolvedValue(result);
+  it.each(["pageSize", "maxPagesPerDataset", "runPreset"])(
+    "rejects obsolete %s configuration",
+    async (key) => {
+      const runLiveReport = vi.fn();
+      const response = await handleReportRunRequest(
+        { reportId: "inactive-users", credentials, [key]: key === "runPreset" ? "deep-audit" : 100 },
+        { runLiveReport },
+      );
 
-    const response = await handleReportRunRequest(
-      {
-        reportId: "tag-report",
-        credentials,
-        pageSize: 50,
-        maxPagesPerDataset: 1,
-        runPreset: "quick-sample",
-      },
-      { runLiveReport },
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true, result });
-    expect(runLiveReport).toHaveBeenCalledWith("tag-report", credentials, {
-      periodRole: "current",
-      scope: {},
-      pageSize: 50,
-      maxPagesPerDataset: 1,
-      runPreset: "quick-sample",
-    });
-  });
-
-  it("clears a valid but mismatched run preset when custom volume settings are submitted", async () => {
-    const result: LiveReportRunResult = {
-      reportId: "tag-report",
-      reportTitle: "Tag Report",
-      periodRole: "current",
-      scope: {},
-      pageSize: 75,
-      maxPagesPerDataset: 2,
-      datasets: [],
-      messages: [],
-      warnings: [],
-    };
-    const runLiveReport = vi.fn().mockResolvedValue(result);
-
-    const response = await handleReportRunRequest(
-      {
-        reportId: "tag-report",
-        credentials,
-        pageSize: 75,
-        maxPagesPerDataset: 2,
-        runPreset: "quick-sample",
-      },
-      { runLiveReport },
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true, result });
-    expect(runLiveReport.mock.calls[0]?.[2].runPreset).toBeUndefined();
-  });
-
-  it("rejects invalid run presets before calling the runner", async () => {
-    const runLiveReport = vi.fn();
-
-    const response = await handleReportRunRequest(
-      {
-        reportId: "tag-report",
-        credentials,
-        runPreset: "tiny-preview",
-      },
-      { runLiveReport },
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      ok: false,
-      error: "Report run request requires a reportId and credentials.",
-    });
-    expect(runLiveReport).not.toHaveBeenCalled();
-  });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        ok: false,
+        error: "Report runs accept credentials, a period role, and a date scope only.",
+      });
+      expect(runLiveReport).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects Enterprise v3 report credentials before calling the runner", async () => {
     const runLiveReport = vi.fn();
@@ -170,8 +96,6 @@ describe("handleReportRunRequest", () => {
       reportTitle: "API User Report",
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 5,
       datasets: [],
       messages: [],
       warnings: [],
@@ -198,8 +122,6 @@ describe("handleReportRunRequest", () => {
     expect(runLiveReport).toHaveBeenCalledWith("api-user-report", manualTokenCredentials, {
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 5,
     });
   });
 
@@ -209,12 +131,11 @@ describe("handleReportRunRequest", () => {
       reportTitle: "Inactive Users",
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 5,
       datasets: [
         {
           datasetName: "users",
           records: [{ user_id: 1, display_name: "Ada" }],
+          pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
         },
       ],
       messages: ["Collected users (1 record) for Inactive Users."],
@@ -240,8 +161,6 @@ describe("handleReportRunRequest", () => {
     expect(runLiveReport).toHaveBeenCalledWith("inactive-users", apiKeyOnlyCredentials, {
       periodRole: "current",
       scope: {},
-      pageSize: 100,
-      maxPagesPerDataset: 5,
     });
   });
 
@@ -293,8 +212,6 @@ describe("handleReportRunRequest", () => {
         credentials,
         periodRole: "current",
         scope: { startDate: "2026-04-30", endDate: "2026-04-01" },
-        pageSize: 0,
-        maxPagesPerDataset: 0,
       },
       { runLiveReport },
     );
@@ -302,8 +219,26 @@ describe("handleReportRunRequest", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       ok: false,
-      error:
-        "Page size must be between 1 and 100. Max pages per dataset must be at least 1. Current period end date must be on or after its start date.",
+      error: "Current period end date must be on or after its start date.",
+    });
+    expect(runLiveReport).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { startDate: ["2026-01-01"] },
+    { pageSize: 100 },
+  ])("rejects non-date scope shapes", async (scope) => {
+    const runLiveReport = vi.fn();
+
+    const response = await handleReportRunRequest(
+      { reportId: "inactive-users", credentials, scope },
+      { runLiveReport },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Report run request requires a reportId and credentials.",
     });
     expect(runLiveReport).not.toHaveBeenCalled();
   });

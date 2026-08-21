@@ -8,6 +8,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function responseWithJson(body: unknown): Response {
+  const response = new Response("", { status: 200 });
+  vi.spyOn(response, "json").mockResolvedValue(body);
+  return response;
+}
+
 describe("StackApiV3Client", () => {
   it("fetches totalPages pagination", async () => {
     const fetchMock = vi.fn()
@@ -37,6 +43,22 @@ describe("StackApiV3Client", () => {
 
     await expect(client.getPagedItems("/tags", {}, { maxPages: 1 })).resolves.toEqual([{ id: "a" }]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when pagination exceeds the internal safety limit", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ items: [{ id: "tag" }], totalPages: 99 }), { status: 200 }));
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: fetchMock,
+      paginationSafetyLimit: 2,
+    });
+
+    await expect(client.getPagedItems("/tags")).rejects.toThrow(
+      "exceeded the internal safety limit of 2 pages. No complete result was produced.",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("returns pagination metadata when max pages leaves more v3 data available", async () => {
@@ -77,6 +99,97 @@ describe("StackApiV3Client", () => {
       hasMore: true,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a null body", null],
+    ["an array body", []],
+    ["missing items", { totalPages: 0 }],
+    ["non-array items", { items: {}, totalPages: 0 }],
+    ["inherited items", Object.create({ items: [] })],
+  ])("fails closed when page 1 has %s", async (_label, body) => {
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: vi.fn().mockResolvedValue(responseWithJson(body)),
+    });
+
+    await expect(client.getPagedItems("/tags")).rejects.toThrow(
+      "Stack API v3 returned an invalid pagination envelope for /tags page 1. No complete result was produced.",
+    );
+  });
+
+  it.each([
+    ["a string", "2"],
+    ["null", null],
+    ["a negative number", -1],
+    ["a fraction", 1.5],
+    ["positive infinity", Number.POSITIVE_INFINITY],
+  ])("rejects totalPages when it is %s", async (_label, totalPages) => {
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: vi.fn().mockResolvedValue(responseWithJson({ items: [], totalPages })),
+    });
+
+    await expect(client.getPagedItems("/tags")).rejects.toThrow(
+      "Stack API v3 returned an invalid pagination envelope for /tags page 1. No complete result was produced.",
+    );
+  });
+
+  it("rejects a totalPages value that changes between pages", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: "a" }], totalPages: 2 }))
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: "b" }], totalPages: 3 }));
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: fetchMock,
+    });
+
+    await expect(client.getPagedItems("/tags")).rejects.toThrow(
+      "Stack API v3 returned an invalid pagination envelope for /tags page 2. No complete result was produced.",
+    );
+  });
+
+  it.each([
+    ["page 1 with totalPages 0", [
+      { items: [{ id: "a" }], totalPages: 0 },
+    ]],
+    ["page 2 greater than a newly supplied totalPages", [
+      { items: [{ id: "a" }] },
+      { items: [{ id: "b" }], totalPages: 1 },
+    ]],
+  ] as const)("rejects non-empty items claimed beyond totalPages: %s", async (_label, pages) => {
+    const fetchMock = vi.fn();
+    for (const page of pages) fetchMock.mockResolvedValueOnce(responseWithJson(page));
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: fetchMock,
+    });
+
+    await expect(client.getPagedItems("/tags")).rejects.toThrow(
+      `Stack API v3 returned an invalid pagination envelope for /tags page ${pages.length}. No complete result was produced.`,
+    );
+  });
+
+  it("uses an explicit empty items array as the terminal fallback when totalPages is absent", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responseWithJson({ items: [{ id: "a" }] }))
+      .mockResolvedValueOnce(responseWithJson({ items: [] }));
+    const client = new StackApiV3Client({
+      apiV3Url: "https://api.stackoverflowteams.com/v3/teams/example-team",
+      token: "token",
+      fetchFn: fetchMock,
+    });
+
+    await expect(client.getPagedResult("/tags")).resolves.toEqual({
+      items: [{ id: "a" }],
+      pageCount: 2,
+      reachedMaxPages: false,
+      hasMore: false,
+    });
   });
 
   it("calls the throttle callback when token bucket is low", async () => {

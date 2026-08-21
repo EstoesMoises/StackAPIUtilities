@@ -1,7 +1,4 @@
-import type { ApiVolumeSettingsValue } from "../domain/types";
 import type { SmeCoverageDecisionPack } from "../utilities/smeCoverage/model";
-import { getSmeCoveragePresetDisclosure } from "../utilities/smeCoverage/settings";
-import { ApiVolumeSettings } from "./ApiVolumeSettings";
 import { SmeCoverageDecisionPack as SmeCoverageDecisionPackView } from "./SmeCoverageDecisionPack";
 import {
   SmeCoverageRunProgress,
@@ -17,16 +14,12 @@ export interface SmeCoverageRunUiState {
 }
 
 export interface SmeCoverageWorkspaceProps {
-  settings: ApiVolumeSettingsValue;
-  onSettingsChange: (settings: ApiVolumeSettingsValue) => void;
   onRun: () => void;
   runState: SmeCoverageRunUiState;
   decisionPack?: SmeCoverageDecisionPack;
 }
 
 export function SmeCoverageWorkspace({
-  settings,
-  onSettingsChange,
   onRun,
   runState,
   decisionPack,
@@ -55,15 +48,11 @@ export function SmeCoverageWorkspace({
             It requires both API lanes in the same read-only run. You do not need to run a Script
             first or provide an upload.
           </p>
+          <p>
+            The analyzer collects all available evidence automatically. Large instances can take
+            longer while API pagination and rate limits are handled for you.
+          </p>
         </div>
-        <ApiVolumeSettings
-          value={settings}
-          radioName="sme-coverage-run-preset"
-          helpText="Choose how much source evidence to collect. Higher limits reduce the chance of a partial sample, but take longer to run."
-          recordDetail="Tags, questions, assigned-SME counts"
-          getDisclosure={getSmeCoveragePresetDisclosure}
-          onChange={onSettingsChange}
-        />
         <div className="run-controls">
           <button
             className="s-btn s-btn__filled report-run-primary"
