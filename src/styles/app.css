@@ -2738,14 +2738,14 @@ select:disabled {
 .report-evidence-sort-button:focus-visible,
 .report-column-menu > summary:focus-visible,
 .report-column-options input:focus-visible {
-  outline: 3px solid var(--so-focus);
+  outline: 3px solid var(--so-focus) !important;
   outline-offset: 2px;
 }
 
 .report-command-center-tabs .report-command-center-tab:focus-visible,
 .report-command-center-panel:focus-visible,
 .report-export-bar .s-btn:focus-visible {
-  outline: 3px solid var(--so-focus);
+  outline: 3px solid var(--so-focus) !important;
   outline-offset: 2px;
 }
 
