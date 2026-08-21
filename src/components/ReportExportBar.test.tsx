@@ -69,6 +69,21 @@ describe("ReportExportBar", () => {
     expect(moreFormats).toHaveFocus();
   });
 
+  it("uses an exact direct CSV label override", () => {
+    render(
+      <ReportExportBar
+        feedback={{ state: "idle" }}
+        onExportCsv={vi.fn()}
+        onRunAgain={vi.fn()}
+        csvLabel="Export report CSV"
+      />,
+    );
+
+    const csv = screen.getByRole("button", { name: "Export report CSV" });
+    expect(csv).toHaveClass("report-export-csv");
+    expect(screen.queryByRole("button", { name: "Export evidence CSV" })).not.toBeInTheDocument();
+  });
+
   it("omits optional formats and their disclosure when callbacks are absent", () => {
     render(<ReportExportBar feedback={{ state: "idle" }} onRunAgain={vi.fn()} />);
 

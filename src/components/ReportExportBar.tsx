@@ -11,6 +11,7 @@ export interface ReportExportBarProps {
   onExportPdf?: () => void;
   onExportCsv?: () => void;
   onExportMarkdown?: () => void;
+  csvLabel?: string;
   pdfPending?: boolean;
   runPending?: boolean;
 }
@@ -21,6 +22,7 @@ export function ReportExportBar({
   onExportPdf,
   onExportCsv,
   onExportMarkdown,
+  csvLabel,
   pdfPending = false,
   runPending = false,
 }: ReportExportBarProps) {
@@ -48,7 +50,7 @@ export function ReportExportBar({
             type="button"
             onClick={onExportCsv}
           >
-            Export evidence CSV
+            {csvLabel ?? "Export evidence CSV"}
           </button>
         )}
         {onExportMarkdown && (
