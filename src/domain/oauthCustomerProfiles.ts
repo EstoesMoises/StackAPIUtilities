@@ -3,18 +3,21 @@ import {
   normalizeOAuthBaseUrl,
 } from "../auth/enterpriseOAuthTarget";
 
-export const OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION = 1 as const;
+const LEGACY_OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION = 1 as const;
+export const OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION = 2 as const;
 
 export interface OAuthCustomerProfileDraft {
   customerName: string;
   baseUrl: string;
   oauthClientId: string;
+  apiKey: string;
   includeNoExpiry: boolean;
 }
 
-export interface OAuthCustomerProfile extends OAuthCustomerProfileDraft {
+export interface OAuthCustomerProfile extends Omit<OAuthCustomerProfileDraft, "apiKey"> {
   schemaVersion: typeof OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION;
   id: string;
+  apiKey?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -55,8 +58,22 @@ function normalizeDraft(draft: OAuthCustomerProfileDraft): OAuthCustomerProfileD
     customerName: normalizeDraftString(draft.customerName),
     baseUrl: isSupportedEnterpriseOAuthTarget(baseUrl) ? normalizeOAuthBaseUrl(baseUrl) : baseUrl,
     oauthClientId: normalizeDraftString(draft.oauthClientId),
+    apiKey: normalizeDraftString(draft.apiKey),
     includeNoExpiry: draft.includeNoExpiry,
   };
+}
+
+function normalizedDraftToProfileFields(
+  draft: OAuthCustomerProfileDraft,
+): Omit<OAuthCustomerProfile, "schemaVersion" | "id" | "createdAt" | "updatedAt"> {
+  const fields = {
+    customerName: draft.customerName,
+    baseUrl: draft.baseUrl,
+    oauthClientId: draft.oauthClientId,
+    includeNoExpiry: draft.includeNoExpiry,
+  };
+
+  return draft.apiKey ? { ...fields, apiKey: draft.apiKey } : fields;
 }
 
 function customerNamesMatch(left: string, right: string): boolean {
@@ -123,7 +140,7 @@ export function createOAuthCustomerProfile(
     profile: {
       schemaVersion: OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION,
       id: dependencies.createId ? dependencies.createId() : crypto.randomUUID(),
-      ...normalizedDraft,
+      ...normalizedDraftToProfileFields(normalizedDraft),
       createdAt: timestamp,
       updatedAt: timestamp,
     },
@@ -146,9 +163,9 @@ export function updateOAuthCustomerProfile(
   return {
     ok: true,
     profile: {
-      schemaVersion: profile.schemaVersion,
+      schemaVersion: OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION,
       id: profile.id,
-      ...normalizedDraft,
+      ...normalizedDraftToProfileFields(normalizedDraft),
       createdAt: profile.createdAt,
       updatedAt: toIsoTimestamp(dependencies.now ?? (() => new Date())),
     },
@@ -173,7 +190,11 @@ function isExactIsoTimestamp(value: unknown): value is string {
 }
 
 export function parseOAuthCustomerProfile(value: unknown): OAuthCustomerProfile | null {
-  if (!isRecord(value) || value.schemaVersion !== OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION) {
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== LEGACY_OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION &&
+      value.schemaVersion !== OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION)
+  ) {
     return null;
   }
 
@@ -191,7 +212,7 @@ export function parseOAuthCustomerProfile(value: unknown): OAuthCustomerProfile 
     return null;
   }
 
-  return {
+  const profile: OAuthCustomerProfile = {
     schemaVersion: OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION,
     id: value.id,
     customerName: value.customerName,
@@ -201,12 +222,33 @@ export function parseOAuthCustomerProfile(value: unknown): OAuthCustomerProfile 
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };
+
+  if (value.schemaVersion === LEGACY_OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION) {
+    return profile;
+  }
+
+  if (
+    !Object.prototype.hasOwnProperty.call(value, "apiKey") ||
+    value.apiKey === undefined
+  ) {
+    return profile;
+  }
+
+  if (!isNonblankTrimmedString(value.apiKey)) {
+    return null;
+  }
+
+  return { ...profile, apiKey: value.apiKey };
 }
 
 export function parseOAuthCustomerProfilePreferences(
   value: unknown,
 ): OAuthCustomerProfilePreferences | null {
-  if (!isRecord(value) || value.schemaVersion !== OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION) {
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== LEGACY_OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION &&
+      value.schemaVersion !== OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION)
+  ) {
     return null;
   }
 
@@ -232,6 +274,7 @@ export function toOAuthCustomerProfileDraft(
     customerName: profile.customerName,
     baseUrl: profile.baseUrl,
     oauthClientId: profile.oauthClientId,
+    apiKey: profile.apiKey ?? "",
     includeNoExpiry: profile.includeNoExpiry,
   };
 }
@@ -245,6 +288,7 @@ export function isOAuthCustomerProfileDraftDirty(
     normalizedDraft.customerName !== profile.customerName ||
     normalizedDraft.baseUrl !== profile.baseUrl ||
     normalizedDraft.oauthClientId !== profile.oauthClientId ||
+    normalizedDraft.apiKey !== (profile.apiKey ?? "") ||
     normalizedDraft.includeNoExpiry !== profile.includeNoExpiry
   );
 }

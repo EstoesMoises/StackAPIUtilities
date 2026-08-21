@@ -37,7 +37,6 @@ describe("browserOAuthProfileStorage", () => {
     const profile = {
       ...createProfile(),
       accessToken: "access-secret",
-      apiKey: "api-secret",
       pat: "pat-secret",
       codeVerifier: "verifier-secret",
       oauthScopes: ["read"],
@@ -49,14 +48,41 @@ describe("browserOAuthProfileStorage", () => {
 
     expect(fake.store("profiles").get(profile.id)).toEqual(createProfile());
     expect(JSON.stringify(fake.store("profiles").get(profile.id))).not.toMatch(
-      /accessToken|apiKey|pat|codeVerifier|oauthScopes|authSource|clientSecret/,
+      /accessToken|pat|codeVerifier|oauthScopes|authSource|clientSecret/,
     );
     await expect(loadOAuthCustomerProfileStore()).resolves.toEqual({
       available: true,
       profiles: [createProfile()],
-      preferences: { schemaVersion: 1 },
+      preferences: { schemaVersion: 2 },
       malformedProfileCount: 0,
     });
+  });
+
+  it("loads legacy records in memory without rewriting them or upgrading IndexedDB", async () => {
+    const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
+    const { apiKey: _apiKey, ...profileWithoutApiKey } = createProfile();
+    const legacyProfile = {
+      ...profileWithoutApiKey,
+      schemaVersion: 1,
+      apiKey: "legacy-unknown-key",
+    };
+    const legacyPreferences = {
+      schemaVersion: 1,
+      lastSelectedProfileId: legacyProfile.id,
+    };
+    fake.store("profiles").set(legacyProfile.id, legacyProfile);
+    fake.store("preferences").set("current", legacyPreferences);
+
+    await expect(loadOAuthCustomerProfileStore()).resolves.toEqual({
+      available: true,
+      profiles: [{ ...profileWithoutApiKey, schemaVersion: 2 }],
+      preferences: { schemaVersion: 2, lastSelectedProfileId: legacyProfile.id },
+      malformedProfileCount: 0,
+    });
+    expect(fake.putCalls).toEqual([]);
+    expect(fake.openCalls).toEqual([
+      { name: "stack-api-utilities-oauth-profiles", version: 1 },
+    ]);
   });
 
   it("updates an existing profile under the same ID", async () => {
@@ -88,12 +114,12 @@ describe("browserOAuthProfileStorage", () => {
       {
         storeName: "preferences",
         key: "current",
-        value: { schemaVersion: 1, lastSelectedProfileId: profile.id },
+        value: { schemaVersion: 2, lastSelectedProfileId: profile.id },
       },
     ]);
     expect(fake.store("profiles").get(profile.id)).toEqual(createProfile());
     expect(fake.store("preferences").get("current")).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: profile.id,
     });
     expect(fake.transactionCalls[fake.transactionCalls.length - 1]).toEqual({
@@ -106,7 +132,7 @@ describe("browserOAuthProfileStorage", () => {
   it("rolls back profile and selection when the atomic selection put fails", async () => {
     const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
     fake.store("preferences").set("current", {
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: "existing-profile",
     });
     fake.failRequestAt(2, new Error("Atomic selection failed"));
@@ -117,7 +143,7 @@ describe("browserOAuthProfileStorage", () => {
 
     expect(fake.store("profiles").size).toBe(0);
     expect(fake.store("preferences").get("current")).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: "existing-profile",
     });
     expect(fake.transactionEvents).toEqual(["error", "abort"]);
@@ -138,18 +164,18 @@ describe("browserOAuthProfileStorage", () => {
 
     await saveLastSelectedOAuthCustomerProfileId("profile-1");
     await expect(loadOAuthCustomerProfileStore()).resolves.toMatchObject({
-      preferences: { schemaVersion: 1, lastSelectedProfileId: "profile-1" },
+      preferences: { schemaVersion: 2, lastSelectedProfileId: "profile-1" },
     });
 
     await saveLastSelectedOAuthCustomerProfileId("profile-2");
     expect(fake.store("preferences").get("current")).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: "profile-2",
     });
 
     await saveLastSelectedOAuthCustomerProfileId();
     await expect(loadOAuthCustomerProfileStore()).resolves.toMatchObject({
-      preferences: { schemaVersion: 1 },
+      preferences: { schemaVersion: 2 },
     });
   });
 
@@ -169,14 +195,14 @@ describe("browserOAuthProfileStorage", () => {
     const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
     fake.store("profiles").set("profile-1", createProfile());
     fake.store("preferences").set("current", {
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: "profile-1",
     });
 
     await deleteOAuthCustomerProfile("profile-1");
 
     expect(fake.store("profiles").has("profile-1")).toBe(false);
-    expect(fake.store("preferences").get("current")).toEqual({ schemaVersion: 1 });
+    expect(fake.store("preferences").get("current")).toEqual({ schemaVersion: 2 });
     expect(fake.transactionCalls[fake.transactionCalls.length - 1]).toEqual({
       storeNames: ["profiles", "preferences"],
       mode: "readwrite",
@@ -187,7 +213,7 @@ describe("browserOAuthProfileStorage", () => {
     const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
     fake.store("profiles").set("profile-1", createProfile());
     fake.store("preferences").set("current", {
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: "profile-2",
     });
 
@@ -195,7 +221,7 @@ describe("browserOAuthProfileStorage", () => {
 
     expect(fake.store("profiles").has("profile-1")).toBe(false);
     expect(fake.store("preferences").get("current")).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: "profile-2",
     });
   });
@@ -203,7 +229,7 @@ describe("browserOAuthProfileStorage", () => {
   it("loads valid records while ignoring and counting malformed profiles", async () => {
     const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
     fake.store("profiles").set("valid", createProfile());
-    fake.store("profiles").set("invalid-schema", { ...createProfile(), schemaVersion: 2 });
+    fake.store("profiles").set("invalid-schema", { ...createProfile(), schemaVersion: 3 });
     fake.store("profiles").set("invalid-secret-only", { accessToken: "secret" });
 
     await expect(loadOAuthCustomerProfileStore()).resolves.toMatchObject({
@@ -239,13 +265,13 @@ describe("browserOAuthProfileStorage", () => {
   it("defaults malformed preferences safely", async () => {
     const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
     fake.store("preferences").set("current", {
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: " ",
       accessToken: "secret",
     });
 
     await expect(loadOAuthCustomerProfileStore()).resolves.toMatchObject({
-      preferences: { schemaVersion: 1 },
+      preferences: { schemaVersion: 2 },
     });
   });
 
@@ -255,7 +281,7 @@ describe("browserOAuthProfileStorage", () => {
     await expect(loadOAuthCustomerProfileStore()).resolves.toEqual({
       available: false,
       profiles: [],
-      preferences: { schemaVersion: 1 },
+      preferences: { schemaVersion: 2 },
       malformedProfileCount: 0,
     });
   });
@@ -321,7 +347,7 @@ describe("browserOAuthProfileStorage", () => {
     const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
     fake.store("profiles").set("profile-1", createProfile());
     fake.store("preferences").set("current", {
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: "profile-1",
     });
     fake.failRequestAt(3, new Error("Preference clear failed"));
@@ -331,7 +357,7 @@ describe("browserOAuthProfileStorage", () => {
     );
     expect(fake.store("profiles").get("profile-1")).toEqual(createProfile());
     expect(fake.store("preferences").get("current")).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       lastSelectedProfileId: "profile-1",
     });
     expect(fake.transactionEvents).toEqual(["error", "abort"]);
@@ -400,7 +426,7 @@ describe("browserOAuthProfileStorage", () => {
       const fake = installFakeIndexedDB({ existingStores: ["profiles", "preferences"] });
       fake.store("profiles").set("profile-1", createProfile());
       fake.store("preferences").set("current", {
-        schemaVersion: 1,
+        schemaVersion: 2,
         lastSelectedProfileId: "profile-1",
       });
       fake.failNextTransaction(outcome, new Error(`Delete profile ${outcome}`));
@@ -410,7 +436,7 @@ describe("browserOAuthProfileStorage", () => {
       );
       expect(fake.store("profiles").get("profile-1")).toEqual(createProfile());
       expect(fake.store("preferences").get("current")).toEqual({
-        schemaVersion: 1,
+        schemaVersion: 2,
         lastSelectedProfileId: "profile-1",
       });
       expect(fake.closeCount).toBe(1);
@@ -432,11 +458,12 @@ describe("browserOAuthProfileStorage", () => {
 
 function createProfile(overrides: Partial<OAuthCustomerProfile> = {}): OAuthCustomerProfile {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: "profile-1",
     customerName: "Acme",
     baseUrl: "https://acme.stackenterprise.co",
     oauthClientId: "acme-client",
+    apiKey: "api-secret",
     includeNoExpiry: false,
     createdAt: "2026-08-19T10:00:00.000Z",
     updatedAt: "2026-08-19T10:00:00.000Z",

@@ -14,6 +14,7 @@ const draft = {
   customerName: "Acme",
   baseUrl: "https://acme.stackenterprise.co",
   oauthClientId: "acme-client",
+  apiKey: "",
   includeNoExpiry: false,
 };
 
@@ -22,7 +23,10 @@ const profile: OAuthCustomerProfile = {
   id: "profile-1",
   createdAt: "2026-08-19T10:00:00.000Z",
   updatedAt: "2026-08-19T10:00:00.000Z",
-  ...draft,
+  customerName: draft.customerName,
+  baseUrl: draft.baseUrl,
+  oauthClientId: draft.oauthClientId,
+  includeNoExpiry: draft.includeNoExpiry,
 };
 
 describe("OAuth customer profiles", () => {
@@ -32,6 +36,7 @@ describe("OAuth customer profiles", () => {
         customerName: "  Acme  ",
         baseUrl: "https://acme.stackenterprise.co/path?source=test",
         oauthClientId: "  client-id  ",
+        apiKey: "  api-secret  ",
         includeNoExpiry: true,
       },
       [],
@@ -41,16 +46,28 @@ describe("OAuth customer profiles", () => {
     expect(result).toEqual({
       ok: true,
       profile: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         id: "new-profile",
         customerName: "Acme",
         baseUrl: "https://acme.stackenterprise.co",
         oauthClientId: "client-id",
+        apiKey: "api-secret",
         includeNoExpiry: true,
         createdAt: "2026-08-19T12:34:56.000Z",
         updatedAt: "2026-08-19T12:34:56.000Z",
       },
     });
+  });
+
+  it("omits a blank API key from a created profile", () => {
+    const result = createOAuthCustomerProfile(
+      { ...draft, apiKey: "  " },
+      [],
+      { createId: () => "new-profile", now: () => new Date("2026-08-19T12:34:56.000Z") },
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.profile).not.toHaveProperty("apiKey");
   });
 
   it("rejects customer names duplicated case-insensitively after trimming", () => {
@@ -121,6 +138,7 @@ describe("OAuth customer profiles", () => {
         customerName: " ACME ",
         baseUrl: "https://acme.stackenterprise.co/new-path",
         oauthClientId: " updated-client ",
+        apiKey: " updated-key ",
         includeNoExpiry: true,
       },
       [profile],
@@ -134,10 +152,36 @@ describe("OAuth customer profiles", () => {
         customerName: "ACME",
         baseUrl: "https://acme.stackenterprise.co",
         oauthClientId: "updated-client",
+        apiKey: "updated-key",
         includeNoExpiry: true,
         updatedAt: "2026-08-20T11:00:00.000Z",
       },
     });
+  });
+
+  it("replaces and removes an API key on update", () => {
+    const withApiKey = { ...profile, apiKey: "old-key" };
+    const replaced = updateOAuthCustomerProfile(
+      withApiKey,
+      { ...draft, apiKey: " replacement-key " },
+      [withApiKey],
+      { now: () => new Date("2026-08-20T11:00:00.000Z") },
+    );
+
+    expect(replaced).toMatchObject({ ok: true, profile: { apiKey: "replacement-key" } });
+    if (!replaced.ok) {
+      throw new Error("Expected API key replacement to succeed.");
+    }
+
+    const cleared = updateOAuthCustomerProfile(
+      replaced.profile,
+      { ...draft, apiKey: "  " },
+      [replaced.profile],
+      { now: () => new Date("2026-08-20T12:00:00.000Z") },
+    );
+
+    expect(cleared).toMatchObject({ ok: true });
+    expect(cleared.ok && cleared.profile).not.toHaveProperty("apiKey");
   });
 
   it("rejects an update that collides with a different existing profile", () => {
@@ -183,7 +227,7 @@ describe("OAuth customer profiles", () => {
   });
 
   it.each([
-    ["an invalid schema", { ...profile, schemaVersion: 2 }],
+    ["an invalid schema", { ...profile, schemaVersion: 3 }],
     ["a non-boolean includeNoExpiry", { ...profile, includeNoExpiry: "false" }],
     ["an invalid timestamp", { ...profile, createdAt: "not a timestamp" }],
     ["a non-exact timestamp", { ...profile, updatedAt: "2026-08-19T10:00:00Z" }],
@@ -194,20 +238,60 @@ describe("OAuth customer profiles", () => {
     expect(parseOAuthCustomerProfile(value)).toBeNull();
   });
 
+  it.each([
+    ["a blank API key", ""],
+    ["a whitespace-only API key", "  "],
+    ["a padded API key", " api-secret "],
+    ["a non-string API key", 42],
+  ])("rejects a current persisted profile with %s", (_description, apiKey) => {
+    expect(parseOAuthCustomerProfile({ ...profile, apiKey })).toBeNull();
+  });
+
+  it("treats an undefined API key property as omitted", () => {
+    const parsed = parseOAuthCustomerProfile({ ...profile, apiKey: undefined });
+
+    expect(parsed).toEqual(profile);
+    expect(parsed).not.toHaveProperty("apiKey");
+  });
+
+  it("does not retain an inherited API key", () => {
+    const inheritedApiKeyProfile = Object.assign(
+      Object.create({ apiKey: "inherited-secret" }),
+      profile,
+    );
+
+    const parsed = parseOAuthCustomerProfile(inheritedApiKeyProfile);
+
+    expect(parsed).toEqual(profile);
+    expect(parsed).not.toHaveProperty("apiKey");
+  });
+
+  it("migrates legacy profiles without retaining an API key", () => {
+    expect(
+      parseOAuthCustomerProfile({
+        ...profile,
+        schemaVersion: 1,
+        apiKey: "legacy-unknown-key",
+        unknownField: "discarded",
+      }),
+    ).toEqual(profile);
+  });
+
   it("reconstructs profiles from an exact allowlist", () => {
     const parsed = parseOAuthCustomerProfile({
       ...profile,
       accessToken: "secret-token",
       apiKey: "secret-key",
+      pat: "secret-pat",
       oauthScopes: ["read"],
       authSource: "manual",
       codeVerifier: "secret-verifier",
       clientSecret: "secret-client-secret",
     });
 
-    expect(parsed).toEqual(profile);
+    expect(parsed).toEqual({ ...profile, apiKey: "secret-key" });
     expect(parsed).not.toHaveProperty("accessToken");
-    expect(parsed).not.toHaveProperty("apiKey");
+    expect(parsed).not.toHaveProperty("pat");
     expect(parsed).not.toHaveProperty("oauthScopes");
     expect(parsed).not.toHaveProperty("authSource");
     expect(parsed).not.toHaveProperty("codeVerifier");
@@ -232,8 +316,11 @@ describe("OAuth customer profiles", () => {
         codeVerifier: "secret-verifier",
         clientSecret: "secret-client-secret",
       }),
-    ).toEqual({ schemaVersion: 1, lastSelectedProfileId: "profile-1" });
-    expect(parseOAuthCustomerProfilePreferences({ schemaVersion: 2 })).toBeNull();
+    ).toEqual({ schemaVersion: 2, lastSelectedProfileId: "profile-1" });
+    expect(parseOAuthCustomerProfilePreferences({ schemaVersion: 2 })).toEqual({
+      schemaVersion: 2,
+    });
+    expect(parseOAuthCustomerProfilePreferences({ schemaVersion: 3 })).toBeNull();
     expect(parseOAuthCustomerProfilePreferences({ schemaVersion: 1, lastSelectedProfileId: " " })).toBeNull();
   });
 
@@ -248,5 +335,13 @@ describe("OAuth customer profiles", () => {
       }),
     ).toBe(false);
     expect(isOAuthCustomerProfileDraftDirty(profile, { ...draft, includeNoExpiry: true })).toBe(true);
+    expect(isOAuthCustomerProfileDraftDirty(profile, { ...draft, apiKey: "  " })).toBe(false);
+    expect(isOAuthCustomerProfileDraftDirty(profile, { ...draft, apiKey: " new-key " })).toBe(true);
+    expect(
+      isOAuthCustomerProfileDraftDirty(
+        { ...profile, apiKey: "saved-key" },
+        { ...draft, apiKey: " saved-key " },
+      ),
+    ).toBe(false);
   });
 });

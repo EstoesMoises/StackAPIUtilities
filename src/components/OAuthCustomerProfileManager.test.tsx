@@ -16,7 +16,7 @@ function createProfile(
   overrides: Partial<OAuthCustomerProfile> = {},
 ): OAuthCustomerProfile {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: "profile-1",
     customerName: "Demo Customer",
     baseUrl: "https://demo.stackenterprise.co",
@@ -78,7 +78,9 @@ describe("OAuthCustomerProfileManager", () => {
     render(<ControlledManager />);
 
     expect(screen.getByRole("group", { name: "Saved customer profiles" })).toBeInTheDocument();
-    expect(screen.getByText(/non-sensitive OAuth settings in this browser/i)).toBeInTheDocument();
+    expect(screen.getByText(
+      "Customer profiles store OAuth settings and an optional API key in this browser.",
+    )).toBeInTheDocument();
     expect(screen.getByLabelText("Saved customer")).toHaveValue("");
     expect(screen.getByRole("option", { name: "New customer" })).toHaveValue("");
 
