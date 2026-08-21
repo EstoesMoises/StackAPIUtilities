@@ -1,0 +1,119 @@
+import { useEffect, useId, useRef, useState } from "react";
+import type { Key, KeyboardEvent, ReactNode } from "react";
+import type { ReportSectionId } from "../reports/reportPresentation";
+
+export interface ReportCommandCenterSection<SectionId extends ReportSectionId = ReportSectionId> {
+  id: SectionId;
+  label: string;
+  content: ReactNode;
+}
+
+export type ReportCommandCenterSections<SectionId extends ReportSectionId = ReportSectionId> =
+  readonly [
+    ReportCommandCenterSection<SectionId>,
+    ...ReportCommandCenterSection<SectionId>[],
+  ];
+
+export function requireReportCommandCenterSections<SectionId extends ReportSectionId>(
+  sections: readonly ReportCommandCenterSection<SectionId>[],
+): ReportCommandCenterSections<SectionId> {
+  if (sections.length === 0) {
+    throw new Error("ReportCommandCenter requires at least one section.");
+  }
+
+  return sections as ReportCommandCenterSections<SectionId>;
+}
+
+export interface ReportCommandCenterProps<SectionId extends ReportSectionId = ReportSectionId> {
+  reportKey: Key;
+  header: ReactNode;
+  sections: ReportCommandCenterSections<SectionId>;
+}
+
+export function ReportCommandCenter<SectionId extends ReportSectionId>({
+  reportKey,
+  header,
+  sections,
+}: ReportCommandCenterProps<SectionId>) {
+  return (
+    <section className="report-command-center" aria-label="Generated report">
+      <header className="report-command-center-header">{header}</header>
+      <ReportCommandCenterTabs key={reportKey} sections={sections} />
+    </section>
+  );
+}
+
+function ReportCommandCenterTabs<SectionId extends ReportSectionId>({
+  sections,
+}: Pick<ReportCommandCenterProps<SectionId>, "sections">) {
+  const baseId = useId();
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const firstSection = sections[0];
+  const [activeId, setActiveId] = useState<SectionId>(firstSection.id);
+  const selectedId = sections.some((section) => section.id === activeId)
+    ? activeId
+    : firstSection.id;
+  const selectedIndex = sections.findIndex((section) => section.id === selectedId);
+  const selectedSection = sections[selectedIndex];
+
+  useEffect(() => {
+    if (!sections.some((section) => section.id === activeId)) {
+      setActiveId(firstSection.id);
+    }
+  }, [activeId, firstSection.id, sections]);
+
+  function selectAdjacentTab(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+
+    event.preventDefault();
+    const offset = event.key === "ArrowRight" ? 1 : -1;
+    const nextIndex = (index + offset + sections.length) % sections.length;
+    setActiveId(sections[nextIndex].id);
+    tabRefs.current[nextIndex]?.focus();
+  }
+
+  return (
+    <>
+      <div
+        className="s-navigation s-navigation__muted report-command-center-tabs"
+        role="tablist"
+        aria-label="Report sections"
+      >
+        {sections.map((section, index) => {
+          const selected = section.id === selectedId;
+          const tabId = `${baseId}-tab-${index}`;
+          const panelId = `${baseId}-panel-${index}`;
+
+          return (
+            <button
+              className="s-navigation--item report-command-center-tab"
+              id={tabId}
+              key={section.id}
+              ref={(node) => {
+                tabRefs.current[index] = node;
+              }}
+              type="button"
+              role="tab"
+              aria-controls={panelId}
+              aria-selected={selected}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setActiveId(section.id)}
+              onKeyDown={(event) => selectAdjacentTab(event, index)}
+            >
+              {section.label}
+            </button>
+          );
+        })}
+      </div>
+      <div
+        className="report-command-center-panel"
+        id={`${baseId}-panel-${selectedIndex}`}
+        role="tabpanel"
+        aria-labelledby={`${baseId}-tab-${selectedIndex}`}
+        tabIndex={0}
+      >
+        {selectedSection!.content}
+      </div>
+    </>
+  );
+}

@@ -2267,11 +2267,139 @@ select:disabled {
   background: var(--so-red-soft);
 }
 
+.report-command-center {
+  width: min(100%, 1180px);
+  border: 1px solid var(--so-border);
+  border-radius: 8px;
+  background: var(--so-surface);
+  box-shadow: var(--so-shadow-hairline);
+}
+
+.report-command-center-header {
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--so-border);
+}
+
+.report-command-center-header h1,
+.report-command-center-header h2 {
+  margin-block: 0;
+  color: var(--so-ink);
+  text-wrap: balance;
+}
+
+.report-command-center-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--so-border);
+  background: var(--so-surface-raised);
+}
+
+.report-command-center-tabs .report-command-center-tab {
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--so-text);
+  background: transparent;
+  font-weight: 750;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-base) var(--ease-out-product),
+    border-color var(--motion-base) var(--ease-out-product),
+    color var(--motion-base) var(--ease-out-product);
+}
+
+.report-command-center-tabs .report-command-center-tab:hover {
+  border-color: var(--so-border);
+  color: var(--so-ink);
+  background: var(--so-surface);
+}
+
+.report-command-center-tabs .report-command-center-tab[aria-selected="true"] {
+  border-color: var(--so-orange-strong);
+  color: var(--so-ink);
+  background: var(--so-orange-soft);
+}
+
+.report-command-center-panel {
+  min-width: 0;
+  padding: 22px;
+}
+
+.report-export-bar {
+  display: grid;
+  gap: 10px;
+}
+
+.report-export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.report-export-primary {
+  flex: 0 0 auto;
+}
+
+.report-export-format {
+  position: relative;
+}
+
+.report-export-disclosure {
+  position: absolute;
+  z-index: var(--so-z-sticky);
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 218px;
+  padding: 6px;
+  border: 1px solid var(--so-border-strong);
+  border-radius: 7px;
+  background: var(--so-surface);
+  box-shadow: var(--so-shadow-hairline);
+}
+
+.report-export-disclosure[hidden] {
+  display: none;
+}
+
+.report-export-feedback {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--so-border);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.report-export-feedback__success {
+  border-color: var(--so-green);
+  color: var(--so-green-text);
+  background: var(--so-green-soft);
+}
+
+.report-export-feedback__error {
+  border-color: var(--so-red);
+  color: var(--so-red);
+  background: var(--so-red-soft);
+}
+
 .sme-finding-table-wrap:focus-visible,
 .sme-evidence-table-wrap:focus-visible,
 .sme-sort-button:focus-visible,
 .sme-methodology summary:focus-visible,
 .sme-decision-pack .s-btn:focus-visible {
+  outline: 3px solid var(--so-focus);
+  outline-offset: 2px;
+}
+
+.report-command-center-tabs .report-command-center-tab:focus-visible,
+.report-command-center-panel:focus-visible,
+.report-export-bar .s-btn:focus-visible {
   outline: 3px solid var(--so-focus);
   outline-offset: 2px;
 }
@@ -2410,6 +2538,30 @@ select:disabled {
   color: var(--so-text-subtle);
   background: var(--so-canvas);
   opacity: 1;
+}
+
+.app-shell .report-export-actions .report-export-csv {
+  border-color: var(--so-blue);
+  color: var(--so-blue);
+  background: var(--so-blue-soft);
+}
+
+.app-shell .report-export-actions .report-export-csv:hover {
+  border-color: var(--so-blue);
+  color: var(--so-ink);
+  background: var(--so-surface-hover);
+}
+
+.app-shell .report-export-disclosure .report-export-menu-item {
+  width: 100%;
+  justify-content: flex-start;
+  border-color: transparent;
+  text-align: left;
+}
+
+.app-shell .report-export-actions .report-export-run:not(:disabled) {
+  border-color: transparent;
+  color: var(--so-text-muted);
 }
 
 .app-shell .s-table {
@@ -2675,6 +2827,15 @@ select:disabled {
 }
 
 @media (max-width: 640px) {
+  .report-command-center-header,
+  .report-command-center-panel {
+    padding: 18px;
+  }
+
+  .report-command-center-tabs {
+    padding-inline: 10px;
+  }
+
   .sme-decision-pack {
     padding: 18px;
   }
@@ -2723,6 +2884,23 @@ select:disabled {
 }
 
 @media (max-width: 460px) {
+  .report-export-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-export-actions > .s-btn,
+  .report-export-format,
+  .report-export-format > .s-btn {
+    width: 100%;
+  }
+
+  .report-export-disclosure {
+    position: static;
+    width: 100%;
+    margin-top: 6px;
+  }
+
   .app-brand-block {
     align-items: flex-start;
     flex-wrap: wrap;
