@@ -252,6 +252,7 @@ export function ReportEvidenceExplorer<TRow>({
                       scope="col"
                       colSpan={header.colSpan}
                       aria-sort={ariaSort}
+                      data-column-id={header.column.id}
                     >
                       {header.isPlaceholder ? null : canSort ? (
                         <button
@@ -286,7 +287,7 @@ export function ReportEvidenceExplorer<TRow>({
               pageRows.map((row) => (
                 <tr key={row.id}>
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id}>
+                    <td key={cell.id} data-column-id={cell.column.id}>
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </td>
                   ))}

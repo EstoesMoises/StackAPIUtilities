@@ -78,6 +78,20 @@ describe("SmeCoveragePdfDocument", () => {
     );
   });
 
+  it("uses a full warning border without a colored side stripe", () => {
+    const model = buildSmeCoveragePdfModel(partialSmeCoverageDecisionPack());
+    const warning = descendants(resolvedDocument(model).pages[1]).find(
+      (node) => node.element.type === Text && textOf(node) === model.warnings[0],
+    );
+
+    expect(styleOf(warning)).toMatchObject({
+      borderWidth: 1,
+      borderColor: "#e6b800",
+      backgroundColor: "#fff4d1",
+    });
+    expect(styleOf(warning).borderLeftWidth).toBeUndefined();
+  });
+
   it("renders required report sections and the complete-CSV note in order", () => {
     const contentText = textNodes(
       resolvedDocument(buildSmeCoveragePdfModel(completeSmeCoverageDecisionPack())).pages[1],

@@ -1,11 +1,14 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   completeSmeCoverageDecisionPack,
   partialSmeCoverageDecisionPack,
 } from "../test/fixtures/smeCoverageFixtures";
 import { SmeCoverageEvidenceTable } from "./SmeCoverageEvidenceTable";
+
+const appStyles = readFileSync("src/styles/app.css", "utf8");
 
 describe("SmeCoverageEvidenceTable", () => {
   it("shows the decision-ready columns by default and keeps technical fields optional", async () => {
@@ -14,7 +17,11 @@ describe("SmeCoverageEvidenceTable", () => {
 
     const region = screen.getByRole("region", { name: "SME coverage evidence table" });
     expect(region).toHaveAttribute("tabindex", "0");
-    expect(within(region).getByRole("columnheader", { name: "Tag" })).toBeVisible();
+    expect(within(region).getByRole("columnheader", { name: "Tag" })).toHaveAttribute(
+      "data-column-id",
+      "tagName",
+    );
+    expect(within(region).getAllByRole("cell")[0]).toHaveAttribute("data-column-id", "tagName");
     expect(within(region).getByRole("columnheader", { name: "Evidence quality" })).toBeVisible();
     expect(
       within(region).queryByRole("columnheader", { name: "Question-count basis" }),
@@ -26,6 +33,23 @@ describe("SmeCoverageEvidenceTable", () => {
     expect(
       within(region).getByRole("columnheader", { name: "Question-count basis" }),
     ).toBeVisible();
+  });
+
+  it("keeps decision-ready columns readable inside the scrollable evidence region", () => {
+    for (const columnId of [
+      "tagName",
+      "pageViews",
+      "smeCount",
+      "pageViewsPerSme",
+      "coverageTier",
+      "evidenceQuality",
+      "recommendedAction",
+    ]) {
+      expect(appStyles).toMatch(
+        new RegExp(`\\[data-column-id="${columnId}"\\]\\s*\\{[^}]*min-width:`, "s"),
+      );
+    }
+    expect(appStyles).toMatch(/\.report-evidence-table-wrap\s*\{[^}]*overflow-x:\s*auto;/s);
   });
 
   it("filters by the actual coverage tiers in the evidence", async () => {

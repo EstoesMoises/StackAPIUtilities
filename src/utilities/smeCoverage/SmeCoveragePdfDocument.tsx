@@ -142,8 +142,8 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     paddingVertical: 7,
     paddingHorizontal: 9,
-    borderLeftWidth: 3,
-    borderLeftColor: colors.warningBorder,
+    borderWidth: 1,
+    borderColor: colors.warningBorder,
     backgroundColor: colors.warning,
   },
   metricGrid: {

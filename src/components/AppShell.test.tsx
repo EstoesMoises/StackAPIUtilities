@@ -48,6 +48,7 @@ describe("AppShell", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Stack API Utilities" })).toBeInTheDocument();
+    expect(screen.queryByText("Enterprise API tools")).not.toBeInTheDocument();
     expect(
       within(screen.getByRole("navigation", { name: "Application panels" }))
         .getAllByRole("button")

@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   ReportCommandCenter,
@@ -14,7 +15,15 @@ const sections: ReportCommandCenterSections = [
   { id: "evidence", label: "Evidence", content: <p>Evidence content</p> },
 ];
 
+const appStyles = readFileSync("src/styles/app.css", "utf8");
+
 describe("ReportCommandCenter", () => {
+  it("uses the approved orange top rule on the report command bar", () => {
+    expect(appStyles).toMatch(
+      /\.report-command-center\s*\{[^}]*border-top:\s*3px solid var\(--so-orange\);/s,
+    );
+  });
+
   it("associates tabs and panels while exposing only the selected section", async () => {
     const user = userEvent.setup();
     renderCommandCenter();

@@ -112,7 +112,6 @@ select:disabled {
   min-width: 0;
 }
 
-.app-kicker,
 .workspace-kicker,
 .scope-label {
   margin: 0;
@@ -2307,6 +2306,34 @@ select:disabled {
   vertical-align: top;
 }
 
+.report-evidence-table [data-column-id="tagName"] {
+  min-width: 10rem;
+}
+
+.report-evidence-table [data-column-id="pageViews"] {
+  min-width: 7rem;
+}
+
+.report-evidence-table [data-column-id="smeCount"] {
+  min-width: 6.5rem;
+}
+
+.report-evidence-table [data-column-id="pageViewsPerSme"] {
+  min-width: 9.5rem;
+}
+
+.report-evidence-table [data-column-id="coverageTier"] {
+  min-width: 12rem;
+}
+
+.report-evidence-table [data-column-id="evidenceQuality"] {
+  min-width: 8rem;
+}
+
+.report-evidence-table [data-column-id="recommendedAction"] {
+  min-width: 18rem;
+}
+
 .report-evidence-table tr:last-child td {
   border-bottom: 0;
 }
@@ -2457,6 +2484,7 @@ select:disabled {
   min-width: 0;
   width: min(100%, 1180px);
   border: 1px solid var(--so-border);
+  border-top: 3px solid var(--so-orange);
   border-radius: 8px;
   background: var(--so-surface);
   box-shadow: var(--so-shadow-hairline);
