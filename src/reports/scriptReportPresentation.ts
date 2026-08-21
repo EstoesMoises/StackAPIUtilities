@@ -1,13 +1,16 @@
 import { isLegacyCollectionWarning } from "../domain/collectionWarnings";
 import { reportRegistry } from "../domain/reportRegistry";
 import { formatPeriodLabel } from "../domain/reportScope";
-import type { PeriodScope, ReportId, ReportWarning } from "../domain/types";
+import type { DatasetName, PeriodScope, ReportId, ReportWarning } from "../domain/types";
 import type { ReportPresentationModel } from "./reportPresentation";
 
 interface ScriptPresentationInput {
   reportId: ReportId;
   records: readonly Record<string, unknown>[];
   comparisonRecords?: readonly Record<string, unknown>[];
+  datasetName?: DatasetName;
+  currentSnapshotId?: string;
+  comparisonSnapshotId?: string;
   loadedAt: string;
   outputSource: "live-api" | "upload";
   currentScope?: PeriodScope;
@@ -17,6 +20,10 @@ interface ScriptPresentationInput {
 
 function serializeScope(scope: PeriodScope | undefined): string {
   return scope ? `${scope.startDate ?? ""}..${scope.endDate ?? ""}` : "none";
+}
+
+function serializeIdentity(value: string | undefined): string {
+  return JSON.stringify(value ?? null);
 }
 
 function requireReportMetadata(reportId: ReportId) {
@@ -60,7 +67,7 @@ export function createScriptReportPresentation(
   const evidence = [...evidenceSource];
 
   return {
-    reportKey: `${input.reportId}:${input.loadedAt}:${input.outputSource}:current=${serializeScope(input.currentScope)}:comparison=${serializeScope(input.comparisonScope)}`,
+    reportKey: `${input.reportId}:${input.loadedAt}:${input.outputSource}:dataset=${serializeIdentity(input.datasetName)}:currentSnapshot=${serializeIdentity(input.currentSnapshotId)}:comparisonSnapshot=${serializeIdentity(input.comparisonSnapshotId)}:current=${serializeScope(input.currentScope)}:comparison=${serializeScope(input.comparisonScope)}`,
     kindLabel: "Script report",
     title: report.title,
     sourceLabel: report.sourceRepo,

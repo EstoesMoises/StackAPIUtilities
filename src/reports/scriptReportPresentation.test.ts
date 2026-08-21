@@ -94,6 +94,47 @@ describe("createScriptReportPresentation", () => {
     expect(new Set([reportKey, differentCurrentEnd, differentComparisonEnd, uploaded]).size).toBe(4);
   });
 
+  it("includes canonical dataset and persisted snapshot identities in the report key", () => {
+    const input = {
+      reportId: "inactive-users" as const,
+      records: [{ user_id: 1 }],
+      datasetName: "users" as const,
+      currentSnapshotId: "current-snapshot-1",
+      comparisonSnapshotId: "comparison-snapshot-1",
+      loadedAt: "2026-08-20T12:00:00.000Z",
+      outputSource: "live-api" as const,
+      warnings: [],
+    };
+
+    const reportKey = createScriptReportPresentation(input).reportKey;
+    const changedDataset = createScriptReportPresentation({
+      ...input,
+      datasetName: "tags",
+    }).reportKey;
+    const removedDataset = createScriptReportPresentation({
+      ...input,
+      datasetName: undefined,
+    }).reportKey;
+    const changedCurrentSnapshot = createScriptReportPresentation({
+      ...input,
+      currentSnapshotId: "current-snapshot-2",
+    }).reportKey;
+    const changedComparisonSnapshot = createScriptReportPresentation({
+      ...input,
+      comparisonSnapshotId: "comparison-snapshot-2",
+    }).reportKey;
+
+    expect(
+      new Set([
+        reportKey,
+        changedDataset,
+        removedDataset,
+        changedCurrentSnapshot,
+        changedComparisonSnapshot,
+      ]).size,
+    ).toBe(5);
+  });
+
   it("warns when a live result has the canonical legacy warning for this report", () => {
     const warnings = [
       {

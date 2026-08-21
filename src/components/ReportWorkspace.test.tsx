@@ -29,14 +29,15 @@ describe("ReportWorkspace", () => {
       />,
     );
 
-    const setupHeading = screen
-      .getAllByRole("heading", { name: "Tag Report", level: 2 })
-      .find((heading) => heading.closest(".workspace-panel"));
-    const setupPanel = setupHeading?.closest(".workspace-panel") ?? null;
-    const commandCenter = screen.getByRole("region", { name: "Generated report" });
+    const setupHeading = screen.getByRole("heading", { name: "Configure Tag Report", level: 2 });
+    const resultHeading = screen.getByRole("heading", { name: "Tag Report result", level: 2 });
+    const setupPanel = setupHeading.closest(".workspace-panel");
+    const commandCenter = screen.getByRole("region", { name: "Tag Report result" });
 
     expect(setupPanel).toBeInTheDocument();
     expect(setupPanel).not.toContainElement(commandCenter);
+    expect(commandCenter).toHaveAttribute("aria-labelledby", resultHeading.id);
+    expect(commandCenter).not.toHaveAttribute("aria-label");
     expect(
       screen.getByText(
         "Ready for session credentials. Live API runs collect mapped datasets; uploads render full script outputs. Loaded datasets stay in this browser until removed.",
@@ -69,13 +70,13 @@ describe("ReportWorkspace", () => {
     };
     const { rerender } = render(<ReportWorkspace {...props} />);
 
-    expect(screen.queryByRole("region", { name: "Generated report" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Inactive Users result" })).not.toBeInTheDocument();
 
     rerender(<ReportWorkspace {...props} loadedAt="2026-08-20T12:00:00.000Z" />);
-    expect(screen.queryByRole("region", { name: "Generated report" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Inactive Users result" })).not.toBeInTheDocument();
 
     rerender(<ReportWorkspace {...props} outputSource="live-api" />);
-    expect(screen.queryByRole("region", { name: "Generated report" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Inactive Users result" })).not.toBeInTheDocument();
   });
 
   it("renders an empty loaded result as Overview only without CSV capability", () => {
@@ -90,7 +91,7 @@ describe("ReportWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("region", { name: "Generated report" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Inactive Users result" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Overview" })).toBeVisible();
     expect(screen.queryByRole("tab", { name: /Evidence/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Export report CSV" })).not.toBeInTheDocument();
@@ -368,6 +369,97 @@ describe("ReportWorkspace", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("does not reprepare visited Evidence when export feedback or an equivalent parent render updates", async () => {
+    const user = userEvent.setup();
+    let evidenceReads = 0;
+    const records = Array.from({ length: 55 }, (_, index) => {
+      const record: Record<string, unknown> = { user_id: index + 1 };
+      Object.defineProperty(record, "display_name", {
+        enumerable: true,
+        get() {
+          evidenceReads += 1;
+          return `User ${index + 1}`;
+        },
+      });
+      return record;
+    });
+    const props = {
+      ...defaultWorkspaceProps(),
+      reportId: "inactive-users" as const,
+      records,
+      datasetName: "users" as const,
+      loadedAt: "2026-07-08T12:00:00.000Z",
+      outputSource: "upload" as const,
+    };
+    const { rerender } = render(<ReportWorkspace {...props} />);
+
+    await user.click(screen.getByRole("tab", { name: "Evidence · 55" }));
+    expect(screen.getByRole("region", { name: "Report evidence table" })).toBeVisible();
+    const readsAfterPreparation = evidenceReads;
+    expect(readsAfterPreparation).toBeGreaterThanOrEqual(55);
+
+    await user.click(screen.getByRole("tab", { name: "Overview" }));
+    await user.click(screen.getByRole("button", { name: "Export report CSV" }));
+
+    expect(screen.getByText("CSV download started for 55 rows.")).toBeInTheDocument();
+    expect(evidenceReads).toBe(readsAfterPreparation);
+
+    rerender(<ReportWorkspace {...props} />);
+    expect(evidenceReads).toBe(readsAfterPreparation);
+  });
+
+  it("resets export feedback when canonical dataset identity changes or is removed", async () => {
+    const user = userEvent.setup();
+    const props = {
+      ...defaultWorkspaceProps(),
+      reportId: "inactive-users" as const,
+      records: [{ user_id: 1 }],
+      datasetName: "users" as const,
+      loadedAt: "2026-07-08T12:00:00.000Z",
+      outputSource: "live-api" as const,
+      currentSnapshotId: "current-snapshot-1",
+    };
+    vi.mocked(downloadReportCsv).mockImplementationOnce(() => {
+      throw new Error("blocked");
+    });
+    const { rerender } = render(<ReportWorkspace {...props} />);
+    await user.click(screen.getByRole("button", { name: "Export report CSV" }));
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+
+    rerender(<ReportWorkspace {...props} datasetName="tags" />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    vi.mocked(downloadReportCsv).mockImplementationOnce(() => {
+      throw new Error("blocked again");
+    });
+    await user.click(screen.getByRole("button", { name: "Export report CSV" }));
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+
+    rerender(<ReportWorkspace {...props} datasetName={undefined} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(/no canonical dataset identity/i)).toBeVisible();
+  });
+
+  it("resets Evidence navigation when an existing snapshot identity changes", async () => {
+    const user = userEvent.setup();
+    const props = {
+      ...defaultWorkspaceProps(),
+      reportId: "inactive-users" as const,
+      records: [{ user_id: 1 }],
+      datasetName: "users" as const,
+      loadedAt: "2026-07-08T12:00:00.000Z",
+      outputSource: "live-api" as const,
+      currentSnapshotId: "current-snapshot-1",
+    };
+    const { rerender } = render(<ReportWorkspace {...props} />);
+    await user.click(screen.getByRole("tab", { name: "Evidence · 1" }));
+
+    rerender(<ReportWorkspace {...props} currentSnapshotId="current-snapshot-2" />);
+
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Evidence · 1" })).toHaveAttribute("aria-selected", "false");
   });
 
   it("resets Evidence navigation when the report identity changes", async () => {

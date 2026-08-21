@@ -26,17 +26,23 @@ export function requireReportCommandCenterSections<SectionId extends ReportSecti
 
 export interface ReportCommandCenterProps<SectionId extends ReportSectionId = ReportSectionId> {
   reportKey: Key;
+  ariaLabelledBy?: string;
   header: ReactNode;
   sections: ReportCommandCenterSections<SectionId>;
 }
 
 export function ReportCommandCenter<SectionId extends ReportSectionId>({
   reportKey,
+  ariaLabelledBy,
   header,
   sections,
 }: ReportCommandCenterProps<SectionId>) {
   return (
-    <section className="report-command-center" aria-label="Generated report">
+    <section
+      className="report-command-center"
+      aria-label={ariaLabelledBy ? undefined : "Generated report"}
+      aria-labelledby={ariaLabelledBy}
+    >
       <header className="report-command-center-header">{header}</header>
       <ReportCommandCenterTabs key={reportKey} sections={sections} />
     </section>

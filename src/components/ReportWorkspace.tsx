@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { isLegacyCollectionWarning } from "../domain/collectionWarnings";
 import { formatPeriodLabel } from "../domain/reportScope";
 import { reportRegistry } from "../domain/reportRegistry";
@@ -28,6 +28,8 @@ export interface ReportWorkspaceProps {
   records: Record<string, unknown>[];
   comparisonRecords?: Record<string, unknown>[];
   datasetName?: DatasetName;
+  currentSnapshotId?: string;
+  comparisonSnapshotId?: string;
   loadedAt?: string;
   currentScope?: PeriodScope;
   comparisonScope?: PeriodScope;
@@ -60,6 +62,8 @@ export function ReportWorkspace({
   records,
   comparisonRecords,
   datasetName,
+  currentSnapshotId,
+  comparisonSnapshotId,
   loadedAt,
   currentScope,
   comparisonScope,
@@ -74,19 +78,37 @@ export function ReportWorkspace({
   const comparisonEnabled = scope.comparison !== undefined;
   const legacyCollection =
     warnings?.some((warning) => isLegacyCollectionWarning(warning, reportId)) ?? false;
-  const presentation =
-    loadedAt && outputSource
-      ? createScriptReportPresentation({
-          reportId,
-          records,
-          comparisonRecords,
-          loadedAt,
-          outputSource,
-          currentScope,
-          comparisonScope,
-          warnings: warnings ?? [],
-        })
-      : undefined;
+  const presentation = useMemo(
+    () =>
+      loadedAt && outputSource
+        ? createScriptReportPresentation({
+            reportId,
+            records,
+            comparisonRecords,
+            datasetName,
+            currentSnapshotId,
+            comparisonSnapshotId,
+            loadedAt,
+            outputSource,
+            currentScope,
+            comparisonScope,
+            warnings: warnings ?? [],
+          })
+        : undefined,
+    [
+      comparisonRecords,
+      comparisonScope,
+      comparisonSnapshotId,
+      currentScope,
+      currentSnapshotId,
+      datasetName,
+      loadedAt,
+      outputSource,
+      records,
+      reportId,
+      warnings,
+    ],
+  );
 
   return (
     <div className="workspace-stack">
@@ -95,7 +117,7 @@ export function ReportWorkspace({
           <div>
             <p className="workspace-kicker">{report.sourceRepo}</p>
             <h2 className="workspace-heading" id="selected-report-heading">
-              {report.title}
+              Configure {report.title}
             </h2>
           </div>
           <StackOverflowLogo className="workspace-stack-mark" variant="glyph" />
@@ -195,6 +217,7 @@ function ScriptResult({
   warnings,
   onRunAgain,
 }: ScriptResultProps) {
+  const resultHeadingId = useId();
   const [exportFeedback, setExportFeedback] = useState<ReportExportFeedback>({ state: "idle" });
   const exportRecords = records.length > 0 ? records : (comparisonRecords ?? []);
   const exportPeriodRole = records.length > 0 ? "current" : "comparison";
@@ -219,7 +242,7 @@ function ScriptResult({
           {
             id: "evidence",
             label: `Evidence · ${presentation.rowCount.toLocaleString("en-US")}`,
-            content: <DataTable records={[...presentation.evidence]} />,
+            content: <DataTable records={presentation.evidence} />,
           },
         ] satisfies ReportCommandCenterSection[])
       : []),
@@ -256,7 +279,7 @@ function ScriptResult({
     <div className="report-command-header">
       <div className="report-command-identity">
         <div className="script-report-title-row">
-          <h2>{presentation.title}</h2>
+          <h2 id={resultHeadingId}>{presentation.title} result</h2>
           <span className={`script-report-quality script-report-quality__${presentation.qualityTone}`}>
             {presentation.qualityLabel}
           </span>
@@ -290,6 +313,7 @@ function ScriptResult({
   return (
     <ReportCommandCenter
       reportKey={presentation.reportKey}
+      ariaLabelledBy={resultHeadingId}
       header={header}
       sections={sections}
     />

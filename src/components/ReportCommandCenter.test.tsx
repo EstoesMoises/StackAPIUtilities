@@ -53,6 +53,21 @@ describe("ReportCommandCenter", () => {
     expect(within(commandCenter).queryByRole("tabpanel", { name: "Summary" })).not.toBeInTheDocument();
   });
 
+  it("uses an explicit heading association as the generated region name", () => {
+    render(
+      <ReportCommandCenter
+        reportKey="labelled-report"
+        ariaLabelledBy="labelled-report-heading"
+        header={<h2 id="labelled-report-heading">Quarterly access result</h2>}
+        sections={sections}
+      />,
+    );
+
+    const commandCenter = screen.getByRole("region", { name: "Quarterly access result" });
+    expect(commandCenter).toHaveAttribute("aria-labelledby", "labelled-report-heading");
+    expect(commandCenter).not.toHaveAttribute("aria-label");
+  });
+
   it("lazily mounts sections and preserves visited panel state while keeping inactive panels hidden", async () => {
     const user = userEvent.setup();
     const statefulSections: ReportCommandCenterSections = [

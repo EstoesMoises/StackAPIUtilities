@@ -229,7 +229,7 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     expect(screen.getByRole("button", { name: "Scripts" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Configure Tag Report" })).toBeInTheDocument();
     expect(screen.queryByRole("progressbar", { name: "SME Coverage Analyzer progress" })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -238,7 +238,7 @@ describe("AppShell", () => {
     });
 
     expect(screen.getByRole("button", { name: "Scripts" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Configure Tag Report" })).toBeInTheDocument();
     expect(screen.queryByText(stalePack.overview)).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar", { name: "SME Coverage Analyzer progress" })).not.toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
@@ -1096,7 +1096,7 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
 
     expect(screen.getByRole("button", { name: "Inactive Users" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Configure Inactive Users" })).toBeInTheDocument();
 
     await act(async () => {
       loadDeferred.resolve({
@@ -1164,7 +1164,7 @@ describe("AppShell", () => {
 
     expect(screen.getByText("2 datasets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Inactive Users" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Configure Inactive Users" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Community Members" })).toHaveAttribute("aria-pressed", "false");
     expect(clearPersistedDatasetSessionMock).not.toHaveBeenCalled();
 
@@ -1398,8 +1398,8 @@ describe("AppShell", () => {
 
     expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
     expect(
-      within(screen.getByRole("region", { name: "Generated report" })).getByRole("heading", {
-        name: "Tag Report",
+      within(screen.getByRole("region", { name: "Tag Report result" })).getByRole("heading", {
+        name: "Tag Report result",
       }),
     ).toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
@@ -1955,7 +1955,7 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
 
-    expect(screen.getByRole("heading", { name: "Inactive Users" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Configure Inactive Users" })).toBeInTheDocument();
     expect(screen.queryByText("Collecting all available data for Tag Report…")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Run status" })).not.toBeInTheDocument();
 
