@@ -29,8 +29,7 @@ function escapeCsvValue(value: unknown): string {
   return text;
 }
 
-export function downloadTextFile(fileName: string, contents: string, mimeType: string) {
-  const blob = new Blob([contents], { type: mimeType });
+export function downloadBlobFile(fileName: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
 
@@ -42,4 +41,8 @@ export function downloadTextFile(fileName: string, contents: string, mimeType: s
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+export function downloadTextFile(fileName: string, contents: string, mimeType: string): void {
+  downloadBlobFile(fileName, new Blob([contents], { type: mimeType }));
 }
