@@ -24,7 +24,6 @@ export function TagReportDashboard({ summary, currentScope, comparisonScope }: T
     <div className="tag-dashboard" aria-labelledby="tag-dashboard-title">
       <header className="tag-dashboard-header">
         <div className="tag-dashboard-title">
-          <p className="tag-dashboard-subtitle">Tag Health operations</p>
           <h3 id="tag-dashboard-title">Tag Health Dashboard</h3>
           <p className="tag-dashboard-copy">
             {comparisonPeriod ? (

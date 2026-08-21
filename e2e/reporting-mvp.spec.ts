@@ -4,6 +4,7 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Stack API Utilities" })).toBeVisible();
+  await expect(page.locator(".app-topbar")).toHaveCSS("background-color", "oklch(1 0 0)");
   await expect(page.getByRole("button", { exact: true, name: "Tag Report" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run current period" })).toBeVisible();
   await page.getByLabel("Enable comparison period").click();
@@ -89,6 +90,11 @@ test("Tag Report keeps large evidence bounded, searchable, and configurable", as
 
   await page.getByRole("tab", { name: "Evidence · 120" }).click();
   await expect(page.getByText("Rows 1–50 of 120", { exact: true })).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const topbar = page.locator(".app-topbar");
+  await expect(topbar).toHaveCSS("position", "sticky");
+  await expect(topbar).toHaveCSS("background-color", "oklch(1 0 0)");
+  expect((await topbar.boundingBox())?.y).toBe(0);
   await page.getByRole("button", { name: "Next page" }).click();
   await expect(page.getByText("Rows 51–100 of 120", { exact: true })).toBeVisible();
 

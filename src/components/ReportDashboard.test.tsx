@@ -47,7 +47,7 @@ describe("ReportDashboard", () => {
     expect(screen.queryByText("Period comparison")).not.toBeInTheDocument();
   });
 
-  it("renders warnings and the Tag Health operations overview", () => {
+  it("renders warnings and the Tag Health dashboard without an eyebrow", () => {
     render(
       <ReportDashboard
         reportId="tag-report"
@@ -106,6 +106,7 @@ describe("ReportDashboard", () => {
       within(warningArea).getByText("Questions hit the configured page cap; results may be partial."),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tag Health Dashboard" })).toBeInTheDocument();
+    expect(screen.queryByText("Tag Health operations")).not.toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
     expect(screen.getByText("Healthy Tags")).toBeInTheDocument();
     expect(screen.getByText("SME Gaps")).toBeInTheDocument();
@@ -143,10 +144,11 @@ describe("ReportDashboard", () => {
     expect(screen.queryByText("Period comparison")).not.toBeInTheDocument();
   });
 
-  it("renders the Tag Health operations overview for empty Tag Reports", () => {
+  it("renders the Tag Health dashboard for empty Tag Reports without an eyebrow", () => {
     render(<ReportDashboard reportId="tag-report" outputSource="live-api" records={[]} />);
 
     expect(screen.getByRole("heading", { name: "Tag Health Dashboard" })).toBeInTheDocument();
+    expect(screen.queryByText("Tag Health operations")).not.toBeInTheDocument();
     expect(screen.getByText("Current-period context")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
     expect(screen.getByText("No chart data loaded.")).toBeInTheDocument();

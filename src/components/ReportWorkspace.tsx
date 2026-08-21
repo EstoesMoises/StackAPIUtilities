@@ -115,7 +115,6 @@ export function ReportWorkspace({
       <section className="workspace-panel" aria-labelledby="selected-report-heading">
         <div className="workspace-header">
           <div>
-            <p className="workspace-kicker">{report.sourceRepo}</p>
             <h2 className="workspace-heading" id="selected-report-heading">
               Configure {report.title}
             </h2>

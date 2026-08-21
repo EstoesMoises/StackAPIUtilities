@@ -62,6 +62,11 @@ describe("AppShell", () => {
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tag Report" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Data Export" })).toBeInTheDocument();
+    const configuredReport = screen.getByRole("region", { name: "Configure Tag Report" });
+    expect(within(configuredReport).queryByText("Run scope")).not.toBeInTheDocument();
+    expect(
+      within(configuredReport).queryByText("StackExchange/so4t_tag_report"),
+    ).not.toBeInTheDocument();
     await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
   });
 

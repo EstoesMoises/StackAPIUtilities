@@ -90,7 +90,7 @@ select:disabled {
   padding: 12px 28px;
   border-top: 4px solid var(--so-orange);
   border-bottom: 1px solid var(--so-border);
-  background: oklch(1 0 0 / 0.96);
+  background: var(--so-surface);
   box-shadow: var(--so-shadow-hairline);
 }
 
@@ -110,15 +110,6 @@ select:disabled {
 
 .app-title {
   min-width: 0;
-}
-
-.workspace-kicker,
-.scope-label {
-  margin: 0;
-  color: var(--so-text-muted);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.3;
 }
 
 .app-heading {
@@ -759,11 +750,6 @@ select:disabled {
   background: var(--so-yellow-soft);
 }
 
-.scope-label {
-  margin-bottom: 6px;
-  color: oklch(0.38 0.1 70);
-}
-
 .credential-notes h3,
 .credential-notes li {
   color: var(--so-text);
@@ -1056,7 +1042,6 @@ select:disabled {
   line-height: 1.2;
 }
 
-.tag-dashboard-subtitle,
 .tag-dashboard-copy {
   margin: 0;
   color: var(--so-text-muted);

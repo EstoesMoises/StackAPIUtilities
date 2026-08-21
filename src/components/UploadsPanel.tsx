@@ -44,7 +44,6 @@ export function UploadsPanel({ onImported }: UploadsPanelProps) {
     <section className="workspace-panel" aria-labelledby="uploads-heading">
       <div className="workspace-header">
         <div>
-          <p className="workspace-kicker">Local files</p>
           <h2 className="workspace-heading" id="uploads-heading">
             Uploads
           </h2>
