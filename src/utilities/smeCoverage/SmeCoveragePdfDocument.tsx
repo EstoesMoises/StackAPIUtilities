@@ -54,12 +54,6 @@ const styles = StyleSheet.create({
     marginBottom: 46,
     backgroundColor: colors.orange,
   },
-  eyebrow: {
-    marginBottom: 10,
-    fontSize: 8,
-    letterSpacing: 1.4,
-    color: colors.muted,
-  },
   title: {
     maxWidth: 430,
     marginBottom: 14,
@@ -297,7 +291,6 @@ export function SmeCoveragePdfDocument({ model }: SmeCoveragePdfDocumentProps) {
     <Document title={model.title} author="Stack API Utilities">
       <Page size="A4" style={styles.cover}>
         <View style={styles.coverRule} />
-        <Text style={styles.eyebrow}>STACK API UTILITIES</Text>
         <Text style={styles.title}>{model.title}</Text>
         <Text style={styles.deck}>
           A concise decision document for reviewing subject-matter expert coverage against observed tag demand.

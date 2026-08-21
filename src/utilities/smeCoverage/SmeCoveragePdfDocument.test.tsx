@@ -33,7 +33,7 @@ describe("SmeCoveragePdfDocument", () => {
     expect(pages).toHaveLength(2);
     expect(pages.map((page) => page.element.props.size)).toEqual(["A4", "A4"]);
     expect(styleOf(cover)).toMatchObject({ padding: 36, fontFamily: "Helvetica" });
-    expect(textOf(cover)).toContain("STACK API UTILITIES");
+    expect(textOf(cover)).not.toContain("STACK API UTILITIES");
     expect(textOf(cover)).toContain(model.title);
     expect(textOf(cover)).toContain(model.snapshot.instanceHost);
     expect(textOf(cover)).toContain(model.snapshot.generatedAt);
