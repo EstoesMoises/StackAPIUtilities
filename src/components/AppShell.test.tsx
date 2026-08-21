@@ -299,11 +299,14 @@ describe("AppShell", () => {
 
     pendingRun.resolve(jsonResponse(makeSmeCoverageRunBody(completeSmeCoverageDecisionPack(), "first")));
 
-    expect(await screen.findByRole("heading", { name: "Priority findings" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Generated report" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: /Priority findings/ }));
+    expect(screen.getByRole("heading", { name: "Priority findings" })).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Highest-demand critical gaps" }),
     ).not.toBeInTheDocument();
-    expect(screen.getAllByText("Alpha-platform").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("Alpha-platform").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("3 datasets")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Datasets" }));

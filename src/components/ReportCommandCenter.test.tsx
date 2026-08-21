@@ -40,7 +40,47 @@ describe("ReportCommandCenter", () => {
     expect(summaryTab).toHaveAttribute("tabindex", "-1");
     expect(findingsPanel).toHaveTextContent("Findings content");
     expect(findingsPanel).toHaveAttribute("aria-labelledby", findingsTab.id);
-    expect(screen.queryByText("Summary content")).not.toBeInTheDocument();
+    expect(screen.getByText("Summary content")).not.toBeVisible();
+    expect(within(commandCenter).queryByRole("tabpanel", { name: "Summary" })).not.toBeInTheDocument();
+  });
+
+  it("lazily mounts sections and preserves visited panel state while keeping inactive panels hidden", async () => {
+    const user = userEvent.setup();
+    const statefulSections: ReportCommandCenterSections = [
+      { id: "overview", label: "Summary", content: <StatefulPanel label="Summary value" /> },
+      { id: "evidence", label: "Evidence", content: <StatefulPanel label="Evidence value" /> },
+    ];
+    const { rerender } = render(
+      <ReportCommandCenter
+        reportKey="stateful-report-1"
+        header={<h2>Generated analysis</h2>}
+        sections={statefulSections}
+      />,
+    );
+
+    expect(screen.queryByRole("textbox", { name: "Evidence value" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Evidence" }));
+    await user.type(screen.getByRole("textbox", { name: "Evidence value" }), "retained");
+    await user.click(screen.getByRole("tab", { name: "Summary" }));
+
+    expect(screen.queryByRole("tabpanel", { name: "Evidence" })).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("retained")).not.toBeVisible();
+
+    await user.click(screen.getByRole("tab", { name: "Evidence" }));
+    expect(screen.getByRole("textbox", { name: "Evidence value" })).toHaveValue("retained");
+
+    rerender(
+      <ReportCommandCenter
+        reportKey="stateful-report-2"
+        header={<h2>Replacement analysis</h2>}
+        sections={statefulSections}
+      />,
+    );
+    expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("textbox", { name: "Evidence value" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Evidence" }));
+    expect(screen.getByRole("textbox", { name: "Evidence value" })).toHaveValue("");
   });
 
   it("moves focus and selection with wrapping arrow-key navigation", async () => {
@@ -181,4 +221,13 @@ function renderCommandCenter() {
 function RenderProbe({ label, onRender }: { label: string; onRender: (label: string) => void }) {
   onRender(label);
   return <p>{label}</p>;
+}
+
+function StatefulPanel({ label }: { label: string }) {
+  return (
+    <label>
+      {label}
+      <input aria-label={label} />
+    </label>
+  );
 }

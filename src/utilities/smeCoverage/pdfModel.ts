@@ -57,6 +57,8 @@ export function buildSmeCoveragePdfModel(
     methodology: pack.methodology,
     appendixRows: findingGroups.flatMap((group) => group.rows),
     completeEvidenceNote:
-      "The accompanying evidence CSV contains the complete canonical dataset in decision-pack order.",
+      pack.evidence.length > 0
+        ? "The accompanying evidence CSV contains the complete canonical dataset in decision-pack order."
+        : "No accompanying evidence CSV is available because this report contains no canonical evidence rows.",
   };
 }

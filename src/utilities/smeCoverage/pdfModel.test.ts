@@ -125,8 +125,7 @@ describe("buildSmeCoveragePdfModel", () => {
   it.each([
     ["complete", completeSmeCoverageDecisionPack()],
     ["partial", partialSmeCoverageDecisionPack()],
-    ["empty", emptySmeCoverageDecisionPack()],
-  ])("builds a useful %s model", (_state, pack) => {
+  ])("builds a useful %s model with the complete CSV note", (_state, pack) => {
     const model = buildSmeCoveragePdfModel(pack);
 
     expect(model.snapshot.completeness).toBe(pack.snapshot.completeness);
@@ -135,5 +134,16 @@ describe("buildSmeCoveragePdfModel", () => {
     expect(model.completeEvidenceNote).toBe(
       "The accompanying evidence CSV contains the complete canonical dataset in decision-pack order.",
     );
+  });
+
+  it("states that no evidence CSV accompanies an empty report", () => {
+    const pack = emptySmeCoverageDecisionPack();
+    const model = buildSmeCoveragePdfModel(pack);
+
+    expect(model.snapshot.completeness).toBe("Empty");
+    expect(model.completeEvidenceNote).toBe(
+      "No accompanying evidence CSV is available because this report contains no canonical evidence rows.",
+    );
+    expect(model.completeEvidenceNote).not.toContain("complete canonical dataset");
   });
 });

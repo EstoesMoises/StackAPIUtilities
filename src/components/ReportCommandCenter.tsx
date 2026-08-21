@@ -50,11 +50,12 @@ function ReportCommandCenterTabs<SectionId extends ReportSectionId>({
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const firstSection = sections[0];
   const [activeId, setActiveId] = useState<SectionId>(firstSection.id);
+  const [visitedIds, setVisitedIds] = useState<ReadonlySet<SectionId>>(
+    () => new Set([firstSection.id]),
+  );
   const selectedId = sections.some((section) => section.id === activeId)
     ? activeId
     : firstSection.id;
-  const selectedIndex = sections.findIndex((section) => section.id === selectedId);
-  const selectedSection = sections[selectedIndex];
 
   useEffect(() => {
     if (!sections.some((section) => section.id === activeId)) {
@@ -68,8 +69,16 @@ function ReportCommandCenterTabs<SectionId extends ReportSectionId>({
     event.preventDefault();
     const offset = event.key === "ArrowRight" ? 1 : -1;
     const nextIndex = (index + offset + sections.length) % sections.length;
-    setActiveId(sections[nextIndex].id);
+    selectSection(sections[nextIndex].id);
     tabRefs.current[nextIndex]?.focus();
+  }
+
+  function selectSection(id: SectionId) {
+    setVisitedIds((current) => {
+      if (current.has(id)) return current;
+      return new Set([...current, id]);
+    });
+    setActiveId(id);
   }
 
   return (
@@ -97,7 +106,7 @@ function ReportCommandCenterTabs<SectionId extends ReportSectionId>({
               aria-controls={panelId}
               aria-selected={selected}
               tabIndex={selected ? 0 : -1}
-              onClick={() => setActiveId(section.id)}
+              onClick={() => selectSection(section.id)}
               onKeyDown={(event) => selectAdjacentTab(event, index)}
             >
               {section.label}
@@ -105,15 +114,24 @@ function ReportCommandCenterTabs<SectionId extends ReportSectionId>({
           );
         })}
       </div>
-      <div
-        className="report-command-center-panel"
-        id={`${baseId}-panel-${selectedIndex}`}
-        role="tabpanel"
-        aria-labelledby={`${baseId}-tab-${selectedIndex}`}
-        tabIndex={0}
-      >
-        {selectedSection!.content}
-      </div>
+      {sections.map((section, index) => {
+        const selected = section.id === selectedId;
+        if (!selected && !visitedIds.has(section.id)) return null;
+
+        return (
+          <div
+            className="report-command-center-panel"
+            id={`${baseId}-panel-${index}`}
+            key={section.id}
+            role="tabpanel"
+            aria-labelledby={`${baseId}-tab-${index}`}
+            hidden={!selected}
+            tabIndex={selected ? 0 : -1}
+          >
+            {section.content}
+          </div>
+        );
+      })}
     </>
   );
 }

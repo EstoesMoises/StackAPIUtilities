@@ -147,8 +147,9 @@ describe("SmeCoveragePdfDocument", () => {
     );
 
     expect(appendixPage).toContain(
-      "TheaccompanyingevidenceCSVcontainsthecompletecanonicaldatasetindecision-packorder.",
+      "NoaccompanyingevidenceCSVisavailablebecausethisreportcontainsnocanonicalevidencerows.",
     );
+    expect(appendixPage).not.toContain("completecanonicaldataset");
     expect(appendixPage).toContain(
       "Nofindingrowsareavailableforthisboundedappendix.",
     );
