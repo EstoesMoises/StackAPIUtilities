@@ -15,37 +15,63 @@ interface ScriptPresentationInput {
   warnings: readonly ReportWarning[];
 }
 
+function serializeScope(scope: PeriodScope | undefined): string {
+  return scope ? `${scope.startDate ?? ""}..${scope.endDate ?? ""}` : "none";
+}
+
+function requireReportMetadata(reportId: ReportId) {
+  const report = reportRegistry.find((candidate) => candidate.id === reportId);
+  if (!report) {
+    throw new Error(`Missing report metadata for Script report "${reportId}".`);
+  }
+  return report;
+}
+
+function formatScopeLabel(
+  input: ScriptPresentationInput,
+  evidenceRole: "current" | "comparison",
+): string {
+  if (evidenceRole === "comparison") {
+    return `Comparison: ${formatPeriodLabel(input.comparisonScope ?? {})}`;
+  }
+  if (input.currentScope) return formatPeriodLabel(input.currentScope);
+  if (input.comparisonScope) return `Comparison: ${formatPeriodLabel(input.comparisonScope)}`;
+  return "All available history";
+}
+
 export function createScriptReportPresentation(
   input: ScriptPresentationInput,
 ): ReportPresentationModel<Record<string, unknown>, never> {
-  const report = reportRegistry.find((candidate) => candidate.id === input.reportId)!;
-  const legacy = input.warnings.some((warning) =>
-    isLegacyCollectionWarning(warning, input.reportId),
-  );
-  const qualityLabel =
+  const report = requireReportMetadata(input.reportId);
+  const legacy =
+    input.outputSource === "live-api" &&
+    input.warnings.some((warning) => isLegacyCollectionWarning(warning, input.reportId));
+  const quality =
     input.outputSource === "upload"
-      ? "Uploaded result"
+      ? ({ label: "Uploaded result", tone: "neutral" } as const)
       : legacy
-        ? "Legacy result — completeness unverified"
-        : "All available data collected";
-  const evidence = input.records.length > 0 ? input.records : (input.comparisonRecords ?? []);
+        ? ({ label: "Legacy result — completeness unverified", tone: "warning" } as const)
+        : ({ label: "All available data collected", tone: "success" } as const);
+  const evidenceRole =
+    input.records.length === 0 && (input.comparisonRecords?.length ?? 0) > 0
+      ? "comparison"
+      : "current";
+  const evidenceSource =
+    evidenceRole === "comparison" ? (input.comparisonRecords ?? []) : input.records;
+  const evidence = [...evidenceSource];
 
   return {
-    reportKey: `${input.reportId}:${input.loadedAt}:${input.currentScope?.startDate ?? ""}:${input.comparisonScope?.startDate ?? ""}`,
+    reportKey: `${input.reportId}:${input.loadedAt}:${input.outputSource}:current=${serializeScope(input.currentScope)}:comparison=${serializeScope(input.comparisonScope)}`,
     kindLabel: "Script report",
     title: report.title,
     sourceLabel: report.sourceRepo,
     generatedAt: input.loadedAt,
-    scopeLabel: input.currentScope
-      ? formatPeriodLabel(input.currentScope)
-      : input.comparisonScope
-        ? `Comparison: ${formatPeriodLabel(input.comparisonScope)}`
-        : "All available history",
-    collectionLabel: qualityLabel,
-    qualityLabel,
-    qualityTone: legacy ? "warning" : input.outputSource === "live-api" ? "success" : "neutral",
+    scopeLabel: formatScopeLabel(input, evidenceRole),
+    collectionLabel: quality.label,
+    qualityLabel: quality.label,
+    qualityTone: quality.tone,
     rowCount: evidence.length,
-    warnings: input.warnings,
+    warnings: [...input.warnings],
     metrics: [],
     overview: report.description,
     findings: [],
