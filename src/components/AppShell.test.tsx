@@ -800,7 +800,7 @@ describe("AppShell", () => {
     render(<App />);
 
     expect(await screen.findByText("1 dataset")).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Raw Table" }));
+    await user.click(screen.getByRole("tab", { name: "Evidence · 1" }));
     expect(screen.getByText("Ada")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Datasets" }));
@@ -809,7 +809,7 @@ describe("AppShell", () => {
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Scripts" }));
-    await user.click(screen.getByRole("tab", { name: "Raw Table" }));
+    expect(screen.queryByRole("region", { name: "Generated report" })).not.toBeInTheDocument();
     expect(screen.queryByText("Ada")).not.toBeInTheDocument();
     await waitFor(() => expect(clearPersistedDatasetSessionMock).toHaveBeenCalled());
   });
@@ -1397,7 +1397,11 @@ describe("AppShell", () => {
     );
 
     expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Tag Report" })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Generated report" })).getByRole("heading", {
+        name: "Tag Report",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
     expect(screen.getByText("SME Gaps")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
@@ -1480,7 +1484,7 @@ describe("AppShell", () => {
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Scripts" }));
-    await user.click(screen.getByRole("tab", { name: "Raw Table" }));
+    await user.click(screen.getByRole("tab", { name: "Evidence · 1" }));
 
     expect(screen.getByText("Ada")).toBeInTheDocument();
   });

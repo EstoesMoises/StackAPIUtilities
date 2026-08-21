@@ -619,6 +619,7 @@ export function App() {
           reportId={state.selectedReportId}
           records={selectedReportRecords}
           comparisonRecords={selectedReportOutput?.comparisonRecords}
+          datasetName={selectedReportOutput?.datasetName}
           loadedAt={selectedReportOutput?.loadedAt}
           currentScope={selectedReportOutput?.currentScope}
           comparisonScope={selectedReportOutput?.comparisonScope}
