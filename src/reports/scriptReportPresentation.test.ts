@@ -178,6 +178,22 @@ describe("createScriptReportPresentation", () => {
     expect(result.rowCount).toBe(1);
   });
 
+  it("does not borrow a comparison scope for current evidence without a current scope", () => {
+    const result = createScriptReportPresentation({
+      reportId: "inactive-users",
+      records: [{ datasetName: "users", user_id: 1 }],
+      comparisonRecords: [{ datasetName: "users", user_id: 2 }],
+      loadedAt: "2026-08-20T12:00:00.000Z",
+      outputSource: "live-api",
+      comparisonScope: { startDate: "2026-07-01", endDate: "2026-07-20" },
+      warnings: [],
+    });
+
+    expect(result.scopeLabel).toBe("All available history");
+    expect(result.evidence).toEqual([{ datasetName: "users", user_id: 1 }]);
+    expect(result.rowCount).toBe(1);
+  });
+
   it("ignores legacy warnings belonging to a different report", () => {
     const result = createScriptReportPresentation({
       reportId: "inactive-users",

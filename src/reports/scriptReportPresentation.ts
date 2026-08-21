@@ -35,7 +35,6 @@ function formatScopeLabel(
     return `Comparison: ${formatPeriodLabel(input.comparisonScope ?? {})}`;
   }
   if (input.currentScope) return formatPeriodLabel(input.currentScope);
-  if (input.comparisonScope) return `Comparison: ${formatPeriodLabel(input.comparisonScope)}`;
   return "All available history";
 }
 
