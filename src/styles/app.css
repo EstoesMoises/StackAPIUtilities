@@ -1913,7 +1913,7 @@ select:disabled {
 .sme-result-header h2,
 .sme-section-header h3,
 .sme-summary h3,
-.sme-finding-section h3,
+.sme-findings h3,
 .sme-evidence-section h3,
 .sme-warning-stack h3 {
   margin: 0;
@@ -1930,7 +1930,7 @@ select:disabled {
 
 .sme-section-header h3,
 .sme-summary h3,
-.sme-finding-section h3,
+.sme-findings h3,
 .sme-evidence-section h3,
 .sme-warning-stack h3 {
   font-size: 18px;
@@ -2064,10 +2064,10 @@ select:disabled {
 
 .sme-findings {
   display: grid;
-  gap: 24px;
+  min-width: 0;
+  gap: 12px;
 }
 
-.sme-finding-section,
 .sme-assessment,
 .sme-evidence-section {
   display: grid;
@@ -2075,45 +2075,35 @@ select:disabled {
   gap: 12px;
 }
 
-.sme-finding-table-wrap,
-.sme-evidence-table-wrap {
+.sme-finding-table-wrap {
   width: 100%;
-  overflow: auto;
+  overflow-x: auto;
   border: 1px solid var(--so-border);
   border-radius: 8px;
   background: var(--so-surface);
 }
 
-.sme-finding-table,
-.sme-evidence-table {
+.sme-finding-table {
   width: 100%;
-  min-width: 1100px;
+  min-width: 920px;
   border-collapse: collapse;
   font-size: 13px;
 }
 
-.sme-evidence-table {
-  min-width: 1560px;
-}
-
-.sme-finding-table th,
-.sme-evidence-table th {
+.sme-finding-table th {
   white-space: nowrap;
 }
 
-.sme-finding-table td,
-.sme-evidence-table td {
+.sme-finding-table td {
   vertical-align: top;
   line-height: 1.4;
 }
 
-.sme-finding-table tr:last-child td,
-.sme-evidence-table tr:last-child td {
+.sme-finding-table tr:last-child td {
   border-bottom: 0;
 }
 
-.sme-empty-state,
-.sme-evidence-empty {
+.sme-empty-state {
   padding: 12px 14px;
   border: 1px solid var(--so-border);
   border-radius: 8px;
@@ -2180,40 +2170,41 @@ select:disabled {
   gap: 10px;
 }
 
-.sme-evidence-search {
-  display: grid;
-  width: min(100%, 420px);
-  gap: 6px;
-  color: var(--so-text);
+.sme-finding-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sme-finding-header p {
+  margin: 4px 0 0;
+  color: var(--so-text-muted);
   font-size: 13px;
-  font-weight: 750;
+  line-height: 1.4;
 }
 
-.sme-evidence-search .s-input {
-  min-height: 40px;
+.sme-finding-filter {
+  display: grid;
+  width: min(100%, 240px);
+  gap: 5px;
+  color: var(--so-text);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.3;
 }
 
-.sme-sort-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: -6px -8px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 5px;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
+.sme-finding-filter .s-select {
+  min-height: 38px;
 }
 
-.sme-sort-button:hover {
-  color: var(--so-ink);
-  background: var(--so-surface-hover);
-}
-
-.sme-sort-indicator {
-  color: var(--so-text-subtle);
+.sme-finding-filter-empty {
+  margin: 0;
+  padding: 18px 14px;
+  color: var(--so-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .report-evidence-explorer {
@@ -2615,8 +2606,6 @@ select:disabled {
 }
 
 .sme-finding-table-wrap:focus-visible,
-.sme-evidence-table-wrap:focus-visible,
-.sme-sort-button:focus-visible,
 .sme-methodology summary:focus-visible,
 .sme-decision-pack .s-btn:focus-visible,
 .report-evidence-table-wrap:focus-visible,
@@ -3085,13 +3074,18 @@ select:disabled {
 
   .sme-result-actions,
   .sme-result-header,
-  .sme-section-header {
+  .sme-section-header,
+  .sme-finding-header {
     align-items: stretch;
     flex-direction: column;
   }
 
   .sme-result-actions .s-btn,
   .sme-section-header .s-btn {
+    width: 100%;
+  }
+
+  .sme-finding-filter {
     width: 100%;
   }
 

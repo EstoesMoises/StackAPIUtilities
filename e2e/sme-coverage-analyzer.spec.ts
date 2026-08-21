@@ -146,27 +146,30 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
   ).toBeVisible();
   await expect(page.getByText("Analysis quality: Partial", { exact: true })).toBeVisible();
   expect(Object.keys(utilityRequestPayload as Record<string, unknown>)).toEqual(["credentials"]);
-  const immediateFindingRegion = page.getByRole("region", {
-    name: "Immediate no-SME risks",
+  const priorityFindingRegion = page.getByRole("region", {
+    name: "Priority findings table",
     exact: true,
   });
-  const criticalFindingRegion = page.getByRole("region", {
-    name: "Highest-demand critical gaps",
-    exact: true,
-  });
-  const lightFindingRegion = page.getByRole("region", {
-    name: "Light SME coverage",
-    exact: true,
-  });
+  const priorityRows = priorityFindingRegion.getByRole("row");
+  await expect(priorityRows).toHaveCount(4);
+  await expect(priorityRows.nth(1)).toContainText("Immediate gap");
+  await expect(priorityRows.nth(1)).toContainText("zeta-runtime");
+  await expect(priorityRows.nth(2)).toContainText("Critical under-coverage");
+  await expect(priorityRows.nth(2)).toContainText("echo");
+  await expect(priorityRows.nth(3)).toContainText("Light coverage");
+  await expect(priorityRows.nth(3)).toContainText("delta");
+
+  await page.getByLabel("Priority tier").selectOption("Light coverage");
+  await expect(priorityRows).toHaveCount(2);
   await expect(
-    immediateFindingRegion.getByRole("cell", { name: "zeta-runtime", exact: true }),
+    priorityFindingRegion.getByRole("cell", { name: "delta", exact: true }),
   ).toBeVisible();
   await expect(
-    criticalFindingRegion.getByRole("cell", { name: "echo", exact: true }),
-  ).toBeVisible();
+    priorityFindingRegion.getByRole("cell", { name: "zeta-runtime", exact: true }),
+  ).toHaveCount(0);
   await expect(
-    lightFindingRegion.getByRole("cell", { name: "delta", exact: true }),
-  ).toBeVisible();
+    priorityFindingRegion.getByRole("cell", { name: "echo", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page
       .getByRole("region", { name: "SME coverage evidence table" })
@@ -266,7 +269,27 @@ test("375px navigation and complete evidence remain keyboard reachable", async (
   await evidenceRegion.focus();
   await expect(evidenceRegion).toBeFocused();
   await expect(evidenceRegion.getByRole("table")).toBeVisible();
-  await expect(evidenceRegion.getByRole("columnheader")).toHaveCount(12);
+  await expect(evidenceRegion.getByRole("columnheader")).toHaveCount(7);
+  for (const header of [
+    "Tag",
+    "Page views",
+    "SMEs",
+    "Page views per SME",
+    "Coverage tier",
+    "Evidence quality",
+    "Recommended action",
+  ]) {
+    await expect(
+      evidenceRegion.getByRole("columnheader", { name: header, exact: true }),
+    ).toBeVisible();
+  }
+
+  await page.getByText("Columns", { exact: true }).click();
+  await page.getByRole("checkbox", { name: "Question-count basis", exact: true }).check();
+  await expect(evidenceRegion.getByRole("columnheader")).toHaveCount(8);
+  await expect(
+    evidenceRegion.getByRole("columnheader", { name: "Question-count basis", exact: true }),
+  ).toBeVisible();
   expect(
     await evidenceRegion.evaluate((element) => element.scrollWidth > element.clientWidth),
   ).toBe(true);

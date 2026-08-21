@@ -65,9 +65,7 @@ describe("SmeCoverageDecisionPack", () => {
     }
 
     expect(screen.getByText(pack.overview)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Immediate no-SME risks" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Highest-demand critical gaps" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Light SME coverage" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Priority findings" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Copy-ready assessment" })).toBeInTheDocument();
     expect(screen.getByText("Methodology and evidence quality")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Evidence" })).toBeInTheDocument();
@@ -106,32 +104,38 @@ describe("SmeCoverageDecisionPack", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/only 1 eligible covered active tag/i);
   });
 
-  it("shows every prepared finding field, explicit unavailable values, and tier-specific empty states", async () => {
+  it("shows one prepared priority queue in canonical order and filters without mutating findings", async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    const pack = completeSmeCoverageDecisionPack();
+    const before = JSON.stringify(pack.findings);
     const { rerender } = render(
-      <SmeCoverageDecisionPack pack={completeSmeCoverageDecisionPack()} onRunAgain={vi.fn()} />,
+      <SmeCoverageDecisionPack pack={pack} onRunAgain={vi.fn()} />,
     );
 
-    const immediate = screen.getByRole("region", { name: "Immediate no-SME risks" });
-    expect(within(immediate).getByRole("columnheader", { name: "Tag" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "Priority findings" })).toHaveLength(1);
+    const priorityTable = screen.getByRole("region", { name: "Priority findings table" });
     for (const header of [
-      "Page views",
+      "Priority",
+      "Tag",
+      "Why it matters",
       "SMEs",
-      "Questions",
-      "Question-count basis",
-      "Page views per SME",
-      "Tier reason",
-      "Recommended next action",
+      "Demand",
+      "Recommended action",
     ]) {
-      expect(within(immediate).getByRole("columnheader", { name: header })).toBeInTheDocument();
+      expect(within(priorityTable).getByRole("columnheader", { name: header })).toBeInTheDocument();
     }
-    expect(within(immediate).getByText("No SME")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Immediate no-SME risks" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Highest-demand critical gaps" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Light SME coverage" })).not.toBeInTheDocument();
+    expect(priorityRowTags()).toEqual(["zeta-runtime", "Alpha-platform", "beta-data"]);
+    expect(within(priorityTable).getByText("No SME")).toBeInTheDocument();
+    expect(within(priorityTable).getByText("3,000.49")).toBeInTheDocument();
+    expect(screen.getByText("3 prepared priorities")).toBeInTheDocument();
 
-    const critical = screen.getByRole("region", { name: "Highest-demand critical gaps" });
-    expect(within(critical).getByText("3,000.49")).toBeInTheDocument();
-    expect(within(critical).getByText("3,000")).toBeInTheDocument();
-    expect(within(critical).getByText("Complete question enumeration")).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Priority tier" }), "Light coverage");
+    expect(priorityRowTags()).toEqual(["beta-data"]);
+    expect(JSON.stringify(pack.findings)).toBe(before);
 
     const assessment = completeSmeCoverageDecisionPack().assessment;
     await user.click(screen.getByRole("button", { name: "Copy assessment" }));
@@ -163,9 +167,9 @@ describe("SmeCoverageDecisionPack", () => {
     expect(within(methodology).queryByText(/result completeness|warnings above/i)).not.toBeInTheDocument();
 
     rerender(<SmeCoverageDecisionPack pack={emptySmeCoverageDecisionPack()} onRunAgain={vi.fn()} />);
-    expect(screen.getByText("No immediate no-SME risks are listed in this decision pack.")).toBeInTheDocument();
-    expect(screen.getByText("No highest-demand critical gaps are listed in this decision pack.")).toBeInTheDocument();
-    expect(screen.getByText("No light SME coverage risks are listed in this decision pack.")).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "Priority findings" })).toHaveLength(1);
+    expect(screen.getByText("No priority findings are in this decision pack.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Priority findings table" })).not.toBeInTheDocument();
 
     rerender(
       <SmeCoverageDecisionPack
@@ -193,6 +197,24 @@ describe("SmeCoverageDecisionPack", () => {
     expect(screen.getByRole("status")).toHaveTextContent(message);
   });
 
+  it("shows a clear filtered-empty priority state", async () => {
+    const user = userEvent.setup();
+    const pack = completeSmeCoverageDecisionPack();
+    render(
+      <SmeCoverageDecisionPack
+        pack={{
+          ...pack,
+          findings: { ...pack.findings, lightCoverage: [] },
+        }}
+        onRunAgain={vi.fn()}
+      />,
+    );
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Priority tier" }), "Light coverage");
+
+    expect(screen.getByText("No prepared priorities match Light coverage.")).toBeInTheDocument();
+  });
+
   it.each([
     ["Download Markdown", downloadSmeCoverageMarkdown, "Markdown"],
     ["Download CSV", downloadSmeCoverageEvidenceCsv, "CSV"],
@@ -212,3 +234,11 @@ describe("SmeCoverageDecisionPack", () => {
     );
   });
 });
+
+function priorityRowTags(): string[] {
+  return within(screen.getByRole("region", { name: "Priority findings table" }))
+    .getAllByRole("row")
+    .slice(1)
+    .filter((row) => within(row).queryAllByRole("cell").length > 1)
+    .map((row) => within(row).getAllByRole("cell")[1]!.textContent ?? "");
+}

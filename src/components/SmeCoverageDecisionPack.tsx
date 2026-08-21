@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { SmeCoverageDecisionPack as DecisionPack } from "../utilities/smeCoverage/model";
+import { createSmeCoveragePresentation } from "../utilities/smeCoverage/presentation";
 import {
   downloadSmeCoverageEvidenceCsv,
   downloadSmeCoverageMarkdown,
@@ -34,6 +35,7 @@ export function SmeCoverageDecisionPack({
   runPending = false,
 }: SmeCoverageDecisionPackProps) {
   const [downloadFeedback, setDownloadFeedback] = useState<DownloadFeedback>({ state: "idle" });
+  const presentation = useMemo(() => createSmeCoveragePresentation(pack), [pack]);
 
   function startDownload(format: "Markdown" | "CSV") {
     try {
@@ -93,7 +95,7 @@ export function SmeCoverageDecisionPack({
         <p className="sme-overview">{pack.overview}</p>
       </section>
 
-      <SmeCoverageFindings findings={pack.findings} />
+      <SmeCoverageFindings findings={presentation.findings} />
       <SmeCoverageAssessment assessment={pack.assessment} />
       <SmeCoverageMethodology
         methodology={pack.methodology}

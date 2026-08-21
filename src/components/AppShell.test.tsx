@@ -299,7 +299,10 @@ describe("AppShell", () => {
 
     pendingRun.resolve(jsonResponse(makeSmeCoverageRunBody(completeSmeCoverageDecisionPack(), "first")));
 
-    expect(await screen.findByRole("heading", { name: "Highest-demand critical gaps" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Priority findings" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Highest-demand critical gaps" }),
+    ).not.toBeInTheDocument();
     expect(screen.getAllByText("Alpha-platform").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("3 datasets")).toBeInTheDocument();
 
@@ -500,7 +503,7 @@ describe("AppShell", () => {
 
     expect(await screen.findByRole("heading", { name: "SME Coverage Analyzer failed" })).toBeInTheDocument();
     expect(screen.getByText(/No complete result was produced\.$/)).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Highest-demand critical gaps" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Priority findings" })).not.toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
   });
