@@ -261,7 +261,7 @@ function SmeOverview({
       <aside className="sme-deliverable-panel" aria-labelledby="sme-deliverable-heading">
         <h3 id="sme-deliverable-heading">Deliverable</h3>
         <strong>Ready to share</strong>
-        <p>The PDF includes the executive brief, priority findings, methodology, and supporting evidence.</p>
+        <p>The PDF contains a concise executive summary and bounded priority action register.</p>
         <p>
           {presentation.exports.csv
             ? "The evidence CSV contains every canonical row in decision-pack order."

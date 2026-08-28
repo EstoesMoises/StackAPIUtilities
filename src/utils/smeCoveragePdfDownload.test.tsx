@@ -49,7 +49,7 @@ describe("SME coverage PDF download", () => {
 
     expect(pdf).toHaveBeenCalledWith(expect.objectContaining({
       props: expect.objectContaining({
-        model: expect.objectContaining({ title: "SME Coverage Decision Pack" }),
+        model: expect.objectContaining({ title: "SME Coverage Executive Brief" }),
       }),
     }));
     expect(downloadBlobFile).toHaveBeenCalledWith(buildPdfFileName(pack), blob);

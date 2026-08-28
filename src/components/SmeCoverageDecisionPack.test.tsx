@@ -188,7 +188,9 @@ describe("SmeCoverageDecisionPack", () => {
     expect(within(priorities).getByText(pack.evidence[0]!.recommendedAction)).toBeVisible();
 
     const deliverable = within(overviewPanel).getByRole("complementary", { name: "Deliverable" });
-    expect(deliverable).toHaveTextContent("The PDF includes the executive brief, priority findings, methodology, and supporting evidence.");
+    expect(deliverable).toHaveTextContent(
+      "The PDF contains a concise executive summary and bounded priority action register.",
+    );
     expect(deliverable).toHaveTextContent("The evidence CSV contains every canonical row in decision-pack order.");
   });
 

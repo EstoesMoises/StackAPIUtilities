@@ -8,52 +8,37 @@ import type { SmeCoverageDecisionPack } from "./model";
 import { buildSmeCoveragePdfModel } from "./pdfModel";
 
 describe("buildSmeCoveragePdfModel", () => {
-  it("preserves the snapshot, source summary values, overview, and methodology", () => {
-    const source = completeSmeCoverageDecisionPack();
-    const pack: SmeCoverageDecisionPack = {
-      ...source,
-      summary: {
-        tagsAnalyzed: 101,
-        tagsWithSmes: 72,
-        immediateGaps: 13,
-        criticalUnderCoverage: 8,
-        lightCoverage: 5,
-        unknownRows: 3,
-      },
-    };
-
+  it("builds an executive brief with prepared metrics and assessment structure", () => {
+    const pack = completeSmeCoverageDecisionPack();
     const model = buildSmeCoveragePdfModel(pack);
 
-    expect(model.title).toBe("SME Coverage Decision Pack");
+    expect(model.title).toBe("SME Coverage Executive Brief");
     expect(model.snapshot).toBe(pack.snapshot);
     expect(model.metrics).toEqual([
-      { label: "Tags analyzed", value: 101 },
-      { label: "Tags with SMEs", value: 72 },
-      { label: "Immediate gaps", value: 13 },
-      { label: "Critical under-coverage", value: 8 },
-      { label: "Light coverage", value: 5 },
-      { label: "Unknown rows", value: 3 },
+      { label: "Tags analyzed", value: 5 },
+      { label: "Tags with SMEs", value: 4 },
+      { label: "Immediate gaps", value: 1 },
+      { label: "Critical under-coverage", value: 1 },
+      { label: "Light coverage", value: 1 },
+      { label: "Unknown rows", value: 0 },
     ]);
     expect(model.overview).toBe(pack.overview);
-    expect(model.methodology).toBe(pack.methodology);
+    expect(model.assessmentBrief.bottomLine).toBe(pack.overview);
+    expect(model.assessmentBrief.sections.map((section) => section.heading)).toEqual([
+      "Immediate priorities",
+      "Critical under-coverage",
+      "Light coverage",
+    ]);
   });
 
-  it("keeps warning messages and findings in canonical source order", () => {
+  it("keeps warnings and priority rows in canonical source order", () => {
     const source = completeSmeCoverageDecisionPack();
-    const [immediate] = source.findings.immediateGaps;
-    const critical = source.evidence[1];
-    const light = source.evidence[2];
     const pack: SmeCoverageDecisionPack = {
       ...source,
       warnings: [
         { code: "first", message: "First evidence limitation." },
         { code: "second", message: "Second evidence limitation." },
       ],
-      findings: {
-        immediateGaps: [immediate],
-        criticalUnderCoverage: [critical],
-        lightCoverage: [light],
-      },
     };
 
     const model = buildSmeCoveragePdfModel(pack);
@@ -62,88 +47,57 @@ describe("buildSmeCoveragePdfModel", () => {
       "First evidence limitation.",
       "Second evidence limitation.",
     ]);
-    expect(model.findingGroups.map((group) => group.tier)).toEqual([
-      "Immediate gap",
-      "Critical under-coverage",
-      "Light coverage",
-    ]);
-    expect(model.findingGroups.flatMap((group) => group.rows)).toEqual([
-      immediate,
-      critical,
-      light,
+    expect(model.priorityRows.map((row) => row.tagName)).toEqual([
+      "zeta-runtime",
+      "Alpha-platform",
+      "beta-data",
     ]);
   });
 
-  it("omits empty finding groups and bounds the appendix to finding rows", () => {
-    const source = partialSmeCoverageDecisionPack();
-    const immediate = source.evidence[0];
-    const light = source.evidence[2];
+  it("bounds the printed action register and reports omitted priorities", () => {
+    const source = completeSmeCoverageDecisionPack();
+    const seed = source.findings.immediateGaps[0];
     const pack: SmeCoverageDecisionPack = {
       ...source,
       findings: {
-        immediateGaps: [immediate],
-        criticalUnderCoverage: [],
-        lightCoverage: [light],
+        ...source.findings,
+        immediateGaps: Array.from({ length: 15 }, (_, index) => ({
+          ...seed,
+          tagName: `immediate-${index + 1}`,
+        })),
       },
     };
 
     const model = buildSmeCoveragePdfModel(pack);
 
-    expect(model.findingGroups.map((group) => group.tier)).toEqual([
-      "Immediate gap",
-      "Light coverage",
-    ]);
-    expect(model.appendixRows).toEqual([immediate, light]);
-    expect(model.appendixRows).not.toContain(source.evidence[source.evidence.length - 1]);
-    expect(model.appendixRows.length).toBeLessThan(pack.evidence.length);
+    expect(model.priorityRows).toHaveLength(12);
+    expect(model.priorityRows.map((row) => row.tagName)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `immediate-${index + 1}`),
+    );
+    expect(model.omittedPriorityCount).toBe(5);
+    expect(model).not.toHaveProperty("appendixRows");
   });
 
-  it("keeps source row references and does not mutate the decision pack", () => {
-    const pack = completeSmeCoverageDecisionPack();
-    const sourceJson = JSON.stringify(pack);
+  it("summarizes methodology and directs complete reports to the CSV", () => {
+    const model = buildSmeCoveragePdfModel(partialSmeCoverageDecisionPack());
 
-    const model = buildSmeCoveragePdfModel(pack);
-
-    expect(model.findingGroups[0]?.rows[0]).toBe(pack.findings.immediateGaps[0]);
-    expect(model.appendixRows[0]).toBe(pack.findings.immediateGaps[0]);
-    expect(JSON.stringify(pack)).toBe(sourceJson);
-  });
-
-  it("cleans assessment paragraphs while preserving their source order", () => {
-    const source = completeSmeCoverageDecisionPack();
-    const pack: SmeCoverageDecisionPack = {
-      ...source,
-      assessment: "  First assessment paragraph.  \n\n \n Second assessment paragraph. \r\n\r\n  ",
-    };
-
-    expect(buildSmeCoveragePdfModel(pack).assessmentParagraphs).toEqual([
-      "First assessment paragraph.",
-      "Second assessment paragraph.",
-    ]);
-  });
-
-  it.each([
-    ["complete", completeSmeCoverageDecisionPack()],
-    ["partial", partialSmeCoverageDecisionPack()],
-  ])("builds a useful %s model with the complete CSV note", (_state, pack) => {
-    const model = buildSmeCoveragePdfModel(pack);
-
-    expect(model.snapshot.completeness).toBe(pack.snapshot.completeness);
-    expect(model.assessmentParagraphs.every((paragraph) => paragraph.length > 0)).toBe(true);
-    expect(model.appendixRows).toEqual(model.findingGroups.flatMap((group) => group.rows));
+    expect(model.methodologySummary).toContain(
+      "Active tags have at least 1 question or more than 25 page views.",
+    );
+    expect(model.methodologySummary).toContain("P75 1,250");
+    expect(model.methodologySummary).toContain("P90 3,000");
     expect(model.completeEvidenceNote).toBe(
-      "The accompanying evidence CSV contains the complete canonical dataset in decision-pack order.",
+      "Complete canonical evidence is provided in the accompanying CSV for filtering, audit, and AI-assisted analysis.",
     );
   });
 
-  it("states that no evidence CSV accompanies an empty report", () => {
-    const pack = emptySmeCoverageDecisionPack();
-    const model = buildSmeCoveragePdfModel(pack);
+  it("keeps an empty report useful without promising an unavailable CSV", () => {
+    const model = buildSmeCoveragePdfModel(emptySmeCoverageDecisionPack());
 
-    expect(model.snapshot.completeness).toBe("Empty");
+    expect(model.priorityRows).toEqual([]);
+    expect(model.omittedPriorityCount).toBe(0);
     expect(model.completeEvidenceNote).toBe(
-      "No accompanying evidence CSV is available because this report contains no canonical evidence rows.",
+      "No evidence CSV is available because this report contains no canonical evidence rows.",
     );
-    expect(model.completeEvidenceNote).not.toContain("complete canonical dataset");
   });
 });
