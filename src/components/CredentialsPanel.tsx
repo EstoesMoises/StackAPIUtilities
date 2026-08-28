@@ -72,7 +72,7 @@ const PROFILE_CLIENT_ID_ERROR_ID = "oauth-profile-client-id-error";
 
 const credentialLabels: Record<string, string> = {
   "api-key": "API key",
-  "access-token": "Access token",
+  "access-token": "Enterprise sign-in",
   pat: "Personal access token",
   "community-access": "Community access",
   "enterprise-admin": "Enterprise admin access",
@@ -908,13 +908,13 @@ export function CredentialsPanel({
           <section className="credential-assurance-section credential-notes" role="note">
             <p className="scope-label">Scope notes for {metadata.title}</p>
             <h3>{metadata.title} credential notes</h3>
-            <div className="credential-requirements" aria-label="Required credentials">
+            <div className="credential-requirements" aria-label="Workflow requirements">
               {requiredCredentialLabels.map((label) => (
                 <span key={label}>{label}</span>
               ))}
             </div>
             <p className="credential-required-summary">
-              Required for this workflow: {requiredCredentialLabels.join(", ")}.
+              This workflow needs: {requiredCredentialLabels.join(", ")}.
             </p>
             <ul>
               <li>Basic/Business uses your team URL and Personal access token.</li>
@@ -928,8 +928,8 @@ export function CredentialsPanel({
               )}
               {isTagReport && (
                 <li>
-                  Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires both an{" "}
-                  API key and an OAuth access token (or pasted token).
+                  Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access
+                  requires an API key plus either OAuth sign-in or a pasted token.
                 </li>
               )}
             </ul>

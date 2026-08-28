@@ -82,28 +82,32 @@ describe("CredentialsPanel", () => {
     expect(screen.queryByText("Required")).not.toBeInTheDocument();
   });
 
-  it("shows deployment-specific credential requirements", async () => {
+  it("describes Enterprise access without implying a manually supplied token", async () => {
     const user = userEvent.setup();
 
     renderCredentialsPanel();
 
-    const requirements = screen.getByLabelText("Required credentials");
+    const requirements = screen.getByLabelText("Workflow requirements");
     expect(requirements).toHaveTextContent("Personal access token");
     expect(requirements).not.toHaveTextContent("API key");
-    expect(requirements).not.toHaveTextContent("Access token");
+    expect(requirements).not.toHaveTextContent("Enterprise sign-in");
 
     await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
 
     expect(requirements).toHaveTextContent("API key");
-    expect(requirements).toHaveTextContent("Access token");
+    expect(requirements).toHaveTextContent("Enterprise sign-in");
+    expect(requirements).not.toHaveTextContent("Access token");
     expect(requirements).not.toHaveTextContent("Personal access token");
+    expect(screen.getByText(/This workflow needs:/)).toHaveTextContent(
+      "This workflow needs: Enterprise sign-in, API key.",
+    );
   });
 
   it("discloses Tag Report's v2.3 and v3 Enterprise credential requirements", () => {
     renderCredentialsPanel();
 
     expect(screen.getByText(
-      "Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires both an API key and an OAuth access token (or pasted token).",
+      "Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires an API key plus either OAuth sign-in or a pasted token.",
     )).toBeInTheDocument();
   });
 
@@ -118,7 +122,7 @@ describe("CredentialsPanel", () => {
     expect(screen.queryByText("Scope notes for selected utility")).not.toBeInTheDocument();
     expect(screen.getByText(/read-only/i)).toBeInTheDocument();
     expect(screen.getByText(/both API lanes/i)).toBeInTheDocument();
-    expect(screen.getByText(/API key, Access token/i)).toBeInTheDocument();
+    expect(screen.getByText(/API key, Enterprise sign-in/i)).toBeInTheDocument();
   });
 
   it("starts read-only utility Enterprise OAuth with no write scopes", async () => {
@@ -169,7 +173,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Instance type")).toBeDisabled();
     expect(screen.queryByRole("option", { name: "Basic / Business" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Personal access token")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Required credentials")).toHaveTextContent("Access token");
+    expect(screen.getByLabelText("Workflow requirements")).toHaveTextContent("Enterprise sign-in");
   });
 
   it("does not hydrate Enterprise-only workflows from Basic session credentials", () => {
