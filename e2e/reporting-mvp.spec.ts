@@ -163,7 +163,7 @@ test("Tag Report keeps current and comparison date scopes distinct", async ({ pa
 async function saveBasicBusinessCredentials(page: Page) {
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Instance URL").fill("https://stackoverflowteams.com/c/example-team");
-  await page.getByLabel("Personal access token").fill("pat-token");
+  await page.getByLabel("Personal access token", { exact: true }).fill("pat-token");
   await page.getByRole("button", { name: "Save session credentials" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "Credentials saved for this browser session." }),

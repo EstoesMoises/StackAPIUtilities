@@ -139,6 +139,16 @@ describe("CredentialsPanel", () => {
     });
   });
 
+  it("locks Enterprise-only workflows to their supported deployment", () => {
+    renderCredentialsPanel({ workflow: { kind: "write-tool", writeToolId: "user-group-sync" } });
+
+    expect(screen.getByLabelText("Instance type")).toHaveValue("enterprise");
+    expect(screen.getByLabelText("Instance type")).toBeDisabled();
+    expect(screen.queryByRole("option", { name: "Basic / Business" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Personal access token")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Required credentials")).toHaveTextContent("Access token");
+  });
+
   it("shows PAT credentials for Basic/Business and hides Enterprise OAuth controls", () => {
     renderCredentialsPanel();
 

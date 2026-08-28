@@ -139,9 +139,14 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       : reportRegistry.find((candidate) => candidate.id === workflow.reportId)!;
   const oauthScopes = workflow.kind === "write-tool" ? [...writeTool!.oauthScopes] : [];
   const isTagReport = workflow.kind === "report" && workflow.reportId === "tag-report";
+  const selectedInstanceType = credentials?.instanceType ?? "basic-business";
+  const initialInstanceType = metadata.supportedInstances.includes(selectedInstanceType)
+    ? selectedInstanceType
+    : metadata.supportedInstances[0] ?? "basic-business";
+  const deploymentLocked = metadata.supportedInstances.length === 1;
   const customerProfiles = useOAuthCustomerProfiles();
   const [draft, setDraft] = useState<CredentialsDraft>({
-    instanceType: credentials?.instanceType ?? "basic-business",
+    instanceType: initialInstanceType,
     customerName: "",
     baseUrl: credentials?.baseUrl ?? "",
     apiKey: credentials?.apiKey ?? "",
@@ -616,14 +621,20 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
                 className="s-select"
                 aria-label="Instance type"
                 value={draft.instanceType}
-                disabled={profileTargetBusy}
+                disabled={profileTargetBusy || deploymentLocked}
                 onChange={(event) => handleInstanceTypeChange(event.currentTarget.value as InstanceType)}
               >
-                <option value="basic-business">Basic / Business</option>
-                <option value="enterprise">Enterprise</option>
+                {metadata.supportedInstances.includes("basic-business") && (
+                  <option value="basic-business">Basic / Business</option>
+                )}
+                {metadata.supportedInstances.includes("enterprise") && (
+                  <option value="enterprise">Enterprise</option>
+                )}
               </select>
               <span className="credential-field-help">
-                {isEnterprise
+                {deploymentLocked
+                  ? `${metadata.title} is available only for ${isEnterprise ? "Enterprise" : "Basic / Business"}.`
+                  : isEnterprise
                   ? "For a dedicated Stack Enterprise site."
                   : "For a hosted Stack Overflow for Teams workspace."}
               </span>

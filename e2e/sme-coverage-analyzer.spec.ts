@@ -255,6 +255,7 @@ test("375px navigation and complete evidence remain keyboard reachable", async (
     await expect(control).toHaveAttribute("aria-pressed", "true");
   }
 
+  await navigation.getByRole("button", { name: "Utilities", exact: true }).click();
   await saveBasicBusinessCredentials(page);
   await navigation.getByRole("button", { name: "Utilities", exact: true }).click();
   await page.getByRole("button", { name: "SME Coverage Analyzer", exact: true }).click();
@@ -289,7 +290,7 @@ async function saveBasicBusinessCredentials(page: Page) {
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await expect(page.getByLabel("Instance type")).toHaveValue("basic-business");
   await page.getByLabel("Instance URL").fill("https://stackoverflowteams.com/c/example-team");
-  await page.getByLabel("Personal access token").fill("pat-token");
+  await page.getByLabel("Personal access token", { exact: true }).fill("pat-token");
   await page.getByRole("button", { name: "Save session credentials" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "Credentials saved for this browser session." }),

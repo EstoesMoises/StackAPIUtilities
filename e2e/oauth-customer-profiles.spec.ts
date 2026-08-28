@@ -23,7 +23,7 @@ test("saved Enterprise OAuth customer profile survives reload and stays deleted"
   await page.getByLabel("Customer name").fill(customerName);
   await page.getByLabel("Instance URL").fill(enterpriseUrl);
   await page.getByLabel("OAuth Client ID").fill(oauthClientId);
-  await page.getByLabel("API key").fill(apiKey);
+  await page.getByLabel("API key", { exact: true }).fill(apiKey);
   await page.getByLabel("Request non-expiring token").check();
   await page.getByRole("button", { name: "Save customer" }).click();
 
@@ -39,8 +39,8 @@ test("saved Enterprise OAuth customer profile survives reload and stays deleted"
   await expect(page.getByLabel("Customer name")).toHaveValue(customerName);
   await expect(page.getByLabel("Instance URL")).toHaveValue(enterpriseUrl);
   await expect(page.getByLabel("OAuth Client ID")).toHaveValue(oauthClientId);
-  await expect(page.getByLabel("API key")).toHaveValue(apiKey);
-  await expect(page.getByLabel("API key")).toHaveAttribute("type", "password");
+  await expect(page.getByLabel("API key", { exact: true })).toHaveValue(apiKey);
+  await expect(page.getByLabel("API key", { exact: true })).toHaveAttribute("type", "password");
   await expect(page.getByLabel("Request non-expiring token")).toBeChecked();
   expect(oauthStartRequests).toBe(0);
 
@@ -56,7 +56,7 @@ test("saved Enterprise OAuth customer profile survives reload and stays deleted"
   await expect(page.getByLabel("Customer name")).toHaveValue("");
   await expect(page.getByLabel("Instance URL")).toHaveValue("");
   await expect(page.getByLabel("OAuth Client ID")).toHaveValue("");
-  await expect(page.getByLabel("API key")).toHaveValue("");
+  await expect(page.getByLabel("API key", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Request non-expiring token")).not.toBeChecked();
 
   await page.reload();
@@ -70,7 +70,7 @@ test("saved Enterprise OAuth customer profile survives reload and stays deleted"
   await expect(page.getByLabel("Customer name")).toHaveValue("");
   await expect(page.getByLabel("Instance URL")).toHaveValue("");
   await expect(page.getByLabel("OAuth Client ID")).toHaveValue("");
-  await expect(page.getByLabel("API key")).toHaveValue("");
+  await expect(page.getByLabel("API key", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Request non-expiring token")).not.toBeChecked();
   expect(oauthStartRequests).toBe(0);
 });
