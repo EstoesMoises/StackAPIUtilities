@@ -43,13 +43,14 @@ afterEach(() => {
 });
 
 describe("CredentialsPanel", () => {
-  it("presents credentials as a focused connection flow for the selected workflow", () => {
+  it("presents credentials as a shared connection across compatible workflows", () => {
     renderCredentialsPanel();
 
     expect(
       screen.getByRole("heading", { name: "Connect your Stack environment" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Credentials for")).toBeInTheDocument();
+    expect(screen.getByText("Shared across compatible scripts and tools")).toBeInTheDocument();
+    expect(screen.queryByText("Credentials for")).not.toBeInTheDocument();
     expect(
       screen.getByRole("complementary", { name: "Credential privacy and requirements" }),
     ).toBeInTheDocument();
@@ -60,15 +61,15 @@ describe("CredentialsPanel", () => {
     expect(screen.queryByText(/nothing is sent until you run it/i)).not.toBeInTheDocument();
   });
 
-  it("presents the active workflow as changeable context", async () => {
+  it("returns to the originating catalog without implying workflow-specific credentials", async () => {
     const user = userEvent.setup();
     const onChangeWorkflow = vi.fn();
 
     renderCredentialsPanel({ onChangeWorkflow });
 
-    expect(screen.getByText("Credentials for")).toBeInTheDocument();
-    expect(screen.getByText("Tag Report")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Change script" }));
+    expect(screen.queryByText("Credentials for")).not.toBeInTheDocument();
+    expect(screen.getByText("Scope notes for Tag Report")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back to scripts" }));
 
     expect(onChangeWorkflow).toHaveBeenCalledOnce();
     expect(screen.queryByText(/selected report/i)).not.toBeInTheDocument();

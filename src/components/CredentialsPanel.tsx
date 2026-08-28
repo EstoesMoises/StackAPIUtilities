@@ -587,16 +587,11 @@ export function CredentialsPanel({
     setOauthError(null);
   }
 
-  const workflowKindLabel = workflow.kind === "utility"
-    ? "utility"
+  const workflowBackLabel = workflow.kind === "utility"
+    ? "Back to utilities"
     : workflow.kind === "write-tool"
-      ? "write tool"
-      : "report";
-  const workflowChangeLabel = workflow.kind === "utility"
-    ? "Change utility"
-    : workflow.kind === "write-tool"
-      ? "Change write tool"
-      : "Change script";
+      ? "Back to write tools"
+      : "Back to scripts";
   const requiredCredentialLabels = isEnterprise
     ? metadata.credentialRequirements.map(
         (requirement) => credentialLabels[requirement] ?? requirement,
@@ -612,20 +607,18 @@ export function CredentialsPanel({
             Connect your Stack environment
           </h2>
           <div className="credential-workflow-context">
-            <span>Credentials for</span>
-            <strong>{metadata.title}</strong>
+            <span>Shared across compatible scripts and tools</span>
             <button
               className="credential-context-action"
               type="button"
               onClick={onChangeWorkflow}
             >
-              {workflowChangeLabel}
+              {workflowBackLabel}
             </button>
           </div>
           <p className="workspace-copy credential-session-copy">
-            Choose your deployment and add the credentials {metadata.title} needs. Connection
-            details are sent when you authorize, and
-            credentials are sent when you run.
+            Choose your deployment and connect once for this browser session. Connection details
+            are sent when you authorize, and credentials are sent when you run.
           </p>
         </div>
       </header>

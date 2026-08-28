@@ -807,11 +807,6 @@ select:disabled {
   line-height: 1.35;
 }
 
-.credential-workflow-context strong {
-  color: var(--so-orange-deep);
-  font-weight: 850;
-}
-
 .credential-context-action {
   min-height: 32px;
   padding: 4px 8px;
