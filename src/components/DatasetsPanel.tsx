@@ -17,7 +17,6 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
     <section className="workspace-panel datasets-panel" aria-labelledby="datasets-heading">
       <div className="workspace-header">
         <div>
-          <p className="workspace-kicker">Browser-local data</p>
           <h2 className="workspace-heading" id="datasets-heading">
             Datasets
           </h2>

@@ -12,7 +12,7 @@ export function buildSmeCoverageMarkdownDownload(
   pack: SmeCoverageDecisionPack,
 ): SmeCoverageDownload {
   return {
-    fileName: `sme-coverage-decision-pack-${buildFileSuffix(pack)}.md`,
+    fileName: `sme-coverage-decision-pack-${buildSmeCoverageFileSuffix(pack)}.md`,
     contents: buildSmeCoverageMarkdown(pack),
     mimeType: "text/markdown;charset=utf-8",
   };
@@ -20,7 +20,7 @@ export function buildSmeCoverageMarkdownDownload(
 
 export function buildSmeCoverageCsvDownload(pack: SmeCoverageDecisionPack): SmeCoverageDownload {
   return {
-    fileName: `sme-coverage-evidence-${buildFileSuffix(pack)}.csv`,
+    fileName: `sme-coverage-evidence-${buildSmeCoverageFileSuffix(pack)}.csv`,
     contents: buildSmeCoverageEvidenceCsv(pack),
     mimeType: "text/csv;charset=utf-8",
   };
@@ -36,7 +36,7 @@ export function downloadSmeCoverageEvidenceCsv(pack: SmeCoverageDecisionPack): v
   downloadTextFile(download.fileName, download.contents, download.mimeType);
 }
 
-function buildFileSuffix(pack: SmeCoverageDecisionPack): string {
+export function buildSmeCoverageFileSuffix(pack: SmeCoverageDecisionPack): string {
   return `${sanitizeFileNamePart(pack.snapshot.instanceHost)}-${pack.snapshot.generatedAt.slice(0, 10)}`;
 }
 

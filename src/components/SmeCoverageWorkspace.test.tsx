@@ -9,6 +9,10 @@ vi.mock("../utils/smeCoverageDownloads", () => ({
   downloadSmeCoverageMarkdown: vi.fn(),
 }));
 
+vi.mock("../utils/smeCoveragePdfDownload", () => ({
+  downloadSmeCoveragePdf: vi.fn(),
+}));
+
 describe("SmeCoverageWorkspace", () => {
   it("presents a read-only all-time utility without Script, upload, or date prerequisites", () => {
     render(
@@ -74,7 +78,7 @@ describe("SmeCoverageWorkspace", () => {
       />,
     );
     expect(screen.getByRole("button", { name: "Run SME coverage analysis" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Run again" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Running again…" })).toBeDisabled();
 
     rerender(
       <SmeCoverageWorkspace
@@ -97,7 +101,7 @@ describe("SmeCoverageWorkspace", () => {
         ...completeSmeCoverageDecisionPack().snapshot,
         generatedAt: "2026-07-30T13:00:00.000Z",
       },
-      assessment: "A newly prepared assessment.",
+      overview: "A newly prepared overview.",
     };
     const props = {
       onRun: vi.fn(),
@@ -106,14 +110,41 @@ describe("SmeCoverageWorkspace", () => {
     const { rerender } = render(<SmeCoverageWorkspace {...props} decisionPack={firstPack} />);
 
     await user.click(screen.getByRole("button", { name: "Copy assessment" }));
-    await user.click(screen.getByRole("button", { name: "Download Markdown" }));
+    await user.click(screen.getByRole("button", { name: "More formats" }));
+    await user.click(screen.getByRole("button", { name: "Download Markdown brief" }));
     expect(screen.getByText("Assessment copied to the clipboard.")).toBeInTheDocument();
     expect(screen.getByText("Markdown download started.")).toBeInTheDocument();
 
     rerender(<SmeCoverageWorkspace {...props} decisionPack={secondPack} />);
 
-    expect(screen.getByText("A newly prepared assessment.")).toBeInTheDocument();
+    expect(screen.getByText("A newly prepared overview.")).toBeInTheDocument();
     expect(screen.queryByText("Assessment copied to the clipboard.")).not.toBeInTheDocument();
     expect(screen.queryByText("Markdown download started.")).not.toBeInTheDocument();
+  });
+
+  it("opens a replacement result on Overview without exposing the old active panel", async () => {
+    const user = userEvent.setup();
+    const firstPack = completeSmeCoverageDecisionPack();
+    const secondPack = {
+      ...completeSmeCoverageDecisionPack(),
+      snapshot: {
+        ...completeSmeCoverageDecisionPack().snapshot,
+        generatedAt: "2026-07-30T13:00:00.000Z",
+      },
+      overview: "Replacement report overview.",
+    };
+    const props = {
+      onRun: vi.fn(),
+      runState: { status: "succeeded" as const },
+    };
+    const { rerender } = render(<SmeCoverageWorkspace {...props} decisionPack={firstPack} />);
+    await user.click(screen.getByRole("tab", { name: /Priority findings/ }));
+    expect(screen.getByRole("region", { name: "Priority findings table" })).toBeVisible();
+
+    rerender(<SmeCoverageWorkspace {...props} decisionPack={secondPack} />);
+
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Replacement report overview.")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Priority findings table" })).not.toBeInTheDocument();
   });
 });

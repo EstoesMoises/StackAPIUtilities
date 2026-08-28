@@ -42,7 +42,6 @@ export function AppShell({ activePanel, onPanelChange, sidebar, children, summar
         <div className="app-brand-block">
           <StackOverflowLogo className="app-brand-logo" />
           <div className="app-title">
-            <p className="app-kicker">Enterprise API tools</p>
             <h1 className="app-heading">Stack API Utilities</h1>
           </div>
         </div>

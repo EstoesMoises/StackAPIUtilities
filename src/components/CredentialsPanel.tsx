@@ -523,7 +523,6 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
     <section className="workspace-panel" aria-labelledby="credentials-heading">
       <div className="workspace-header">
         <div>
-          <p className="workspace-kicker">Browser session</p>
           <h2 className="workspace-heading" id="credentials-heading">
             Session Credentials
           </h2>
@@ -534,9 +533,6 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
         when explicitly saved in a customer profile.
       </p>
       <div className="credential-notes" role="note">
-        <p className="scope-label">
-          Scope notes for selected {workflow.kind === "utility" ? "utility" : workflow.kind === "write-tool" ? "write tool" : "report"}
-        </p>
         <h3 className="fs-body2 mb8">{metadata.title} credential notes</h3>
         <ul className="m0">
           <li>Basic/Business: provide your team URL and Personal access token.</li>

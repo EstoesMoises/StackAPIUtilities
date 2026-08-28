@@ -54,8 +54,8 @@ describe("CredentialsPanel", () => {
   it("shows read-only mixed-lane requirements for SME Coverage Analyzer", () => {
     renderCredentialsPanel({ workflow: { kind: "utility", utilityId: "sme-coverage-analyzer" } });
 
-    expect(screen.getByText("Scope notes for selected utility")).toBeInTheDocument();
     expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
+    expect(screen.queryByText("Scope notes for selected utility")).not.toBeInTheDocument();
     expect(screen.getByText(/read-only/i)).toBeInTheDocument();
     expect(screen.getByText(/both API lanes/i)).toBeInTheDocument();
     expect(screen.getByText(/API key, Access token/i)).toBeInTheDocument();

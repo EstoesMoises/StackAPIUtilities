@@ -200,7 +200,6 @@ export function UserGroupSyncPanel({ credentials }: UserGroupSyncPanelProps) {
     <section className="workspace-panel" aria-labelledby="user-group-sync-heading">
       <div className="workspace-header">
         <div>
-          <p className="workspace-kicker">Enterprise write tool</p>
           <h2 className="workspace-heading" id="user-group-sync-heading">
             User Group Sync
           </h2>

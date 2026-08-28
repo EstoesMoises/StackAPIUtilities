@@ -4,6 +4,7 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Stack API Utilities" })).toBeVisible();
+  await expect(page.locator(".app-topbar")).toHaveCSS("background-color", "oklch(1 0 0)");
   await expect(page.getByRole("button", { exact: true, name: "Tag Report" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run current period" })).toBeVisible();
   await page.getByLabel("Enable comparison period").click();
@@ -24,6 +25,7 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
 });
 
 test("Tag Report collects every available page for the selected date scope", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-08-20T12:00:00.000Z"));
   let requestPayload: unknown;
   await page.route("**/api/reports/run", async (route) => {
     requestPayload = route.request().postDataJSON();
@@ -46,7 +48,17 @@ test("Tag Report collects every available page for the selected date scope", asy
   const collectionStatus = page.getByRole("status", { name: "Collection status" });
   await expect(collectionStatus).toContainText("All available data collected");
   await expect(collectionStatus).toContainText("2026-07-01 to 2026-07-31");
-  await page.getByRole("tab", { name: "Raw Table" }).click();
+  const csvDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export report CSV" }).click();
+  const csvDownload = await csvDownloadPromise;
+  expect(csvDownload.suggestedFilename()).toBe(
+    "tag-report-tag-health-current-2026-08-20.csv",
+  );
+  await expect(page.getByRole("status").filter({ hasText: "CSV download started" })).toContainText(
+    "2 rows",
+  );
+
+  await page.getByRole("tab", { name: "Evidence · 2" }).click();
   await expect(page.getByRole("cell", { name: "page-one-tag", exact: true })).toBeVisible();
   await expect(page.getByRole("cell", { name: "page-two-tag", exact: true })).toBeVisible();
 
@@ -61,6 +73,103 @@ test("Tag Report collects every available page for the selected date scope", asy
     "reportId",
     "scope",
   ]);
+});
+
+test("Tag Report keeps large evidence bounded, searchable, and configurable", async ({ page }) => {
+  await page.route("**/api/reports/run", async (route) => {
+    await fulfillTagReport(route, {
+      scope: {},
+      records: buildLargeTagRecords(),
+      pagination: { pageCount: 2, reachedMaxPages: false, hasMore: false },
+    });
+  });
+  await page.goto("/");
+  await saveBasicBusinessCredentials(page);
+  await page.getByRole("button", { name: "Scripts", exact: true }).click();
+  await page.getByRole("button", { name: "Run current period" }).click();
+
+  await page.getByRole("tab", { name: "Evidence · 120" }).click();
+  await expect(page.getByText("Rows 1–50 of 120", { exact: true })).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const topbar = page.locator(".app-topbar");
+  await expect(topbar).toHaveCSS("position", "sticky");
+  await expect(topbar).toHaveCSS("background-color", "oklch(1 0 0)");
+  expect((await topbar.boundingBox())?.y).toBe(0);
+  await page.getByRole("button", { name: "Next page" }).click();
+  await expect(page.getByText("Rows 51–100 of 120", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Search evidence").fill("tag-120");
+  await expect(page.getByText("Rows 1–1 of 1", { exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "tag-120", exact: true })).toBeVisible();
+
+  await page.getByText("Columns", { exact: true }).click();
+  await page.getByLabel("sme_count").check();
+  await expect(page.getByRole("columnheader", { name: "sme_count" })).toBeVisible();
+  await expect(page.locator('td[data-column-id="report-field-8"]')).toHaveText("0");
+});
+
+test("Tag Report command center stays contained at a 375px viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.route("**/api/reports/run", async (route) => {
+    await fulfillTagReport(route, {
+      scope: {},
+      records: buildLargeTagRecords(),
+      pagination: { pageCount: 2, reachedMaxPages: false, hasMore: false },
+    });
+  });
+  await page.goto("/");
+  await saveBasicBusinessCredentials(page);
+  await page.getByRole("button", { name: "Scripts", exact: true }).click();
+  await page.getByRole("button", { name: "Run current period" }).click();
+
+  const setupPanel = page.locator(".workspace-panel");
+  const commandCenter = page.locator(".report-command-center");
+  await expect(commandCenter).toBeVisible();
+  expect(
+    await setupPanel.evaluate((setup, result) =>
+      Boolean(setup.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING),
+    await commandCenter.elementHandle()),
+  ).toBe(true);
+
+  const csvButton = page.getByRole("button", { name: "Export report CSV" });
+  await expect(csvButton).toBeVisible();
+  const [buttonBox, actionsBox] = await Promise.all([
+    csvButton.boundingBox(),
+    page.locator(".report-export-actions").boundingBox(),
+  ]);
+  expect(buttonBox).not.toBeNull();
+  expect(actionsBox).not.toBeNull();
+  expect(Math.abs(buttonBox!.width - actionsBox!.width)).toBeLessThanOrEqual(1);
+
+  const tabs = page.getByRole("tablist", { name: "Report sections" });
+  await expect(tabs).toHaveCSS("flex-wrap", "wrap");
+  for (const tab of await page.getByRole("tab").all()) {
+    expect(await tab.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+
+  const overviewTab = page.getByRole("tab", { name: "Overview" });
+  const evidenceTab = page.getByRole("tab", { name: "Evidence · 120" });
+  await overviewTab.focus();
+  await overviewTab.press("ArrowRight");
+  await expect(evidenceTab).toHaveAttribute("aria-selected", "true");
+  expect(
+    await evidenceTab.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        color: style.outlineColor,
+        width: style.outlineWidth,
+      };
+    }),
+  ).toEqual({ color: "oklch(0.47 0.16 39)", width: "3px" });
+
+  const evidenceRegion = page.getByRole("region", { name: "Report evidence table" });
+  await expect(evidenceRegion).toBeVisible();
+  expect(await evidenceRegion.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(
+    true,
+  );
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+  ).toBe(true);
 });
 
 test("Tag Report rejects nonterminal pagination without publishing or persisting a result", async ({ page }) => {
@@ -178,6 +287,23 @@ async function fulfillTwoPageTagReport(route: Route) {
       { name: "page-two-tag", count: 3 },
     ],
     pagination: { pageCount: 2, reachedMaxPages: false, hasMore: false },
+  });
+}
+
+function buildLargeTagRecords() {
+  return Array.from({ length: 120 }, (_, index) => {
+    const row = index + 1;
+    return {
+      name: `tag-${String(row).padStart(3, "0")}`,
+      count: row,
+      questionCount: row + 10,
+      answerCount: row + 20,
+      score: row + 30,
+      subscribers: row + 40,
+      synonyms: row + 50,
+      lastActivity: `2026-08-${String(((row - 1) % 20) + 1).padStart(2, "0")}`,
+      ninthField: `detail-${row}`,
+    };
   });
 }
 

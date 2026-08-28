@@ -1,74 +1,106 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { completeSmeCoverageDecisionPack } from "../test/fixtures/smeCoverageFixtures";
+import {
+  completeSmeCoverageDecisionPack,
+  partialSmeCoverageDecisionPack,
+} from "../test/fixtures/smeCoverageFixtures";
 import { SmeCoverageEvidenceTable } from "./SmeCoverageEvidenceTable";
 
-const headers = [
-  "Tag",
-  "Page views",
-  "Questions",
-  "Question-count basis",
-  "SMEs",
-  "Page views per SME",
-  "Coverage percentile",
-  "Coverage tier",
-  "Demand quality",
-  "SME quality",
-  "Reason",
-  "Recommended action",
-] as const;
+const appStyles = readFileSync("src/styles/app.css", "utf8");
 
 describe("SmeCoverageEvidenceTable", () => {
-  it("uses semantic fixed headers, a focusable labeled scroll region, and visible tier text", () => {
+  it("shows the decision-ready columns by default and keeps technical fields optional", async () => {
+    const user = userEvent.setup();
     render(<SmeCoverageEvidenceTable evidence={completeSmeCoverageDecisionPack().evidence} />);
 
     const region = screen.getByRole("region", { name: "SME coverage evidence table" });
     expect(region).toHaveAttribute("tabindex", "0");
-    for (const header of headers) {
-      expect(within(region).getByRole("columnheader", { name: header })).toHaveAttribute(
-        "scope",
-        "col",
+    expect(within(region).getByRole("columnheader", { name: "Tag" })).toHaveAttribute(
+      "data-column-id",
+      "tagName",
+    );
+    expect(within(region).getAllByRole("cell")[0]).toHaveAttribute("data-column-id", "tagName");
+    expect(within(region).getByRole("columnheader", { name: "Evidence quality" })).toBeVisible();
+    expect(
+      within(region).queryByRole("columnheader", { name: "Question-count basis" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Columns", { selector: "summary" }));
+    await user.click(screen.getByRole("checkbox", { name: "Question-count basis" }));
+
+    expect(
+      within(region).getByRole("columnheader", { name: "Question-count basis" }),
+    ).toBeVisible();
+  });
+
+  it("keeps decision-ready columns readable inside the scrollable evidence region", () => {
+    for (const columnId of [
+      "tagName",
+      "pageViews",
+      "smeCount",
+      "pageViewsPerSme",
+      "coverageTier",
+      "evidenceQuality",
+      "recommendedAction",
+    ]) {
+      expect(appStyles).toMatch(
+        new RegExp(`\\[data-column-id="${columnId}"\\]\\s*\\{[^}]*min-width:`, "s"),
       );
     }
-    for (const tier of [
-      "Immediate gap",
-      "Critical under-coverage",
-      "Light coverage",
-      "Adequate coverage",
-    ]) {
-      expect(
-        within(region).getAllByText(tier, { selector: ".sme-tier-badge" }).length,
-      ).toBeGreaterThan(0);
-    }
-    expect(within(region).getAllByText("Unavailable").length).toBeGreaterThan(0);
+    expect(appStyles).toMatch(/\.report-evidence-table-wrap\s*\{[^}]*overflow-x:\s*auto;/s);
+  });
+
+  it("filters by the actual coverage tiers in the evidence", async () => {
+    const user = userEvent.setup();
+    render(<SmeCoverageEvidenceTable evidence={completeSmeCoverageDecisionPack().evidence} />);
+
+    const tierFilter = screen.getByRole("combobox", { name: "Coverage tier" });
+    expect(within(tierFilter).getByRole("option", { name: "All coverage tiers" })).toBeVisible();
+    await user.selectOptions(tierFilter, "Immediate gap");
+
+    expect(dataRowTags()).toEqual(["zeta-runtime"]);
+  });
+
+  it("filters and searches by derived evidence quality", async () => {
+    const user = userEvent.setup();
+    render(<SmeCoverageEvidenceTable evidence={partialSmeCoverageDecisionPack().evidence} />);
+
+    const qualityFilter = screen.getByRole("combobox", { name: "Evidence quality" });
+    expect(within(qualityFilter).getByRole("option", { name: "Complete" })).toBeVisible();
+    expect(within(qualityFilter).getByRole("option", { name: "Needs review" })).toBeVisible();
+    await user.selectOptions(qualityFilter, "Needs review");
+    expect(dataRowTags()).toEqual(["unknown-source"]);
+
+    await user.selectOptions(qualityFilter, "");
+    await user.type(screen.getByRole("searchbox", { name: "Search evidence" }), "needs review");
+    expect(dataRowTags()).toEqual(["unknown-source"]);
   });
 
   it.each([
-    ["alpha", "Alpha-platform"],
-    ["critical under", "Alpha-platform"],
-    ["between p75", "beta-data"],
-    ["improve resilience", "beta-data"],
-  ])("searches all prepared evidence text for %s", async (query, expectedTag) => {
+    ["2500.8", "beta-data"],
+    ["1250.4", "beta-data"],
+  ])("searches canonical numeric evidence for %s", async (query, expectedTag) => {
     const user = userEvent.setup();
     render(<SmeCoverageEvidenceTable evidence={completeSmeCoverageDecisionPack().evidence} />);
 
     await user.type(screen.getByRole("searchbox", { name: "Search evidence" }), query);
 
-    expect(screen.getByRole("cell", { name: expectedTag })).toBeInTheDocument();
-    expect(screen.getAllByRole("row")).toHaveLength(2);
-  });
-
-  it("shows a useful no-match state", async () => {
-    const user = userEvent.setup();
-    render(<SmeCoverageEvidenceTable evidence={completeSmeCoverageDecisionPack().evidence} />);
-    await user.type(screen.getByRole("searchbox", { name: "Search evidence" }), "not-a-real-tag");
-    expect(screen.getByText("No evidence matches this search.")).toBeInTheDocument();
+    expect(dataRowTags()).toEqual([expectedTag]);
   });
 
   it.each([
-    ["Page views", ["gamma-tools", "delta-service", "beta-data", "Alpha-platform", "zeta-runtime"], ["zeta-runtime", "Alpha-platform", "beta-data", "delta-service", "gamma-tools"]],
-    ["Page views per SME", ["gamma-tools", "delta-service", "beta-data", "Alpha-platform", "zeta-runtime"], ["Alpha-platform", "beta-data", "delta-service", "gamma-tools", "zeta-runtime"]],
+    [
+      "Page views",
+      ["gamma-tools", "delta-service", "beta-data", "Alpha-platform", "zeta-runtime"],
+      ["zeta-runtime", "Alpha-platform", "beta-data", "delta-service", "gamma-tools"],
+    ],
+    [
+      "Page views per SME",
+      ["gamma-tools", "delta-service", "beta-data", "Alpha-platform", "zeta-runtime"],
+      ["Alpha-platform", "beta-data", "delta-service", "gamma-tools", "zeta-runtime"],
+    ],
   ] as const)("sorts %s numerically both ways with unavailable values last", async (header, ascending, descending) => {
     const user = userEvent.setup();
     render(<SmeCoverageEvidenceTable evidence={completeSmeCoverageDecisionPack().evidence} />);
@@ -83,24 +115,62 @@ describe("SmeCoverageEvidenceTable", () => {
     expect(dataRowTags()).toEqual(descending);
   });
 
-  it("sorts text with code-unit ordering and never mutates canonical evidence", async () => {
+  it("retains text sorting and explicit unavailable formatting", async () => {
     const user = userEvent.setup();
     const evidence = completeSmeCoverageDecisionPack().evidence;
     const before = JSON.stringify(evidence);
     render(<SmeCoverageEvidenceTable evidence={evidence} />);
 
+    expect(screen.getByRole("cell", { name: "No SME" })).toBeVisible();
+    expect(screen.getAllByRole("cell", { name: "Unavailable" }).length).toBeGreaterThan(0);
     const tagHeader = screen.getByRole("columnheader", { name: "Tag" });
     await user.click(within(tagHeader).getByRole("button", { name: "Tag" }));
-    expect(dataRowTags()).toEqual(["Alpha-platform", "beta-data", "delta-service", "gamma-tools", "zeta-runtime"]);
+    expect(dataRowTags()).toEqual([
+      "Alpha-platform",
+      "beta-data",
+      "delta-service",
+      "gamma-tools",
+      "zeta-runtime",
+    ]);
     await user.click(within(tagHeader).getByRole("button", { name: "Tag" }));
-    expect(dataRowTags()).toEqual(["zeta-runtime", "gamma-tools", "delta-service", "beta-data", "Alpha-platform"]);
+    expect(dataRowTags()).toEqual([
+      "zeta-runtime",
+      "gamma-tools",
+      "delta-service",
+      "beta-data",
+      "Alpha-platform",
+    ]);
     expect(JSON.stringify(evidence)).toBe(before);
+  });
+
+  it("bounds large evidence without mutating canonical rows", async () => {
+    const user = userEvent.setup();
+    const source = completeSmeCoverageDecisionPack().evidence;
+    const evidence = Array.from({ length: 55 }, (_, index) => ({
+      ...source[index % source.length]!,
+      tagName: `tag-${String(index + 1).padStart(2, "0")}`,
+    }));
+    const before = JSON.stringify(evidence);
+    render(<SmeCoverageEvidenceTable evidence={evidence} />);
+
+    expect(screen.getAllByRole("row")).toHaveLength(51);
+    expect(screen.getByText("Rows 1–50 of 55")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(screen.getAllByRole("row")).toHaveLength(6);
+    expect(screen.getByText("Rows 51–55 of 55")).toBeVisible();
+    expect(JSON.stringify(evidence)).toBe(before);
+  });
+
+  it("shows the pack empty message when no evidence exists", () => {
+    render(<SmeCoverageEvidenceTable evidence={[]} />);
+    expect(screen.getByText("No evidence rows are in this decision pack.")).toBeVisible();
   });
 });
 
 function dataRowTags(): string[] {
-  return screen
+  return within(screen.getByRole("region", { name: "SME coverage evidence table" }))
     .getAllByRole("row")
     .slice(1)
+    .filter((row) => within(row).queryAllByRole("cell").length > 1)
     .map((row) => within(row).getAllByRole("cell")[0]!.textContent ?? "");
 }
