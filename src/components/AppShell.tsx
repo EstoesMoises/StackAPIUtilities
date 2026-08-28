@@ -17,7 +17,7 @@ interface AppShellSummary {
 interface AppShellProps {
   activePanel: AppPanel;
   onPanelChange: (panel: AppPanel) => void;
-  sidebar: ReactNode;
+  sidebar?: ReactNode;
   children: ReactNode;
   summary?: AppShellSummary;
 }
@@ -71,8 +71,8 @@ export function AppShell({ activePanel, onPanelChange, sidebar, children, summar
           Slack with the reports you're using the most, what would be most useful, and let's connect on that.
         </p>
       </section>
-      <div className="app-body">
-        <aside className="app-sidebar">{sidebar}</aside>
+      <div className={`app-body${sidebar ? "" : " app-body__focused"}`}>
+        {sidebar && <aside className="app-sidebar">{sidebar}</aside>}
         <main className="app-main" aria-label="Workspace">
           {children}
         </main>

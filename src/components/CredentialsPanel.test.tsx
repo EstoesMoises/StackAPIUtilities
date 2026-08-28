@@ -43,6 +43,19 @@ afterEach(() => {
 });
 
 describe("CredentialsPanel", () => {
+  it("presents credentials as a focused connection flow for the selected workflow", () => {
+    renderCredentialsPanel();
+
+    expect(
+      screen.getByRole("heading", { name: "Connect your Stack environment" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Set up access for Tag Report")).toBeInTheDocument();
+    expect(
+      screen.getByRole("complementary", { name: "Credential privacy and requirements" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/guidance placeholder/i)).not.toBeInTheDocument();
+  });
+
   it("discloses Tag Report's v2.3 and v3 Enterprise credential requirements", () => {
     renderCredentialsPanel();
 
@@ -110,6 +123,28 @@ describe("CredentialsPanel", () => {
     expect(screen.queryByLabelText("OAuth Client ID")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect with Enterprise OAuth" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
+  });
+
+  it("reveals and hides the personal access token without changing its value", async () => {
+    const user = userEvent.setup();
+
+    renderCredentialsPanel();
+
+    const token = screen.getByLabelText("Personal access token");
+    await user.type(token, "private-token");
+    expect(token).toHaveAttribute("type", "password");
+
+    const revealButton = screen.getByRole("button", { name: "Reveal secret value" });
+    expect(revealButton).toHaveAccessibleDescription("Personal access token");
+    await user.click(revealButton);
+
+    expect(token).toHaveAttribute("type", "text");
+    expect(token).toHaveValue("private-token");
+
+    await user.click(screen.getByRole("button", { name: "Conceal secret value" }));
+
+    expect(token).toHaveAttribute("type", "password");
+    expect(token).toHaveValue("private-token");
   });
 
   it("shows OAuth controls and API key support for Enterprise", async () => {

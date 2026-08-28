@@ -11,7 +11,7 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
   await expect(page.getByRole("button", { name: "Run both periods" })).toBeVisible();
 
   await page.getByRole("button", { name: "Credentials" }).click();
-  await expect(page.getByRole("heading", { name: "Session Credentials" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connect your Stack environment" })).toBeVisible();
   await expect(page.getByLabel("Instance URL")).toBeVisible();
 
   await page.getByRole("button", { name: "Uploads" }).click();

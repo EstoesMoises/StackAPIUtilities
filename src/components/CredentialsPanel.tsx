@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import {
   isOAuthCustomerProfileDraftDirty,
   toOAuthCustomerProfileDraft,
@@ -76,6 +76,59 @@ const credentialLabels: Record<string, string> = {
   "community-access": "Community access",
   "enterprise-admin": "Enterprise admin access",
 };
+
+interface SecretInputProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  autoComplete?: string;
+  describedBy?: string;
+  disabled?: boolean;
+}
+
+function SecretInput({
+  label,
+  value,
+  onChange,
+  autoComplete = "off",
+  describedBy,
+  disabled = false,
+}: SecretInputProps) {
+  const inputId = useId();
+  const labelId = useId();
+  const [revealed, setRevealed] = useState(false);
+
+  return (
+    <div className="credential-field">
+      <label className="credential-label" id={labelId} htmlFor={inputId}>
+        {label}
+      </label>
+      <div className="credential-secret-control">
+        <input
+          className="s-input"
+          id={inputId}
+          type={revealed ? "text" : "password"}
+          autoComplete={autoComplete}
+          aria-describedby={describedBy}
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.currentTarget.value)}
+        />
+        <button
+          className="credential-secret-toggle"
+          type="button"
+          aria-label={revealed ? "Conceal secret value" : "Reveal secret value"}
+          aria-describedby={labelId}
+          aria-pressed={revealed}
+          disabled={disabled}
+          onClick={() => setRevealed((current) => !current)}
+        >
+          {revealed ? "Hide" : "Show"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsPanelProps) {
   const writeTool = workflow.kind === "write-tool"
@@ -519,227 +572,332 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
     setOauthError(null);
   }
 
+  const workflowKindLabel = workflow.kind === "utility"
+    ? "utility"
+    : workflow.kind === "write-tool"
+      ? "write tool"
+      : "report";
+  const requiredCredentialLabels = metadata.credentialRequirements
+    .map((requirement) => credentialLabels[requirement] ?? requirement);
+
   return (
-    <section className="workspace-panel" aria-labelledby="credentials-heading">
-      <div className="workspace-header">
-        <div>
-          <p className="workspace-kicker">Browser session</p>
+    <section className="workspace-panel credentials-panel" aria-labelledby="credentials-heading">
+      <header className="credential-hero">
+        <div className="credential-hero-copy">
+          <span className="credential-session-badge">Session connection</span>
           <h2 className="workspace-heading" id="credentials-heading">
-            Session Credentials
+            Connect your Stack environment
           </h2>
-        </div>
-      </div>
-      <p className="workspace-copy credential-session-copy">
-        OAuth access tokens and PATs stay in memory for this browser session. API keys persist only
-        when explicitly saved in a customer profile.
-      </p>
-      <div className="credential-notes" role="note">
-        <p className="scope-label">
-          Scope notes for selected {workflow.kind === "utility" ? "utility" : workflow.kind === "write-tool" ? "write tool" : "report"}
-        </p>
-        <h3 className="fs-body2 mb8">{metadata.title} credential notes</h3>
-        <ul className="m0">
-          <li>Basic/Business: provide your team URL and Personal access token.</li>
-          <li>
-            Enterprise: provide your site URL
-            {metadata.credentialRequirements.includes("api-key") ? ", API key," : ""} and either
-            connect with Enterprise OAuth or paste an optional access token.
-          </li>
-          <li>
-            Required scope notes:{" "}
-            {metadata.credentialRequirements
-              .map((requirement) => credentialLabels[requirement] ?? requirement)
-              .join(", ")}
-            .
-          </li>
-          {workflow.kind === "utility" && (
-            <li>Read-only workflow: both API lanes are used without requesting write access.</li>
-          )}
-          {isTagReport && (
-            <li>
-              Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires both an{" "}
-              API key and an OAuth access token (or pasted token).
-            </li>
-          )}
-          <li>Credential acquisition guidance placeholder: add internal steps here.</li>
-        </ul>
-      </div>
-      <form className="credentials-form" onSubmit={handleSubmit}>
-        <label className="d-block">
-          <span className="d-block fs-caption tt-uppercase fc-light mb4">Instance type</span>
-          <select
-            className="s-select"
-            value={draft.instanceType}
-            disabled={profileTargetBusy}
-            onChange={(event) => handleInstanceTypeChange(event.currentTarget.value as InstanceType)}
-          >
-            <option value="basic-business">Basic / Business</option>
-            <option value="enterprise">Enterprise</option>
-          </select>
-        </label>
-        <label className="d-block">
-          <span className="d-block fs-caption tt-uppercase fc-light mb4">Instance URL</span>
-          <input
-            className="s-input"
-            aria-describedby={
-              isEnterprise && profileErrors.baseUrl ? PROFILE_BASE_URL_ERROR_ID : undefined
-            }
-            aria-invalid={isEnterprise && profileErrors.baseUrl ? true : undefined}
-            value={draft.baseUrl}
-            disabled={profileTargetBusy}
-            onChange={(event) => updateDraft("baseUrl", event.currentTarget.value)}
-            placeholder="https://stackoverflowteams.com/c/team-name"
-            required
-          />
-        </label>
-        {isEnterprise && profileErrors.baseUrl && (
-          <p className="oauth-profile-error" id={PROFILE_BASE_URL_ERROR_ID} role="alert">
-            {profileErrors.baseUrl}
+          <p className="credential-workflow-title">Set up access for {metadata.title}</p>
+          <p className="workspace-copy credential-session-copy">
+            Choose your deployment, add the credentials it needs, and continue with your selected
+            {" "}{workflowKindLabel}. Nothing is sent until you run it.
           </p>
-        )}
-        {isEnterprise ? (
-          <>
-            <OAuthCustomerProfileManager
-              profiles={customerProfiles.profiles}
-              selectedProfileId={customerProfiles.selectedProfileId}
-              customerName={draft.customerName}
-              dirty={profileDirty}
-              ready={customerProfiles.ready}
-              available={customerProfiles.available}
-              busy={profileTargetBusy}
-              errors={profileErrors}
-              warning={customerProfiles.warning}
-              onCustomerNameChange={(value) => updateDraft("customerName", value)}
-              onSelect={handleProfileSelection}
-              onSave={() => void handleProfileSave()}
-              onUpdate={() => void handleProfileUpdate()}
-              onDelete={() => void handleProfileDelete()}
-            />
-            <label className="d-block">
-              <span className="d-block fs-caption tt-uppercase fc-light mb4">API key</span>
-              <input
-                className="s-input"
-                type="password"
-                autoComplete="off"
-                value={draft.apiKey}
+        </div>
+      </header>
+
+      <div className="credential-layout">
+        <form className="credentials-form" onSubmit={handleSubmit}>
+          <section className="credential-section" aria-labelledby="deployment-heading">
+            <div className="credential-section-heading">
+              <div>
+                <h3 id="deployment-heading">Choose your deployment</h3>
+                <p>This changes the sign-in details required below.</p>
+              </div>
+            </div>
+            <label className="credential-field credential-deployment-field">
+              <span className="credential-label">Instance type</span>
+              <select
+                className="s-select"
+                aria-label="Instance type"
+                value={draft.instanceType}
                 disabled={profileTargetBusy}
-                onChange={(event) => updateDraft("apiKey", event.currentTarget.value)}
-              />
-            </label>
-            <label className="d-block">
-              <span className="d-block fs-caption tt-uppercase fc-light mb4">
-                Access token (optional)
+                onChange={(event) => handleInstanceTypeChange(event.currentTarget.value as InstanceType)}
+              >
+                <option value="basic-business">Basic / Business</option>
+                <option value="enterprise">Enterprise</option>
+              </select>
+              <span className="credential-field-help">
+                {isEnterprise
+                  ? "For a dedicated Stack Enterprise site."
+                  : "For a hosted Stack Overflow for Teams workspace."}
               </span>
-              <input
-                className="s-input"
-                type="password"
-                aria-describedby="enterprise-access-token-help"
-                value={draft.accessToken}
-                onChange={(event) => updateDraft("accessToken", event.currentTarget.value)}
-              />
             </label>
-            <p className="oauth-status" id="enterprise-access-token-help">
-              Optional if you connect with Enterprise OAuth.
-            </p>
-            <label className="d-block">
-              <span className="d-block fs-caption tt-uppercase fc-light mb4">OAuth Client ID</span>
-              <input
-                className="s-input"
-                aria-describedby={
-                  profileErrors.oauthClientId ? PROFILE_CLIENT_ID_ERROR_ID : undefined
-                }
-                aria-invalid={profileErrors.oauthClientId ? true : undefined}
-                value={draft.oauthClientId}
-                disabled={profileTargetBusy}
-                onChange={(event) => updateDraft("oauthClientId", event.currentTarget.value)}
+          </section>
+
+          <section className="credential-section" aria-labelledby="connection-details-heading">
+            <div className="credential-section-heading">
+              <div>
+                <h3 id="connection-details-heading">
+                  {isEnterprise ? "Enterprise connection" : "Team connection"}
+                </h3>
+                <p>
+                  {isEnterprise
+                    ? "Use a saved customer or enter a new site connection."
+                    : "Enter the URL you use to open your team and its personal access token."}
+                </p>
+              </div>
+            </div>
+
+            {isEnterprise && (
+              <OAuthCustomerProfileManager
+                profiles={customerProfiles.profiles}
+                selectedProfileId={customerProfiles.selectedProfileId}
+                customerName={draft.customerName}
+                dirty={profileDirty}
+                ready={customerProfiles.ready}
+                available={customerProfiles.available}
+                busy={profileTargetBusy}
+                errors={profileErrors}
+                warning={customerProfiles.warning}
+                onCustomerNameChange={(value) => updateDraft("customerName", value)}
+                onSelect={handleProfileSelection}
+                onSave={() => void handleProfileSave()}
+                onUpdate={() => void handleProfileUpdate()}
+                onDelete={() => void handleProfileDelete()}
               />
-            </label>
-            {profileErrors.oauthClientId && (
-              <p className="oauth-profile-error" id={PROFILE_CLIENT_ID_ERROR_ID} role="alert">
-                {profileErrors.oauthClientId}
-              </p>
             )}
-            <div className="oauth-redirect-row">
-              <label className="d-block">
-                <span className="d-block fs-caption tt-uppercase fc-light mb4">
-                  OAuth redirect URL
+
+            <div className="credential-fields">
+              <label className="credential-field credential-url-field">
+                <span className="credential-label">
+                  {isEnterprise ? "Enterprise site URL" : "Team URL"}
+                  <span className="credential-required">Required</span>
                 </span>
                 <input
                   className="s-input"
-                  aria-label="OAuth redirect URL"
-                  value={redirectUri}
-                  readOnly
-                />
-              </label>
-              <button
-                className="s-btn"
-                type="button"
-                onClick={() => void handleCopyRedirectUri()}
-                disabled={!redirectUri}
-              >
-                Copy redirect URL
-              </button>
-            </div>
-            {redirectStatus && (
-              <p className="oauth-status" role="status">
-                {redirectStatus}
-              </p>
-            )}
-            <div className="oauth-connect-panel">
-              <label className="d-flex ai-center g8">
-                <input
-                  type="checkbox"
-                  checked={draft.includeNoExpiry}
+                  aria-label="Instance URL"
+                  aria-describedby={
+                    isEnterprise && profileErrors.baseUrl ? PROFILE_BASE_URL_ERROR_ID : undefined
+                  }
+                  aria-invalid={isEnterprise && profileErrors.baseUrl ? true : undefined}
+                  value={draft.baseUrl}
                   disabled={profileTargetBusy}
-                  onChange={(event) => updateDraft("includeNoExpiry", event.currentTarget.checked)}
+                  onChange={(event) => updateDraft("baseUrl", event.currentTarget.value)}
+                  placeholder={
+                    isEnterprise
+                      ? "https://support.example.com"
+                      : "https://stackoverflowteams.com/c/team-name"
+                  }
+                  inputMode="url"
+                  required
                 />
-                <span>Request non-expiring token</span>
+                <span className="credential-field-help">
+                  {isEnterprise
+                    ? "Use the root URL of your Enterprise site."
+                    : "Paste any page URL from your team; the team slug identifies the workspace."}
+                </span>
               </label>
-              <button
-                className="s-btn"
-                type="button"
-                onClick={handleOAuthConnect}
-                disabled={oauthPending}
-              >
-                Connect with Enterprise OAuth
-              </button>
-              {oauthPending && (
-                <button className="s-btn" type="button" onClick={handleOAuthCancel}>
-                  Cancel Enterprise OAuth
-                </button>
+
+              {isEnterprise && profileErrors.baseUrl && (
+                <p className="oauth-profile-error credential-field-error" id={PROFILE_BASE_URL_ERROR_ID} role="alert">
+                  {profileErrors.baseUrl}
+                </p>
               )}
-              <p className="oauth-status">
-                Enterprise OAuth credentials are saved after the authorization callback completes.
-              </p>
+
+              {isEnterprise ? (
+                <>
+                  <SecretInput
+                    label="API key"
+                    value={draft.apiKey}
+                    disabled={profileTargetBusy}
+                    onChange={(value) => updateDraft("apiKey", value)}
+                  />
+                  <div className="credential-field">
+                    <label className="credential-label" htmlFor="enterprise-oauth-client-id">
+                      OAuth Client ID
+                    </label>
+                    <input
+                      className="s-input"
+                      id="enterprise-oauth-client-id"
+                      aria-describedby={
+                        profileErrors.oauthClientId ? PROFILE_CLIENT_ID_ERROR_ID : undefined
+                      }
+                      aria-invalid={profileErrors.oauthClientId ? true : undefined}
+                      value={draft.oauthClientId}
+                      disabled={profileTargetBusy}
+                      onChange={(event) => updateDraft("oauthClientId", event.currentTarget.value)}
+                    />
+                    <span className="credential-field-help">
+                      The public client identifier configured for this browser app.
+                    </span>
+                  </div>
+                  {profileErrors.oauthClientId && (
+                    <p className="oauth-profile-error credential-field-error" id={PROFILE_CLIENT_ID_ERROR_ID} role="alert">
+                      {profileErrors.oauthClientId}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <SecretInput
+                  label="Personal access token"
+                  value={draft.pat}
+                  onChange={(value) => updateDraft("pat", value)}
+                />
+              )}
             </div>
-          </>
-        ) : (
-          <label className="d-block">
-            <span className="d-block fs-caption tt-uppercase fc-light mb4">
-              Personal access token
-            </span>
-            <input
-              className="s-input"
-              type="password"
-              value={draft.pat}
-              onChange={(event) => updateDraft("pat", event.currentTarget.value)}
-            />
-          </label>
-        )}
-        <button className="s-btn s-btn__primary" type="submit">
-          Save session credentials
-        </button>
-      </form>
-      {oauthError && (
-        <div className="s-notice s-notice__danger mt16" role="alert">
-          {oauthError}
-        </div>
-      )}
-      {saved && (
-        <div className="s-notice s-notice__success mt16" role="status">
-          Credentials saved for this browser session.
-        </div>
-      )}
+          </section>
+
+          {isEnterprise && (
+            <section className="credential-section credential-auth-section" aria-labelledby="enterprise-auth-heading">
+              <div className="credential-section-heading credential-section-heading-inline">
+                <div>
+                  <h3 id="enterprise-auth-heading">Authorize API access</h3>
+                  <p>OAuth is recommended. You can also paste a token you already have.</p>
+                </div>
+                <span className="credential-recommended-badge">OAuth recommended</span>
+              </div>
+
+              <div className="oauth-connect-panel">
+                <div>
+                  <h4>Sign in with Enterprise OAuth</h4>
+                  <p className="oauth-status">
+                    Opens your Enterprise site in a secure pop-up and returns the token to this session.
+                  </p>
+                </div>
+                <label className="credential-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={draft.includeNoExpiry}
+                    disabled={profileTargetBusy}
+                    onChange={(event) => updateDraft("includeNoExpiry", event.currentTarget.checked)}
+                  />
+                  <span>Request non-expiring token</span>
+                </label>
+                <div className="credential-action-row">
+                  <button
+                    className="s-btn s-btn__primary"
+                    type="button"
+                    onClick={handleOAuthConnect}
+                    disabled={oauthPending}
+                  >
+                    Connect with Enterprise OAuth
+                  </button>
+                  {oauthPending && (
+                    <button className="s-btn" type="button" onClick={handleOAuthCancel}>
+                      Cancel Enterprise OAuth
+                    </button>
+                  )}
+                </div>
+                <p className="oauth-status">
+                  Enterprise OAuth credentials are saved after the authorization callback completes.
+                </p>
+              </div>
+
+              <div className="credential-alternative" aria-hidden="true">
+                <span>or use an existing token</span>
+              </div>
+
+              <div className="credential-manual-token">
+                <SecretInput
+                  label="Access token (optional)"
+                  value={draft.accessToken}
+                  describedBy="enterprise-access-token-help"
+                  onChange={(value) => updateDraft("accessToken", value)}
+                />
+                <p className="oauth-status" id="enterprise-access-token-help">
+                  Optional if you connect with Enterprise OAuth.
+                </p>
+              </div>
+
+              <details className="oauth-advanced-settings">
+                <summary>OAuth setup details</summary>
+                <p className="oauth-status">
+                  Add this redirect URL to the OAuth application configured on your Enterprise site.
+                </p>
+                <div className="oauth-redirect-row">
+                  <label className="credential-field">
+                    <span className="credential-label">OAuth redirect URL</span>
+                    <input
+                      className="s-input"
+                      aria-label="OAuth redirect URL"
+                      value={redirectUri}
+                      readOnly
+                    />
+                  </label>
+                  <button
+                    className="s-btn"
+                    type="button"
+                    onClick={() => void handleCopyRedirectUri()}
+                    disabled={!redirectUri}
+                  >
+                    Copy redirect URL
+                  </button>
+                </div>
+                {redirectStatus && (
+                  <p className="oauth-status" role="status">
+                    {redirectStatus}
+                  </p>
+                )}
+              </details>
+            </section>
+          )}
+
+          <div className="credential-submit-row">
+            <button className="s-btn s-btn__primary" type="submit">
+              Save session credentials
+            </button>
+            <p>Use these credentials for live runs until this tab is refreshed or closed.</p>
+          </div>
+
+          {oauthError && (
+            <div className="s-notice s-notice__danger" role="alert">
+              {oauthError}
+            </div>
+          )}
+          {saved && (
+            <div className="s-notice s-notice__success" role="status">
+              Credentials saved for this browser session.
+            </div>
+          )}
+        </form>
+
+        <aside
+          className="credential-assurance"
+          aria-label="Credential privacy and requirements"
+        >
+          <section className="credential-assurance-section">
+            <h3>Your credentials stay local</h3>
+            <p>
+              OAuth access tokens and PATs remain in memory for this browser session. They are not
+              written to browser storage.
+            </p>
+            <p>
+              API keys persist only when you explicitly save an Enterprise customer profile.
+            </p>
+          </section>
+
+          <section className="credential-assurance-section credential-notes" role="note">
+            <p className="scope-label">Scope notes for selected {workflowKindLabel}</p>
+            <h3>{metadata.title} credential notes</h3>
+            <div className="credential-requirements" aria-label="Required credentials">
+              {requiredCredentialLabels.map((label) => (
+                <span key={label}>{label}</span>
+              ))}
+            </div>
+            <p className="credential-required-summary">
+              Required for this workflow: {requiredCredentialLabels.join(", ")}.
+            </p>
+            <ul>
+              <li>Basic/Business uses your team URL and Personal access token.</li>
+              <li>
+                Enterprise uses your site URL
+                {metadata.credentialRequirements.includes("api-key") ? ", API key," : ""} and either
+                Enterprise OAuth or a pasted access token.
+              </li>
+              {workflow.kind === "utility" && (
+                <li>Read-only workflow: both API lanes are used without requesting write access.</li>
+              )}
+              {isTagReport && (
+                <li>
+                  Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires both an{" "}
+                  API key and an OAuth access token (or pasted token).
+                </li>
+              )}
+            </ul>
+          </section>
+        </aside>
+      </div>
     </section>
   );
 }
