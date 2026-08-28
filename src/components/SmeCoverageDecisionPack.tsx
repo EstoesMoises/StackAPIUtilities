@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReportSectionId } from "../reports/reportPresentation";
+import { buildSmeCoverageAssessmentBrief } from "../utilities/smeCoverage/assessmentBrief";
 import type { SmeCoverageDecisionPack as DecisionPack } from "../utilities/smeCoverage/model";
 import {
   createSmeCoveragePresentation,
@@ -196,6 +197,7 @@ function SmeOverview({
   presentation: SmeCoveragePresentation;
 }) {
   const prioritySnapshot = presentation.findings.slice(0, 3);
+  const assessmentBrief = useMemo(() => buildSmeCoverageAssessmentBrief(pack), [pack]);
 
   return (
     <div className="sme-overview-layout">
@@ -232,10 +234,9 @@ function SmeOverview({
               </div>
             ))}
           </dl>
-          <p className="sme-overview">{presentation.overview}</p>
         </section>
 
-        <SmeCoverageAssessment assessment={pack.assessment} />
+        <SmeCoverageAssessment brief={assessmentBrief} />
 
         <section className="sme-priority-snapshot" aria-labelledby="sme-priority-snapshot-heading">
           <h3 id="sme-priority-snapshot-heading">Priority snapshot</h3>
