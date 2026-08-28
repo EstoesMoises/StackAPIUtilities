@@ -73,8 +73,10 @@ scoped to `/api/oauth/pkce`, and cleared after the callback succeeds or fails.
 These OAuth secrets never enter the customer-profile IndexedDB database.
 
 For Stack Enterprise OAuth, users may explicitly save browser-local customer
-profiles containing a customer name, Enterprise instance URL, OAuth client ID,
-the non-expiring-token preference, and an optional API key. The API key is stored
+profiles containing a customer name, Enterprise instance URL, optional OAuth client ID,
+the non-expiring-token preference, and an optional API key. A client ID is required
+to start OAuth, but not when the customer is saved with a manually supplied access
+token. The API key is stored
 directly in browser IndexedDB and is readable by scripts running under the app
 origin; customer profiles are not a secret vault. The server-controlled OAuth
 redirect URL is displayed read-only and is never overridden by a saved profile.

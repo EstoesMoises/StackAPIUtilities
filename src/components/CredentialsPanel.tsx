@@ -358,7 +358,9 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   }
 
   async function handleProfileSave() {
-    const result = await customerProfiles.createProfile(profileDraft);
+    const result = await customerProfiles.createProfile(profileDraft, {
+      accessTokenPresent: Boolean(draft.accessToken.trim()),
+    });
     if (!result.ok) {
       setProfileErrors(result.errors);
       return;
@@ -367,7 +369,9 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   }
 
   async function handleProfileUpdate() {
-    const result = await customerProfiles.updateProfile(profileDraft);
+    const result = await customerProfiles.updateProfile(profileDraft, {
+      accessTokenPresent: Boolean(draft.accessToken.trim()),
+    });
     if (!result.ok) {
       setProfileErrors(result.errors);
       return;

@@ -41,8 +41,14 @@ export interface UseOAuthCustomerProfilesResult {
   busy: boolean;
   warning: string | null;
   selectProfile(profileId?: string): Promise<void>;
-  createProfile(draft: OAuthCustomerProfileDraft): Promise<OAuthCustomerProfileMutationResult>;
-  updateProfile(draft: OAuthCustomerProfileDraft): Promise<OAuthCustomerProfileMutationResult>;
+  createProfile(
+    draft: OAuthCustomerProfileDraft,
+    options?: { accessTokenPresent?: boolean },
+  ): Promise<OAuthCustomerProfileMutationResult>;
+  updateProfile(
+    draft: OAuthCustomerProfileDraft,
+    options?: { accessTokenPresent?: boolean },
+  ): Promise<OAuthCustomerProfileMutationResult>;
   deleteSelectedProfile(): Promise<boolean>;
   clearWarning(): void;
 }
@@ -204,7 +210,10 @@ export function useOAuthCustomerProfiles(
   );
 
   const createProfile = useCallback(
-    async (draft: OAuthCustomerProfileDraft): Promise<OAuthCustomerProfileMutationResult> => {
+    async (
+      draft: OAuthCustomerProfileDraft,
+      options: { accessTokenPresent?: boolean } = {},
+    ): Promise<OAuthCustomerProfileMutationResult> => {
       if (!readyRef.current) {
         return failedMutation();
       }
@@ -212,7 +221,7 @@ export function useOAuthCustomerProfiles(
       beginMutation();
       try {
         return await enqueue(async () => {
-          const mutation = createOAuthCustomerProfile(draft, profilesRef.current);
+          const mutation = createOAuthCustomerProfile(draft, profilesRef.current, options);
           if (!mutation.ok) {
             return mutation;
           }
@@ -236,7 +245,10 @@ export function useOAuthCustomerProfiles(
   );
 
   const updateProfile = useCallback(
-    async (draft: OAuthCustomerProfileDraft): Promise<OAuthCustomerProfileMutationResult> => {
+    async (
+      draft: OAuthCustomerProfileDraft,
+      options: { accessTokenPresent?: boolean } = {},
+    ): Promise<OAuthCustomerProfileMutationResult> => {
       if (!readyRef.current) {
         return failedMutation();
       }
@@ -256,7 +268,12 @@ export function useOAuthCustomerProfiles(
             return failedMutation();
           }
 
-          const mutation = updateOAuthCustomerProfile(selected, draft, profilesRef.current);
+          const mutation = updateOAuthCustomerProfile(
+            selected,
+            draft,
+            profilesRef.current,
+            options,
+          );
           if (!mutation.ok) {
             return mutation;
           }
