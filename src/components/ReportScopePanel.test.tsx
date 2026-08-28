@@ -10,6 +10,8 @@ describe("ReportScopePanel", () => {
 
     expect(screen.getByLabelText("Current start date")).toBeInTheDocument();
     expect(screen.getByLabelText("Current end date")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Scope" })).toBeInTheDocument();
+    expect(screen.queryByText("Run scope")).not.toBeInTheDocument();
     expect(
       screen.getByText(/collects all available data for the selected dates/i),
     ).toHaveTextContent(

@@ -1,9 +1,22 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReportSectionId } from "../reports/reportPresentation";
+import { buildSmeCoverageAssessmentBrief } from "../utilities/smeCoverage/assessmentBrief";
 import type { SmeCoverageDecisionPack as DecisionPack } from "../utilities/smeCoverage/model";
+import {
+  createSmeCoveragePresentation,
+  type SmeCoveragePresentation,
+} from "../utilities/smeCoverage/presentation";
 import {
   downloadSmeCoverageEvidenceCsv,
   downloadSmeCoverageMarkdown,
 } from "../utils/smeCoverageDownloads";
+import { downloadSmeCoveragePdf } from "../utils/smeCoveragePdfDownload";
+import {
+  ReportCommandCenter,
+  requireReportCommandCenterSections,
+  type ReportCommandCenterSection,
+} from "./ReportCommandCenter";
+import { ReportExportBar, type ReportExportFeedback } from "./ReportExportBar";
 import { SmeCoverageAssessment } from "./SmeCoverageAssessment";
 import { SmeCoverageEvidenceTable } from "./SmeCoverageEvidenceTable";
 import { SmeCoverageFindings } from "./SmeCoverageFindings";
@@ -15,27 +28,72 @@ interface SmeCoverageDecisionPackProps {
   runPending?: boolean;
 }
 
-type DownloadFeedback =
-  | { state: "idle" }
-  | { state: "success"; message: string }
-  | { state: "failed"; message: string };
-
-const summaryMetrics = [
-  ["Tags analyzed", "tagsAnalyzed"],
-  ["Tags with SMEs", "tagsWithSmes"],
-  ["Immediate gaps", "immediateGaps"],
-  ["Critical under-coverage", "criticalUnderCoverage"],
-  ["Light-coverage tags", "lightCoverage"],
-] as const;
+interface SmeCoverageCommandCenterProps extends SmeCoverageDecisionPackProps {
+  presentation: SmeCoveragePresentation;
+}
 
 export function SmeCoverageDecisionPack({
   pack,
   onRunAgain,
   runPending = false,
 }: SmeCoverageDecisionPackProps) {
-  const [downloadFeedback, setDownloadFeedback] = useState<DownloadFeedback>({ state: "idle" });
+  const presentation = useMemo(() => createSmeCoveragePresentation(pack), [pack]);
 
-  function startDownload(format: "Markdown" | "CSV") {
+  return (
+    <SmeCoverageCommandCenter
+      key={presentation.reportKey}
+      pack={pack}
+      presentation={presentation}
+      onRunAgain={onRunAgain}
+      runPending={runPending}
+    />
+  );
+}
+
+function SmeCoverageCommandCenter({
+  pack,
+  presentation,
+  onRunAgain,
+  runPending = false,
+}: SmeCoverageCommandCenterProps) {
+  const [pdfPending, setPdfPending] = useState(false);
+  const [downloadFeedback, setDownloadFeedback] = useState<ReportExportFeedback>({ state: "idle" });
+  const mountedRef = useRef(true);
+  const pdfRequestRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      pdfRequestRef.current += 1;
+    };
+  }, []);
+
+  async function startPdfDownload() {
+    const requestId = ++pdfRequestRef.current;
+    setPdfPending(true);
+    setDownloadFeedback({ state: "idle" });
+
+    try {
+      await downloadSmeCoveragePdf(pack);
+      if (!isCurrentPdfRequest(requestId)) return;
+      setDownloadFeedback({ state: "success", message: "PDF download started." });
+    } catch {
+      if (!isCurrentPdfRequest(requestId)) return;
+      setDownloadFeedback({
+        state: "failed",
+        message: "The PDF download could not be prepared. Check browser download permissions and try again.",
+      });
+    } finally {
+      if (isCurrentPdfRequest(requestId)) setPdfPending(false);
+    }
+  }
+
+  function isCurrentPdfRequest(requestId: number): boolean {
+    return mountedRef.current && pdfRequestRef.current === requestId;
+  }
+
+  function startTextDownload(format: "Markdown" | "CSV") {
     try {
       if (format === "Markdown") downloadSmeCoverageMarkdown(pack);
       else downloadSmeCoverageEvidenceCsv(pack);
@@ -48,91 +106,169 @@ export function SmeCoverageDecisionPack({
     }
   }
 
-  return (
-    <section className="sme-decision-pack" aria-labelledby="sme-decision-pack-heading">
-      <div className="sme-result-header">
-        <div>
-          <p className="workspace-kicker">Decision pack</p>
-          <h2 id="sme-decision-pack-heading">SME coverage result</h2>
+  const sections = requireReportCommandCenterSections(
+    presentation.availableSections.map<ReportCommandCenterSection>((id) => ({
+      id,
+      label: sectionLabel(id, presentation),
+      content: sectionContent(id, pack, presentation),
+    })),
+  );
+
+  const header = (
+    <div className="report-command-header">
+      <div className="report-command-identity">
+        <div className="sme-result-title-row">
+          <h2 id="sme-decision-pack-heading">{presentation.title}</h2>
+          <span
+            className={`sme-completeness-badge sme-completeness-badge__${pack.snapshot.completeness.toLowerCase()}`}
+          >
+            {presentation.qualityLabel}
+          </span>
         </div>
-        <span
-          className={`sme-completeness-badge sme-completeness-badge__${pack.snapshot.completeness.toLowerCase()}`}
-        >
-          Analysis quality: {pack.snapshot.completeness}
-        </span>
+        <p className="report-command-meta">
+          <span className="report-command-kind">{presentation.kindLabel}</span>
+          <span>{presentation.sourceLabel}</span>
+          <span>{presentation.generatedAt}</span>
+          <span>{presentation.rowCount.toLocaleString("en-US")} evidence rows</span>
+        </p>
       </div>
-
-      {pack.warnings.length > 0 && (
-        <section className="sme-warning-stack" role="region" aria-labelledby="sme-warnings-heading">
-          <h3 id="sme-warnings-heading">Evidence notes</h3>
-          {pack.warnings.map((warning) => (
-            <p className="s-notice s-notice__warning" role="alert" key={`${warning.code}-${warning.message}`}>
-              {warning.message}
-            </p>
-          ))}
-        </section>
-      )}
-
-      <dl className="sme-snapshot" aria-label="Analysis snapshot">
-        <SnapshotItem label="Instance" value={pack.snapshot.instanceHost} />
-        <SnapshotItem label="Generated" value={pack.snapshot.generatedAt} />
-        <SnapshotItem label="Scope" value={pack.snapshot.scopeLabel} />
-        <SnapshotItem label="Collection" value={pack.snapshot.collectionLabel} />
-      </dl>
-
-      <section className="sme-summary" aria-labelledby="sme-summary-heading">
-        <h3 id="sme-summary-heading">Executive summary</h3>
-        <dl className="sme-kpi-strip">
-          {summaryMetrics.map(([label, key]) => (
-            <div className="sme-kpi" key={key}>
-              <dt>{label}</dt>
-              <dd>{pack.summary[key].toLocaleString("en-US")}</dd>
-            </div>
-          ))}
-        </dl>
-        <p className="sme-overview">{pack.overview}</p>
-      </section>
-
-      <SmeCoverageFindings findings={pack.findings} />
-      <SmeCoverageAssessment assessment={pack.assessment} />
-      <SmeCoverageMethodology
-        methodology={pack.methodology}
-        completeness={pack.snapshot.completeness}
+      <ReportExportBar
+        feedback={downloadFeedback}
+        onExportPdf={presentation.exports.pdf ? startPdfDownload : undefined}
+        onExportCsv={presentation.exports.csv ? () => startTextDownload("CSV") : undefined}
+        onExportMarkdown={presentation.exports.markdown ? () => startTextDownload("Markdown") : undefined}
+        onRunAgain={onRunAgain}
+        pdfPending={pdfPending}
+        runPending={runPending}
       />
+    </div>
+  );
 
-      <section className="sme-evidence-section" aria-labelledby="sme-evidence-heading">
-        <h3 id="sme-evidence-heading">Evidence</h3>
-        <p>Search and sort this view without changing the decision pack or its download order.</p>
-        <SmeCoverageEvidenceTable evidence={pack.evidence} />
-      </section>
+  return (
+    <ReportCommandCenter
+      reportKey={presentation.reportKey}
+      header={header}
+      sections={sections}
+    />
+  );
+}
 
-      <div className="sme-result-actions" aria-label="Decision pack actions">
-        <button className="s-btn s-btn__outlined" type="button" onClick={() => startDownload("Markdown")}>
-          Download Markdown
-        </button>
-        <button className="s-btn s-btn__outlined" type="button" onClick={() => startDownload("CSV")}>
-          Download CSV
-        </button>
-        <button
-          className="s-btn s-btn__filled"
-          type="button"
-          disabled={runPending}
-          onClick={onRunAgain}
-        >
-          Run again
-        </button>
+function sectionLabel(id: ReportSectionId, presentation: SmeCoveragePresentation): string {
+  switch (id) {
+    case "overview":
+      return "Overview";
+    case "findings":
+      return `Priority findings · ${presentation.findings.length.toLocaleString("en-US")}`;
+    case "evidence":
+      return `Evidence · ${presentation.rowCount.toLocaleString("en-US")}`;
+    case "methodology":
+      return "Methodology";
+  }
+}
+
+function sectionContent(
+  id: ReportSectionId,
+  pack: DecisionPack,
+  presentation: SmeCoveragePresentation,
+) {
+  switch (id) {
+    case "overview":
+      return <SmeOverview pack={pack} presentation={presentation} />;
+    case "findings":
+      return <SmeCoverageFindings findings={presentation.findings} />;
+    case "evidence":
+      return <SmeCoverageEvidenceTable evidence={presentation.evidence} />;
+    case "methodology":
+      return (
+        <SmeCoverageMethodology
+          methodology={pack.methodology}
+          completeness={pack.snapshot.completeness}
+          standalone
+        />
+      );
+  }
+}
+
+function SmeOverview({
+  pack,
+  presentation,
+}: {
+  pack: DecisionPack;
+  presentation: SmeCoveragePresentation;
+}) {
+  const prioritySnapshot = presentation.findings.slice(0, 3);
+  const assessmentBrief = useMemo(() => buildSmeCoverageAssessmentBrief(pack), [pack]);
+
+  return (
+    <div className="sme-overview-layout">
+      <div className="sme-overview-main">
+        {pack.warnings.length > 0 && (
+          <section className="sme-warning-stack" aria-labelledby="sme-warnings-heading">
+            <h3 id="sme-warnings-heading">Evidence notes</h3>
+            {pack.warnings.map((warning) => (
+              <p className="s-notice s-notice__warning" role="alert" key={`${warning.code}-${warning.message}`}>
+                {warning.message}
+              </p>
+            ))}
+          </section>
+        )}
+
+        <dl className="sme-snapshot" aria-label="Analysis snapshot">
+          <SnapshotItem label="Instance" value={pack.snapshot.instanceHost} />
+          <SnapshotItem label="Generated" value={pack.snapshot.generatedAt} />
+          <SnapshotItem label="Scope" value={pack.snapshot.scopeLabel} />
+          <SnapshotItem label="Collection" value={pack.snapshot.collectionLabel} />
+        </dl>
+
+        <section className="sme-summary" aria-labelledby="sme-summary-heading">
+          <h3 id="sme-summary-heading">Executive summary</h3>
+          <dl className="sme-kpi-strip">
+            {presentation.metrics.map((metric) => (
+              <div className="sme-kpi" key={metric.label}>
+                <dt>{metric.label}</dt>
+                <dd>
+                  {typeof metric.value === "number"
+                    ? metric.value.toLocaleString("en-US")
+                    : metric.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+
+        <SmeCoverageAssessment brief={assessmentBrief} />
+
+        <section className="sme-priority-snapshot" aria-labelledby="sme-priority-snapshot-heading">
+          <h3 id="sme-priority-snapshot-heading">Priority snapshot</h3>
+          {prioritySnapshot.length > 0 ? (
+            <ul aria-label="Top priority findings">
+              {prioritySnapshot.map(({ tier, evidence }, index) => (
+                <li key={`${tier}:${evidence.tagName}:${index}`}>
+                  <div className="sme-priority-snapshot-heading">
+                    <span className={`sme-tier-badge sme-tier-badge__${tierClass(tier)}`}>{tier}</span>
+                    <strong>{evidence.tagName}</strong>
+                  </div>
+                  <p>{evidence.recommendedAction}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="sme-empty-state">No prepared priority findings are available for this report.</p>
+          )}
+        </section>
       </div>
-      {downloadFeedback.state === "success" && (
-        <p className="sme-action-feedback sme-action-feedback__success" role="status">
-          {downloadFeedback.message}
+
+      <aside className="sme-deliverable-panel" aria-labelledby="sme-deliverable-heading">
+        <h3 id="sme-deliverable-heading">Deliverable</h3>
+        <strong>Ready to share</strong>
+        <p>The PDF contains a concise executive summary and bounded priority action register.</p>
+        <p>
+          {presentation.exports.csv
+            ? "The evidence CSV contains every canonical row in decision-pack order."
+            : "No evidence CSV is available because this report contains no canonical evidence rows."}
         </p>
-      )}
-      {downloadFeedback.state === "failed" && (
-        <p className="sme-action-feedback sme-action-feedback__error" role="alert">
-          {downloadFeedback.message}
-        </p>
-      )}
-    </section>
+      </aside>
+    </div>
   );
 }
 
@@ -143,4 +279,8 @@ function SnapshotItem({ label, value }: { label: string; value: string }) {
       <dd>{value}</dd>
     </div>
   );
+}
+
+function tierClass(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }

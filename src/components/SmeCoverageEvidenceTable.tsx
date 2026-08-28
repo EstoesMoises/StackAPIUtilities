@@ -1,16 +1,11 @@
-import { useMemo, useState } from "react";
-import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  getFilteredRowModel,
-  getSortedRowModel,
-  useReactTable,
-  type SortingFn,
-  type SortingState,
-} from "@tanstack/react-table";
+import { useMemo } from "react";
+import { createColumnHelper, type SortingFn } from "@tanstack/react-table";
 import type { SmeCoverageEvidenceRow } from "../utilities/smeCoverage/model";
 import { formatDisplayedRatio } from "../utilities/smeCoverage/narrative";
+import {
+  ReportEvidenceExplorer,
+  type EvidenceFacet,
+} from "./ReportEvidenceExplorer";
 
 interface SmeCoverageEvidenceTableProps {
   evidence: readonly SmeCoverageEvidenceRow[];
@@ -75,6 +70,11 @@ const columns = [
       </span>
     ),
   }),
+  columnHelper.display({
+    id: "evidenceQuality",
+    header: "Evidence quality",
+    cell: ({ row }) => evidenceQuality(row.original),
+  }),
   columnHelper.accessor("demandQuality", {
     header: "Demand quality",
     sortingFn: codeUnitSort,
@@ -93,98 +93,95 @@ const columns = [
   }),
 ];
 
+const defaultColumnVisibility = {
+  questionCount: false,
+  questionCountBasis: false,
+  coveragePercentile: false,
+  reason: false,
+  demandQuality: false,
+  smeQuality: false,
+} as const;
+
 export function SmeCoverageEvidenceTable({ evidence }: SmeCoverageEvidenceTableProps) {
-  const [search, setSearch] = useState("");
-  const [sorting, setSorting] = useState<SortingState>([]);
-  const tableData = useMemo(() => [...evidence], [evidence]);
-  const table = useReactTable({
-    data: tableData,
-    columns,
-    state: { globalFilter: search, sorting },
-    onGlobalFilterChange: setSearch,
-    onSortingChange: setSorting,
-    globalFilterFn: (row, _columnId, filterValue) => {
-      const query = String(filterValue).toLocaleLowerCase("en-US");
-      return Object.values(row.original).some((value) =>
-        String(value ?? "Unavailable").toLocaleLowerCase("en-US").includes(query),
-      );
-    },
-    getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    enableSortingRemoval: false,
-    sortDescFirst: false,
-  });
-  const rows = table.getRowModel().rows;
+  const coverageTiers = useMemo(
+    () => [...new Set(evidence.map((row) => row.coverageTier))],
+    [evidence],
+  );
+  const facets = useMemo<readonly EvidenceFacet<SmeCoverageEvidenceRow>[]>(
+    () => [
+      {
+        id: "coverageTier",
+        label: "Coverage tier",
+        allLabel: "All coverage tiers",
+        options: coverageTiers,
+        matches: matchesCoverageTier,
+      },
+      {
+        id: "evidenceQuality",
+        label: "Evidence quality",
+        allLabel: "All evidence quality",
+        options: ["Complete", "Needs review"],
+        matches: matchesEvidenceQuality,
+      },
+    ],
+    [coverageTiers],
+  );
 
   return (
     <div className="sme-evidence">
-      <label className="sme-evidence-search">
-        <span>Search evidence</span>
-        <input
-          className="s-input"
-          type="search"
-          value={search}
-          onChange={(event) => setSearch(event.currentTarget.value)}
-        />
-      </label>
-      <div
-        className="sme-evidence-table-wrap"
-        role="region"
-        aria-label="SME coverage evidence table"
-        tabIndex={0}
-      >
-        <table className="s-table sme-evidence-table">
-          <thead>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => {
-                  const sorted = header.column.getIsSorted();
-                  return (
-                    <th
-                      key={header.id}
-                      scope="col"
-                      aria-sort={
-                        sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : "none"
-                      }
-                    >
-                      <button
-                        className="sme-sort-button"
-                        type="button"
-                        onClick={header.column.getToggleSortingHandler()}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                        <span className="sme-sort-indicator" aria-hidden="true">
-                          {sorted === "asc" ? "↑" : sorted === "desc" ? "↓" : "↕"}
-                        </span>
-                      </button>
-                    </th>
-                  );
-                })}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {rows.length > 0 ? (
-              rows.map((row) => (
-                <tr key={row.id}>
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
-                  ))}
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td className="sme-evidence-empty" colSpan={columns.length}>
-                  {search ? "No evidence matches this search." : "No evidence rows are in this decision pack."}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <ReportEvidenceExplorer
+        rows={evidence}
+        columns={columns}
+        defaultColumnVisibility={defaultColumnVisibility}
+        facets={facets}
+        getSearchText={getSmeEvidenceSearchText}
+        getRowId={getSmeEvidenceRowId}
+        ariaLabel="SME coverage evidence table"
+        emptyMessage="No evidence rows are in this decision pack."
+      />
     </div>
   );
+}
+
+function evidenceQuality(row: SmeCoverageEvidenceRow): "Complete" | "Needs review" {
+  return row.demandQuality === "Complete" && row.smeQuality === "Complete"
+    ? "Complete"
+    : "Needs review";
+}
+
+function matchesCoverageTier(row: SmeCoverageEvidenceRow, value: string): boolean {
+  return row.coverageTier === value;
+}
+
+function matchesEvidenceQuality(row: SmeCoverageEvidenceRow, value: string): boolean {
+  return evidenceQuality(row) === value;
+}
+
+function getSmeEvidenceSearchText(row: SmeCoverageEvidenceRow): string {
+  return [
+    row.tagName,
+    row.pageViews,
+    formatNumber(row.pageViews ?? undefined),
+    row.questionCount,
+    formatNumber(row.questionCount ?? undefined),
+    row.questionCountBasis,
+    row.smeCount,
+    formatSmeCount(row.smeCount ?? undefined),
+    row.pageViewsPerSme,
+    row.pageViewsPerSme === null ? "Unavailable" : formatDisplayedRatio(row.pageViewsPerSme),
+    row.coveragePercentile,
+    formatNumber(row.coveragePercentile ?? undefined),
+    row.coverageTier,
+    evidenceQuality(row),
+    row.demandQuality,
+    row.smeQuality,
+    row.reason,
+    row.recommendedAction,
+  ].join(" ");
+}
+
+function getSmeEvidenceRowId(row: SmeCoverageEvidenceRow): string {
+  return row.tagName;
 }
 
 function formatNumber(value: number | undefined): string {

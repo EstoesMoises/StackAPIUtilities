@@ -114,6 +114,7 @@ describe("CredentialsPanel", () => {
 
     expect(screen.getByText("Scope notes for SME Coverage Analyzer")).toBeInTheDocument();
     expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
+    expect(screen.queryByText("Scope notes for selected utility")).not.toBeInTheDocument();
     expect(screen.getByText(/read-only/i)).toBeInTheDocument();
     expect(screen.getByText(/both API lanes/i)).toBeInTheDocument();
     expect(screen.getByText(/API key, Access token/i)).toBeInTheDocument();

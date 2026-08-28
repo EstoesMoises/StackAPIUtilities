@@ -35,7 +35,6 @@ export function ReportScopePanel({ scope, onChange }: ReportScopePanelProps) {
     <section className="report-scope-panel" aria-labelledby="report-scope-heading">
       <div className="workspace-header">
         <div>
-          <p className="fs-caption fc-light mb4">Run scope</p>
           <h3 className="fs-title m0" id="report-scope-heading">
             Scope
           </h3>

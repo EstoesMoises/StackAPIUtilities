@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-21T04:10:00Z",
+  "title": "Design System: Stack API Utilities",
+  "extensions": {
+    "colorMeta": {
+      "primary-orange": { "role": "primary", "displayName": "Stack Action Orange", "canonical": "oklch(0.72 0.18 48)", "tonalRamp": ["oklch(0.15 0.18 48)", "oklch(0.27 0.18 48)", "oklch(0.39 0.18 48)", "oklch(0.51 0.18 48)", "oklch(0.63 0.18 48)", "oklch(0.75 0.18 48)", "oklch(0.87 0.18 48)", "oklch(0.95 0.18 48)"] },
+      "primary-orange-strong": { "role": "primary", "displayName": "Strong Stack Orange", "canonical": "oklch(0.62 0.19 43)", "tonalRamp": ["oklch(0.15 0.19 43)", "oklch(0.27 0.19 43)", "oklch(0.39 0.19 43)", "oklch(0.51 0.19 43)", "oklch(0.63 0.19 43)", "oklch(0.75 0.19 43)", "oklch(0.87 0.19 43)", "oklch(0.95 0.19 43)"] },
+      "primary-orange-deep": { "role": "primary", "displayName": "Deep Focus Orange", "canonical": "oklch(0.47 0.16 39)", "tonalRamp": ["oklch(0.15 0.16 39)", "oklch(0.27 0.16 39)", "oklch(0.39 0.16 39)", "oklch(0.51 0.16 39)", "oklch(0.63 0.16 39)", "oklch(0.75 0.16 39)", "oklch(0.87 0.16 39)", "oklch(0.95 0.16 39)"] },
+      "primary-orange-soft": { "role": "primary", "displayName": "Soft Selection Orange", "canonical": "oklch(0.95 0.04 56)", "tonalRamp": ["oklch(0.15 0.04 56)", "oklch(0.27 0.04 56)", "oklch(0.39 0.04 56)", "oklch(0.51 0.04 56)", "oklch(0.63 0.04 56)", "oklch(0.75 0.04 56)", "oklch(0.87 0.04 56)", "oklch(0.95 0.04 56)"] },
+      "information-blue": { "role": "secondary", "displayName": "Evidence Blue", "canonical": "oklch(0.48 0.13 252)", "tonalRamp": ["oklch(0.15 0.13 252)", "oklch(0.27 0.13 252)", "oklch(0.39 0.13 252)", "oklch(0.51 0.13 252)", "oklch(0.63 0.13 252)", "oklch(0.75 0.13 252)", "oklch(0.87 0.13 252)", "oklch(0.95 0.13 252)"] },
+      "information-blue-soft": { "role": "secondary", "displayName": "Soft Evidence Blue", "canonical": "oklch(0.95 0.025 252)", "tonalRamp": ["oklch(0.15 0.025 252)", "oklch(0.27 0.025 252)", "oklch(0.39 0.025 252)", "oklch(0.51 0.025 252)", "oklch(0.63 0.025 252)", "oklch(0.75 0.025 252)", "oklch(0.87 0.025 252)", "oklch(0.95 0.025 252)"] },
+      "success-green": { "role": "tertiary", "displayName": "Success Green", "canonical": "oklch(0.52 0.13 147)", "tonalRamp": ["oklch(0.15 0.13 147)", "oklch(0.27 0.13 147)", "oklch(0.39 0.13 147)", "oklch(0.51 0.13 147)", "oklch(0.63 0.13 147)", "oklch(0.75 0.13 147)", "oklch(0.87 0.13 147)", "oklch(0.95 0.13 147)"] },
+      "success-green-text": { "role": "tertiary", "displayName": "Success Text Green", "canonical": "oklch(0.42 0.12 147)", "tonalRamp": ["oklch(0.15 0.12 147)", "oklch(0.27 0.12 147)", "oklch(0.39 0.12 147)", "oklch(0.51 0.12 147)", "oklch(0.63 0.12 147)", "oklch(0.75 0.12 147)", "oklch(0.87 0.12 147)", "oklch(0.95 0.12 147)"] },
+      "success-green-soft": { "role": "tertiary", "displayName": "Soft Success Green", "canonical": "oklch(0.94 0.04 147)", "tonalRamp": ["oklch(0.15 0.04 147)", "oklch(0.27 0.04 147)", "oklch(0.39 0.04 147)", "oklch(0.51 0.04 147)", "oklch(0.63 0.04 147)", "oklch(0.75 0.04 147)", "oklch(0.87 0.04 147)", "oklch(0.95 0.04 147)"] },
+      "danger-red": { "role": "tertiary", "displayName": "Danger Red", "canonical": "oklch(0.54 0.18 28)", "tonalRamp": ["oklch(0.15 0.18 28)", "oklch(0.27 0.18 28)", "oklch(0.39 0.18 28)", "oklch(0.51 0.18 28)", "oklch(0.63 0.18 28)", "oklch(0.75 0.18 28)", "oklch(0.87 0.18 28)", "oklch(0.95 0.18 28)"] },
+      "danger-red-soft": { "role": "tertiary", "displayName": "Soft Danger Red", "canonical": "oklch(0.95 0.04 28)", "tonalRamp": ["oklch(0.15 0.04 28)", "oklch(0.27 0.04 28)", "oklch(0.39 0.04 28)", "oklch(0.51 0.04 28)", "oklch(0.63 0.04 28)", "oklch(0.75 0.04 28)", "oklch(0.87 0.04 28)", "oklch(0.95 0.04 28)"] },
+      "warning-yellow": { "role": "tertiary", "displayName": "Warning Yellow", "canonical": "oklch(0.86 0.15 88)", "tonalRamp": ["oklch(0.15 0.15 88)", "oklch(0.27 0.15 88)", "oklch(0.39 0.15 88)", "oklch(0.51 0.15 88)", "oklch(0.63 0.15 88)", "oklch(0.75 0.15 88)", "oklch(0.87 0.15 88)", "oklch(0.95 0.15 88)"] },
+      "warning-yellow-soft": { "role": "tertiary", "displayName": "Soft Warning Yellow", "canonical": "oklch(0.96 0.05 88)", "tonalRamp": ["oklch(0.15 0.05 88)", "oklch(0.27 0.05 88)", "oklch(0.39 0.05 88)", "oklch(0.51 0.05 88)", "oklch(0.63 0.05 88)", "oklch(0.75 0.05 88)", "oklch(0.87 0.05 88)", "oklch(0.95 0.05 88)"] },
+      "neutral-canvas": { "role": "neutral", "displayName": "Cool Canvas", "canonical": "oklch(0.96 0.006 255)", "tonalRamp": ["oklch(0.15 0.006 255)", "oklch(0.27 0.006 255)", "oklch(0.39 0.006 255)", "oklch(0.51 0.006 255)", "oklch(0.63 0.006 255)", "oklch(0.75 0.006 255)", "oklch(0.87 0.006 255)", "oklch(0.95 0.006 255)"] },
+      "neutral-canvas-deep": { "role": "neutral", "displayName": "Raised Canvas", "canonical": "oklch(0.93 0.012 255)", "tonalRamp": ["oklch(0.15 0.012 255)", "oklch(0.27 0.012 255)", "oklch(0.39 0.012 255)", "oklch(0.51 0.012 255)", "oklch(0.63 0.012 255)", "oklch(0.75 0.012 255)", "oklch(0.87 0.012 255)", "oklch(0.95 0.012 255)"] },
+      "neutral-surface": { "role": "neutral", "displayName": "Paper Surface", "canonical": "oklch(1 0 0)", "tonalRamp": ["oklch(0.15 0 0)", "oklch(0.27 0 0)", "oklch(0.39 0 0)", "oklch(0.51 0 0)", "oklch(0.63 0 0)", "oklch(0.75 0 0)", "oklch(0.87 0 0)", "oklch(0.95 0 0)"] },
+      "neutral-surface-raised": { "role": "neutral", "displayName": "Quiet Raised Surface", "canonical": "oklch(0.985 0.004 255)", "tonalRamp": ["oklch(0.15 0.004 255)", "oklch(0.27 0.004 255)", "oklch(0.39 0.004 255)", "oklch(0.51 0.004 255)", "oklch(0.63 0.004 255)", "oklch(0.75 0.004 255)", "oklch(0.87 0.004 255)", "oklch(0.95 0.004 255)"] },
+      "neutral-surface-hover": { "role": "neutral", "displayName": "Neutral Hover Surface", "canonical": "oklch(0.965 0.009 255)", "tonalRamp": ["oklch(0.15 0.009 255)", "oklch(0.27 0.009 255)", "oklch(0.39 0.009 255)", "oklch(0.51 0.009 255)", "oklch(0.63 0.009 255)", "oklch(0.75 0.009 255)", "oklch(0.87 0.009 255)", "oklch(0.95 0.009 255)"] },
+      "neutral-ink": { "role": "neutral", "displayName": "Operational Ink", "canonical": "oklch(0.2 0.035 255)", "tonalRamp": ["oklch(0.15 0.035 255)", "oklch(0.27 0.035 255)", "oklch(0.39 0.035 255)", "oklch(0.51 0.035 255)", "oklch(0.63 0.035 255)", "oklch(0.75 0.035 255)", "oklch(0.87 0.035 255)", "oklch(0.95 0.035 255)"] },
+      "neutral-text": { "role": "neutral", "displayName": "Working Text", "canonical": "oklch(0.29 0.028 255)", "tonalRamp": ["oklch(0.15 0.028 255)", "oklch(0.27 0.028 255)", "oklch(0.39 0.028 255)", "oklch(0.51 0.028 255)", "oklch(0.63 0.028 255)", "oklch(0.75 0.028 255)", "oklch(0.87 0.028 255)", "oklch(0.95 0.028 255)"] },
+      "neutral-text-muted": { "role": "neutral", "displayName": "Muted Text", "canonical": "oklch(0.43 0.027 255)", "tonalRamp": ["oklch(0.15 0.027 255)", "oklch(0.27 0.027 255)", "oklch(0.39 0.027 255)", "oklch(0.51 0.027 255)", "oklch(0.63 0.027 255)", "oklch(0.75 0.027 255)", "oklch(0.87 0.027 255)", "oklch(0.95 0.027 255)"] },
+      "neutral-text-subtle": { "role": "neutral", "displayName": "Quiet Text", "canonical": "oklch(0.51 0.025 255)", "tonalRamp": ["oklch(0.15 0.025 255)", "oklch(0.27 0.025 255)", "oklch(0.39 0.025 255)", "oklch(0.51 0.025 255)", "oklch(0.63 0.025 255)", "oklch(0.75 0.025 255)", "oklch(0.87 0.025 255)", "oklch(0.95 0.025 255)"] },
+      "neutral-border": { "role": "neutral", "displayName": "Quiet Border", "canonical": "oklch(0.84 0.018 255)", "tonalRamp": ["oklch(0.15 0.018 255)", "oklch(0.27 0.018 255)", "oklch(0.39 0.018 255)", "oklch(0.51 0.018 255)", "oklch(0.63 0.018 255)", "oklch(0.75 0.018 255)", "oklch(0.87 0.018 255)", "oklch(0.95 0.018 255)"] },
+      "neutral-border-strong": { "role": "neutral", "displayName": "Strong Border", "canonical": "oklch(0.7 0.03 255)", "tonalRamp": ["oklch(0.15 0.03 255)", "oklch(0.27 0.03 255)", "oklch(0.39 0.03 255)", "oklch(0.51 0.03 255)", "oklch(0.63 0.03 255)", "oklch(0.75 0.03 255)", "oklch(0.87 0.03 255)", "oklch(0.95 0.03 255)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Workspace Display", "purpose": "Top-level workspace headings." },
+      "headline": { "displayName": "Report Headline", "purpose": "Generated report identity and major result titles." },
+      "title": { "displayName": "Section Title", "purpose": "Summary, findings, warning, deliverable, and methodology headings." },
+      "body": { "displayName": "Operational Body", "purpose": "Explanations, findings context, and methodology." },
+      "label": { "displayName": "Dense Label", "purpose": "Metadata, table headings, field labels, and status pills." }
+    },
+    "shadows": [
+      { "name": "hairline-surface", "value": "0 1px 2px oklch(0.2 0.035 255 / 0.08)", "purpose": "Shallow support for top bars, high-level panels, and command centers." },
+      { "name": "detached-popover", "value": "0 8px 22px oklch(0.2 0.035 255 / 0.16)", "purpose": "Detached menus above dense workspace content." }
+    ],
+    "motion": [
+      { "name": "ease-out-product", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Shared easing for state changes and brief entrance motion." },
+      { "name": "motion-fast", "value": "140ms", "purpose": "Press and lift response." },
+      { "name": "motion-base", "value": "190ms", "purpose": "Control color, border, and background transitions." },
+      { "name": "motion-slow", "value": "260ms", "purpose": "Brief surface and notice settling motion." }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "460px" },
+      { "name": "compact", "value": "640px" },
+      { "name": "shell-stack", "value": "780px" },
+      { "name": "report-stack", "value": "860px" },
+      { "name": "wide-shell", "value": "1220px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Functional orange action for the single primary operation in a control group.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Export polished PDF</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:7px 13px;border:1px solid var(--so-orange-strong,oklch(0.62 0.19 43));border-radius:7px;color:var(--so-ink,oklch(0.2 0.035 255));background:var(--so-orange,oklch(0.72 0.18 48));font:750 13px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color 190ms cubic-bezier(0.16,1,0.3,1),border-color 190ms cubic-bezier(0.16,1,0.3,1),transform 140ms cubic-bezier(0.16,1,0.3,1)}.ds-btn-primary:hover{border-color:var(--so-orange-deep,oklch(0.47 0.16 39));background:oklch(0.76 0.16 55);transform:translateY(-1px)}.ds-btn-primary:active{transform:translateY(0)}.ds-btn-primary:focus-visible{outline:3px solid var(--so-focus,oklch(0.47 0.16 39));outline-offset:2px}"
+    },
+    {
+      "name": "Outlined Button",
+      "kind": "button",
+      "refersTo": "button-outlined",
+      "description": "Default secondary action with a visible neutral boundary.",
+      "html": "<button class=\"ds-btn-outlined\" type=\"button\">Run again</button>",
+      "css": ".ds-btn-outlined{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:7px 13px;border:1px solid var(--so-border-strong,oklch(0.7 0.03 255));border-radius:7px;color:var(--so-ink,oklch(0.2 0.035 255));background:var(--so-surface,oklch(1 0 0));font:750 13px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color 190ms cubic-bezier(0.16,1,0.3,1),transform 140ms cubic-bezier(0.16,1,0.3,1)}.ds-btn-outlined:hover{background:var(--so-surface-hover,oklch(0.965 0.009 255));transform:translateY(-1px)}.ds-btn-outlined:active{transform:translateY(0)}.ds-btn-outlined:focus-visible{outline:3px solid var(--so-focus,oklch(0.47 0.16 39));outline-offset:2px}"
+    },
+    {
+      "name": "Evidence CSV Button",
+      "kind": "button",
+      "description": "Direct evidence export paired with the primary polished-report action.",
+      "html": "<button class=\"ds-btn-evidence\" type=\"button\">Export evidence CSV</button>",
+      "css": ".ds-btn-evidence{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:7px 13px;border:1px solid var(--so-blue,oklch(0.48 0.13 252));border-radius:7px;color:var(--so-blue,oklch(0.48 0.13 252));background:var(--so-blue-soft,oklch(0.95 0.025 252));font:750 13px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color 190ms cubic-bezier(0.16,1,0.3,1),transform 140ms cubic-bezier(0.16,1,0.3,1)}.ds-btn-evidence:hover{color:var(--so-ink,oklch(0.2 0.035 255));background:var(--so-surface-hover,oklch(0.965 0.009 255));transform:translateY(-1px)}.ds-btn-evidence:active{transform:translateY(0)}.ds-btn-evidence:focus-visible{outline:3px solid var(--so-focus,oklch(0.47 0.16 39));outline-offset:2px}"
+    },
+    {
+      "name": "Evidence Search Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Compact bordered field for searching or filtering dense operational data.",
+      "html": "<label class=\"ds-field\"><span>Search evidence</span><input class=\"ds-input\" type=\"search\" placeholder=\"Search tags and actions\"></label>",
+      "css": ".ds-field{display:grid;gap:5px;width:min(100%,420px);color:var(--so-text,oklch(0.29 0.028 255));font:800 12px/1.3 Inter,ui-sans-serif,system-ui,sans-serif}.ds-input{width:100%;min-height:38px;padding:7px 9px;border:1px solid var(--so-border-strong,oklch(0.7 0.03 255));border-radius:7px;color:var(--so-ink,oklch(0.2 0.035 255));background:var(--so-surface,oklch(1 0 0));font:400 14px/1.4 Inter,ui-sans-serif,system-ui,sans-serif}.ds-input::placeholder{color:var(--so-text-muted,oklch(0.43 0.027 255))}.ds-input:hover{border-color:var(--so-text-subtle,oklch(0.51 0.025 255))}.ds-input:focus{outline:3px solid var(--so-focus,oklch(0.47 0.16 39));outline-offset:2px}"
+    },
+    {
+      "name": "Report Tabs",
+      "kind": "nav",
+      "refersTo": "tab-selected",
+      "description": "Content-aware navigation with a soft orange selected state.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\"><button class=\"ds-tab ds-tab-selected\" role=\"tab\" aria-selected=\"true\">Overview</button><button class=\"ds-tab\" role=\"tab\">Evidence · 1,240</button></div>",
+      "css": ".ds-tabs{display:flex;flex-wrap:wrap;gap:4px;padding:8px 14px;border:1px solid var(--so-border,oklch(0.84 0.018 255));border-radius:8px;background:var(--so-surface-raised,oklch(0.985 0.004 255))}.ds-tab{min-height:36px;padding:7px 12px;border:1px solid transparent;border-radius:6px;color:var(--so-text,oklch(0.29 0.028 255));background:transparent;font:750 13px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer}.ds-tab:hover{border-color:var(--so-border,oklch(0.84 0.018 255));background:var(--so-surface,oklch(1 0 0))}.ds-tab-selected{border-color:var(--so-orange-strong,oklch(0.62 0.19 43));color:var(--so-ink,oklch(0.2 0.035 255));background:var(--so-orange-soft,oklch(0.95 0.04 56))}.ds-tab:focus-visible{outline:3px solid var(--so-focus,oklch(0.47 0.16 39));outline-offset:2px}"
+    },
+    {
+      "name": "Completeness Status Pill",
+      "kind": "chip",
+      "refersTo": "status-pill",
+      "description": "Text-first quality state reinforced by a quiet semantic surface.",
+      "html": "<span class=\"ds-status-complete\">Complete analysis</span>",
+      "css": ".ds-status-complete{display:inline-flex;align-items:center;min-height:28px;padding:5px 9px;border:1px solid oklch(0.72 0.08 147);border-radius:999px;color:var(--so-green-text,oklch(0.42 0.12 147));background:var(--so-green-soft,oklch(0.94 0.04 147));font:800 12px/1.2 Inter,ui-sans-serif,system-ui,sans-serif}"
+    },
+    {
+      "name": "Operational Panel",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Primary white workspace surface with border-led structure and shallow depth.",
+      "html": "<section class=\"ds-panel\"><h2>Evidence summary</h2><p>Review prepared findings and canonical rows without leaving the current task.</p></section>",
+      "css": ".ds-panel{width:min(100%,720px);padding:22px;border:1px solid var(--so-border,oklch(0.84 0.018 255));border-radius:8px;color:var(--so-text,oklch(0.29 0.028 255));background:var(--so-surface,oklch(1 0 0));box-shadow:0 1px 2px oklch(0.2 0.035 255/.08);font-family:Inter,ui-sans-serif,system-ui,sans-serif}.ds-panel h2{margin:0;color:var(--so-ink,oklch(0.2 0.035 255));font-size:18px;line-height:1.25;font-weight:850}.ds-panel p{max-width:65ch;margin:12px 0 0;font-size:14px;line-height:1.55}"
+    },
+    {
+      "name": "Report Command Center",
+      "kind": "custom",
+      "description": "Deliverable-first shell for generated results with stable identity, direct actions, and section navigation.",
+      "html": "<section class=\"ds-command\"><header class=\"ds-command-header\"><div><h2>SME Coverage Analysis</h2><p>Decision pack · 1,240 evidence rows</p></div><button class=\"ds-command-action\">Export polished PDF</button></header><nav class=\"ds-command-tabs\"><button class=\"ds-command-tab ds-command-tab-active\">Overview</button><button class=\"ds-command-tab\">Evidence</button></nav><div class=\"ds-command-body\"><h3>Executive summary</h3><p>The report is ready to review and share.</p></div></section>",
+      "css": ".ds-command{width:min(100%,900px);border:1px solid var(--so-border,oklch(0.84 0.018 255));border-top:3px solid var(--so-orange,oklch(0.72 0.18 48));border-radius:8px;color:var(--so-text,oklch(0.29 0.028 255));background:var(--so-surface,oklch(1 0 0));box-shadow:0 1px 2px oklch(0.2 0.035 255/.08);font-family:Inter,ui-sans-serif,system-ui,sans-serif}.ds-command-header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:18px 24px;padding:20px 22px;border-bottom:1px solid var(--so-border,oklch(0.84 0.018 255))}.ds-command-header h2,.ds-command-body h3{margin:0;color:var(--so-ink,oklch(0.2 0.035 255))}.ds-command-header h2{font-size:24px;line-height:1.2;font-weight:850}.ds-command-header p{margin:8px 0 0;color:var(--so-text-muted,oklch(0.43 0.027 255));font-size:12px}.ds-command-action{min-height:36px;padding:7px 13px;border:1px solid var(--so-orange-strong,oklch(0.62 0.19 43));border-radius:7px;color:var(--so-ink,oklch(0.2 0.035 255));background:var(--so-orange,oklch(0.72 0.18 48));font-weight:750;cursor:pointer}.ds-command-action:hover{background:oklch(0.76 0.16 55);transform:translateY(-1px)}.ds-command-action:focus-visible,.ds-command-tab:focus-visible{outline:3px solid var(--so-focus,oklch(0.47 0.16 39));outline-offset:2px}.ds-command-tabs{display:flex;flex-wrap:wrap;gap:4px;padding:8px 14px;border-bottom:1px solid var(--so-border,oklch(0.84 0.018 255));background:var(--so-surface-raised,oklch(0.985 0.004 255))}.ds-command-tab{min-height:36px;padding:7px 12px;border:1px solid transparent;border-radius:6px;color:var(--so-text,oklch(0.29 0.028 255));background:transparent;font-weight:750;cursor:pointer}.ds-command-tab:hover{border-color:var(--so-border,oklch(0.84 0.018 255));background:var(--so-surface,oklch(1 0 0))}.ds-command-tab-active{border-color:var(--so-orange-strong,oklch(0.62 0.19 43));color:var(--so-ink,oklch(0.2 0.035 255));background:var(--so-orange-soft,oklch(0.95 0.04 56))}.ds-command-body{padding:22px}.ds-command-body h3{font-size:18px;line-height:1.25;font-weight:850}.ds-command-body p{margin:10px 0 0;font-size:14px;line-height:1.55}"
+    },
+    {
+      "name": "Evidence Table",
+      "kind": "custom",
+      "description": "Bounded, focusable data region with a cool heading field and compact evidence rows.",
+      "html": "<div class=\"ds-table-region\" role=\"region\" tabindex=\"0\"><table class=\"ds-table\"><thead><tr><th>Tag</th><th>Page views</th></tr></thead><tbody><tr><td><strong>react</strong></td><td>42,180</td></tr></tbody></table></div>",
+      "css": ".ds-table-region{width:100%;overflow-x:auto;border:1px solid var(--so-border,oklch(0.84 0.018 255));border-radius:8px;background:var(--so-surface,oklch(1 0 0))}.ds-table-region:focus-visible{outline:3px solid var(--so-focus,oklch(0.47 0.16 39));outline-offset:2px}.ds-table{width:100%;min-width:420px;border-collapse:collapse;color:var(--so-text,oklch(0.29 0.028 255));font:400 13px/1.4 Inter,ui-sans-serif,system-ui,sans-serif}.ds-table th,.ds-table td{padding:10px 12px;border-bottom:1px solid var(--so-border,oklch(0.84 0.018 255));text-align:left}.ds-table th{color:var(--so-text-muted,oklch(0.43 0.027 255));background:var(--so-canvas,oklch(0.96 0.006 255));font-size:12px;font-weight:800}.ds-table tr:last-child td{border-bottom:0}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Stack-Native Operations Workbench",
+    "overview": "Stack API Utilities is a light, exacting console for people doing consequential operational work with local data. Its visual authority comes from clean white work surfaces, cool neutral canvas layers, dark ink, compact controls, and restrained Stack Overflow orange—not from ornamental dashboard furniture. The result should feel trusted, practical, sharp, and warmer than a generic administration tool.\n\nThe system supports dense evidence without making every surface equally loud. Clear headings, bordered regions, native controls, labeled status, and bounded tables make a task's current state legible. High-value results may use a deliverable-first command center: stable identity and direct exports lead into sectioned findings, evidence, and methodology while preserving the same incumbent console world.",
+    "keyCharacteristics": [
+      "Light neutral canvas with white and softly tinted operational surfaces.",
+      "Ink-first typography with a compact, high-weight hierarchy.",
+      "Orange reserved for primary action, selection, focus, and the approved report-shell top rule.",
+      "Border-led structure, shallow depth, and familiar native control behavior.",
+      "Dense data remains bounded, searchable, and keyboard reachable."
+    ],
+    "rules": [
+      { "name": "The Functional Orange Rule", "body": "Orange marks primary action, selection, focus, or the command center's approved top edge; it does not become ambient decoration.", "section": "colors" },
+      { "name": "The Two-Channel Status Rule", "body": "Status color always travels with a label, message, icon-free structure, or state name so meaning never depends on hue alone.", "section": "colors" },
+      { "name": "The Dense, Not Tiny Rule", "body": "Operational density uses 12px labels and 13–14px controls or table text; 11px is reserved for short metadata chips, never body copy.", "section": "typography" },
+      { "name": "The Weight Carries Hierarchy Rule", "body": "Keep letter spacing neutral and use the established 750–850 weights to clarify scan order.", "section": "typography" },
+      { "name": "The Bounded Workspace Rule", "body": "Keep the page frame stable; let wide evidence scroll inside its named region and paginate long datasets instead of extending the document indefinitely.", "section": "layout" },
+      { "name": "The Actions Survive Wrap Rule", "body": "Primary actions wrap or stack before their labels truncate, and direct deliverable actions remain visible at narrow widths.", "section": "layout" },
+      { "name": "The Border-Before-Shadow Rule", "body": "Use tonal layers and borders for routine grouping; introduce a shadow only when a surface is structurally elevated or detached.", "section": "elevation" },
+      { "name": "The Quiet Radius Rule", "body": "Use the 7–8px control and panel family by default; pill geometry signals compact state rather than general decoration.", "section": "shapes" },
+      { "name": "The Deliverables Stay Direct Rule", "body": "When a report supports both polished PDF and canonical CSV, expose both as direct named actions; secondary formats may use a disclosure.", "section": "components" }
+    ],
+    "dos": [
+      "Do lead with white and cool-neutral work surfaces, dark ink, and visible boundaries.",
+      "Do reserve orange for primary action, selection, focus, and the report command center's approved top rule.",
+      "Do keep statuses readable in text and use soft semantic fills as reinforcement.",
+      "Do contain wide tables in labeled focusable regions and paginate large evidence sets.",
+      "Do preserve visible 3px focus outlines and reduced-motion-safe transitions.",
+      "Do use the command center only when result identity, deliverables, and multiple report sections need to stay in context together."
+    ],
+    "donts": [
+      "Don't turn every panel into a competing call to action or scatter orange across passive decoration.",
+      "Don't rely on low-contrast dark surfaces, nearly invisible controls, or color alone to convey state.",
+      "Don't use generic analytics-card grids when a concise brief, bounded table, or task-specific panel is clearer.",
+      "Don't let data tables force page-level horizontal overflow or allow large datasets to create an unbounded report page.",
+      "Don't hide supported primary PDF or canonical CSV deliverables inside a catch-all menu."
+    ]
+  }
+}
