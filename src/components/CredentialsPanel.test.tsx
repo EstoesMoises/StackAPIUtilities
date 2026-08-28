@@ -54,6 +54,27 @@ describe("CredentialsPanel", () => {
       screen.getByRole("complementary", { name: "Credential privacy and requirements" }),
     ).toBeInTheDocument();
     expect(screen.queryByText(/guidance placeholder/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Connection details are sent when you authorize, and credentials are sent when you run/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nothing is sent until you run it/i)).not.toBeInTheDocument();
+  });
+
+  it("shows deployment-specific credential requirements", async () => {
+    const user = userEvent.setup();
+
+    renderCredentialsPanel();
+
+    const requirements = screen.getByLabelText("Required credentials");
+    expect(requirements).toHaveTextContent("Personal access token");
+    expect(requirements).not.toHaveTextContent("API key");
+    expect(requirements).not.toHaveTextContent("Access token");
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+
+    expect(requirements).toHaveTextContent("API key");
+    expect(requirements).toHaveTextContent("Access token");
+    expect(requirements).not.toHaveTextContent("Personal access token");
   });
 
   it("discloses Tag Report's v2.3 and v3 Enterprise credential requirements", () => {
@@ -64,8 +85,11 @@ describe("CredentialsPanel", () => {
     )).toBeInTheDocument();
   });
 
-  it("shows read-only mixed-lane requirements for SME Coverage Analyzer", () => {
+  it("shows read-only mixed-lane requirements for SME Coverage Analyzer", async () => {
+    const user = userEvent.setup();
     renderCredentialsPanel({ workflow: { kind: "utility", utilityId: "sme-coverage-analyzer" } });
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
 
     expect(screen.getByText("Scope notes for selected utility")).toBeInTheDocument();
     expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
@@ -134,14 +158,13 @@ describe("CredentialsPanel", () => {
     await user.type(token, "private-token");
     expect(token).toHaveAttribute("type", "password");
 
-    const revealButton = screen.getByRole("button", { name: "Reveal secret value" });
-    expect(revealButton).toHaveAccessibleDescription("Personal access token");
+    const revealButton = screen.getByRole("button", { name: "Show Personal access token" });
     await user.click(revealButton);
 
     expect(token).toHaveAttribute("type", "text");
     expect(token).toHaveValue("private-token");
 
-    await user.click(screen.getByRole("button", { name: "Conceal secret value" }));
+    await user.click(screen.getByRole("button", { name: "Hide Personal access token" }));
 
     expect(token).toHaveAttribute("type", "password");
     expect(token).toHaveValue("private-token");
@@ -159,6 +182,8 @@ describe("CredentialsPanel", () => {
     expect(screen.getByText("Optional if you connect with Enterprise OAuth.")).toBeInTheDocument();
     expect(screen.getByLabelText("OAuth Client ID")).toBeInTheDocument();
     expect(screen.getByLabelText("Request non-expiring token")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Show API key" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show Access token (optional)" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Personal access token")).not.toBeInTheDocument();
   });
@@ -1370,7 +1395,7 @@ describe("CredentialsPanel", () => {
     const user = userEvent.setup();
     const apiKey = await screen.findByLabelText("API key");
 
-    await user.clear(apiKey);
+    await user.clear(screen.getByLabelText("API key"));
     await user.type(apiKey, "replacement-key");
     await user.click(screen.getByRole("button", { name: "Update customer" }));
 
@@ -1387,7 +1412,7 @@ describe("CredentialsPanel", () => {
       updatedAt: expect.any(String),
     });
 
-    await user.clear(apiKey);
+    await user.clear(screen.getByLabelText("API key"));
     await user.click(screen.getByRole("button", { name: "Update customer" }));
 
     await waitFor(() => expect(profileStorageMocks.saveProfile).toHaveBeenCalledTimes(2));
@@ -1414,6 +1439,30 @@ describe("CredentialsPanel", () => {
     const apiKey = await screen.findByLabelText("API key");
     expect(apiKey).toHaveAttribute("type", "password");
     expect(apiKey).toHaveAttribute("autocomplete", "off");
+  });
+
+  it("re-masks the API key when switching saved customers", async () => {
+    const user = userEvent.setup();
+    mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [
+        enterpriseProfile(),
+        enterpriseProfile({ id: "profile-2", customerName: "Other Customer", apiKey: "other-api-key" }),
+      ],
+      lastSelectedProfileId: "profile-1",
+    });
+    renderCredentialsPanel();
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    const apiKey = await screen.findByLabelText("API key");
+    expect(apiKey).toHaveValue("profile-api-key");
+    await user.click(screen.getByRole("button", { name: "Show API key" }));
+    expect(apiKey).toHaveAttribute("type", "text");
+
+    await user.selectOptions(screen.getByLabelText("Saved customer"), "profile-2");
+
+    expect(screen.getByLabelText("API key")).toHaveValue("other-api-key");
+    expect(screen.getByLabelText("API key")).toHaveAttribute("type", "password");
   });
 
   it("associates profile URL and client ID validation errors with their fields", async () => {

@@ -95,12 +95,11 @@ function SecretInput({
   disabled = false,
 }: SecretInputProps) {
   const inputId = useId();
-  const labelId = useId();
   const [revealed, setRevealed] = useState(false);
 
   return (
     <div className="credential-field">
-      <label className="credential-label" id={labelId} htmlFor={inputId}>
+      <label className="credential-label" htmlFor={inputId}>
         {label}
       </label>
       <div className="credential-secret-control">
@@ -117,8 +116,7 @@ function SecretInput({
         <button
           className="credential-secret-toggle"
           type="button"
-          aria-label={revealed ? "Conceal secret value" : "Reveal secret value"}
-          aria-describedby={labelId}
+          aria-label={`${revealed ? "Hide" : "Show"} ${label}`}
           aria-pressed={revealed}
           disabled={disabled}
           onClick={() => setRevealed((current) => !current)}
@@ -159,6 +157,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   const [profileErrors, setProfileErrors] = useState<OAuthCustomerProfileErrors>({});
   const [redirectUri, setRedirectUri] = useState("");
   const [redirectStatus, setRedirectStatus] = useState<string | null>(null);
+  const [apiKeyInputVersion, setApiKeyInputVersion] = useState(0);
   const pendingOAuthFlowRef = useRef<PendingOAuthFlow | null>(null);
   const oauthPendingRef = useRef(false);
   const nextOAuthFlowIdRef = useRef(0);
@@ -363,6 +362,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   function applyProfile(profile: OAuthCustomerProfile) {
     const values = toOAuthCustomerProfileDraft(profile);
     setDraft((current) => ({ ...current, instanceType: "enterprise", ...values }));
+    setApiKeyInputVersion((current) => current + 1);
     profileBackedDraftEditedRef.current = false;
     setSaved(false);
     setOauthError(null);
@@ -378,6 +378,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
       apiKey: "",
       includeNoExpiry: false,
     }));
+    setApiKeyInputVersion((current) => current + 1);
     profileBackedDraftEditedRef.current = false;
     setSaved(false);
     setOauthError(null);
@@ -577,8 +578,11 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
     : workflow.kind === "write-tool"
       ? "write tool"
       : "report";
-  const requiredCredentialLabels = metadata.credentialRequirements
-    .map((requirement) => credentialLabels[requirement] ?? requirement);
+  const requiredCredentialLabels = isEnterprise
+    ? metadata.credentialRequirements.map(
+        (requirement) => credentialLabels[requirement] ?? requirement,
+      )
+    : [credentialLabels.pat];
 
   return (
     <section className="workspace-panel credentials-panel" aria-labelledby="credentials-heading">
@@ -591,7 +595,8 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
           <p className="credential-workflow-title">Set up access for {metadata.title}</p>
           <p className="workspace-copy credential-session-copy">
             Choose your deployment, add the credentials it needs, and continue with your selected
-            {" "}{workflowKindLabel}. Nothing is sent until you run it.
+            {" "}{workflowKindLabel}. Connection details are sent when you authorize, and
+            credentials are sent when you run.
           </p>
         </div>
       </header>
@@ -698,6 +703,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
               {isEnterprise ? (
                 <>
                   <SecretInput
+                    key={`api-key-${apiKeyInputVersion}`}
                     label="API key"
                     value={draft.apiKey}
                     disabled={profileTargetBusy}
@@ -857,10 +863,14 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
           aria-label="Credential privacy and requirements"
         >
           <section className="credential-assurance-section">
-            <h3>Your credentials stay local</h3>
+            <h3>How credentials are handled</h3>
             <p>
               OAuth access tokens and PATs remain in memory for this browser session. They are not
               written to browser storage.
+            </p>
+            <p>
+              Connection details are sent to this app&apos;s same-origin server when you authorize,
+              and credentials are sent there when you run a workflow.
             </p>
             <p>
               API keys persist only when you explicitly save an Enterprise customer profile.

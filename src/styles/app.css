@@ -934,7 +934,7 @@ select:disabled {
 .write-tool-form .s-input,
 .report-scope-panel .s-input,
 .report-scope-panel .s-select {
-  min-height: 42px;
+  min-height: 48px;
 }
 
 .credentials-form .s-input::placeholder {
@@ -955,9 +955,9 @@ select:disabled {
 .credential-secret-toggle {
   position: absolute;
   top: 50%;
-  right: 5px;
+  right: 2px;
   min-width: 56px;
-  min-height: 32px;
+  min-height: 44px;
   padding: 5px 9px;
   border: 0;
   border-radius: 6px;
