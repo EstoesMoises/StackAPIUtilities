@@ -70,6 +70,36 @@ describe("OAuth customer profiles", () => {
     expect(result.ok && result.profile).not.toHaveProperty("apiKey");
   });
 
+  it("creates a persistable profile without a client ID when an access token is present", () => {
+    const result = createOAuthCustomerProfile(
+      { ...draft, oauthClientId: "  " },
+      [],
+      {
+        accessTokenPresent: true,
+        createId: () => "manual-token-profile",
+        now: () => new Date("2026-08-27T12:34:56.000Z"),
+      },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      profile: {
+        schemaVersion: 2,
+        id: "manual-token-profile",
+        customerName: "Acme",
+        baseUrl: "https://acme.stackenterprise.co",
+        oauthClientId: "",
+        includeNoExpiry: false,
+        createdAt: "2026-08-27T12:34:56.000Z",
+        updatedAt: "2026-08-27T12:34:56.000Z",
+      },
+    });
+    if (!result.ok) {
+      throw new Error("Expected the manual-token profile to be created.");
+    }
+    expect(parseOAuthCustomerProfile(result.profile)).toEqual(result.profile);
+  });
+
   it("rejects customer names duplicated case-insensitively after trimming", () => {
     expect(createOAuthCustomerProfile({ ...draft, customerName: "  aCmE " }, [profile])).toEqual({
       ok: false,
@@ -184,6 +214,26 @@ describe("OAuth customer profiles", () => {
     expect(cleared.ok && cleared.profile).not.toHaveProperty("apiKey");
   });
 
+  it("updates a saved profile that already has no OAuth Client ID", () => {
+    const profileWithoutClientId = { ...profile, oauthClientId: "" };
+
+    const result = updateOAuthCustomerProfile(
+      profileWithoutClientId,
+      { ...draft, customerName: "Renamed Customer", oauthClientId: "" },
+      [profileWithoutClientId],
+      { now: () => new Date("2026-08-27T13:00:00.000Z") },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      profile: {
+        ...profileWithoutClientId,
+        customerName: "Renamed Customer",
+        updatedAt: "2026-08-27T13:00:00.000Z",
+      },
+    });
+  });
+
   it("rejects an update that collides with a different existing profile", () => {
     const otherProfile = { ...profile, id: "profile-2", customerName: "Other Customer" };
 
@@ -275,6 +325,16 @@ describe("OAuth customer profiles", () => {
         unknownField: "discarded",
       }),
     ).toEqual(profile);
+  });
+
+  it("keeps rejecting legacy profiles with a blank OAuth Client ID", () => {
+    expect(
+      parseOAuthCustomerProfile({
+        ...profile,
+        schemaVersion: 1,
+        oauthClientId: "",
+      }),
+    ).toBeNull();
   });
 
   it("reconstructs profiles from an exact allowlist", () => {

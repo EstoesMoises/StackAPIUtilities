@@ -37,7 +37,8 @@ export type OAuthCustomerProfileMutationResult =
   | { ok: true; profile: OAuthCustomerProfile }
   | { ok: false; errors: OAuthCustomerProfileErrors };
 
-export interface OAuthCustomerProfileDependencies {
+export interface OAuthCustomerProfileMutationOptions {
+  accessTokenPresent?: boolean;
   createId?: () => string;
   now?: () => Date;
 }
@@ -84,6 +85,7 @@ function validateDraft(
   draft: OAuthCustomerProfileDraft,
   existingProfiles: readonly OAuthCustomerProfile[],
   profileIdToExclude?: string,
+  allowMissingOAuthClientId = false,
 ): OAuthCustomerProfileErrors {
   const errors: OAuthCustomerProfileErrors = {};
 
@@ -103,7 +105,7 @@ function validateDraft(
     errors.baseUrl = "Enter a Stack Enterprise HTTPS instance URL.";
   }
 
-  if (!draft.oauthClientId) {
+  if (!draft.oauthClientId && !allowMissingOAuthClientId) {
     errors.oauthClientId = "Enter an OAuth client ID.";
   }
 
@@ -125,21 +127,26 @@ function toIsoTimestamp(now: () => Date): string {
 export function createOAuthCustomerProfile(
   draft: OAuthCustomerProfileDraft,
   existingProfiles: readonly OAuthCustomerProfile[],
-  dependencies: OAuthCustomerProfileDependencies = {},
+  options: OAuthCustomerProfileMutationOptions = {},
 ): OAuthCustomerProfileMutationResult {
   const normalizedDraft = normalizeDraft(draft);
-  const errors = validateDraft(normalizedDraft, existingProfiles);
+  const errors = validateDraft(
+    normalizedDraft,
+    existingProfiles,
+    undefined,
+    options.accessTokenPresent,
+  );
 
   if (hasErrors(errors)) {
     return { ok: false, errors };
   }
 
-  const timestamp = toIsoTimestamp(dependencies.now ?? (() => new Date()));
+  const timestamp = toIsoTimestamp(options.now ?? (() => new Date()));
   return {
     ok: true,
     profile: {
       schemaVersion: OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION,
-      id: dependencies.createId ? dependencies.createId() : crypto.randomUUID(),
+      id: options.createId ? options.createId() : crypto.randomUUID(),
       ...normalizedDraftToProfileFields(normalizedDraft),
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -151,10 +158,15 @@ export function updateOAuthCustomerProfile(
   profile: OAuthCustomerProfile,
   draft: OAuthCustomerProfileDraft,
   existingProfiles: readonly OAuthCustomerProfile[],
-  dependencies: OAuthCustomerProfileDependencies = {},
+  options: OAuthCustomerProfileMutationOptions = {},
 ): OAuthCustomerProfileMutationResult {
   const normalizedDraft = normalizeDraft(draft);
-  const errors = validateDraft(normalizedDraft, existingProfiles, profile.id);
+  const errors = validateDraft(
+    normalizedDraft,
+    existingProfiles,
+    profile.id,
+    options.accessTokenPresent || !profile.oauthClientId,
+  );
 
   if (hasErrors(errors)) {
     return { ok: false, errors };
@@ -167,7 +179,7 @@ export function updateOAuthCustomerProfile(
       id: profile.id,
       ...normalizedDraftToProfileFields(normalizedDraft),
       createdAt: profile.createdAt,
-      updatedAt: toIsoTimestamp(dependencies.now ?? (() => new Date())),
+      updatedAt: toIsoTimestamp(options.now ?? (() => new Date())),
     },
   };
 }
@@ -178,6 +190,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonblankTrimmedString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.trim() === value;
+}
+
+function isTrimmedString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() === value;
+}
+
+function isValidPersistedOAuthClientId(
+  schemaVersion: unknown,
+  value: unknown,
+): value is string {
+  return schemaVersion === LEGACY_OAUTH_CUSTOMER_PROFILE_SCHEMA_VERSION
+    ? isNonblankTrimmedString(value)
+    : isTrimmedString(value);
 }
 
 function isExactIsoTimestamp(value: unknown): value is string {
@@ -202,7 +227,7 @@ export function parseOAuthCustomerProfile(value: unknown): OAuthCustomerProfile 
     !isNonblankTrimmedString(value.id) ||
     !isNonblankTrimmedString(value.customerName) ||
     !isNonblankTrimmedString(value.baseUrl) ||
-    !isNonblankTrimmedString(value.oauthClientId) ||
+    !isValidPersistedOAuthClientId(value.schemaVersion, value.oauthClientId) ||
     typeof value.includeNoExpiry !== "boolean" ||
     !isExactIsoTimestamp(value.createdAt) ||
     !isExactIsoTimestamp(value.updatedAt) ||

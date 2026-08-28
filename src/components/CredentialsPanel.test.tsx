@@ -1182,6 +1182,39 @@ describe("CredentialsPanel", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it("saves a customer without an OAuth Client ID when a manual access token is present", async () => {
+    mockOAuthEndpoints();
+    installProfileStorage();
+    renderCredentialsPanel({
+      credentials: {
+        instanceType: "enterprise",
+        baseUrl: "https://demo.stackenterprise.co",
+        accessToken: "manual-access-token",
+        authSource: "manual-enterprise-token",
+      },
+    });
+    const user = userEvent.setup();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save customer" })).toBeEnabled();
+    });
+
+    await user.type(screen.getByLabelText("Customer name"), "Token Customer");
+    await user.click(screen.getByRole("button", { name: "Save customer" }));
+
+    await waitFor(() => {
+      expect(profileStorageMocks.saveProfileAndSelect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customerName: "Token Customer",
+          oauthClientId: "",
+        }),
+      );
+    });
+    expect(screen.queryByText("Enter an OAuth client ID.")).not.toBeInTheDocument();
+    expect(JSON.stringify(profileStorageMocks.saveProfileAndSelect.mock.calls[0][0])).not.toMatch(
+      /manual-access-token|accessToken/,
+    );
+  });
+
   it("clears a successfully deleted profile key without changing the saved session", async () => {
     mockOAuthEndpoints();
     installProfileStorage({
