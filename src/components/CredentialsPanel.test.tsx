@@ -49,7 +49,7 @@ describe("CredentialsPanel", () => {
     expect(
       screen.getByRole("heading", { name: "Connect your Stack environment" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Set up access for Tag Report")).toBeInTheDocument();
+    expect(screen.getByText("Credentials for")).toBeInTheDocument();
     expect(
       screen.getByRole("complementary", { name: "Credential privacy and requirements" }),
     ).toBeInTheDocument();
@@ -58,6 +58,27 @@ describe("CredentialsPanel", () => {
       screen.getByText(/Connection details are sent when you authorize, and credentials are sent when you run/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/nothing is sent until you run it/i)).not.toBeInTheDocument();
+  });
+
+  it("presents the active workflow as changeable context", async () => {
+    const user = userEvent.setup();
+    const onChangeWorkflow = vi.fn();
+
+    renderCredentialsPanel({ onChangeWorkflow });
+
+    expect(screen.getByText("Credentials for")).toBeInTheDocument();
+    expect(screen.getByText("Tag Report")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Change script" }));
+
+    expect(onChangeWorkflow).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/selected report/i)).not.toBeInTheDocument();
+  });
+
+  it("uses a quiet parenthetical required indicator", () => {
+    renderCredentialsPanel();
+
+    expect(screen.getByText("(required)")).toHaveClass("credential-required");
+    expect(screen.queryByText("Required")).not.toBeInTheDocument();
   });
 
   it("shows deployment-specific credential requirements", async () => {
@@ -91,7 +112,7 @@ describe("CredentialsPanel", () => {
 
     await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
 
-    expect(screen.getByText("Scope notes for selected utility")).toBeInTheDocument();
+    expect(screen.getByText("Scope notes for SME Coverage Analyzer")).toBeInTheDocument();
     expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
     expect(screen.getByText(/read-only/i)).toBeInTheDocument();
     expect(screen.getByText(/both API lanes/i)).toBeInTheDocument();
@@ -1835,10 +1856,12 @@ describe("CredentialsPanel", () => {
 
 function renderCredentialsPanel({
   credentials = null,
+  onChangeWorkflow = vi.fn(),
   onSave = vi.fn(),
   workflow = { kind: "report", reportId: "tag-report" },
 }: {
   credentials?: SessionCredentials | null;
+  onChangeWorkflow?: () => void;
   onSave?: (credentials: SessionCredentials) => void;
   workflow?:
     | { kind: "report"; reportId: "tag-report" }
@@ -1849,6 +1872,7 @@ function renderCredentialsPanel({
     <CredentialsPanel
       workflow={workflow}
       credentials={credentials}
+      onChangeWorkflow={onChangeWorkflow}
       onSave={onSave}
     />,
   );

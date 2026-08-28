@@ -21,6 +21,7 @@ export type CredentialWorkflow =
 interface CredentialsPanelProps {
   workflow: CredentialWorkflow;
   credentials: SessionCredentials | null;
+  onChangeWorkflow: () => void;
   onSave: (credentials: SessionCredentials) => void;
 }
 
@@ -128,7 +129,12 @@ function SecretInput({
   );
 }
 
-export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsPanelProps) {
+export function CredentialsPanel({
+  workflow,
+  credentials,
+  onChangeWorkflow,
+  onSave,
+}: CredentialsPanelProps) {
   const writeTool = workflow.kind === "write-tool"
     ? writeTools.find((candidate) => candidate.id === workflow.writeToolId)!
     : null;
@@ -586,6 +592,11 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
     : workflow.kind === "write-tool"
       ? "write tool"
       : "report";
+  const workflowChangeLabel = workflow.kind === "utility"
+    ? "Change utility"
+    : workflow.kind === "write-tool"
+      ? "Change write tool"
+      : "Change script";
   const requiredCredentialLabels = isEnterprise
     ? metadata.credentialRequirements.map(
         (requirement) => credentialLabels[requirement] ?? requirement,
@@ -600,10 +611,20 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
           <h2 className="workspace-heading" id="credentials-heading">
             Connect your Stack environment
           </h2>
-          <p className="credential-workflow-title">Set up access for {metadata.title}</p>
+          <div className="credential-workflow-context">
+            <span>Credentials for</span>
+            <strong>{metadata.title}</strong>
+            <button
+              className="credential-context-action"
+              type="button"
+              onClick={onChangeWorkflow}
+            >
+              {workflowChangeLabel}
+            </button>
+          </div>
           <p className="workspace-copy credential-session-copy">
-            Choose your deployment, add the credentials it needs, and continue with your selected
-            {" "}{workflowKindLabel}. Connection details are sent when you authorize, and
+            Choose your deployment and add the credentials {metadata.title} needs. Connection
+            details are sent when you authorize, and
             credentials are sent when you run.
           </p>
         </div>
@@ -681,7 +702,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
               <label className="credential-field credential-url-field">
                 <span className="credential-label">
                   {isEnterprise ? "Enterprise site URL" : "Team URL"}
-                  <span className="credential-required">Required</span>
+                  <span className="credential-required">(required)</span>
                 </span>
                 <input
                   className="s-input"
@@ -892,7 +913,7 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
           </section>
 
           <section className="credential-assurance-section credential-notes" role="note">
-            <p className="scope-label">Scope notes for selected {workflowKindLabel}</p>
+            <p className="scope-label">Scope notes for {metadata.title}</p>
             <h3>{metadata.title} credential notes</h3>
             <div className="credential-requirements" aria-label="Required credentials">
               {requiredCredentialLabels.map((label) => (

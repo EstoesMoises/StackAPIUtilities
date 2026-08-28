@@ -595,6 +595,13 @@ export function App() {
         <CredentialsPanel
           workflow={credentialContext}
           credentials={state.credentials}
+          onChangeWorkflow={() => changeActivePanel(
+            credentialContext.kind === "report"
+              ? "report"
+              : credentialContext.kind === "utility"
+                ? "utilities"
+                : "write-tools",
+          )}
           onSave={(credentials) => dispatch({ type: "credentials/set", credentials })}
         />
       )}

@@ -817,12 +817,44 @@ select:disabled {
   line-height: 1.12;
 }
 
-.credential-workflow-title {
-  margin: 9px 0 0;
-  color: var(--so-orange-deep);
+.credential-workflow-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+  margin-top: 10px;
+  color: var(--so-text);
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 650;
   line-height: 1.35;
+}
+
+.credential-workflow-context strong {
+  color: var(--so-orange-deep);
+  font-weight: 850;
+}
+
+.credential-context-action {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--so-blue);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.credential-context-action:hover {
+  color: var(--so-ink);
+  background: var(--so-surface);
+}
+
+.credential-context-action:focus-visible {
+  outline: 3px solid var(--so-focus);
+  outline-offset: 2px;
 }
 
 .credential-session-copy {
@@ -904,11 +936,11 @@ select:disabled {
   line-height: 1.3;
 }
 
-.credential-required {
-  margin-left: 7px;
+.credentials-form .credential-required {
+  margin-left: 5px;
   color: var(--so-text-muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .credential-field-help {
@@ -944,18 +976,25 @@ select:disabled {
 
 .credential-secret-control {
   position: relative;
+  display: block;
+  align-self: start;
   min-width: 0;
 }
 
 .credential-secret-control .s-input {
+  display: block;
   width: 100%;
   padding-right: 72px;
 }
 
 .credential-secret-toggle {
   position: absolute;
-  top: 50%;
+  top: 2px;
   right: 2px;
+  bottom: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 56px;
   min-height: 44px;
   padding: 5px 9px;
@@ -966,7 +1005,6 @@ select:disabled {
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
-  transform: translateY(-50%);
   transition:
     background-color var(--motion-fast) var(--ease-out-product),
     color var(--motion-fast) var(--ease-out-product);

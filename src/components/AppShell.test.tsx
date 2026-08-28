@@ -54,6 +54,11 @@ describe("AppShell", () => {
       screen.getByRole("heading", { name: "Connect your Stack environment" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Report Catalog" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Change script" }));
+
+    expect(screen.getByRole("button", { name: "Scripts" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Report Catalog" })).toBeInTheDocument();
   });
 
   it("renders report catalog and all MVP reports", async () => {
