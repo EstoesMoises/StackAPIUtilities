@@ -44,6 +44,23 @@ afterEach(() => {
 });
 
 describe("AppShell", () => {
+  it("gives the credentials flow a focused workspace without a catalog sidebar", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Connect your Stack environment" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Report Catalog" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Back to scripts" }));
+
+    expect(screen.getByRole("button", { name: "Scripts" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Report Catalog" })).toBeInTheDocument();
+  });
+
   it("renders report catalog and all MVP reports", async () => {
     render(<App />);
 
@@ -84,7 +101,7 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "Run SME coverage analysis" }));
 
-    expect(screen.getByRole("heading", { name: "Session Credentials" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Connect your Stack environment" })).toBeInTheDocument();
     expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
     expect(screen.getByText(/add session credentials before running SME Coverage Analyzer/i)).toBeInTheDocument();
   });
@@ -1348,11 +1365,15 @@ describe("AppShell", () => {
 
     await user.click(screen.getByRole("button", { name: "Credentials" }));
 
-    expect(screen.getByRole("heading", { name: "Session Credentials" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Connect your Stack environment" })).toBeInTheDocument();
+    const credentialAssurance = screen.getByRole("complementary", {
+      name: "Credential privacy and requirements",
+    });
     expect(
-      screen.getByText(
-        "OAuth access tokens and PATs stay in memory for this browser session. API keys persist only when explicitly saved in a customer profile.",
-      ),
+      within(credentialAssurance).getByText(/they are not written to browser storage/i),
+    ).toBeInTheDocument();
+    expect(
+      within(credentialAssurance).getByText(/API keys persist only when you explicitly save/i),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Instance URL")).toBeInTheDocument();
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
@@ -1423,7 +1444,7 @@ describe("AppShell", () => {
     expect(
       screen.getByText("Add session credentials before running Tag Report."),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Session Credentials" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Connect your Stack environment" })).toBeInTheDocument();
   });
 
   it("runs a server-backed live API report and stores live datasets locally", async () => {

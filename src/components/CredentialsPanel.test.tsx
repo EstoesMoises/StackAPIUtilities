@@ -43,22 +43,86 @@ afterEach(() => {
 });
 
 describe("CredentialsPanel", () => {
+  it("presents credentials as a shared connection across compatible workflows", () => {
+    renderCredentialsPanel();
+
+    expect(
+      screen.getByRole("heading", { name: "Connect your Stack environment" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Shared across compatible scripts and tools")).toBeInTheDocument();
+    expect(screen.queryByText("Credentials for")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("complementary", { name: "Credential privacy and requirements" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/guidance placeholder/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Connection details are sent when you authorize, and credentials are sent when you run/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nothing is sent until you run it/i)).not.toBeInTheDocument();
+  });
+
+  it("returns to the originating catalog without implying workflow-specific credentials", async () => {
+    const user = userEvent.setup();
+    const onChangeWorkflow = vi.fn();
+
+    renderCredentialsPanel({ onChangeWorkflow });
+
+    expect(screen.queryByText("Credentials for")).not.toBeInTheDocument();
+    expect(screen.getByText("Scope notes for Tag Report")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back to scripts" }));
+
+    expect(onChangeWorkflow).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/selected report/i)).not.toBeInTheDocument();
+  });
+
+  it("uses a quiet parenthetical required indicator", () => {
+    renderCredentialsPanel();
+
+    expect(screen.getByText("(required)")).toHaveClass("credential-required");
+    expect(screen.queryByText("Required")).not.toBeInTheDocument();
+  });
+
+  it("describes Enterprise access without implying a manually supplied token", async () => {
+    const user = userEvent.setup();
+
+    renderCredentialsPanel();
+
+    const requirements = screen.getByLabelText("Workflow requirements");
+    expect(requirements).toHaveTextContent("Personal access token");
+    expect(requirements).not.toHaveTextContent("API key");
+    expect(requirements).not.toHaveTextContent("Enterprise sign-in");
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+
+    expect(requirements).toHaveTextContent("API key");
+    expect(requirements).toHaveTextContent("Enterprise sign-in");
+    expect(requirements).not.toHaveTextContent("Access token");
+    expect(requirements).not.toHaveTextContent("Personal access token");
+    expect(screen.getByText(/This workflow needs:/)).toHaveTextContent(
+      "This workflow needs: Enterprise sign-in, API key.",
+    );
+  });
+
   it("discloses Tag Report's v2.3 and v3 Enterprise credential requirements", () => {
     renderCredentialsPanel();
 
     expect(screen.getByText(
-      "Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires both an API key and an OAuth access token (or pasted token).",
+      "Tag Report uses Stack Exchange API v2.3 and Enterprise API v3. Enterprise access requires an API key plus either OAuth sign-in or a pasted token.",
     )).toBeInTheDocument();
   });
 
-  it("shows read-only mixed-lane requirements for SME Coverage Analyzer", () => {
+  it("shows read-only mixed-lane requirements for SME Coverage Analyzer", async () => {
+    const user = userEvent.setup();
     renderCredentialsPanel({ workflow: { kind: "utility", utilityId: "sme-coverage-analyzer" } });
 
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+
+    expect(screen.getByText("Scope notes for SME Coverage Analyzer")).toBeInTheDocument();
     expect(screen.getByText("SME Coverage Analyzer credential notes")).toBeInTheDocument();
     expect(screen.queryByText("Scope notes for selected utility")).not.toBeInTheDocument();
     expect(screen.getByText(/read-only/i)).toBeInTheDocument();
     expect(screen.getByText(/both API lanes/i)).toBeInTheDocument();
-    expect(screen.getByText(/API key, Access token/i)).toBeInTheDocument();
+    expect(screen.getByText(/API key, Enterprise sign-in/i)).toBeInTheDocument();
   });
 
   it("starts read-only utility Enterprise OAuth with no write scopes", async () => {
@@ -102,6 +166,34 @@ describe("CredentialsPanel", () => {
     });
   });
 
+  it("locks Enterprise-only workflows to their supported deployment", () => {
+    renderCredentialsPanel({ workflow: { kind: "write-tool", writeToolId: "user-group-sync" } });
+
+    expect(screen.getByLabelText("Instance type")).toHaveValue("enterprise");
+    expect(screen.getByLabelText("Instance type")).toBeDisabled();
+    expect(screen.queryByRole("option", { name: "Basic / Business" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Personal access token")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Workflow requirements")).toHaveTextContent("Enterprise sign-in");
+  });
+
+  it("does not hydrate Enterprise-only workflows from Basic session credentials", () => {
+    renderCredentialsPanel({
+      workflow: { kind: "write-tool", writeToolId: "user-group-sync" },
+      credentials: {
+        instanceType: "basic-business",
+        baseUrl: "https://stackoverflowteams.com/c/example-team",
+        pat: "basic-pat",
+        authSource: "manual-pat",
+      },
+    });
+
+    expect(screen.getByLabelText("Instance type")).toHaveValue("enterprise");
+    expect(screen.getByLabelText("Instance URL")).toHaveValue("");
+    expect(screen.getByLabelText("API key")).toHaveValue("");
+    expect(screen.getByLabelText("OAuth Client ID")).toHaveValue("");
+    expect(screen.getByLabelText("Access token (optional)")).toHaveValue("");
+  });
+
   it("shows PAT credentials for Basic/Business and hides Enterprise OAuth controls", () => {
     renderCredentialsPanel();
 
@@ -110,6 +202,27 @@ describe("CredentialsPanel", () => {
     expect(screen.queryByLabelText("OAuth Client ID")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect with Enterprise OAuth" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
+  });
+
+  it("reveals and hides the personal access token without changing its value", async () => {
+    const user = userEvent.setup();
+
+    renderCredentialsPanel();
+
+    const token = screen.getByLabelText("Personal access token");
+    await user.type(token, "private-token");
+    expect(token).toHaveAttribute("type", "password");
+
+    const revealButton = screen.getByRole("button", { name: "Show Personal access token" });
+    await user.click(revealButton);
+
+    expect(token).toHaveAttribute("type", "text");
+    expect(token).toHaveValue("private-token");
+
+    await user.click(screen.getByRole("button", { name: "Hide Personal access token" }));
+
+    expect(token).toHaveAttribute("type", "password");
+    expect(token).toHaveValue("private-token");
   });
 
   it("shows OAuth controls and API key support for Enterprise", async () => {
@@ -124,6 +237,8 @@ describe("CredentialsPanel", () => {
     expect(screen.getByText("Optional if you connect with Enterprise OAuth.")).toBeInTheDocument();
     expect(screen.getByLabelText("OAuth Client ID")).toBeInTheDocument();
     expect(screen.getByLabelText("Request non-expiring token")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Show API key" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show Access token (optional)" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Connect with Enterprise OAuth" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Personal access token")).not.toBeInTheDocument();
   });
@@ -1335,7 +1450,7 @@ describe("CredentialsPanel", () => {
     const user = userEvent.setup();
     const apiKey = await screen.findByLabelText("API key");
 
-    await user.clear(apiKey);
+    await user.clear(screen.getByLabelText("API key"));
     await user.type(apiKey, "replacement-key");
     await user.click(screen.getByRole("button", { name: "Update customer" }));
 
@@ -1352,7 +1467,7 @@ describe("CredentialsPanel", () => {
       updatedAt: expect.any(String),
     });
 
-    await user.clear(apiKey);
+    await user.clear(screen.getByLabelText("API key"));
     await user.click(screen.getByRole("button", { name: "Update customer" }));
 
     await waitFor(() => expect(profileStorageMocks.saveProfile).toHaveBeenCalledTimes(2));
@@ -1379,6 +1494,30 @@ describe("CredentialsPanel", () => {
     const apiKey = await screen.findByLabelText("API key");
     expect(apiKey).toHaveAttribute("type", "password");
     expect(apiKey).toHaveAttribute("autocomplete", "off");
+  });
+
+  it("re-masks the API key when switching saved customers", async () => {
+    const user = userEvent.setup();
+    mockOAuthEndpoints();
+    installProfileStorage({
+      profiles: [
+        enterpriseProfile(),
+        enterpriseProfile({ id: "profile-2", customerName: "Other Customer", apiKey: "other-api-key" }),
+      ],
+      lastSelectedProfileId: "profile-1",
+    });
+    renderCredentialsPanel();
+
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    const apiKey = await screen.findByLabelText("API key");
+    expect(apiKey).toHaveValue("profile-api-key");
+    await user.click(screen.getByRole("button", { name: "Show API key" }));
+    expect(apiKey).toHaveAttribute("type", "text");
+
+    await user.selectOptions(screen.getByLabelText("Saved customer"), "profile-2");
+
+    expect(screen.getByLabelText("API key")).toHaveValue("other-api-key");
+    expect(screen.getByLabelText("API key")).toHaveAttribute("type", "password");
   });
 
   it("associates profile URL and client ID validation errors with their fields", async () => {
@@ -1723,10 +1862,12 @@ describe("CredentialsPanel", () => {
 
 function renderCredentialsPanel({
   credentials = null,
+  onChangeWorkflow = vi.fn(),
   onSave = vi.fn(),
   workflow = { kind: "report", reportId: "tag-report" },
 }: {
   credentials?: SessionCredentials | null;
+  onChangeWorkflow?: () => void;
   onSave?: (credentials: SessionCredentials) => void;
   workflow?:
     | { kind: "report"; reportId: "tag-report" }
@@ -1737,6 +1878,7 @@ function renderCredentialsPanel({
     <CredentialsPanel
       workflow={workflow}
       credentials={credentials}
+      onChangeWorkflow={onChangeWorkflow}
       onSave={onSave}
     />,
   );

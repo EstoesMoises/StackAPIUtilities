@@ -1,4 +1,4 @@
-import type { CredentialRequirement } from "../domain/types";
+import type { CredentialRequirement, InstanceType } from "../domain/types";
 
 export type WriteToolId = "user-group-sync";
 
@@ -7,6 +7,7 @@ export interface WriteToolDefinition {
   title: string;
   scope: string;
   status: string;
+  supportedInstances: readonly InstanceType[];
   credentialRequirements: readonly CredentialRequirement[];
   oauthScopes: readonly string[];
 }
@@ -22,6 +23,7 @@ export const writeTools: WriteToolDefinition[] = [
     title: "User Group Sync",
     scope: "Enterprise",
     status: "Preview required",
+    supportedInstances: ["enterprise"],
     credentialRequirements: ["access-token"],
     oauthScopes: ["write_access"],
   },

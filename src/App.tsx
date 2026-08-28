@@ -563,7 +563,7 @@ export function App() {
   const selectedReportRecords = selectedReportOutput?.records ?? [];
   const datasets = Object.values(state.datasets);
   const datasetCount = datasets.length;
-  const sidebar = activePanel === "write-tools" ? (
+  const sidebar = activePanel === "credentials" ? null : activePanel === "write-tools" ? (
       <WriteToolsCatalog selectedToolId={selectedWriteToolId} onSelect={selectWriteTool} />
     ) : activePanel === "utilities" ? (
       <UtilityCatalog selectedUtilityId={state.selectedUtilityId} onSelect={selectUtility} />
@@ -595,6 +595,13 @@ export function App() {
         <CredentialsPanel
           workflow={credentialContext}
           credentials={state.credentials}
+          onChangeWorkflow={() => changeActivePanel(
+            credentialContext.kind === "report"
+              ? "report"
+              : credentialContext.kind === "utility"
+                ? "utilities"
+                : "write-tools",
+          )}
           onSave={(credentials) => dispatch({ type: "credentials/set", credentials })}
         />
       )}

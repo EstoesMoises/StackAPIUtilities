@@ -12,7 +12,7 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
   await expect(page.getByRole("button", { name: "Run both periods" })).toBeVisible();
 
   await page.getByRole("button", { name: "Credentials" }).click();
-  await expect(page.getByRole("heading", { name: "Session Credentials" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connect your Stack environment" })).toBeVisible();
   await expect(page.getByLabel("Instance URL")).toBeVisible();
 
   await page.getByRole("button", { name: "Uploads" }).click();
@@ -272,7 +272,7 @@ test("Tag Report keeps current and comparison date scopes distinct", async ({ pa
 async function saveBasicBusinessCredentials(page: Page) {
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Instance URL").fill("https://stackoverflowteams.com/c/example-team");
-  await page.getByLabel("Personal access token").fill("pat-token");
+  await page.getByLabel("Personal access token", { exact: true }).fill("pat-token");
   await page.getByRole("button", { name: "Save session credentials" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "Credentials saved for this browser session." }),

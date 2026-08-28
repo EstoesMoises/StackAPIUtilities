@@ -78,7 +78,7 @@ export function OAuthCustomerProfileManager({
 
       <div className="oauth-profile-grid">
         <label className="d-block">
-          <span className="d-block fs-caption tt-uppercase fc-light mb4">Saved customer</span>
+          <span className="credential-label">Saved customer</span>
           <select
             className="s-select"
             aria-label="Saved customer"
@@ -96,7 +96,7 @@ export function OAuthCustomerProfileManager({
         </label>
 
         <label className="d-block">
-          <span className="d-block fs-caption tt-uppercase fc-light mb4">Customer name</span>
+          <span className="credential-label">Customer name</span>
           <input
             className="s-input"
             aria-label="Customer name"
@@ -104,6 +104,7 @@ export function OAuthCustomerProfileManager({
             aria-invalid={errors.customerName ? true : undefined}
             value={customerName}
             disabled={busy}
+            placeholder="Example: Acme Enterprise"
             onChange={(event) => onCustomerNameChange(event.currentTarget.value)}
           />
         </label>
