@@ -149,6 +149,24 @@ describe("CredentialsPanel", () => {
     expect(screen.getByLabelText("Required credentials")).toHaveTextContent("Access token");
   });
 
+  it("does not hydrate Enterprise-only workflows from Basic session credentials", () => {
+    renderCredentialsPanel({
+      workflow: { kind: "write-tool", writeToolId: "user-group-sync" },
+      credentials: {
+        instanceType: "basic-business",
+        baseUrl: "https://stackoverflowteams.com/c/example-team",
+        pat: "basic-pat",
+        authSource: "manual-pat",
+      },
+    });
+
+    expect(screen.getByLabelText("Instance type")).toHaveValue("enterprise");
+    expect(screen.getByLabelText("Instance URL")).toHaveValue("");
+    expect(screen.getByLabelText("API key")).toHaveValue("");
+    expect(screen.getByLabelText("OAuth Client ID")).toHaveValue("");
+    expect(screen.getByLabelText("Access token (optional)")).toHaveValue("");
+  });
+
   it("shows PAT credentials for Basic/Business and hides Enterprise OAuth controls", () => {
     renderCredentialsPanel();
 

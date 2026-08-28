@@ -143,18 +143,21 @@ export function CredentialsPanel({ workflow, credentials, onSave }: CredentialsP
   const initialInstanceType = metadata.supportedInstances.includes(selectedInstanceType)
     ? selectedInstanceType
     : metadata.supportedInstances[0] ?? "basic-business";
+  const initialCredentials = credentials?.instanceType === initialInstanceType ? credentials : null;
   const deploymentLocked = metadata.supportedInstances.length === 1;
   const customerProfiles = useOAuthCustomerProfiles();
   const [draft, setDraft] = useState<CredentialsDraft>({
     instanceType: initialInstanceType,
     customerName: "",
-    baseUrl: credentials?.baseUrl ?? "",
-    apiKey: credentials?.apiKey ?? "",
+    baseUrl: initialCredentials?.baseUrl ?? "",
+    apiKey: initialCredentials?.apiKey ?? "",
     accessToken:
-      credentials?.authSource === "manual-enterprise-token" ? credentials.accessToken ?? "" : "",
-    oauthClientId: credentials?.oauthClientId ?? "",
-    includeNoExpiry: credentials?.oauthScopes?.includes("no_expiry") ?? false,
-    pat: credentials?.pat ?? "",
+      initialCredentials?.authSource === "manual-enterprise-token"
+        ? initialCredentials.accessToken ?? ""
+        : "",
+    oauthClientId: initialCredentials?.oauthClientId ?? "",
+    includeNoExpiry: initialCredentials?.oauthScopes?.includes("no_expiry") ?? false,
+    pat: initialCredentials?.pat ?? "",
   });
   const [saved, setSaved] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
