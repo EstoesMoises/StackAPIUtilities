@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import { analyzeSmeCoverage } from "../src/utilities/smeCoverage/analyzer";
+import {
+  buildSmeCoverageAssessmentBrief,
+  formatSmeCoverageAssessmentMarkdown,
+} from "../src/utilities/smeCoverage/assessmentBrief";
 import { buildSmeCoverageDecisionPack } from "../src/utilities/smeCoverage/decisionPack";
 import type { SmeCoverageDecisionPack } from "../src/utilities/smeCoverage/model";
 import { parseSmeCoverageDecisionPack } from "../src/utilities/smeCoverage/persistence";
@@ -225,7 +229,9 @@ test("SME Coverage Analyzer runs self-contained and exports its canonical decisi
     report.getByRole("status").filter({ hasText: "Assessment copied to the clipboard." }),
   ).toBeVisible();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
-    completeSmeCoverageRunResult.decisionPack.assessment,
+    formatSmeCoverageAssessmentMarkdown(
+      buildSmeCoverageAssessmentBrief(completeSmeCoverageRunResult.decisionPack),
+    ),
   );
 
   const pdfDownloadPromise = page.waitForEvent("download", { timeout: 60_000 });

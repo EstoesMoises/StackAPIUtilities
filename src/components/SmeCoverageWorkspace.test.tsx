@@ -101,7 +101,7 @@ describe("SmeCoverageWorkspace", () => {
         ...completeSmeCoverageDecisionPack().snapshot,
         generatedAt: "2026-07-30T13:00:00.000Z",
       },
-      assessment: "A newly prepared assessment.",
+      overview: "A newly prepared overview.",
     };
     const props = {
       onRun: vi.fn(),
@@ -117,7 +117,7 @@ describe("SmeCoverageWorkspace", () => {
 
     rerender(<SmeCoverageWorkspace {...props} decisionPack={secondPack} />);
 
-    expect(screen.getByText("A newly prepared assessment.")).toBeInTheDocument();
+    expect(screen.getByText("A newly prepared overview.")).toBeInTheDocument();
     expect(screen.queryByText("Assessment copied to the clipboard.")).not.toBeInTheDocument();
     expect(screen.queryByText("Markdown download started.")).not.toBeInTheDocument();
   });
