@@ -52,11 +52,18 @@ export interface StackApiPagedResult<T> {
   hasMore: boolean;
 }
 
+export interface StackApiV3Page<T> {
+  items: T[];
+  page: number;
+  totalPages: number | null;
+  hasMore: boolean;
+}
+
 const API_V3_USER_AGENT =
   "StackAPIUtilities/0.1 (+https://github.com/EstoesMoises/StackAPIUtilities)";
 const BURST_LOW_WATERMARK = 5;
 const TOKEN_BUCKET_LOW_WATERMARK = 30;
-const MAX_GET_RETRIES = 3;
+const MAX_IDEMPOTENT_RETRIES = 3;
 const FALLBACK_RETRY_SECONDS = 2;
 
 const waitSeconds: WaitFn = (seconds) =>
@@ -148,6 +155,43 @@ export class StackApiV3Client {
     };
   }
 
+  async getPage<T = unknown>(
+    path: string,
+    query: Record<string, string> = {},
+    page: number,
+  ): Promise<StackApiV3Page<T>> {
+    assertSafePaginationPage("Stack API v3", path, page, this.paginationSafetyLimit);
+    const response = await this.readResponse(this.buildUrl(path, { ...query, page: String(page) }));
+    const body = validatePaginationEnvelope<T>(
+      await readJsonResponse<unknown>(response, "Stack API v3"),
+      path,
+      page,
+      null,
+    );
+
+    return {
+      items: body.items,
+      page,
+      totalPages: body.totalPages,
+      hasMore: body.totalPages === null ? body.items.length > 0 : page < body.totalPages,
+    };
+  }
+
+  async getJson<T = unknown>(path: string): Promise<T> {
+    const response = await this.readResponse(this.buildUrl(path, {}));
+    return readJsonResponse<T>(response, "Stack API v3");
+  }
+
+  async putJson<T = unknown>(path: string, body: unknown): Promise<T> {
+    const response = await this.readResponse(this.buildUrl(path, {}), {
+      method: "PUT",
+      headers: this.createJsonHeaders(),
+      body: JSON.stringify(body),
+    });
+
+    return readJsonResponse<T>(response, "Stack API v3");
+  }
+
   async getUserByEmail(email: string): Promise<StackApiV3UserSummary | null> {
     const response = await this.readResponse(
       this.buildUrl(`/users/by-email/${encodeURIComponent(email)}`, {}),
@@ -194,7 +238,7 @@ export class StackApiV3Client {
     return url;
   }
 
-  private async writeJson<T>(path: string, method: "POST" | "PUT", body: unknown): Promise<T> {
+  private async writeJson<T>(path: string, method: "POST", body: unknown): Promise<T> {
     const response = await this.fetchFn(this.buildUrl(path, {}), {
       method,
       headers: this.createJsonHeaders(),
@@ -212,22 +256,36 @@ export class StackApiV3Client {
     };
   }
 
-  private async readResponse(url: URL): Promise<Response> {
+  private async readResponse(url: URL, init?: RequestInit): Promise<Response> {
     for (let retryCount = 0; ; retryCount += 1) {
-      const response = await this.fetchFn(url, {
-        headers: this.createJsonHeaders(),
-      });
+      let response: Response;
+      try {
+        response = await this.fetchFn(url, init ?? { headers: this.createJsonHeaders() });
+      } catch (error) {
+        if (retryCount >= MAX_IDEMPOTENT_RETRIES) {
+          throw error;
+        }
 
-      if (response.status !== 429) {
-        await this.notifyThrottle(response.headers);
+        await this.waitFn(FALLBACK_RETRY_SECONDS);
+        continue;
+      }
+
+      if (!isRetryableStatus(response.status)) {
+        if (response.ok) {
+          await this.notifyThrottle(response.headers);
+        }
         return response;
       }
 
-      if (retryCount >= MAX_GET_RETRIES) {
+      if (retryCount >= MAX_IDEMPOTENT_RETRIES) {
         return response;
       }
 
-      await this.waitFn(getRetryDelaySeconds(response.headers, this.nowFn()));
+      const seconds = getRetryDelaySeconds(response.headers, this.nowFn());
+      if (response.status === 429 && this.onThrottle) {
+        await this.onThrottle({ kind: "backoff", seconds });
+      }
+      await this.waitFn(seconds);
     }
   }
 
@@ -260,6 +318,10 @@ export class StackApiV3Client {
       await this.onThrottle({ kind: "token-bucket", seconds: secondsUntilRefill, remaining: callsLeft });
     }
   }
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504;
 }
 
 function validatePaginationEnvelope<T>(

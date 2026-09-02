@@ -14,7 +14,121 @@ function responseWithJson(body: unknown): Response {
   return response;
 }
 
+function createClient(options: Partial<ConstructorParameters<typeof StackApiV3Client>[0]> = {}) {
+  return new StackApiV3Client({
+    apiV3Url: "https://demo.stackenterprise.co/api/v3",
+    token: "token",
+    ...options,
+  });
+}
+
 describe("StackApiV3Client", () => {
+  it("fetches one requested page without walking earlier pages", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [{ id: 9 }], totalPages: 5 })),
+    );
+    const client = createClient({ fetchFn });
+
+    await expect(client.getPage<{ id: number }>("/questions", { pageSize: "100" }, 3)).resolves.toEqual({
+      items: [{ id: 9 }],
+      page: 3,
+      totalPages: 5,
+      hasMore: true,
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(String(fetchFn.mock.calls[0][0])).toContain("page=3");
+  });
+
+  it("rejects an explicitly requested page beyond the pagination safety limit", async () => {
+    const client = createClient({
+      fetchFn: vi.fn(),
+      paginationSafetyLimit: 2,
+    });
+
+    await expect(client.getPage("/questions", {}, 3)).rejects.toThrow(
+      "exceeded the internal safety limit of 2 pages. No complete result was produced.",
+    );
+  });
+
+  it("retrieves one JSON detail object", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 42, title: "MyPBM" })),
+    );
+    const client = createClient({ fetchFn });
+
+    await expect(client.getJson<{ id: number; title: string }>("/questions/42")).resolves.toEqual({
+      id: 42,
+      title: "MyPBM",
+    });
+    expect(String(fetchFn.mock.calls[0][0])).toBe("https://demo.stackenterprise.co/api/v3/questions/42");
+  });
+
+  it("sends one JSON PUT request body", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 42 })));
+    const client = createClient({ fetchFn });
+
+    await expect(client.putJson<{ id: number }>("/questions/42", {
+      title: "MyPBM",
+      body: "Body",
+      tags: [],
+    })).resolves.toEqual({ id: 42 });
+    expect(fetchFn.mock.calls[0][1]).toEqual(expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ title: "MyPBM", body: "Body", tags: [] }),
+    }));
+  });
+
+  it("notifies backoff before waiting to retry a throttled PUT", async () => {
+    const events: string[] = [];
+    const onThrottle = vi.fn(async (notice) => {
+      events.push(`${notice.kind}:${notice.seconds}`);
+    });
+    const waitFn = vi.fn(async (seconds) => {
+      events.push(`wait:${seconds}`);
+    });
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 429, headers: { "Retry-After": "2" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 }), { status: 200 }));
+    const client = createClient({ fetchFn, waitFn, onThrottle });
+
+    await client.putJson("/questions/42", { title: "MyPBM", body: "Body", tags: [] });
+
+    expect(events).toEqual(["backoff:2", "wait:2"]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a GET after a retryable 503 response", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 })));
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson<{ id: number }>("/questions/42")).resolves.toEqual({ id: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(waitFn).toHaveBeenCalledWith(2);
+  });
+
+  it("retries idempotent network errors at most three times", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn(async () => { throw new TypeError("network unavailable"); });
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow("network unavailable");
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(waitFn).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([400, 401, 403, 404, 409])("does not retry non-retryable GET status %s", async (status) => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(new Response("request failed", { status }));
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow(`Stack API v3 request failed with ${status}`);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).not.toHaveBeenCalled();
+  });
+
   it("fetches totalPages pagination", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ id: "a" }], totalPages: 2 }), { status: 200 }))
