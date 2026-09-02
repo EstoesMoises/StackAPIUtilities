@@ -165,6 +165,66 @@ describe("replaceMarkdown", () => {
     ]);
   });
 
+  it("uses decoded entity characters as whole-term neighbors on both sides", () => {
+    const source = "MyPVM&#50; &#65;MyPVM MyPVM";
+
+    const result = replaceMarkdown(source, rules, safe);
+
+    expect(result.markdown).toBe("MyPVM&#50; &#65;MyPVM MyPBM");
+    expect(result.changedOccurrences).toEqual([
+      { ruleId: "rule-1", start: 22, end: 27, before: "MyPVM", after: "MyPBM" },
+    ]);
+  });
+
+  it("reports raw HTML comment and tag-name matches as protected syntax", () => {
+    expect(replaceMarkdown("<!-- MyPVM -->", rules, safe).protectedOccurrences).toEqual([
+      {
+        ruleId: "rule-1",
+        start: 5,
+        end: 10,
+        before: "MyPVM",
+        reason: "raw-html-syntax",
+      },
+    ]);
+    expect(replaceMarkdown("<MyPVM>visible</MyPVM>", rules, safe).protectedOccurrences).toEqual([
+      {
+        ruleId: "rule-1",
+        start: 1,
+        end: 6,
+        before: "MyPVM",
+        reason: "raw-html-syntax",
+      },
+      {
+        ruleId: "rule-1",
+        start: 16,
+        end: 21,
+        before: "MyPVM",
+        reason: "raw-html-syntax",
+      },
+    ]);
+  });
+
+  it("reports script and style text as protected hidden raw HTML", () => {
+    expect(replaceMarkdown("<script>MyPVM</script>", rules, safe).protectedOccurrences).toEqual([
+      {
+        ruleId: "rule-1",
+        start: 8,
+        end: 13,
+        before: "MyPVM",
+        reason: "raw-html-hidden",
+      },
+    ]);
+    expect(replaceMarkdown("<style>MyPVM</style>", rules, safe).protectedOccurrences).toEqual([
+      {
+        ruleId: "rule-1",
+        start: 7,
+        end: 12,
+        before: "MyPVM",
+        reason: "raw-html-hidden",
+      },
+    ]);
+  });
+
   it("uses Unicode letters, numbers, and underscore as whole-term boundaries", () => {
     expect(replaceMarkdown("MyPVM MyPVM2 _MyPVM caféMyPVM MyPVM界", rules, safe).markdown).toBe(
       "MyPBM MyPVM2 _MyPVM caféMyPVM MyPVM界",

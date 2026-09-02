@@ -5,7 +5,12 @@ import { gfm } from "micromark-extension-gfm";
 import { parseFragment } from "parse5";
 import type { ReplacementOptions, ReplacementRule } from "./types";
 
-export type ProtectedOccurrenceReason = "code" | "destination" | "raw-html-attribute";
+export type ProtectedOccurrenceReason =
+  | "code"
+  | "destination"
+  | "raw-html-attribute"
+  | "raw-html-syntax"
+  | "raw-html-hidden";
 
 export interface ReplacementOccurrence {
   ruleId: string;
@@ -26,6 +31,8 @@ export interface MarkdownReplacementResult {
 interface SourceSpan {
   start: number;
   end: number;
+  precedingDecoded?: string;
+  followingDecoded?: string;
 }
 
 interface ProtectedSpan extends SourceSpan {
@@ -66,6 +73,17 @@ function decodedCharacterReference(reference: string): string | undefined {
   return text?.nodeName === "#text" ? text.value : undefined;
 }
 
+function characterBefore(value: string, index: number): string | undefined {
+  if (index <= 0) return undefined;
+  const lastCodeUnit = value.charCodeAt(index - 1);
+  const start = lastCodeUnit >= 0xdc00 && lastCodeUnit <= 0xdfff ? index - 2 : index - 1;
+  return String.fromCodePoint(value.codePointAt(start)!);
+}
+
+function characterAt(value: string, index: number): string | undefined {
+  return index < value.length ? String.fromCodePoint(value.codePointAt(index)!) : undefined;
+}
+
 function exactSourceSpans(raw: string, decoded: string, absoluteStart: number): SourceSpan[] {
   if (raw === decoded) return raw ? [{ start: absoluteStart, end: absoluteStart + raw.length }] : [];
 
@@ -73,12 +91,23 @@ function exactSourceSpans(raw: string, decoded: string, absoluteStart: number): 
   let rawIndex = 0;
   let decodedIndex = 0;
   let exactStart: number | undefined;
+  let exactDecodedStart: number | undefined;
 
   const closeExactSpan = (): void => {
-    if (exactStart !== undefined && rawIndex > exactStart) {
-      spans.push({ start: absoluteStart + exactStart, end: absoluteStart + rawIndex });
+    if (
+      exactStart !== undefined &&
+      exactDecodedStart !== undefined &&
+      rawIndex > exactStart
+    ) {
+      spans.push({
+        start: absoluteStart + exactStart,
+        end: absoluteStart + rawIndex,
+        precedingDecoded: characterBefore(decoded, exactDecodedStart),
+        followingDecoded: characterAt(decoded, decodedIndex),
+      });
     }
     exactStart = undefined;
+    exactDecodedStart = undefined;
   };
 
   while (rawIndex < raw.length && decodedIndex < decoded.length) {
@@ -119,7 +148,10 @@ function exactSourceSpans(raw: string, decoded: string, absoluteStart: number): 
       return spans;
     }
 
-    exactStart ??= rawIndex;
+    if (exactStart === undefined) {
+      exactStart = rawIndex;
+      exactDecodedStart = decodedIndex;
+    }
     rawIndex += rawCharacter.length;
     decodedIndex += decodedCharacter.length;
   }
@@ -128,10 +160,21 @@ function exactSourceSpans(raw: string, decoded: string, absoluteStart: number): 
   return spans;
 }
 
-function hasWholeTermBoundaries(source: string, start: number, end: number): boolean {
-  const preceding = source.slice(0, start).match(/[\p{L}\p{N}_]$/u)?.[0];
-  const following = source.slice(end).match(/^[\p{L}\p{N}_]/u)?.[0];
-  return !preceding && !following;
+function hasWholeTermBoundaries(
+  source: string,
+  span: SourceSpan,
+  start: number,
+  end: number,
+): boolean {
+  const preceding =
+    start === span.start && span.precedingDecoded !== undefined
+      ? span.precedingDecoded
+      : characterBefore(source, start);
+  const following =
+    end === span.end && span.followingDecoded !== undefined
+      ? span.followingDecoded
+      : characterAt(source, end);
+  return !/[\p{L}\p{N}_]/u.test(preceding ?? "") && !/[\p{L}\p{N}_]/u.test(following ?? "");
 }
 
 function matchesInSpan(
@@ -152,7 +195,7 @@ function matchesInSpan(
       const relativeStart = match.index;
       const start = span.start + relativeStart;
       const end = start + match[0].length;
-      if (options.wholeTerm && !hasWholeTermBoundaries(source, start, end)) continue;
+      if (options.wholeTerm && !hasWholeTermBoundaries(source, span, start, end)) continue;
 
       candidates.push({
         ruleId: rule.id,
@@ -292,6 +335,7 @@ function addHtmlSpans(
 ): void {
   const raw = source.slice(span.start, span.end);
   const fragment = parseFragment(raw, { sourceCodeLocationInfo: true }) as unknown as HtmlNode;
+  const classifiedSpans: SourceSpan[] = [];
 
   const visit = (node: HtmlNode, hidden: boolean): void => {
     const location = node.sourceCodeLocation;
@@ -299,28 +343,41 @@ function addHtmlSpans(
 
     if (location?.attrs) {
       for (const attributeLocation of Object.values(location.attrs)) {
-        protectedSpans.push({
+        const attributeSpan = {
           start: span.start + attributeLocation.startOffset,
           end: span.start + attributeLocation.endOffset,
-          reason: "raw-html-attribute",
-        });
+        };
+        protectedSpans.push({ ...attributeSpan, reason: "raw-html-attribute" });
+        classifiedSpans.push(attributeSpan);
       }
     }
 
-    if (node.nodeName === "#text" && location && !isHiddenContent && node.value !== undefined) {
-      editable.push(
-        ...exactSourceSpans(
+    if (node.nodeName === "#text" && location) {
+      const textSpan = {
+        start: span.start + location.startOffset,
+        end: span.start + location.endOffset,
+      };
+      if (isHiddenContent) {
+        protectedSpans.push({ ...textSpan, reason: "raw-html-hidden" });
+        classifiedSpans.push(textSpan);
+      } else if (node.value !== undefined) {
+        const exactSpans = exactSourceSpans(
           raw.slice(location.startOffset, location.endOffset),
           node.value,
-          span.start + location.startOffset,
-        ),
-      );
+          textSpan.start,
+        );
+        editable.push(...exactSpans);
+        classifiedSpans.push(...exactSpans);
+      }
     }
 
     node.childNodes?.forEach((child) => visit(child, isHiddenContent));
   };
 
   visit(fragment, false);
+  complement(span, classifiedSpans).forEach((syntaxSpan) =>
+    protectedSpans.push({ ...syntaxSpan, reason: "raw-html-syntax" }),
+  );
 }
 
 function collectSourceSpans(source: string, root: Nodes, replaceInCode: boolean): {
