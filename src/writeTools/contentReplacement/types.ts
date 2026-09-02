@@ -154,3 +154,114 @@ export interface DetailBatchResult {
   inspectedCount: number;
   protectedOccurrenceCount: number;
 }
+
+export type ContentReplacementJobStage =
+  | "define"
+  | "scan"
+  | "review"
+  | "apply"
+  | "results"
+  | "recovery";
+
+export type ContentReplacementJobStatus =
+  | "idle"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface PersistedContentReplacementProgress {
+  questionPages: number;
+  answerPages: number;
+  articlePages: number;
+  inventoryItems: number;
+  detailsInspected: number;
+  proposalsFound: number;
+  protectedOccurrences: number;
+  applyCompleted: number;
+  recoveryCompleted: number;
+}
+
+export type PersistedContentReplacementItemStatus =
+  | "pending"
+  | "excluded"
+  | "ready-to-apply"
+  | "applying"
+  | "applied"
+  | "stale"
+  | "failed"
+  | "ready-to-recover"
+  | "recovering"
+  | "recovered"
+  | "recovery-conflict";
+
+export interface PersistedContentReplacementFailure {
+  category:
+    | "network"
+    | "authorization"
+    | "validation"
+    | "rate-limit"
+    | "storage"
+    | "server"
+    | "unknown";
+  message: string;
+  retryable: boolean;
+  statusCode?: number;
+  occurredAt: string;
+}
+
+export type PersistedContentReplacementResult =
+  | {
+      kind: "applied";
+      observedRequestChecksum: string;
+      completedAt: string;
+    }
+  | {
+      kind: "unchanged" | "stale" | "excluded" | "recovery-conflict";
+      completedAt: string;
+    }
+  | {
+      kind: "recovered";
+      observedRequestChecksum: string;
+      completedAt: string;
+    };
+
+export interface PersistedContentReplacementRecovery {
+  priorRequestModel: ReplacementRequestModel;
+  scannedRequestChecksum: string;
+  proposedRequestChecksum: string;
+  observedPostApplyChecksum?: string;
+  status: "pending" | "ready" | "applied" | "conflict" | "failed";
+}
+
+export interface PersistedContentReplacementItem {
+  proposal: ReplacementProposal;
+  included: boolean;
+  exclusionReason?: "user" | "bulk";
+  attemptCount: number;
+  status: PersistedContentReplacementItemStatus;
+  result?: PersistedContentReplacementResult;
+  failure?: PersistedContentReplacementFailure;
+  recovery?: PersistedContentReplacementRecovery;
+}
+
+export interface PersistedContentReplacementJob {
+  schemaVersion: 1;
+  id: string;
+  fingerprint: string;
+  baseUrl: string;
+  target: { kind: "enterprise-main" };
+  configuration: ReplacementConfiguration;
+  stage: ContentReplacementJobStage;
+  status: ContentReplacementJobStatus;
+  inventoryQueue: InventoryCursor[];
+  detailQueue: ReplacementItemRef[];
+  progress: PersistedContentReplacementProgress;
+  proposals: Record<string, PersistedContentReplacementItem>;
+  recoverySnapshotStatus: "none" | "preparing" | "ready" | "failed";
+  nextRetryAt?: string;
+  failure?: PersistedContentReplacementFailure;
+  createdAt: string;
+  updatedAt: string;
+}
