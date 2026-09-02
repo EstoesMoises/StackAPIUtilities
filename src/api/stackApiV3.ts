@@ -160,6 +160,9 @@ export class StackApiV3Client {
     query: Record<string, string> = {},
     page: number,
   ): Promise<StackApiV3Page<T>> {
+    if (!Number.isSafeInteger(page) || page < 1) {
+      throw new Error("Stack API v3 page must be a positive safe integer.");
+    }
     assertSafePaginationPage("Stack API v3", path, page, this.paginationSafetyLimit);
     const response = await this.readResponse(this.buildUrl(path, { ...query, page: String(page) }));
     const body = validatePaginationEnvelope<T>(

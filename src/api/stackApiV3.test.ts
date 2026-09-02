@@ -50,6 +50,23 @@ describe("StackApiV3Client", () => {
     );
   });
 
+  it.each([
+    ["zero", 0],
+    ["a negative number", -1],
+    ["a fraction", 1.5],
+    ["an unsafe integer", Number.MAX_SAFE_INTEGER + 1],
+  ])("rejects %s as an explicit page number", async (_label, page) => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], totalPages: 1 })),
+    );
+    const client = createClient({ fetchFn });
+
+    await expect(client.getPage("/questions", {}, page)).rejects.toThrow(
+      "Stack API v3 page must be a positive safe integer.",
+    );
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("retrieves one JSON detail object", async () => {
     const fetchFn = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 42, title: "MyPBM" })),
@@ -74,6 +91,11 @@ describe("StackApiV3Client", () => {
     })).resolves.toEqual({ id: 42 });
     expect(fetchFn.mock.calls[0][1]).toEqual(expect.objectContaining({
       method: "PUT",
+      headers: expect.objectContaining({
+        Authorization: "Bearer token",
+        "Content-Type": "application/json",
+        "User-Agent": API_V3_USER_AGENT,
+      }),
       body: JSON.stringify({ title: "MyPBM", body: "Body", tags: [] }),
     }));
   });
@@ -109,6 +131,18 @@ describe("StackApiV3Client", () => {
     expect(waitFn).toHaveBeenCalledWith(2);
   });
 
+  it.each([502, 504])("retries a GET after a retryable %s response", async (status) => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 })));
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson<{ id: number }>("/questions/42")).resolves.toEqual({ id: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(waitFn).toHaveBeenCalledWith(2);
+  });
+
   it("retries idempotent network errors at most three times", async () => {
     const waitFn = vi.fn(async () => undefined);
     const fetchFn = vi.fn(async () => { throw new TypeError("network unavailable"); });
@@ -119,12 +153,43 @@ describe("StackApiV3Client", () => {
     expect(waitFn).toHaveBeenCalledTimes(3);
   });
 
+  it("stops retrying a PUT after three retryable responses", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn(async () => new Response("unavailable", { status: 503 }));
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.putJson("/questions/42", { title: "MyPBM" })).rejects.toThrow(
+      "Stack API v3 request failed with 503",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(waitFn).toHaveBeenCalledTimes(3);
+  });
+
   it.each([400, 401, 403, 404, 409])("does not retry non-retryable GET status %s", async (status) => {
     const waitFn = vi.fn(async () => undefined);
     const fetchFn = vi.fn().mockResolvedValue(new Response("request failed", { status }));
     const client = createClient({ fetchFn, waitFn });
 
     await expect(client.getJson("/questions/42")).rejects.toThrow(`Stack API v3 request failed with ${status}`);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["POST", "a network error", async (client: StackApiV3Client) => client.createUserGroup({ name: "Ada", userIds: [1] }), () => {
+      throw new TypeError("network unavailable");
+    }],
+    ["DELETE", "a network error", async (client: StackApiV3Client) => client.removeUserGroupMember(7, 3), () => {
+      throw new TypeError("network unavailable");
+    }],
+    ["POST", "a 503 response", async (client: StackApiV3Client) => client.createUserGroup({ name: "Ada", userIds: [1] }), () => new Response("unavailable", { status: 503 })],
+    ["DELETE", "a 503 response", async (client: StackApiV3Client) => client.removeUserGroupMember(7, 3), () => new Response("unavailable", { status: 503 })],
+  ])("does not retry %s after %s", async (_method, _failure, request, responseOrError) => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn(async () => responseOrError());
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(request(client)).rejects.toThrow();
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(waitFn).not.toHaveBeenCalled();
   });
