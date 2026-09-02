@@ -192,9 +192,9 @@ describe("useContentReplacementJob", () => {
     expect(JSON.stringify(deps.store.current())).not.toMatch(/fresh-token|top-secret-token|credentialFingerprint/i);
   });
 
-  it("requires a post-mount credential change for a persisted authorization interruption", async () => {
+  it("does not infer a rejected credential from persisted authorization state after a full reload", async () => {
     let interrupted = createReplacementJob({
-      id: "job-1",
+      id: "reload-without-memory-job",
       fingerprint: "f".repeat(64),
       baseUrl: "https://example.stackenterprise.co",
       configuration,
@@ -211,11 +211,78 @@ describe("useContentReplacementJob", () => {
       { initialProps: { supplied: credentials } },
     );
 
-    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
-    hook.rerender({ supplied: { ...credentials } });
-    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
-    hook.rerender({ supplied: { ...credentials, accessToken: "new-token" } });
     expect(hook.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+    hook.rerender({ supplied: { ...credentials } });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+  });
+
+  it("retains a canonical rejected token identity across remounts until authenticated success", async () => {
+    const firstResponse = deferred<Response>();
+    const fetcher = vi.fn()
+      .mockReturnValueOnce(firstResponse.promise)
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        throttleNotices: [],
+      }));
+    const deps = dependencies(fetcher);
+    deps.value.createId = () => "canonical-remount-job";
+    const tokenA: SessionCredentials = {
+      ...credentials,
+      baseUrl: "https://EXAMPLE.stackenterprise.co/",
+      accessToken: "  token-a  ",
+      oauthScopes: ["no_expiry", "write_access"],
+    };
+    const first = renderHook(() => useContentReplacementJob(tokenA, null, deps.value));
+    await act(async () => first.result.current.createJob(configuration));
+    let scan!: Promise<void>;
+    act(() => { scan = first.result.current.startScan(); });
+    await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    firstResponse.resolve(jsonResponse({ ok: false, error: "rejected" }, 401));
+    await act(async () => scan);
+    const persisted = deps.store.current();
+    expect(JSON.stringify(persisted)).not.toMatch(/token-a|credentialFingerprint|rejectedCredential/i);
+    first.unmount();
+
+    const equivalentA: SessionCredentials = {
+      ...tokenA,
+      baseUrl: "https://example.stackenterprise.co",
+      accessToken: "token-a",
+      oauthScopes: ["write_access", "no_expiry"],
+    };
+    const second = renderHook(
+      ({ supplied }) => useContentReplacementJob(supplied, persisted, deps.value),
+      { initialProps: { supplied: equivalentA } },
+    );
+    expect(second.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+
+    const tokenB = { ...equivalentA, accessToken: "token-b" };
+    second.rerender({ supplied: tokenB });
+    expect(second.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+    second.rerender({ supplied: tokenA });
+    expect(second.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+
+    second.rerender({ supplied: tokenB });
+    await act(async () => second.result.current.resume());
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    second.rerender({ supplied: equivalentA });
+    expect(second.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+  });
+
+  it("clears an in-memory rejection when its job is explicitly deleted", async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ ok: false, error: "rejected" }, 403));
+    const deps = dependencies(fetcher);
+    deps.value.createId = () => "deleted-rejection-job";
+    const first = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => first.result.current.createJob(configuration));
+    await act(async () => first.result.current.startScan());
+    const rejectedJob = first.result.current.job;
+    expect(first.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+    await act(async () => first.result.current.deleteJob());
+    first.unmount();
+
+    const second = renderHook(() => useContentReplacementJob(credentials, rejectedJob, deps.value));
+    expect(second.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
   });
 
   it("rejects the credential used by an in-flight request without tainting a newer input", async () => {
