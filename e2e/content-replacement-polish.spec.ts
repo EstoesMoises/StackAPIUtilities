@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-async function openContentReplacement(page: import("@playwright/test").Page) {
+async function openContentReplacementPolishSurface(page: import("@playwright/test").Page) {
   await page.goto("/");
   await page.getByRole("button", { name: "Write Tools" }).click();
   await page.getByRole("button", { name: "Content Replacement" }).click();
@@ -8,7 +8,7 @@ async function openContentReplacement(page: import("@playwright/test").Page) {
 }
 
 test("keeps sticky ancestry and button motion stable through interaction states", async ({ page }) => {
-  await openContentReplacement(page);
+  await openContentReplacementPolishSurface(page);
   const wizard = page.locator(".content-replacement-wizard");
   const button = wizard.locator(".s-btn").first();
 
@@ -30,7 +30,7 @@ test("keeps sticky ancestry and button motion stable through interaction states"
 test("has no page-horizontal overflow at desktop or narrow mobile widths", async ({ page }) => {
   for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
-    await openContentReplacement(page);
+    await openContentReplacementPolishSurface(page);
     const dimensions = await page.evaluate(() => ({
       viewportWidth: document.documentElement.clientWidth,
       pageWidth: document.documentElement.scrollWidth,

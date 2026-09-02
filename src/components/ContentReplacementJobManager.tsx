@@ -40,6 +40,7 @@ export function ContentReplacementJobManager({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [page, setPage] = useState(1);
+  const [reloadRevision, setReloadRevision] = useState(0);
 
   useEffect(() => {
     const currentRequest = requestId.current + 1;
@@ -65,7 +66,7 @@ export function ContentReplacementJobManager({
     return () => {
       if (requestId.current === currentRequest) requestId.current += 1;
     };
-  }, [page, storage]);
+  }, [page, reloadRevision, storage]);
 
   const pageCount = Math.max(1, Math.ceil(totalCount / JOBS_PER_PAGE));
   const boundedPage = Math.min(page, pageCount);
@@ -82,6 +83,7 @@ export function ContentReplacementJobManager({
       const nextPageCount = Math.max(1, Math.ceil(nextTotalCount / JOBS_PER_PAGE));
       setTotalCount(nextTotalCount);
       if (page > nextPageCount) setPage(nextPageCount);
+      else setReloadRevision((current) => current + 1);
       setPendingDeleteId(null);
       onDeleteJob?.(jobId);
       setAnnouncement(`Content replacement job ${jobId}, its post content, and recovery snapshots were deleted from this browser.`);

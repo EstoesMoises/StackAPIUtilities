@@ -1463,6 +1463,98 @@ describe("AppShell", () => {
     expect(progress).toHaveTextContent("Apply");
   });
 
+  it("does not abort a newly created scan when controlled job identity feeds back from App", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    const firstScan = createDeferred<Response>();
+    const scanAbort = vi.fn();
+    let storedJob: PersistedContentReplacementJob | null = null;
+    saveContentReplacementJobMock.mockImplementation(async (job) => {
+      storedJob = job;
+      return { status: "saved" };
+    });
+    loadContentReplacementJobMock.mockImplementation(async (id) => storedJob?.id === id ? storedJob : null);
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input) === "/api/oauth/pkce/config") {
+        return jsonResponse({ ok: true, redirectUri: "https://utilities.example.com/api/oauth/pkce/callback" });
+      }
+      if (String(input) === "/api/oauth/pkce/start") {
+        return jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=create-scan" });
+      }
+      if (String(input) === "/api/write-tools/content-replacement/scan") {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", scanAbort);
+        const body = JSON.parse(String(init?.body)) as { cursor?: { kind: "questions" | "answers" | "articles" } };
+        if (fetchMock.mock.calls.filter(([url]) => String(url) === "/api/write-tools/content-replacement/scan").length === 1) {
+          return firstScan.promise;
+        }
+        return jsonResponse({
+          ok: true,
+          result: {
+            candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0,
+            pageKind: body.cursor?.kind ?? "questions",
+          },
+          throttleNotices: [],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${String(input)}`);
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        origin: window.location.origin,
+        source: popup as unknown as MessageEventSource,
+        data: {
+          type: "stack-api-oauth-pkce-result",
+          ok: true,
+          credential: {
+            instanceType: "enterprise", baseUrl: "https://demo.stackenterprise.co",
+            accessToken: "oauth-token", authSource: "oauth-pkce", oauthClientId: "client-123",
+            oauthScopes: ["write_access", "no_expiry"],
+          },
+        },
+      }));
+    });
+    expect(await screen.findByText("Credentials saved for this browser session.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    await user.type(screen.getByLabelText("Find term 1"), "Old term");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "New term");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    const startScanButton = screen.getByRole("button", { name: "Start scan" });
+    expect(startScanButton).toBeEnabled();
+    await user.click(startScanButton);
+
+    await waitFor(() => expect(saveContentReplacementJobMock).toHaveBeenCalled());
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) =>
+      String(url) === "/api/write-tools/content-replacement/scan")).toBe(true));
+    expect(loadContentReplacementJobMock).not.toHaveBeenCalled();
+    await act(async () => { await Promise.resolve(); });
+    expect(scanAbort).not.toHaveBeenCalled();
+
+    firstScan.resolve(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0,
+        pageKind: "questions",
+      },
+      throttleNotices: [],
+    }));
+    expect(await screen.findByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "User Group Sync" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+    expect(await screen.findByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    expect(loadContentReplacementJobMock).toHaveBeenCalledWith(storedJob!.id);
+  });
+
   it("keeps a job opened from Define selected across write-tool remounts", async () => {
     const user = userEvent.setup();
     const job = contentReplacementJob({ id: "job-from-define", stage: "scan", status: "paused" });

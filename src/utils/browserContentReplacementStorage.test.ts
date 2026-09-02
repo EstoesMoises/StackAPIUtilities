@@ -968,6 +968,57 @@ describe("browserContentReplacementStorage", () => {
     );
   });
 
+  it("opens exact legacy jobs and exact v2 wrappers without conflating their shapes", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const legacy = { ...createJob(), id: "exact-v1-job" };
+    const wrapped = { ...createJob(), id: "exact-v2-job" };
+    fake.records.set(legacy.id, legacy);
+    fake.records.set(wrapped.id, storedRecordForTest(wrapped));
+
+    await expect(loadContentReplacementJob(legacy.id)).resolves.toEqual(legacy);
+    await expect(loadContentReplacementJob(wrapped.id)).resolves.toEqual(wrapped);
+  });
+
+  it("rejects v2 wrappers with extra string, symbol, or accessor fields without invoking getters", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const stringExtra = storedRecordForTest({ ...createJob(), id: "wrapper-string-extra" });
+    stringExtra.accessToken = "secret";
+    const symbolExtra = storedRecordForTest({ ...createJob(), id: "wrapper-symbol-extra" });
+    Reflect.defineProperty(symbolExtra, Symbol("credential"), { value: "secret", enumerable: true });
+    const getter = vi.fn(() => "secret");
+    const accessorExtra = storedRecordForTest({ ...createJob(), id: "wrapper-accessor-extra" });
+    Object.defineProperty(accessorExtra, "accessToken", { enumerable: true, get: getter });
+    fake.records.set("wrapper-string-extra", stringExtra);
+    fake.records.set("wrapper-symbol-extra", symbolExtra);
+    fake.records.set("wrapper-accessor-extra", accessorExtra);
+
+    for (const id of ["wrapper-string-extra", "wrapper-symbol-extra", "wrapper-accessor-extra"]) {
+      await expect(loadContentReplacementJob(id)).rejects.toThrow("Stored content replacement job is invalid.");
+    }
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("contains hostile v2 wrapper reflection traps behind the stable corruption error", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const wrapped = storedRecordForTest({ ...createJob(), id: "wrapper-proxy" });
+    fake.records.set("wrapper-proxy", new Proxy(wrapped, {
+      ownKeys() { throw new Error("private proxy trap detail"); },
+    }));
+
+    await expect(loadContentReplacementJob("wrapper-proxy")).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
   it("fails predictably when IndexedDB is unavailable", async () => {
     vi.stubGlobal("indexedDB", undefined);
     await expect(loadContentReplacementJob("valid-id")).rejects.toThrow("Content replacement storage is unavailable.");

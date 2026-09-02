@@ -196,7 +196,10 @@ function replacementStorage(jobs: PersistedContentReplacementJob[]): ContentRepl
       jobs: summaries.slice(offset, offset + limit),
       totalCount: summaries.length,
     })),
-    delete: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn(async (id: string) => {
+      const index = summaries.findIndex((summary) => summary.id === id);
+      if (index >= 0) summaries.splice(index, 1);
+    }),
   };
 }
 

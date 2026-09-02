@@ -75,7 +75,6 @@ function ConnectedContentReplacementWizard({
       return;
     }
     if (controllerJobRef.current?.id === selectedJobId) {
-      setSelectedJob(controllerJobRef.current);
       setLoadingSelectedJob(false);
       return;
     }

@@ -188,12 +188,32 @@ function storedJobRevision(value: unknown, expectedId: string): number | null {
 }
 
 function storedJobValue(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const job = Object.getOwnPropertyDescriptor(value, "job");
-  const summary = Object.getOwnPropertyDescriptor(value, "summary");
-  const id = Object.getOwnPropertyDescriptor(value, "id");
-  if (job && summary && id && "value" in job && "value" in summary && "value" in id) return job.value;
-  return value;
+  return storedRecordEnvelope(value)?.job ?? value;
+}
+
+function storedRecordEnvelope(value: unknown): StoredContentReplacementJobRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  let keys: PropertyKey[];
+  try {
+    keys = Reflect.ownKeys(value);
+  } catch {
+    throw corruptJob();
+  }
+  const wrapperCandidate = keys.includes("job") || keys.includes("summary");
+  if (!wrapperCandidate) return null;
+  if (keys.length !== 3 || keys.some((key) => typeof key !== "string" ||
+    (key !== "id" && key !== "job" && key !== "summary"))) throw corruptJob();
+  try {
+    const id = Object.getOwnPropertyDescriptor(value, "id");
+    const job = Object.getOwnPropertyDescriptor(value, "job");
+    const summary = Object.getOwnPropertyDescriptor(value, "summary");
+    if (!id || !("value" in id) || !id.enumerable ||
+      !job || !("value" in job) || !job.enumerable ||
+      !summary || !("value" in summary) || !summary.enumerable) throw corruptJob();
+    return { id: id.value, job: job.value, summary: summary.value } as StoredContentReplacementJobRecord;
+  } catch {
+    throw corruptJob();
+  }
 }
 
 function assertStoredRecordCoherence(
@@ -201,15 +221,10 @@ function assertStoredRecordCoherence(
   expectedId: string,
   job: PersistedContentReplacementJob,
 ): void {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return;
-  const storedJob = Object.getOwnPropertyDescriptor(value, "job");
-  const storedSummary = Object.getOwnPropertyDescriptor(value, "summary");
-  const storedId = Object.getOwnPropertyDescriptor(value, "id");
-  const wrapper = storedJob && storedSummary && storedId &&
-    "value" in storedJob && "value" in storedSummary && "value" in storedId;
+  const wrapper = storedRecordEnvelope(value);
   if (!wrapper) return;
-  if (storedId.value !== expectedId || job.id !== expectedId) throw corruptJob();
-  const summary = cloneSafeDataGraph(storedSummary.value);
+  if (wrapper.id !== expectedId || job.id !== expectedId) throw corruptJob();
+  const summary = cloneSafeDataGraph(wrapper.summary);
   if (stableSerialize(summary) !== stableSerialize(summaryFromJob(job))) throw corruptJob();
 }
 

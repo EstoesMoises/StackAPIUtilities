@@ -82,6 +82,56 @@ describe("ContentReplacementJobManager", () => {
     expect(storage.list).toHaveBeenLastCalledWith({ offset: 0, limit: 25 });
   });
 
+  it("reloads the same bounded page after deletion so an offset shift cannot hide a job", async () => {
+    const user = userEvent.setup();
+    const jobs = Array.from({ length: 51 }, (_, index) =>
+      replacementJob(`job-${String(index + 1).padStart(2, "0")}`, "scan", "paused"),
+    );
+    const storage = managerStorage(jobs);
+    storage.delete.mockImplementation(async (id: string) => {
+      const index = jobs.findIndex((job) => job.id === id);
+      if (index >= 0) jobs.splice(index, 1);
+    });
+    render(<ContentReplacementJobManager storage={storage} onOpenJob={vi.fn()} />);
+
+    await screen.findByText("51 browser-local jobs");
+    await user.click(screen.getByRole("button", { name: "Delete content replacement job job-01" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete job-01" }));
+
+    expect(await screen.findByRole("button", { name: "Resume content replacement job job-26" })).toBeVisible();
+    expect(storage.list).toHaveBeenLastCalledWith({ offset: 0, limit: 25 });
+    await user.click(screen.getByRole("button", { name: "Next jobs page" }));
+    expect(await screen.findByRole("button", { name: "Resume content replacement job job-27" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Resume content replacement job job-26" })).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale same-page reload when navigation wins after deletion", async () => {
+    const user = userEvent.setup();
+    const jobs = Array.from({ length: 51 }, (_, index) =>
+      replacementJob(`job-${String(index + 1).padStart(2, "0")}`, "scan", "paused"),
+    );
+    const delayedReload = deferred<Awaited<ReturnType<ContentReplacementJobManagerStorage["list"]>>>();
+    const storage = managerStorage(jobs);
+    storage.list.mockImplementation(({ offset, limit }: { offset: number; limit: number }) => {
+      if (storage.list.mock.calls.length === 2) return delayedReload.promise;
+      return Promise.resolve({ jobs: jobs.slice(offset, offset + limit), totalCount: jobs.length });
+    });
+    render(<ContentReplacementJobManager storage={storage} onOpenJob={vi.fn()} />);
+
+    await screen.findByText("51 browser-local jobs");
+    await user.click(screen.getByRole("button", { name: "Delete content replacement job job-01" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete job-01" }));
+    await waitFor(() => expect(storage.list).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "Next jobs page" }));
+    expect(await screen.findByRole("button", { name: "Resume content replacement job job-27" })).toBeVisible();
+
+    delayedReload.resolve({ jobs: jobs.slice(0, 25), totalCount: jobs.length });
+    await waitFor(() => expect(storage.list).toHaveBeenCalledTimes(3));
+    expect(screen.getByText("Page 2 of 2")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Resume content replacement job job-27" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Resume content replacement job job-02" })).not.toBeInTheDocument();
+  });
+
   it("announces a storage failure without exposing stale controls", async () => {
     const storage = managerStorage([]);
     storage.list.mockRejectedValueOnce(new Error("private database detail"));
@@ -102,7 +152,10 @@ function managerStorage(jobs: ContentReplacementJobSummary[]): ContentReplacemen
       jobs: jobs.slice(offset, offset + limit),
       totalCount: jobs.length,
     })),
-    delete: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn(async (id: string) => {
+      const index = jobs.findIndex((job) => job.id === id);
+      if (index >= 0) jobs.splice(index, 1);
+    }),
   };
 }
 
@@ -122,4 +175,10 @@ function replacementJob(
     recoverySnapshotStatus: withRecovery ? "ready" : "none",
     updatedAt: "2026-09-02T12:00:00.000Z",
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
 }
