@@ -47,14 +47,21 @@ export interface ContentReplacementClient {
   updateItem(model: ReplacementRequestModel): Promise<void>;
 }
 
+export type ContentReplacementApiErrorCategory = "http" | "transport" | "schema";
+
 export class ContentReplacementApiError extends Error {
   declare readonly status?: number;
+  readonly category: ContentReplacementApiErrorCategory;
 
-  constructor(message: string, error?: unknown) {
+  constructor(
+    message: string,
+    category: ContentReplacementApiErrorCategory,
+    status?: number,
+  ) {
     super(message);
     this.name = "ContentReplacementApiError";
-    const status = numericStatus(error);
-    if (status !== undefined) this.status = status;
+    this.category = category;
+    if (category === "http" && isHttpStatus(status)) this.status = status;
   }
 }
 
@@ -90,7 +97,7 @@ export function createContentReplacementClient(transport: ContentApiTransport): 
       try {
         response = await transport.getJson<unknown>(detailPath(ref));
       } catch (error) {
-        throw readError(ref.kind, requestedId(ref), error);
+        throw transportBoundaryError(`Unable to read ${ref.kind} ${requestedId(ref)}.`, error);
       }
       return reconstructRequestModel(ref, response);
     },
@@ -100,7 +107,7 @@ export function createContentReplacementClient(transport: ContentApiTransport): 
       try {
         await transport.putJson(detailPath(ref), request);
       } catch (error) {
-        throw updateError(ref.kind, requestedId(ref), error);
+        throw transportBoundaryError(`Unable to update ${ref.kind} ${requestedId(ref)}.`, error);
       }
     },
   };
@@ -114,10 +121,10 @@ async function readInventoryPage<T>(
   try {
     result = await read();
   } catch (error) {
-    throw inventoryError(kind, error);
+    throw transportBoundaryError(`Unable to read ${kind} inventory.`, error);
   }
   if (!Array.isArray(result.items) || result.items.some((item) => !isContentId(asRecord(item)?.id))) {
-    throw inventoryError(kind);
+    throw schemaError(`Unable to read ${kind} inventory.`);
   }
   return result;
 }
@@ -185,7 +192,7 @@ function validModelRef(model: ReplacementRequestModel): ReplacementItemRef {
   const record = asRecord(model);
   const ref = asRecord(record?.ref);
   if (!record || !isContentKind(record.kind) || !ref || ref.kind !== record.kind) {
-    throw new ContentReplacementApiError("Unable to update content item.");
+    throw schemaError("Unable to update content item.");
   }
   const typedRef = ref as ReplacementItemRef;
   assertValidRef(typedRef, "update");
@@ -223,22 +230,26 @@ function assertValidRef(ref: ReplacementItemRef, operation: "reconstruct" | "upd
 }
 
 function reconstructionError(ref: ReplacementItemRef): ContentReplacementApiError {
-  return new ContentReplacementApiError(`Unable to reconstruct ${ref.kind} ${requestedId(ref)}.`);
+  return schemaError(`Unable to reconstruct ${ref.kind} ${requestedId(ref)}.`);
 }
 
-function readError(kind: ReplacementItemRef["kind"], id: unknown, error?: unknown): ContentReplacementApiError {
-  return new ContentReplacementApiError(`Unable to read ${kind} ${id}.`, error);
+function readError(kind: ReplacementItemRef["kind"], id: unknown): ContentReplacementApiError {
+  return schemaError(`Unable to read ${kind} ${id}.`);
 }
 
-function updateError(kind: ReplacementItemRef["kind"], id: unknown, error?: unknown): ContentReplacementApiError {
-  return new ContentReplacementApiError(`Unable to update ${kind} ${id}.`, error);
+function updateError(kind: ReplacementItemRef["kind"], id: unknown): ContentReplacementApiError {
+  return schemaError(`Unable to update ${kind} ${id}.`);
 }
 
-function inventoryError(
-  kind: "question" | "answer" | "article",
-  error?: unknown,
-): ContentReplacementApiError {
-  return new ContentReplacementApiError(`Unable to read ${kind} inventory.`, error);
+function schemaError(message: string): ContentReplacementApiError {
+  return new ContentReplacementApiError(message, "schema");
+}
+
+function transportBoundaryError(message: string, error: unknown): ContentReplacementApiError {
+  const status = numericStatus(error);
+  return status === undefined
+    ? new ContentReplacementApiError(message, "transport")
+    : new ContentReplacementApiError(message, "http", status);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -249,11 +260,18 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function numericStatus(error: unknown): number | undefined {
   try {
-    const status = asRecord(error)?.status;
-    return typeof status === "number" && Number.isFinite(status) ? status : undefined;
+    if (!error || (typeof error !== "object" && typeof error !== "function")) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(error, "status");
+    return descriptor && "value" in descriptor && isHttpStatus(descriptor.value)
+      ? descriptor.value
+      : undefined;
   } catch {
     return undefined;
   }
+}
+
+function isHttpStatus(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 100 && value <= 599;
 }
 
 function isContentId(value: unknown): value is number {

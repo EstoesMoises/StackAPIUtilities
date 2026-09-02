@@ -213,7 +213,7 @@ export class StackApiV3Client {
       ? await this.readResponse(url, init)
       : await this.fetchFn(url, init);
 
-    if (!this.retryPutRequests && response.status === 429 && this.onThrottle) {
+    if (!this.retryPutRequests && isRetryableStatus(response.status) && this.onThrottle) {
       await this.onThrottle({
         kind: "backoff",
         seconds: Math.min(

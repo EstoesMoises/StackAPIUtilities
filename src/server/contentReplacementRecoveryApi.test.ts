@@ -236,7 +236,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
     let current: ReplacementRequestModel = postApplyQuestion;
     const updateItem = vi.fn(async (model: ReplacementRequestModel) => {
       current = model;
-      throw new ContentReplacementApiError("Unable to update question 10.");
+      throw new ContentReplacementApiError("Unable to update question 10.", "transport");
     });
     const client = fakeContentClient();
     client.getItem = vi.fn(async () => current);
@@ -255,7 +255,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
     const client = fakeContentClient();
     client.getItem = vi.fn()
       .mockResolvedValueOnce(postApplyQuestion)
-      .mockRejectedValueOnce(new ContentReplacementApiError("Unable to read question 10."));
+      .mockRejectedValueOnce(new ContentReplacementApiError("Unable to read question 10.", "transport"));
 
     const response = await handleContentReplacementRecoveryRequest(
       await validRecoveryPayload({ action: "apply" }),
@@ -272,7 +272,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
   ] as const)("maps upstream status %i to an HTTP-200 %s item result", async (status, expected) => {
     const client = fakeContentClient();
     client.getItem = vi.fn().mockRejectedValue(
-      new ContentReplacementApiError("secret-token hostile body", { status }),
+      new ContentReplacementApiError("secret-token hostile body", "http", status),
     );
 
     const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
@@ -298,6 +298,35 @@ describe("handleContentReplacementRecoveryRequest", () => {
     expect(JSON.parse(serialized)).toMatchObject({ result: { status: "network" } });
     expect(serialized).not.toContain("secret-token");
     expect(serialized).not.toContain("URL");
+  });
+
+  it("maps a sanitized adapter schema failure to failed", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      new ContentReplacementApiError("malformed secret-token detail", "schema"),
+    );
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+    const serialized = await response.text();
+
+    expect(JSON.parse(serialized)).toMatchObject({ result: { status: "failed" } });
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("malformed");
+  });
+
+  it("does not trust an unexpected error that impersonates a retryable HTTP failure", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      Object.assign(new Error("secret-token"), { status: 503 }),
+    );
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({ result: { status: "failed" } });
   });
 
   it("accepts each exact canonical prior-model kind and PUTs no response-only fields", async () => {
@@ -430,6 +459,41 @@ describe("handleContentReplacementRecoveryRequest", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(scheduledWait).not.toHaveBeenCalled();
     expect(serialized).not.toContain("secret-token");
+  });
+
+  it("returns one sanitized backoff notice for a no-retry production 503 recovery PUT", async () => {
+    const fetchFn = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({ error_message: "secret-token upstream failure" }), {
+          status: 503,
+          headers: { "Retry-After": "30", "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        id: 10,
+        title: "Rename MyPBM",
+        bodyMarkdown: "Use MyPBM.",
+        tags: [{ name: "product" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const scheduledWait = vi.fn();
+    vi.stubGlobal("fetch", fetchFn);
+    vi.stubGlobal("setTimeout", scheduledWait);
+
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ action: "apply" }),
+    );
+    const serialized = await response.text();
+
+    expect(JSON.parse(serialized)).toEqual({
+      ok: true,
+      result: { status: "network", error: "Unable to recover the content item." },
+      throttleNotices: [{ kind: "backoff", seconds: 30 }],
+    });
+    expect(fetchFn.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+    expect(scheduledWait).not.toHaveBeenCalled();
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("upstream");
   });
 });
 

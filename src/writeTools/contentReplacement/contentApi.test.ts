@@ -142,6 +142,9 @@ describe("content replacement API adapter", () => {
     ["question", { kind: "question", questionId: 42 }, {
       id: 42, title: "MyPVM", bodyMarkdown: "safe", tags: [{ name: 3 }],
     }],
+    ["answer", { kind: "answer", questionId: 42, answerId: 8 }, {
+      id: 8, bodyMarkdown: { hostile: "secret" },
+    }],
     ["article", { kind: "article", articleId: 7 }, {
       id: 7, title: "MyPVM", bodyMarkdown: "safe", tags: [], type: "policy",
       permissions: { editorUsers: [{ id: 0 }] },
@@ -149,8 +152,11 @@ describe("content replacement API adapter", () => {
   ] as const)("rejects malformed %s tag or editor IDs without exposing detail text", async (kind, ref, detail) => {
     const transport = new FakeTransport(detail);
 
-    await expect(createContentReplacementClient(transport).getItem(ref)).rejects.toThrow(
-      `Unable to reconstruct ${kind} ${kind === "question" ? ref.questionId : ref.articleId}.`,
+    await expect(createContentReplacementClient(transport).getItem(ref)).rejects.toEqual(
+      expect.objectContaining({
+        message: `Unable to reconstruct ${kind} ${kind === "answer" ? ref.answerId : kind === "question" ? ref.questionId : ref.articleId}.`,
+        category: "schema",
+      }),
     );
     await expect(createContentReplacementClient(transport).getItem(ref)).rejects.not.toThrow(/MyPVM/);
   });
@@ -295,10 +301,14 @@ describe("content replacement API adapter", () => {
       expect.objectContaining({
         name: "ContentReplacementApiError",
         message: "Unable to read question 42.",
+        category: "http",
         status: 403,
       }),
     );
     await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toThrow(/secret|private/);
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("cause");
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("url");
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("responseText");
     await expect(client.updateItem({
       kind: "answer",
       ref: { kind: "answer", questionId: 42, answerId: 8 },
@@ -315,13 +325,14 @@ describe("content replacement API adapter", () => {
     const transport = new FakeTransport(
       undefined,
       undefined,
-      { getPage: new ContentReplacementApiError("authorization=secret", { status: 429 }) },
+      { getPage: new ContentReplacementApiError("authorization=secret", "http", 429) },
     );
 
     await expect(createContentReplacementClient(transport).getArticlesPage(1)).rejects.toEqual(
       expect.objectContaining({
         name: "ContentReplacementApiError",
         message: "Unable to read article inventory.",
+        category: "http",
         status: 429,
       }),
     );
@@ -330,7 +341,7 @@ describe("content replacement API adapter", () => {
   it.each([
     [Object.assign(new Error("secret"), { status: Number.POSITIVE_INFINITY })],
     [new Proxy({}, { get: () => { throw new Error("secret getter"); } })],
-    [new ContentReplacementApiError("secret adapter error")],
+    [new ContentReplacementApiError("secret adapter error", "schema")],
   ])("sanitizes hostile detail transport errors without retaining a status", async (failure) => {
     const transport = new FakeTransport({}, undefined, { getJson: failure });
 
@@ -338,9 +349,28 @@ describe("content replacement API adapter", () => {
       .rejects.toEqual(expect.objectContaining({
         name: "ContentReplacementApiError",
         message: "Unable to read question 42.",
+        category: "transport",
       }));
     await expect(createContentReplacementClient(transport).getItem({ kind: "question", questionId: 42 }))
       .rejects.not.toHaveProperty("status");
+  });
+
+  it("marks a status-less raw transport rejection without retaining its cause", async () => {
+    const failure = Object.assign(new TypeError("secret transport URL"), {
+      cause: { authorization: "secret" },
+    });
+    const client = createContentReplacementClient(
+      new FakeTransport({}, undefined, { getJson: failure }),
+    );
+
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.toEqual(
+      expect.objectContaining({
+        name: "ContentReplacementApiError",
+        message: "Unable to read question 42.",
+        category: "transport",
+      }),
+    );
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("cause");
   });
 
   it("writes only the reconstructed request to the matching PUT path", async () => {
@@ -404,8 +434,11 @@ describe("content replacement API adapter", () => {
       kind: "article",
       ref: { kind: "article", articleId: 7 },
       request: { title: "safe", body: 3, tags: [], type: "policy", permissions: {} },
-    } as unknown as Parameters<ContentReplacementClient["updateItem"]>[0])).rejects.toThrow(
-      "Unable to update article 7.",
+    } as unknown as Parameters<ContentReplacementClient["updateItem"]>[0])).rejects.toEqual(
+      expect.objectContaining({
+        message: "Unable to update article 7.",
+        category: "schema",
+      }),
     );
     expect(transport.putCalls).toEqual([]);
   });

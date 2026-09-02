@@ -237,13 +237,16 @@ function itemFailureResponse(
 }
 
 function categorizeItemFailure(error: unknown): "permission" | "validation" | "network" | "failed" {
-  const status = safeErrorStatus(error);
-  if (status === 401 || status === 403) return "permission";
-  if (status === 400 || status === 422) return "validation";
-  if (status === 429 || status === 502 || status === 503 || status === 504) return "network";
-  return (error instanceof ContentReplacementApiError || error instanceof TypeError) && status === undefined
-    ? "network"
-    : "failed";
+  if (error instanceof ContentReplacementApiError) {
+    if (error.category === "transport") return "network";
+    if (error.category === "schema") return "failed";
+    const status = safeErrorStatus(error);
+    if (status === 401 || status === 403) return "permission";
+    if (status === 400 || status === 422) return "validation";
+    if (status === 429 || status === 502 || status === 503 || status === 504) return "network";
+    return "failed";
+  }
+  return error instanceof TypeError ? "network" : "failed";
 }
 
 function safeErrorStatus(error: unknown): number | undefined {

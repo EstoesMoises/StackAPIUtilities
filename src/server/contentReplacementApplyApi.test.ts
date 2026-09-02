@@ -272,7 +272,7 @@ describe("handleContentReplacementApplyRequest", () => {
     let current: ReplacementRequestModel = beforeQuestion;
     const updateItem = vi.fn(async (model: ReplacementRequestModel) => {
       current = model;
-      throw new ContentReplacementApiError("Unable to update question 10.");
+      throw new ContentReplacementApiError("Unable to update question 10.", "transport");
     });
     const client = fakeContentClient();
     client.getItem = vi.fn(async () => current);
@@ -291,7 +291,7 @@ describe("handleContentReplacementApplyRequest", () => {
     const client = fakeContentClient();
     client.getItem = vi.fn()
       .mockResolvedValueOnce(beforeQuestion)
-      .mockRejectedValueOnce(new ContentReplacementApiError("Unable to read question 10."));
+      .mockRejectedValueOnce(new ContentReplacementApiError("Unable to read question 10.", "transport"));
 
     const response = await handleContentReplacementApplyRequest(await validApplyPayload(), {
       createClient: () => client,
@@ -312,7 +312,7 @@ describe("handleContentReplacementApplyRequest", () => {
     [504, "network"],
     [404, "failed"],
   ] as const)("maps upstream status %i to an HTTP-200 %s item result", async (status, expected) => {
-    const hostile = new ContentReplacementApiError("secret-token hostile body", { status });
+    const hostile = new ContentReplacementApiError("secret-token hostile body", "http", status);
     const client = fakeContentClient();
     client.getItem = vi.fn().mockRejectedValue(hostile);
 
@@ -327,14 +327,23 @@ describe("handleContentReplacementApplyRequest", () => {
     expect(serialized).not.toContain("hostile");
   });
 
-  it("maps a sanitized adapter transport failure to network and an unexpected failure to failed", async () => {
+  it("maps a sanitized adapter schema failure to failed and transport failure to network", async () => {
+    const schemaClient = fakeContentClient();
+    schemaClient.getItem = vi.fn().mockRejectedValue(
+      new ContentReplacementApiError("safe", "schema"),
+    );
     const transportClient = fakeContentClient();
-    transportClient.getItem = vi.fn().mockRejectedValue(new ContentReplacementApiError("safe"));
+    transportClient.getItem = vi.fn().mockRejectedValue(
+      new ContentReplacementApiError("safe", "transport"),
+    );
     const fetchTransportClient = fakeContentClient();
     fetchTransportClient.getItem = vi.fn().mockRejectedValue(new TypeError("secret-token network"));
     const unexpectedClient = fakeContentClient();
     unexpectedClient.getItem = vi.fn().mockRejectedValue(new Error("secret-token"));
 
+    const schema = await handleContentReplacementApplyRequest(await validApplyPayload(), {
+      createClient: () => schemaClient,
+    });
     const transport = await handleContentReplacementApplyRequest(await validApplyPayload(), {
       createClient: () => transportClient,
     });
@@ -345,11 +354,25 @@ describe("handleContentReplacementApplyRequest", () => {
       createClient: () => fetchTransportClient,
     });
 
+    await expect(schema.json()).resolves.toMatchObject({ result: { status: "failed" } });
     await expect(transport.json()).resolves.toMatchObject({ result: { status: "network" } });
     await expect(fetchTransport.json()).resolves.toMatchObject({ result: { status: "network" } });
     const serialized = await unexpected.text();
     expect(JSON.parse(serialized)).toMatchObject({ result: { status: "failed" } });
     expect(serialized).not.toContain("secret-token");
+  });
+
+  it("does not trust an unexpected error that impersonates an HTTP failure", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      Object.assign(new Error("secret-token"), { status: 401 }),
+    );
+
+    const response = await handleContentReplacementApplyRequest(await validApplyPayload(), {
+      createClient: () => client,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({ result: { status: "failed" } });
   });
 
   it("rejects a job fingerprint mismatch before client construction", async () => {
@@ -479,6 +502,39 @@ describe("handleContentReplacementApplyRequest", () => {
     await expect(response.json()).resolves.toMatchObject({ result: { status: "network" } });
     expect(fetchFn.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
     expect(scheduledWait).not.toHaveBeenCalled();
+  });
+
+  it("returns one sanitized backoff notice for a no-retry production 503 PUT", async () => {
+    const fetchFn = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({ error_message: "secret-token upstream failure" }), {
+          status: 503,
+          headers: { "Retry-After": "30", "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        id: 10,
+        title: "Rename MyPVM",
+        bodyMarkdown: "Use MyPVM.",
+        tags: [{ name: "product" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const scheduledWait = vi.fn();
+    vi.stubGlobal("fetch", fetchFn);
+    vi.stubGlobal("setTimeout", scheduledWait);
+
+    const response = await handleContentReplacementApplyRequest(await validApplyPayload());
+    const serialized = await response.text();
+
+    expect(JSON.parse(serialized)).toEqual({
+      ok: true,
+      result: { status: "network", error: "Unable to update the content item." },
+      throttleNotices: [{ kind: "backoff", seconds: 30 }],
+    });
+    expect(fetchFn.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+    expect(scheduledWait).not.toHaveBeenCalled();
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("upstream");
   });
 });
 

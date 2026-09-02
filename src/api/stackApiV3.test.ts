@@ -119,6 +119,50 @@ describe("StackApiV3Client", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it.each([429, 502, 503, 504])(
+    "emits one backoff notice without replaying a no-retry PUT after status %i",
+    async (status) => {
+      const onThrottle = vi.fn(async () => undefined);
+      const waitFn = vi.fn(async () => undefined);
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response("upstream secret body", {
+          status,
+          headers: { "Retry-After": "30" },
+        }),
+      );
+      const client = createClient({
+        fetchFn,
+        waitFn,
+        onThrottle,
+        retryPutRequests: false,
+        maxBackoffNoticeSeconds: 86_400,
+      });
+
+      await expect(client.putJson("/questions/42", { title: "safe" })).rejects.toThrow(
+        `Stack API v3 request failed with ${status}`,
+      );
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(waitFn).not.toHaveBeenCalled();
+      expect(onThrottle).toHaveBeenCalledTimes(1);
+      expect(onThrottle).toHaveBeenCalledWith({ kind: "backoff", seconds: 30 });
+    },
+  );
+
+  it.each([400, 401, 403, 404, 409, 500])(
+    "does not emit a backoff notice for no-retry PUT status %i",
+    async (status) => {
+      const onThrottle = vi.fn(async () => undefined);
+      const fetchFn = vi.fn().mockResolvedValue(new Response("failed", { status }));
+      const client = createClient({ fetchFn, onThrottle, retryPutRequests: false });
+
+      await expect(client.putJson("/questions/42", { title: "safe" })).rejects.toThrow(
+        `Stack API v3 request failed with ${status}`,
+      );
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(onThrottle).not.toHaveBeenCalled();
+    },
+  );
+
   it("surfaces an exact browser-cap delay without sleeping or retrying when it exceeds the server wait budget", async () => {
     const onThrottle = vi.fn(async () => undefined);
     const waitFn = vi.fn(async () => undefined);
