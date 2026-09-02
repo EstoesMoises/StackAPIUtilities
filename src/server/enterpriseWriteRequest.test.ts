@@ -159,6 +159,55 @@ describe("prepareEnterpriseWriteContext", () => {
 
     expect(fullStringScanCount).toBeLessThan(20);
   });
+
+  it("does not probe a shared-prefix credential at every source position", () => {
+    const sharedPrefixLength = 10_000;
+    const token = `${"a".repeat(sharedPrefixLength)}b`;
+    const value = "a".repeat(sharedPrefixLength * 2);
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: token,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+    const originalStartsWith = String.prototype.startsWith;
+    let startsWithCallCount = 0;
+    const startsWith = vi.spyOn(String.prototype, "startsWith").mockImplementation(function (
+      this: string,
+      searchString: string,
+      position?: number,
+    ) {
+      startsWithCallCount += 1;
+      if (startsWithCallCount > 8) {
+        throw new Error("source-position credential probing exceeded the linear matcher budget");
+      }
+      return originalStartsWith.call(this, searchString, position);
+    });
+
+    try {
+      expect(result.redact(value)).toBe(value);
+      expect(startsWithCallCount).toBeLessThanOrEqual(8);
+    } finally {
+      startsWith.mockRestore();
+    }
+  });
+
+  it.each([
+    ["longest overlapping candidates", "ab", "aba", "abaab", 2],
+    ["matches at adjacent positions", "abc", undefined, "abcabc", 2],
+  ] as const)("preserves simultaneous semantics for %s", (_caseName, accessToken, pat, value, count) => {
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken,
+      pat,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+
+    expect(result.redact(value)).toBe("[redacted]".repeat(count));
+  });
 });
 
 describe("redactedJsonResponse", () => {

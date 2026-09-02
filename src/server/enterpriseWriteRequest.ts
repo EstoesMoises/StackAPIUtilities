@@ -191,26 +191,29 @@ function createCredentialRedactor(
   const uniqueSecretCandidates = [...new Map(
     secretCandidates.map((candidate) => [candidate.secret, candidate]),
   ).values()].sort((left, right) => right.secret.length - left.secret.length);
-  const marker = chooseRedactionMarker(uniqueSecretCandidates);
-  const boundaryGuard = chooseBoundaryGuard(uniqueSecretCandidates);
+  const compiledCandidates = uniqueSecretCandidates.map(compileSecretCandidate);
+  const marker = chooseRedactionMarker(compiledCandidates);
+  const boundaryGuard = chooseBoundaryGuard(compiledCandidates);
 
   const redact = (value: string) => {
-    const redacted = redactInSinglePass(value, uniqueSecretCandidates, marker);
-    if (!containsCredential(redacted, uniqueSecretCandidates)) {
+    const matches = findLongestCredentialMatches(value, compiledCandidates);
+    const redacted = renderCredentialMatches(value, compiledCandidates, matches, marker);
+    if (!containsCredential(redacted, compiledCandidates)) {
       return redacted;
     }
 
-    const guarded = redactInSinglePass(
+    const guarded = renderCredentialMatches(
       value,
-      uniqueSecretCandidates,
+      compiledCandidates,
+      matches,
       marker,
       boundaryGuard,
     );
-    return containsCredential(guarded, uniqueSecretCandidates) ? boundaryGuard : guarded;
+    return containsCredential(guarded, compiledCandidates) ? boundaryGuard : guarded;
   };
 
   Object.defineProperty(redact, REDACTOR_CANDIDATES, {
-    value: uniqueSecretCandidates.map((candidate) => candidate.secret),
+    value: compiledCandidates,
   });
   return redact;
 }
@@ -219,6 +222,10 @@ interface SecretCandidate {
   secret: string;
   prefix: string;
   suffix: string;
+}
+
+interface CompiledSecretCandidate extends SecretCandidate {
+  failureTable: Uint32Array;
 }
 
 function createRawSecretCandidate(value: string | undefined): SecretCandidate | null {
@@ -243,6 +250,31 @@ function createNormalizedSecretCandidate(value: string | undefined): SecretCandi
 
 function isSecretCandidate(value: SecretCandidate | null): value is SecretCandidate {
   return value !== null;
+}
+
+function compileSecretCandidate(candidate: SecretCandidate): CompiledSecretCandidate {
+  return {
+    ...candidate,
+    failureTable: buildKmpFailureTable(candidate.secret),
+  };
+}
+
+function buildKmpFailureTable(pattern: string): Uint32Array {
+  const failureTable = new Uint32Array(pattern.length);
+  let prefixLength = 0;
+
+  for (let index = 1; index < pattern.length; index += 1) {
+    while (prefixLength > 0 && pattern[index] !== pattern[prefixLength]) {
+      prefixLength = failureTable[prefixLength - 1];
+    }
+
+    if (pattern[index] === pattern[prefixLength]) {
+      prefixLength += 1;
+    }
+    failureTable[index] = prefixLength;
+  }
+
+  return failureTable;
 }
 
 function chooseRedactionMarker(candidates: SecretCandidate[]): string {
@@ -284,18 +316,46 @@ function chooseBoundaryGuard(candidates: SecretCandidate[]): string {
   return "";
 }
 
-function containsCredential(value: string, candidates: SecretCandidate[]): boolean {
-  return candidates.some((candidate) => value.includes(candidate.secret));
+function containsCredential(value: string, candidates: CompiledSecretCandidate[]): boolean {
+  return candidates.some((candidate) => hasKmpMatch(value, candidate));
 }
 
-function getRedactorCandidates(redact: (value: string) => string): readonly string[] {
+function hasKmpMatch(value: string, candidate: CompiledSecretCandidate): boolean {
+  let matchedLength = 0;
+
+  for (let valueIndex = 0; valueIndex < value.length; valueIndex += 1) {
+    while (
+      matchedLength > 0 &&
+      value[valueIndex] !== candidate.secret[matchedLength]
+    ) {
+      matchedLength = candidate.failureTable[matchedLength - 1];
+    }
+
+    if (value[valueIndex] === candidate.secret[matchedLength]) {
+      matchedLength += 1;
+    }
+
+    if (matchedLength === candidate.secret.length) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getRedactorCandidates(
+  redact: (value: string) => string,
+): readonly CompiledSecretCandidate[] {
   const redactor = redact as typeof redact & {
-    [REDACTOR_CANDIDATES]?: readonly string[];
+    [REDACTOR_CANDIDATES]?: readonly CompiledSecretCandidate[];
   };
   return redactor[REDACTOR_CANDIDATES] ?? [];
 }
 
-function serializeWithoutCredentials(value: unknown, candidates: readonly string[]): string {
+function serializeWithoutCredentials(
+  value: unknown,
+  candidates: readonly CompiledSecretCandidate[],
+): string {
   const compact = JSON.stringify(value) ?? "null";
   if (candidates.length === 0) {
     return compact;
@@ -320,8 +380,11 @@ function serializeWithoutCredentials(value: unknown, candidates: readonly string
   );
 }
 
-function containsAnyCandidate(value: string, candidates: readonly string[]): boolean {
-  return candidates.some((candidate) => value.includes(candidate));
+function containsAnyCandidate(
+  value: string,
+  candidates: readonly CompiledSecretCandidate[],
+): boolean {
+  return candidates.some((candidate) => hasKmpMatch(value, candidate));
 }
 
 function escapeAllJsonStrings(serialized: string): string {
@@ -363,27 +426,73 @@ function encodeJsonStringWithUnicodeEscapes(value: string): string {
   return `${encoded}"`;
 }
 
-function redactInSinglePass(
+function findLongestCredentialMatches(
   value: string,
-  candidates: SecretCandidate[],
+  candidates: CompiledSecretCandidate[],
+): Uint8Array {
+  const matches = new Uint8Array(value.length);
+
+  for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+    const candidate = candidates[candidateIndex];
+    let matchedLength = 0;
+
+    for (let valueIndex = 0; valueIndex < value.length; valueIndex += 1) {
+      while (
+        matchedLength > 0 &&
+        value[valueIndex] !== candidate.secret[matchedLength]
+      ) {
+        matchedLength = candidate.failureTable[matchedLength - 1];
+      }
+
+      if (value[valueIndex] === candidate.secret[matchedLength]) {
+        matchedLength += 1;
+      }
+
+      if (matchedLength === candidate.secret.length) {
+        const matchStart = valueIndex - candidate.secret.length + 1;
+        if (matches[matchStart] === 0) {
+          matches[matchStart] = candidateIndex + 1;
+        }
+        matchedLength = candidate.failureTable[matchedLength - 1];
+      }
+    }
+  }
+
+  return matches;
+}
+
+function renderCredentialMatches(
+  value: string,
+  candidates: CompiledSecretCandidate[],
+  matches: Uint8Array,
   marker: string,
   boundaryGuard = "",
 ): string {
-  let redacted = "";
+  const chunks: string[] = [];
   let index = 0;
+  let unchangedStart = 0;
 
   while (index < value.length) {
-    const candidate = candidates.find((item) => value.startsWith(item.secret, index));
-    if (candidate) {
-      redacted += `${boundaryGuard}${candidate.prefix}${marker}${candidate.suffix}${boundaryGuard}`;
+    const candidateIndex = matches[index] - 1;
+    if (candidateIndex >= 0) {
+      const candidate = candidates[candidateIndex];
+      if (unchangedStart < index) {
+        chunks.push(value.slice(unchangedStart, index));
+      }
+      chunks.push(
+        `${boundaryGuard}${candidate.prefix}${marker}${candidate.suffix}${boundaryGuard}`,
+      );
       index += candidate.secret.length;
+      unchangedStart = index;
     } else {
-      redacted += value[index];
       index += 1;
     }
   }
 
-  return redacted;
+  if (unchangedStart < value.length) {
+    chunks.push(value.slice(unchangedStart));
+  }
+  return chunks.join("");
 }
 
 function sanitizeForJson(
