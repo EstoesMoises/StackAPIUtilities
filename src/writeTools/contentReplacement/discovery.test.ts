@@ -138,6 +138,10 @@ describe("exact replacement targets", () => {
     expect(first.discovery.targetDigest).toBe(second.discovery.targetDigest);
   });
 
+  it("rejects an empty exact selection before producing an invalid descriptor", async () => {
+    await expect(createExactTargetSelection([])).rejects.toThrow("at least one");
+  });
+
   it("excludes non-reference row metadata from normalized targets and their digest", async () => {
     const annotated = { kind: "question" as const, questionId: 42, sourceRow: 7 };
     const normalized = normalizeExactTargets([annotated]);

@@ -167,6 +167,9 @@ export async function createExactTargetSelection(
   inputTargets: readonly ReplacementItemRef[],
 ): Promise<ExactTargetSelection> {
   const targets = normalizeExactTargets(inputTargets);
+  if (targets.length === 0) {
+    throw new RangeError("Exact target lists must contain at least one target.");
+  }
   return {
     discovery: {
       mode: "exact",
