@@ -137,12 +137,15 @@ test("reviews and safely applies a complete mocked content replacement job", asy
 
   const indexedDbBoundary = await inspectIndexedDbStructuredClone(page);
   expect(indexedDbBoundary).toEqual({
-    wrapperKeys: ["id", "job", "summary"],
+    wrapperKeys: ["id", "job", "proposalCount", "proposalRoot", "storageFormat", "summary"],
+    storageFormat: "proposal-sidecars-sha256-merkle-v1",
     sameReference: false,
     mutationLeaked: false,
     durableStage: "review",
     durableStatus: "completed",
     proposalCount: 3,
+    sidecarCount: 3,
+    sidecarsBound: true,
   });
 
   await page.reload();
@@ -954,7 +957,7 @@ async function seedLegacyJobs(page: Page): Promise<void> {
   await expect(page.getByText("No replacement jobs are stored in this browser.")).toBeVisible();
   await page.evaluate(async (records) => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("stack-api-content-replacement", 4);
+      const request = indexedDB.open("stack-api-content-replacement", 5);
       request.onerror = () => reject(request.error);
       request.onsuccess = () => resolve(request.result);
     });
@@ -1140,30 +1143,38 @@ async function openContentReplacement(page: Page) {
 async function inspectIndexedDbStructuredClone(page: Page) {
   return page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("stack-api-content-replacement", 4);
+      const request = indexedDB.open("stack-api-content-replacement", 5);
       request.onerror = () => reject(request.error);
       request.onsuccess = () => resolve(request.result);
     });
-    const readAll = () => new Promise<any[]>((resolve, reject) => {
-      const transaction = database.transaction("jobs", "readonly");
-      const request = transaction.objectStore("jobs").getAll();
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
+    const readAll = () => new Promise<{ roots: any[]; sidecars: any[] }>((resolve, reject) => {
+      const transaction = database.transaction(["jobs", "job-items"], "readonly");
+      const rootsRequest = transaction.objectStore("jobs").getAll();
+      const sidecarsRequest = transaction.objectStore("job-items").getAll();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+      transaction.oncomplete = () => resolve({ roots: rootsRequest.result, sidecars: sidecarsRequest.result });
     });
     try {
       const firstRecords = await readAll();
-      if (firstRecords.length !== 1) throw new Error(`Expected one stored job, found ${firstRecords.length}.`);
-      const first = firstRecords[0];
+      if (firstRecords.roots.length !== 1) {
+        throw new Error(`Expected one stored job, found ${firstRecords.roots.length}.`);
+      }
+      const first = firstRecords.roots[0];
       first.job.status = "cancelled";
       const secondRecords = await readAll();
-      const second = secondRecords[0];
+      const second = secondRecords.roots[0];
       return {
         wrapperKeys: Object.keys(second).sort(),
+        storageFormat: second.storageFormat,
         sameReference: first === second || first.job === second.job,
         mutationLeaked: second.job.status === "cancelled",
         durableStage: second.job.stage,
         durableStatus: second.job.status,
-        proposalCount: Object.keys(second.job.proposals).length,
+        proposalCount: second.proposalCount,
+        sidecarCount: secondRecords.sidecars.length,
+        sidecarsBound: secondRecords.sidecars.every((record) =>
+          record.jobId === second.id && record.jobFingerprint === second.job.fingerprint),
       };
     } finally {
       database.close();

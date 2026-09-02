@@ -18,6 +18,7 @@ import {
 import {
   isJsonWithinUtf8ByteLimit,
   MAX_CONTENT_REPLACEMENT_JOB_BYTES,
+  utf8ByteLength,
 } from "../writeTools/contentReplacement/limits";
 import { MAX_CONTENT_REPLACEMENT_PROPOSALS } from "../writeTools/contentReplacement/jobState";
 import type {
@@ -43,9 +44,16 @@ import type {
 } from "../writeTools/contentReplacement/types";
 
 const DATABASE_NAME = "stack-api-content-replacement";
-const DATABASE_VERSION = 4;
+const DATABASE_VERSION = 5;
 const STORE_NAME = "jobs";
+const ITEM_STORE_NAME = "job-items";
 const SUMMARY_INDEX_NAME = "by-summary";
+const ITEM_JOB_INDEX_NAME = "by-job";
+const SIDECAR_STORAGE_FORMAT = "proposal-sidecars-sha256-merkle-v1";
+const SIDECAR_LEAF_DOMAIN = "content-replacement-storage-item\u0000sha256-merkle\u00001\u0000";
+const SIDECAR_NODE_DOMAIN = "content-replacement-storage-node\u0000sha256-merkle\u00001\u0000";
+const SIDECAR_EMPTY_DOMAIN = "content-replacement-storage-empty\u0000sha256-merkle\u00001\u0000";
+const MAX_INCREMENTAL_ITEM_CHANGES = 16;
 const SUMMARY_INDEX_PATH = [
   "summary.sortKey",
   "summary.updatedAt",
@@ -138,6 +146,45 @@ interface StoredContentReplacementJobRecord {
   summary: StoredContentReplacementJobSummary;
 }
 
+interface StoredNormalizedContentReplacementJobRecord {
+  id: string;
+  storageFormat: typeof SIDECAR_STORAGE_FORMAT;
+  proposalCount: number;
+  proposalRoot: string;
+  job: PersistedContentReplacementJob;
+  summary: StoredContentReplacementJobSummary;
+}
+
+interface StoredContentReplacementItemRecord {
+  jobId: string;
+  jobFingerprint: string;
+  itemIndex: number;
+  itemKey: string;
+  itemDigest: string;
+  item: PersistedContentReplacementItem;
+}
+
+interface ValidatedStorageSnapshot {
+  job: PersistedContentReplacementJob;
+  keys: string[];
+  keyIndexes: Map<string, number>;
+  itemIndexes: number[];
+  itemDigests: string[];
+  merkleLevels: string[][];
+  itemEntryBytes: number[];
+  totalJobBytes: number;
+  rootRecord: StoredNormalizedContentReplacementJobRecord;
+}
+
+interface PreparedStorageSnapshot {
+  snapshot: ValidatedStorageSnapshot;
+  changedItemKeys: string[] | null;
+  expectedProposalRoot?: string;
+  expectedProposalCount?: number;
+}
+
+let validatedStorageSnapshot: ValidatedStorageSnapshot | null = null;
+
 export async function listContentReplacementJobs({
   offset,
   limit,
@@ -171,45 +218,89 @@ export async function loadContentReplacementJob(
   assertJobId(id);
   const database = await openDatabase();
   try {
-    const transaction = database.transaction(STORE_NAME, "readonly");
-    const [stored] = await Promise.all([
+    const transaction = database.transaction([STORE_NAME, ITEM_STORE_NAME], "readonly");
+    const itemStore = transaction.objectStore(ITEM_STORE_NAME);
+    const [stored, storedItems] = await Promise.all([
       requestValueToPromise<unknown>(transaction.objectStore(STORE_NAME).get(id)),
+      requestToPromise<unknown[]>(itemStore.index(ITEM_JOB_INDEX_NAME).getAll(id)),
       transactionToPromise(transaction),
     ]);
     const value = stored.value;
     if (value === undefined) return null;
-    const job = await parseContentReplacementJob(storedJobValue(value));
-    assertStoredRecordCoherence(value, id, job);
-    return job;
+    const normalizedRecord = storedNormalizedRecordEnvelope(value);
+    let snapshot: ValidatedStorageSnapshot;
+    if (normalizedRecord) {
+      snapshot = await loadNormalizedStorageSnapshot(normalizedRecord, storedItems, id);
+    } else {
+      if (storedItems.length !== 0) throw corruptJob();
+      const job = await parseContentReplacementJob(storedJobValue(value));
+      assertStoredRecordCoherence(value, id, job);
+      snapshot = await createValidatedStorageSnapshot(job);
+    }
+    validatedStorageSnapshot = snapshot;
+    return snapshot.job;
   } finally {
     database.close();
   }
 }
 
-export type ContentReplacementJobSaveResult = { status: "saved" } | { status: "conflict" };
+export type ContentReplacementJobSaveResult =
+  | { status: "saved"; readonly job?: PersistedContentReplacementJob }
+  | { status: "conflict" };
 
 export async function saveContentReplacementJob(
   job: PersistedContentReplacementJob,
   expectedRevision: number | null,
 ): Promise<ContentReplacementJobSaveResult> {
-  const normalized = await parseContentReplacementJob(job);
+  const incrementallyPrepared = await prepareIncrementalStorageSnapshot(job, expectedRevision);
+  const prepared = incrementallyPrepared ?? {
+    snapshot: await createValidatedStorageSnapshot(await parseContentReplacementJob(job)),
+    changedItemKeys: null,
+  };
+  const normalized = prepared.snapshot.job;
   if (
     (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) ||
-    (expectedRevision === null ? normalized.revision !== 0 : normalized.revision <= expectedRevision)
+    (expectedRevision === null
+      ? normalized.revision !== 0
+      : expectedRevision === Number.MAX_SAFE_INTEGER || normalized.revision !== expectedRevision + 1)
   ) throw corruptJob();
   const database = await openDatabase();
   try {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const transaction = database.transaction([STORE_NAME, ITEM_STORE_NAME], "readwrite");
     const transactionPromise = transactionToPromise(transaction);
     const store = transaction.objectStore(STORE_NAME);
+    const itemStore = transaction.objectStore(ITEM_STORE_NAME);
     const stored = await requestValueToPromise<unknown>(store.get(normalized.id));
     const actualRevision = storedJobRevision(stored.value, normalized.id);
     if (actualRevision !== expectedRevision) {
       await transactionPromise;
       return { status: "conflict" };
     }
-    await Promise.all([requestToPromise(store.put(storedJobRecord(normalized))), transactionPromise]);
-    return { status: "saved" };
+    const actualNormalizedRecord = stored.value === undefined
+      ? null
+      : storedNormalizedRecordEnvelope(stored.value);
+    if (
+      prepared.expectedProposalRoot !== undefined && actualNormalizedRecord &&
+      (actualNormalizedRecord.proposalRoot !== prepared.expectedProposalRoot ||
+        actualNormalizedRecord.proposalCount !== prepared.expectedProposalCount)
+    ) throw corruptJob();
+    try {
+      const rootWrite = requestToPromise(store.put(prepared.snapshot.rootRecord));
+      if (prepared.changedItemKeys !== null && actualNormalizedRecord) {
+        const itemWrites = prepared.changedItemKeys.map((itemKey) => requestToPromise(
+          itemStore.put(storedItemRecord(prepared.snapshot, itemKey)),
+        ));
+        await Promise.all([rootWrite, ...itemWrites, transactionPromise]);
+      } else {
+        await replaceStoredSidecars(itemStore, normalized.id, prepared.snapshot);
+        await Promise.all([rootWrite, transactionPromise]);
+      }
+    } catch (error) {
+      try { transaction.abort(); } catch { /* preserve the originating storage error */ }
+      throw error;
+    }
+    validatedStorageSnapshot = prepared.snapshot;
+    return savedResult(prepared.snapshot.job);
   } finally {
     database.close();
   }
@@ -234,12 +325,40 @@ function storedJobRevision(value: unknown, expectedId: string): number | null {
 }
 
 function storedJobValue(value: unknown): unknown {
-  return storedRecordEnvelope(value)?.job ?? value;
+  return storedNormalizedRecordEnvelope(value)?.job ?? storedRecordEnvelope(value)?.job ?? value;
+}
+
+function storedNormalizedRecordEnvelope(value: unknown): StoredNormalizedContentReplacementJobRecord | null {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const format = Object.getOwnPropertyDescriptor(value, "storageFormat");
+    if (!format) return null;
+    const keys = Reflect.ownKeys(value);
+    const expected = new Set(["id", "storageFormat", "proposalCount", "proposalRoot", "job", "summary"]);
+    if (keys.length !== expected.size || keys.some((key) => typeof key !== "string" || !expected.has(key))) {
+      throw corruptJob();
+    }
+    const record: Record<string, unknown> = {};
+    for (const key of expected) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw corruptJob();
+      record[key] = descriptor.value;
+    }
+    if (
+      record.storageFormat !== SIDECAR_STORAGE_FORMAT || !isJobId(record.id) ||
+      !Number.isSafeInteger(record.proposalCount) || (record.proposalCount as number) < 0 ||
+      (record.proposalCount as number) > MAX_CONTENT_REPLACEMENT_PROPOSALS ||
+      !isSha256Digest(record.proposalRoot)
+    ) throw corruptJob();
+    return record as unknown as StoredNormalizedContentReplacementJobRecord;
+  } catch {
+    throw corruptJob();
+  }
 }
 
 function storedRecordEnvelope(value: unknown): StoredContentReplacementJobRecord | null {
-  if (!value || typeof value !== "object") return null;
   try {
+    if (!value || typeof value !== "object") return null;
     if (Array.isArray(value)) return null;
     const keys = Reflect.ownKeys(value);
     const wrapperCandidate = keys.includes("job") || keys.includes("summary");
@@ -263,7 +382,7 @@ function assertStoredRecordCoherence(
   expectedId: string,
   job: PersistedContentReplacementJob,
 ): void {
-  const wrapper = storedRecordEnvelope(value);
+  const wrapper = storedNormalizedRecordEnvelope(value) ?? storedRecordEnvelope(value);
   if (!wrapper) return;
   if (wrapper.id !== expectedId || job.id !== expectedId) throw corruptJob();
   try {
@@ -279,16 +398,437 @@ export async function deleteContentReplacementJob(id: string): Promise<void> {
   assertJobId(id);
   const database = await openDatabase();
   try {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    const request = transaction.objectStore(STORE_NAME).delete(id);
-    await Promise.all([requestToPromise(request), transactionToPromise(transaction)]);
+    const transaction = database.transaction([STORE_NAME, ITEM_STORE_NAME], "readwrite");
+    const itemStore = transaction.objectStore(ITEM_STORE_NAME);
+    const requests = [
+      requestToPromise(transaction.objectStore(STORE_NAME).delete(id)),
+      deleteStoredSidecars(itemStore, id),
+      transactionToPromise(transaction),
+    ];
+    await Promise.all(requests);
+    if (validatedStorageSnapshot?.job.id === id) validatedStorageSnapshot = null;
   } finally {
     database.close();
   }
 }
 
-function storedJobRecord(job: PersistedContentReplacementJob): StoredContentReplacementJobRecord {
-  return { id: job.id, job, summary: summaryFromJob(job) };
+function savedResult(job: PersistedContentReplacementJob): ContentReplacementJobSaveResult {
+  return { status: "saved", job };
+}
+
+async function replaceStoredSidecars(
+  store: IDBObjectStore,
+  jobId: string,
+  snapshot: ValidatedStorageSnapshot,
+): Promise<void> {
+  const existingKeys = await requestToPromise<IDBValidKey[]>(
+    store.index(ITEM_JOB_INDEX_NAME).getAllKeys(jobId),
+  );
+  const expectedKeys = new Set(snapshot.keys.map((itemKey) => sidecarPrimaryKey(jobId, itemKey)));
+  const requests: Array<Promise<unknown>> = [];
+  for (const key of existingKeys) {
+    if (!expectedKeys.has(serializedPrimaryKey(key))) requests.push(requestToPromise(store.delete(key)));
+  }
+  for (const itemKey of snapshot.keys) {
+    requests.push(requestToPromise(store.put(storedItemRecord(snapshot, itemKey))));
+  }
+  await Promise.all(requests);
+}
+
+async function deleteStoredSidecars(store: IDBObjectStore, jobId: string): Promise<void> {
+  const keys = await requestToPromise<IDBValidKey[]>(store.index(ITEM_JOB_INDEX_NAME).getAllKeys(jobId));
+  await Promise.all(keys.map((key) => requestToPromise(store.delete(key))));
+}
+
+function sidecarPrimaryKey(jobId: string, itemKey: string): string {
+  return serializedPrimaryKey([jobId, itemKey]);
+}
+
+function serializedPrimaryKey(key: IDBValidKey): string {
+  if (Array.isArray(key) && key.length === 2 && key.every((part) => typeof part === "string")) {
+    return `${key[0]}\u0000${key[1]}`;
+  }
+  return "invalid";
+}
+
+function storedItemRecord(
+  snapshot: ValidatedStorageSnapshot,
+  itemKey: string,
+): StoredContentReplacementItemRecord {
+  const index = snapshot.keyIndexes.get(itemKey);
+  if (index === undefined) throw corruptJob();
+  return {
+    jobId: snapshot.job.id,
+    jobFingerprint: snapshot.job.fingerprint,
+    itemIndex: snapshot.itemIndexes[index],
+    itemKey,
+    itemDigest: snapshot.itemDigests[index],
+    item: snapshot.job.proposals[itemKey],
+  };
+}
+
+async function createValidatedStorageSnapshot(
+  job: PersistedContentReplacementJob,
+): Promise<ValidatedStorageSnapshot> {
+  const proposalOrder = Object.keys(job.proposals);
+  const proposalIndexes = new Map(proposalOrder.map((itemKey, index) => [itemKey, index]));
+  const keys = [...proposalOrder].sort(compareOrdinal);
+  const itemIndexes = keys.map((itemKey) => proposalIndexes.get(itemKey)!);
+  const itemDigests = await mapCanonicalEntries(keys, (itemKey) =>
+    hashStoredItem(
+      job.id,
+      job.fingerprint,
+      proposalIndexes.get(itemKey)!,
+      itemKey,
+      job.proposals[itemKey],
+    ));
+  const merkleLevels = await buildStorageMerkleLevels(itemDigests);
+  return finalizeValidatedStorageSnapshot(job, keys, itemIndexes, itemDigests, merkleLevels, false);
+}
+
+async function loadNormalizedStorageSnapshot(
+  record: StoredNormalizedContentReplacementJobRecord,
+  storedItems: unknown[],
+  expectedId: string,
+): Promise<ValidatedStorageSnapshot> {
+  if (record.id !== expectedId || record.proposalCount !== storedItems.length) throw corruptJob();
+  const rootPreflight = preflightContentReplacementJobRoot(record.job);
+  if (rootPreflight.cardinalities.proposals !== 0) throw corruptJob();
+  const safeRoot = cloneSafeDataGraph(
+    rootPreflight.snapshot,
+    contentReplacementGraphBudget({ ...rootPreflight.cardinalities, proposals: record.proposalCount }),
+    rootPreflight.sourceSnapshots,
+  ) as PersistedContentReplacementJob;
+  const items = await mapCanonicalEntries(storedItems, (value) =>
+    parseStoredItemRecord(value, record.id, safeRoot.fingerprint, record.proposalCount));
+  const seen = new Set<string>();
+  const seenIndexes = new Set<number>();
+  for (const item of items) {
+    if (seen.has(item.itemKey) || seenIndexes.has(item.itemIndex)) throw corruptJob();
+    seen.add(item.itemKey);
+    seenIndexes.add(item.itemIndex);
+  }
+  if (items.some((_item, index) => !seenIndexes.has(index))) throw corruptJob();
+  items.sort((left, right) => compareOrdinal(left.itemKey, right.itemKey));
+  const keys = items.map((item) => item.itemKey);
+  const itemIndexes = items.map((item) => item.itemIndex);
+  const itemDigests = items.map((item) => item.itemDigest);
+  const merkleLevels = await buildStorageMerkleLevels(itemDigests);
+  if (storageMerkleRoot(merkleLevels) !== record.proposalRoot) throw corruptJob();
+  const proposals = Object.fromEntries(
+    [...items].sort((left, right) => left.itemIndex - right.itemIndex)
+      .map((item) => [item.itemKey, item.item]),
+  );
+  safeRoot.proposals = proposals;
+  const job = await parseContentReplacementJob(safeRoot);
+  if (
+    stableSerialize({ ...safeRoot, proposals: {} }) !== stableSerialize({ ...job, proposals: {} }) ||
+    keys.some((key, index) => stableSerialize(items[index].item) !== stableSerialize(job.proposals[key]))
+  ) throw corruptJob();
+  assertStoredRecordCoherence(record, expectedId, job);
+  const snapshot = finalizeValidatedStorageSnapshot(job, keys, itemIndexes, itemDigests, merkleLevels, false);
+  if (snapshot.rootRecord.proposalRoot !== record.proposalRoot) throw corruptJob();
+  return snapshot;
+}
+
+async function parseStoredItemRecord(
+  value: unknown,
+  jobId: string,
+  jobFingerprint: string,
+  proposalCount: number,
+): Promise<StoredContentReplacementItemRecord> {
+  try {
+    const cloned = cloneSafeDataGraph(
+      value,
+      contentReplacementGraphBudget({ inventoryQueue: 0, detailQueue: 0, exactProofQueue: 0, proposals: 1 }),
+    );
+    const record = exactObject(
+      cloned,
+      ["jobId", "jobFingerprint", "itemIndex", "itemKey", "itemDigest", "item"],
+    );
+    if (
+      record.jobId !== jobId || record.jobFingerprint !== jobFingerprint ||
+      !Number.isSafeInteger(record.itemIndex) || (record.itemIndex as number) < 0 ||
+      (record.itemIndex as number) >= proposalCount ||
+      typeof record.itemKey !== "string" || !isCanonicalItemKey(record.itemKey) ||
+      typeof record.itemDigest !== "string" || !isSha256Digest(record.itemDigest)
+    ) throw corruptJob();
+    const expectedDigest = await hashStoredItem(
+      record.jobId,
+      record.jobFingerprint,
+      record.itemIndex as number,
+      record.itemKey as string,
+      record.item as PersistedContentReplacementItem,
+    );
+    if (expectedDigest !== record.itemDigest) throw corruptJob();
+    return record as unknown as StoredContentReplacementItemRecord;
+  } catch {
+    throw corruptJob();
+  }
+}
+
+async function prepareIncrementalStorageSnapshot(
+  candidate: PersistedContentReplacementJob,
+  expectedRevision: number | null,
+): Promise<PreparedStorageSnapshot | null> {
+  const previous = validatedStorageSnapshot;
+  if (!previous || expectedRevision === null || previous.job.revision !== expectedRevision) return null;
+  try {
+    const preflight = preflightContentReplacementJobRoot(candidate);
+    if (
+      preflight.cardinalities.proposals !== previous.keys.length ||
+      preflight.cardinalities.inventoryQueue !== 0 || preflight.cardinalities.detailQueue !== 0 ||
+      preflight.cardinalities.exactProofQueue !== 0 ||
+      previous.job.inventoryQueue.length !== 0 || previous.job.detailQueue.length !== 0 ||
+      (previous.job.exactProofQueue?.length ?? 0) !== 0 ||
+      previous.job.activeOperation?.kind === "stale-rescan" ||
+      optionalActiveOperationKind(preflight.snapshot) === "stale-rescan"
+    ) return null;
+    const proposalSnapshot = exactDynamicMap(preflight.snapshot.proposals);
+    const candidateOrder = Object.keys(proposalSnapshot);
+    const previousOrder = Object.keys(previous.job.proposals);
+    if (candidateOrder.some((key, index) => key !== previousOrder[index])) return null;
+    const candidateKeys = [...candidateOrder].sort(compareOrdinal);
+    if (candidateKeys.some((key, index) => key !== previous.keys[index])) return null;
+    const changedItemKeys: string[] = [];
+    for (const itemKey of candidateKeys) {
+      if (proposalSnapshot[itemKey] !== previous.job.proposals[itemKey]) changedItemKeys.push(itemKey);
+    }
+    if (changedItemKeys.length > MAX_INCREMENTAL_ITEM_CHANGES) return null;
+
+    const proposals = { ...previous.job.proposals };
+    const configuredRuleIds = new Set(previous.job.configuration.rules.map((rule) => rule.id));
+    for (const itemKey of changedItemKeys) {
+      const sourceItem = proposalSnapshot[itemKey];
+      if (ownDataProperty(sourceItem, "proposal") !== previous.job.proposals[itemKey].proposal) return null;
+      const safeItem = cloneSafeDataGraph(
+        sourceItem,
+        contentReplacementGraphBudget({ inventoryQueue: 0, detailQueue: 0, exactProofQueue: 0, proposals: 1 }),
+      );
+      proposals[itemKey] = {
+        ...parsePersistedItem(safeItem, itemKey, configuredRuleIds),
+        proposal: previous.job.proposals[itemKey].proposal,
+      };
+    }
+    Object.defineProperty(preflight.snapshot, "proposals", {
+      value: {}, enumerable: true, configurable: true, writable: true,
+    });
+    const safeRoot = cloneSafeDataGraph(
+      preflight.snapshot,
+      contentReplacementGraphBudget({ ...preflight.cardinalities, proposals: 0 }),
+      preflight.sourceSnapshots,
+    );
+    const normalized = normalizeClonedContentReplacementJob(safeRoot, proposals);
+    if (
+      normalized.id !== previous.job.id || normalized.fingerprint !== previous.job.fingerprint ||
+      normalized.baseUrl !== previous.job.baseUrl || normalized.scanCompatibility !== previous.job.scanCompatibility ||
+      stableSerialize(normalized.target) !== stableSerialize(previous.job.target) ||
+      stableSerialize(normalized.configuration) !== stableSerialize(previous.job.configuration) ||
+      Date.parse(normalized.updatedAt) < Date.parse(previous.job.updatedAt)
+    ) return null;
+    for (const itemKey of changedItemKeys) {
+      await validateRecoveryEvidence(normalized.proposals[itemKey], normalized.updatedAt);
+    }
+
+    const itemDigests = [...previous.itemDigests];
+    const itemEntryBytes = [...previous.itemEntryBytes];
+    for (const itemKey of changedItemKeys) {
+      const index = previous.keyIndexes.get(itemKey);
+      if (index === undefined) throw corruptJob();
+      itemDigests[index] = await hashStoredItem(
+        normalized.id,
+        normalized.fingerprint,
+        previous.itemIndexes[index],
+        itemKey,
+        normalized.proposals[itemKey],
+      );
+      itemEntryBytes[index] = storedProposalEntryBytes(itemKey, normalized.proposals[itemKey]);
+    }
+    const merkleLevels = await updateStorageMerkleLevels(
+      previous.merkleLevels,
+      itemDigests,
+      changedItemKeys.map((itemKey) => previous.keyIndexes.get(itemKey)!),
+    );
+    const snapshot = finalizeValidatedStorageSnapshot(
+      normalized,
+      previous.keys,
+      previous.itemIndexes,
+      itemDigests,
+      merkleLevels,
+      true,
+      itemEntryBytes,
+    );
+    return {
+      snapshot,
+      changedItemKeys,
+      expectedProposalRoot: previous.rootRecord.proposalRoot,
+      expectedProposalCount: previous.keys.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function finalizeValidatedStorageSnapshot(
+  job: PersistedContentReplacementJob,
+  keys: string[],
+  itemIndexes: number[],
+  itemDigests: string[],
+  merkleLevels: string[][],
+  incrementally: boolean,
+  knownItemEntryBytes?: number[],
+): ValidatedStorageSnapshot {
+  const itemEntryBytes = knownItemEntryBytes ?? keys.map((itemKey) =>
+    storedProposalEntryBytes(itemKey, job.proposals[itemKey]));
+  const rootJob = { ...job, proposals: {} };
+  const rootBytes = utf8ByteLength(JSON.stringify(rootJob));
+  const totalJobBytes = rootBytes + itemEntryBytes.reduce((total, bytes) => total + bytes, 0) +
+    Math.max(0, keys.length - 1);
+  if (totalJobBytes > MAX_CONTENT_REPLACEMENT_JOB_BYTES) {
+    throw new TypeError("Content replacement job exceeds the 64 MiB storage limit.");
+  }
+  const frozenJob = incrementally
+    ? freezeIncrementalJob(job, new Set(keys.filter((key, index) =>
+      validatedStorageSnapshot?.job.proposals[key] !== job.proposals[key] ||
+      validatedStorageSnapshot?.itemDigests[index] !== itemDigests[index])))
+    : deepFreezeDataGraph(job);
+  const proposalRoot = storageMerkleRoot(merkleLevels);
+  const rootRecord: StoredNormalizedContentReplacementJobRecord = {
+    id: frozenJob.id,
+    storageFormat: SIDECAR_STORAGE_FORMAT,
+    proposalCount: keys.length,
+    proposalRoot,
+    job: { ...frozenJob, proposals: {} },
+    summary: summaryFromJob(frozenJob),
+  };
+  return {
+    job: frozenJob,
+    keys: [...keys],
+    keyIndexes: new Map(keys.map((key, index) => [key, index])),
+    itemIndexes: [...itemIndexes],
+    itemDigests: [...itemDigests],
+    merkleLevels: merkleLevels.map((level) => [...level]),
+    itemEntryBytes,
+    totalJobBytes,
+    rootRecord,
+  };
+}
+
+function storedProposalEntryBytes(itemKey: string, item: PersistedContentReplacementItem): number {
+  return utf8ByteLength(JSON.stringify(itemKey)) + 1 + utf8ByteLength(JSON.stringify(item));
+}
+
+async function hashStoredItem(
+  jobId: string,
+  jobFingerprint: string,
+  itemIndex: number,
+  itemKey: string,
+  item: PersistedContentReplacementItem,
+): Promise<string> {
+  return sha256Storage(
+    `${SIDECAR_LEAF_DOMAIN}${stableSerialize([jobId, jobFingerprint, itemIndex, itemKey, item])}`,
+  );
+}
+
+async function buildStorageMerkleLevels(itemDigests: string[]): Promise<string[][]> {
+  if (itemDigests.length === 0) return [[await sha256Storage(SIDECAR_EMPTY_DOMAIN)]];
+  const levels = [[...itemDigests]];
+  while (levels[levels.length - 1].length > 1) {
+    const current = levels[levels.length - 1];
+    const pairs = Array.from({ length: Math.ceil(current.length / 2) }, (_, index) => index * 2);
+    levels.push(await mapCanonicalEntries(pairs, (index) =>
+      hashStorageNode(current[index], current[index + 1] ?? current[index])));
+  }
+  return levels;
+}
+
+async function updateStorageMerkleLevels(
+  previousLevels: string[][],
+  nextLeaves: string[],
+  changedIndexes: number[],
+): Promise<string[][]> {
+  if (nextLeaves.length === 0) return previousLevels.map((level) => [...level]);
+  if (previousLevels.length === 0 || previousLevels[0].length !== nextLeaves.length) throw corruptJob();
+  const levels = previousLevels.map((level) => [...level]);
+  levels[0] = [...nextLeaves];
+  let affected = [...new Set(changedIndexes)];
+  for (let level = 0; level < levels.length - 1 && affected.length > 0; level += 1) {
+    const current = levels[level];
+    const parentIndexes = [...new Set(affected.map((index) => Math.floor(index / 2)))];
+    const hashes = await mapCanonicalEntries(parentIndexes, (parentIndex) => {
+      const childIndex = parentIndex * 2;
+      return hashStorageNode(current[childIndex], current[childIndex + 1] ?? current[childIndex]);
+    });
+    for (let index = 0; index < parentIndexes.length; index += 1) {
+      levels[level + 1][parentIndexes[index]] = hashes[index];
+    }
+    affected = parentIndexes;
+  }
+  return levels;
+}
+
+function storageMerkleRoot(levels: string[][]): string {
+  if (levels.length === 0) throw corruptJob();
+  const root = levels[levels.length - 1][0];
+  if (!isSha256Digest(root)) throw corruptJob();
+  return root;
+}
+
+async function hashStorageNode(left: string, right: string): Promise<string> {
+  return sha256Storage(`${SIDECAR_NODE_DOMAIN}${left}${right}`);
+}
+
+async function sha256Storage(value: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function deepFreezeDataGraph<T>(value: T): T {
+  if (!value || typeof value !== "object") return value;
+  const seen = new Set<object>();
+  const stack = [value as object];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    for (const child of Object.values(current)) {
+      if (child && typeof child === "object") stack.push(child);
+    }
+    Object.freeze(current);
+  }
+  return value;
+}
+
+function freezeIncrementalJob(
+  job: PersistedContentReplacementJob,
+  changedKeys: ReadonlySet<string>,
+): PersistedContentReplacementJob {
+  for (const key of changedKeys) deepFreezeDataGraph(job.proposals[key]);
+  const stack = Object.entries(job)
+    .filter(([key]) => key !== "proposals")
+    .map(([, value]) => value)
+    .filter((value): value is object => Boolean(value) && typeof value === "object");
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (seen.has(current) || current === job.proposals) continue;
+    seen.add(current);
+    for (const child of Object.values(current)) {
+      if (child && typeof child === "object") stack.push(child);
+    }
+    Object.freeze(current);
+  }
+  Object.freeze(job.proposals);
+  return Object.freeze(job);
+}
+
+function optionalActiveOperationKind(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, "activeOperation");
+  if (!descriptor) return undefined;
+  if (!("value" in descriptor) || !descriptor.enumerable) throw corruptJob();
+  if (descriptor.value === undefined) return undefined;
+  return ownDataProperty(descriptor.value, "kind");
 }
 
 function summaryFromJob(job: PersistedContentReplacementJob): StoredContentReplacementJobSummary {
@@ -840,6 +1380,13 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     contentReplacementGraphBudget(preflight.cardinalities),
     preflight.sourceSnapshots,
   );
+  return normalizeClonedContentReplacementJob(safeValue);
+}
+
+function normalizeClonedContentReplacementJob(
+  safeValue: unknown,
+  trustedProposals?: PersistedContentReplacementJob["proposals"],
+): PersistedContentReplacementJob {
   const record = exactObject(safeValue, JOB_KEYS, [
     "exactProofQueue", "activeOperation", "operationError", "nextRetryAt", "failure",
   ]);
@@ -871,14 +1418,19 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     ? undefined
     : boundedArray(record.exactProofQueue, MAX_CONTENT_REPLACEMENT_PROPOSALS).map(parseExactTargetProof);
   const progress = parseProgress(record.progress);
-  const proposals = exactDynamicMap(record.proposals);
-  const proposalEntries = Object.entries(proposals);
-  if (proposalEntries.length > MAX_CONTENT_REPLACEMENT_PROPOSALS) throw corruptJob();
-  const normalizedProposals: Record<string, PersistedContentReplacementItem> = {};
+  let normalizedProposals: Record<string, PersistedContentReplacementItem>;
   const configuredRuleIds = new Set(configuration.rules.map((rule) => rule.id));
-  for (const [key, item] of proposalEntries) {
-    if (!isCanonicalItemKey(key)) throw corruptJob();
-    normalizedProposals[key] = parsePersistedItem(item, key, configuredRuleIds);
+  if (trustedProposals) {
+    normalizedProposals = trustedProposals;
+  } else {
+    const proposals = exactDynamicMap(record.proposals);
+    const proposalEntries = Object.entries(proposals);
+    if (proposalEntries.length > MAX_CONTENT_REPLACEMENT_PROPOSALS) throw corruptJob();
+    normalizedProposals = {};
+    for (const [key, item] of proposalEntries) {
+      if (!isCanonicalItemKey(key)) throw corruptJob();
+      normalizedProposals[key] = parsePersistedItem(item, key, configuredRuleIds);
+    }
   }
   const nextRetryAt = record.nextRetryAt === undefined ? undefined : timestamp(record.nextRetryAt);
   const failure = record.failure === undefined ? undefined : parseFailure(record.failure);
@@ -2321,6 +2873,12 @@ async function openDatabase(): Promise<IDBDatabase> {
       }
       if (!store.indexNames.contains(SUMMARY_INDEX_NAME)) {
         store.createIndex(SUMMARY_INDEX_NAME, [...SUMMARY_INDEX_PATH], { unique: true });
+      }
+      const itemStore = request.result.objectStoreNames.contains(ITEM_STORE_NAME)
+        ? request.transaction!.objectStore(ITEM_STORE_NAME)
+        : request.result.createObjectStore(ITEM_STORE_NAME, { keyPath: ["jobId", "itemKey"] });
+      if (!itemStore.indexNames.contains(ITEM_JOB_INDEX_NAME)) {
+        itemStore.createIndex(ITEM_JOB_INDEX_NAME, "jobId", { unique: false });
       }
       if (event.oldVersion < 4) {
         const cursorRequest = store.openCursor();

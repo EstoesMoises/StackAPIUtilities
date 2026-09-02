@@ -95,7 +95,7 @@ async function seedNarrowLocalJob(page: import("@playwright/test").Page) {
   await expect(page.getByText("No replacement jobs are stored in this browser.")).toBeVisible();
   await page.evaluate(async (storedJob) => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("stack-api-content-replacement", 4);
+      const request = indexedDB.open("stack-api-content-replacement", 5);
       request.onerror = () => reject(request.error);
       request.onsuccess = () => resolve(request.result);
     });

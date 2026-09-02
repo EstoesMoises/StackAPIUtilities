@@ -78,9 +78,9 @@ describe("browserContentReplacementStorage", () => {
     const next = { ...initial, revision: 1, updatedAt: "2026-09-01T12:01:00.000Z" };
     const stale = { ...initial, revision: 1, status: "cancelled" as const, updatedAt: "2026-09-01T12:02:00.000Z" };
 
-    await expect(compareAndSave(initial, null)).resolves.toEqual({ status: "saved" });
+    await expect(compareAndSave(initial, null)).resolves.toMatchObject({ status: "saved" });
     await expect(compareAndSave(initial, null)).resolves.toEqual({ status: "conflict" });
-    await expect(compareAndSave(next, 0)).resolves.toEqual({ status: "saved" });
+    await expect(compareAndSave(next, 0)).resolves.toMatchObject({ status: "saved" });
     await expect(compareAndSave(stale, 0)).resolves.toEqual({ status: "conflict" });
     await expect(loadContentReplacementJob(initial.id)).resolves.toEqual(next);
   });
@@ -1032,9 +1032,15 @@ describe("browserContentReplacementStorage", () => {
     await deleteContentReplacementJob("job-a");
     await expect(loadContentReplacementJob("job-a")).resolves.toBeNull();
     expect(fake.openCalls.every((call) => call.name === "stack-api-content-replacement")).toBe(true);
-    expect(fake.openCalls.every((call) => call.version === 4)).toBe(true);
-    expect(fake.createdStores).toEqual([{ name: "jobs", keyPath: "id" }]);
-    expect(fake.createdIndexes).toEqual([{ store: "jobs", name: "by-summary", unique: true }]);
+    expect(fake.openCalls.every((call) => call.version === 5)).toBe(true);
+    expect(fake.createdStores).toEqual([
+      { name: "jobs", keyPath: "id" },
+      { name: "job-items", keyPath: ["jobId", "itemKey"] },
+    ]);
+    expect(fake.createdIndexes).toEqual([
+      { store: "jobs", name: "by-summary", unique: true },
+      { store: "job-items", name: "by-job", unique: false },
+    ]);
   });
 
   it("uses a locale-independent lexical ID tie-break for equal update timestamps", async () => {
@@ -1111,7 +1117,7 @@ describe("browserContentReplacementStorage", () => {
     await expect(loadContentReplacementJob("legacy-job")).resolves.toEqual(migrated);
 
     const current = { ...migrated, revision: 1, updatedAt: "2026-09-02T13:00:00.000Z" };
-    await expect(compareAndSave(current, 0)).resolves.toEqual({ status: "saved" });
+    await expect(compareAndSave(current, 0)).resolves.toMatchObject({ status: "saved" });
     await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
       totalCount: 1,
       jobs: [expect.objectContaining({ id: "legacy-job", updatedAt: current.updatedAt })],
@@ -1121,7 +1127,7 @@ describe("browserContentReplacementStorage", () => {
     await expect(loadContentReplacementJob("legacy-job")).resolves.toBeNull();
     await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toEqual({ jobs: [], totalCount: 0 });
     expect(fake.createdIndexes).toContainEqual({ store: "jobs", name: "by-summary", unique: true });
-    expect(fake.openCalls.some((call) => call.version === 4)).toBe(true);
+    expect(fake.openCalls.some((call) => call.version === 5)).toBe(true);
   });
 
   it("rebuilds the v3 summary index with current compatibility and operation kind", async () => {
@@ -1614,7 +1620,7 @@ describe("browserContentReplacementStorage", () => {
       },
     });
 
-    await expect(compareAndSaveContentReplacementJob(mutableRoot, null)).resolves.toEqual({ status: "saved" });
+    await expect(compareAndSaveContentReplacementJob(mutableRoot, null)).resolves.toMatchObject({ status: "saved" });
     expect(rootOwnKeysCalls).toBe(1);
     expect(idDescriptorCalls).toBe(1);
   });
@@ -1636,7 +1642,7 @@ describe("browserContentReplacementStorage", () => {
       },
     });
 
-    await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toEqual({ status: "saved" });
+    await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toMatchObject({ status: "saved" });
     expect(proposalOwnKeysCalls).toBe(1);
     expect(proposalDescriptorCalls).toBe(0);
   });
@@ -1753,7 +1759,7 @@ describe("browserContentReplacementStorage", () => {
     job.target = repeated;
     job.configuration.target = repeated;
 
-    await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toEqual({ status: "saved" });
+    await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toMatchObject({ status: "saved" });
     expect(ownKeysCalls).toBe(1);
   });
 
@@ -1886,7 +1892,8 @@ describe("browserContentReplacementStorage", () => {
 
     try {
       const jobId = job.id;
-      await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toEqual({ status: "saved" });
+      const proposalOrder = Object.keys(job.proposals);
+      await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toMatchObject({ status: "saved" });
       job = undefined;
       const loaded = await loadContentReplacementJob(jobId);
 
@@ -1898,6 +1905,7 @@ describe("browserContentReplacementStorage", () => {
         proposalsFound: 5_000,
       });
       expect(Object.keys(loaded!.proposals)).toHaveLength(5_000);
+      expect(Object.keys(loaded!.proposals)).toEqual(proposalOrder);
       expect(loaded!.proposals["answer:1:5001"].proposal.before.ref).toEqual({
         kind: "answer", questionId: 1, answerId: 5_001,
       });
@@ -1911,6 +1919,284 @@ describe("browserContentReplacementStorage", () => {
       job = undefined;
     }
   }, 60_000);
+
+  it("bounds validation and durable writes across repeated 5,000-item Exact Apply saves", async () => {
+    const fake = installFakeIndexedDB();
+    const originalDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+    const digestResults = new Map<string, ArrayBuffer>();
+    const digestSpy = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async (algorithm, data) => {
+      const bytes = new Uint8Array(data as ArrayBuffer);
+      const key = `${typeof algorithm === "string" ? algorithm : algorithm.name}:` +
+        Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const cached = digestResults.get(key);
+      if (cached) return cached.slice(0);
+      const digest = await originalDigest(algorithm, data);
+      const copy = digest.slice(0) as ArrayBuffer;
+      digestResults.set(key, copy);
+      return copy.slice(0);
+    });
+
+    try {
+      const initial = await createExactApplyBoundaryJob(5_000);
+      await expect(compareAndSaveContentReplacementJob(initial, null)).resolves.toMatchObject({ status: "saved" });
+      expect({ size: fake.sidecarRecords.size, puts: fake.sidecarStorePuts }).toEqual({ size: 5_000, puts: 5_000 });
+      let current = await loadContentReplacementJob(initial.id);
+      if (!current) throw new Error("Expected the Exact Apply boundary fixture to reload.");
+
+      const started = reduceReplacementJob(current, {
+        type: "apply/start",
+        at: "2026-09-01T12:01:00.000Z",
+      });
+      const startedSave = await compareAndSaveContentReplacementJob(started, current.revision);
+      expect(startedSave.status).toBe("saved");
+      current = (startedSave as { job?: PersistedContentReplacementJob }).job ?? started;
+      expect(Object.isFrozen(current)).toBe(true);
+      expect(Object.isFrozen(current.proposals)).toBe(true);
+      expect(Object.isFrozen(current.proposals[Object.keys(current.proposals)[0]].proposal)).toBe(true);
+
+      digestSpy.mockClear();
+      fake.resetWriteMetrics();
+      const itemKeys = Object.keys(current.proposals).slice(0, 2);
+      for (let index = 0; index < itemKeys.length; index += 1) {
+        const itemKey = itemKeys[index];
+        const applying = reduceReplacementJob(current, {
+          type: "apply/item-started",
+          itemKey,
+          at: `2026-09-01T12:0${index * 2 + 2}:00.000Z`,
+        });
+        const applyingSave = await compareAndSaveContentReplacementJob(applying, current.revision);
+        expect(applyingSave.status).toBe("saved");
+        current = (applyingSave as { job?: PersistedContentReplacementJob }).job ?? applying;
+
+        const finished = reduceReplacementJob(current, {
+          type: "apply/item-finished",
+          itemKey,
+          result: {
+            status: "updated",
+            observedRequestChecksum: current.proposals[itemKey].proposal.proposedRequestChecksum,
+          },
+          at: `2026-09-01T12:0${index * 2 + 3}:00.000Z`,
+        });
+        const finishedSave = await compareAndSaveContentReplacementJob(finished, current.revision);
+        expect(finishedSave.status).toBe("saved");
+        current = (finishedSave as { job?: PersistedContentReplacementJob }).job ?? finished;
+      }
+
+      expect(digestSpy.mock.calls.length).toBeLessThanOrEqual(80);
+      expect(fake.jobStorePutBytes).toBeLessThan(512 * 1_024);
+      expect(fake.sidecarStorePuts).toBeLessThanOrEqual(4);
+      expect(fake.sidecarRecords.size).toBe(5_000);
+      expect(fake.sidecarRecordsFor(initial.id)).toHaveLength(5_000);
+      expect(current.progress.applyCompleted).toBe(2);
+
+      digestSpy.mockClear();
+      await expect(loadContentReplacementJob(initial.id)).resolves.toEqual(current);
+      expect(digestSpy.mock.calls.length).toBeGreaterThan(5_000);
+    } finally {
+      digestSpy.mockRestore();
+      fake.records.clear();
+      fake.sidecarRecords.clear();
+    }
+  }, 60_000);
+
+  it.each([
+    ["tampered item", (fake: FakeIndexedDB, key: string) => {
+      const record = structuredClone(fake.sidecarRecords.get(key)) as any;
+      record.item.status = "pending";
+      fake.sidecarRecords.set(key, record);
+    }],
+    ["tampered digest", (fake: FakeIndexedDB, key: string) => {
+      const record = structuredClone(fake.sidecarRecords.get(key)) as any;
+      record.itemDigest = "0".repeat(64);
+      fake.sidecarRecords.set(key, record);
+    }],
+    ["wrong job binding", (fake: FakeIndexedDB, key: string) => {
+      const record = structuredClone(fake.sidecarRecords.get(key)) as any;
+      record.jobFingerprint = "0".repeat(64);
+      fake.sidecarRecords.set(key, record);
+    }],
+    ["wrong item order", (fake: FakeIndexedDB, key: string) => {
+      const record = structuredClone(fake.sidecarRecords.get(key)) as any;
+      record.itemIndex = 1;
+      fake.sidecarRecords.set(key, record);
+    }],
+    ["missing sidecar", (fake: FakeIndexedDB, key: string) => {
+      fake.sidecarRecords.delete(key);
+    }],
+    ["extra sidecar", (fake: FakeIndexedDB, key: string) => {
+      const record = structuredClone(fake.sidecarRecords.get(key)) as any;
+      record.itemKey = "question:43";
+      record.item.proposal.before.ref.questionId = 43;
+      fake.sidecarRecords.set(`${record.jobId}\u0000${record.itemKey}`, record);
+    }],
+    ["tampered root", (fake: FakeIndexedDB) => {
+      const root = structuredClone(fake.records.get("replacement-job-1")) as any;
+      root.proposalRoot = "0".repeat(64);
+      fake.records.set(root.id, root);
+    }],
+  ] as const)("rejects a normalized sidecar checkpoint with a %s", async (_label, mutate) => {
+    const fake = installFakeIndexedDB();
+    const job = createApplyReadyJob();
+    await compareAndSaveContentReplacementJob(job, null);
+    const key = [...fake.sidecarRecords.keys()][0];
+
+    mutate(fake, key);
+
+    await expect(loadContentReplacementJob(job.id)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
+  it("rejects tampered changed recovery input without reusing trusted proposal validation", async () => {
+    const fake = installFakeIndexedDB();
+    const initial = createApplyReadyJob();
+    await compareAndSaveContentReplacementJob(initial, null);
+    const loaded = await loadContentReplacementJob(initial.id);
+    if (!loaded) throw new Error("Expected an Apply checkpoint.");
+    const started = reduceReplacementJob(loaded, { type: "apply/start", at: loaded.updatedAt });
+    const startedSave = await compareAndSaveContentReplacementJob(started, loaded.revision);
+    const current = (startedSave as { job?: PersistedContentReplacementJob }).job ?? started;
+    const applying = reduceReplacementJob(current, {
+      type: "apply/item-started",
+      itemKey: "question:42",
+      at: current.updatedAt,
+    });
+    const item = applying.proposals["question:42"];
+    const tampered = {
+      ...applying,
+      proposals: {
+        ...applying.proposals,
+        "question:42": {
+          ...item,
+          recovery: { ...item.recovery!, scannedRequestChecksum: "0".repeat(64) },
+        },
+      },
+    };
+    fake.resetWriteMetrics();
+
+    await expect(compareAndSaveContentReplacementJob(tampered, current.revision)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+    expect(fake.jobStorePuts).toBe(0);
+    expect(fake.sidecarStorePuts).toBe(0);
+  });
+
+  it("rejects an incremental save when the durable sidecar Merkle root changed at the same revision", async () => {
+    const fake = installFakeIndexedDB();
+    const initial = createApplyReadyJob();
+    await compareAndSaveContentReplacementJob(initial, null);
+    const loaded = await loadContentReplacementJob(initial.id);
+    if (!loaded) throw new Error("Expected an Apply checkpoint.");
+    const root = structuredClone(fake.records.get(initial.id)) as any;
+    root.proposalRoot = "0".repeat(64);
+    fake.records.set(initial.id, root);
+    const started = reduceReplacementJob(loaded, { type: "apply/start", at: loaded.updatedAt });
+    fake.resetWriteMetrics();
+
+    await expect(compareAndSaveContentReplacementJob(started, loaded.revision)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+    expect(fake.jobStorePuts).toBe(0);
+    expect(fake.sidecarStorePuts).toBe(0);
+  });
+
+  it("lazily migrates a fully validated v4 job to a v5 Merkle sidecar checkpoint", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 4;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const legacyRecord = createApplyReadyJob();
+    fake.records.set(legacyRecord.id, storedRecordForTest(legacyRecord));
+
+    const loaded = await loadContentReplacementJob(legacyRecord.id);
+    expect(loaded).toEqual(legacyRecord);
+    expect(fake.sidecarRecords.size).toBe(0);
+    const started = reduceReplacementJob(loaded!, { type: "apply/start", at: loaded!.updatedAt });
+    await expect(compareAndSaveContentReplacementJob(started, loaded!.revision)).resolves.toMatchObject({
+      status: "saved",
+    });
+
+    expect(fake.databaseVersion).toBe(5);
+    expect(fake.sidecarRecords.size).toBe(1);
+    expect(fake.records.get(legacyRecord.id)).toMatchObject({
+      storageFormat: "proposal-sidecars-sha256-merkle-v1",
+      proposalCount: 1,
+      job: { revision: started.revision, proposals: {} },
+    });
+    await expect(loadContentReplacementJob(legacyRecord.id)).resolves.toEqual(started);
+  });
+
+  it("keeps the prior normalized root and sidecar intact on CAS conflict or transaction abort", async () => {
+    const fake = installFakeIndexedDB();
+    const initial = createApplyReadyJob();
+    await compareAndSaveContentReplacementJob(initial, null);
+    const loaded = await loadContentReplacementJob(initial.id);
+    if (!loaded) throw new Error("Expected an Apply checkpoint.");
+    const started = reduceReplacementJob(loaded, { type: "apply/start", at: loaded.updatedAt });
+    let durableRoot = structuredClone(fake.records.get(initial.id));
+    let durableSidecars = structuredClone([...fake.sidecarRecords.entries()]);
+
+    const skippedRevision = { ...started, revision: started.revision + 1 };
+    await expect(compareAndSaveContentReplacementJob(skippedRevision, started.revision)).resolves.toEqual({
+      status: "conflict",
+    });
+    expect(fake.records.get(initial.id)).toEqual(durableRoot);
+    expect([...fake.sidecarRecords.entries()]).toEqual(durableSidecars);
+
+    const startedSave = await compareAndSaveContentReplacementJob(started, loaded.revision);
+    const current = (startedSave as { job?: PersistedContentReplacementJob }).job ?? started;
+    const applying = reduceReplacementJob(current, {
+      type: "apply/item-started",
+      itemKey: "question:42",
+      at: current.updatedAt,
+    });
+    durableRoot = structuredClone(fake.records.get(initial.id));
+    durableSidecars = structuredClone([...fake.sidecarRecords.entries()]);
+    fake.nextTransactionAbort = true;
+    await expect(compareAndSaveContentReplacementJob(applying, current.revision)).rejects.toThrow(
+      "Content replacement storage transaction aborted.",
+    );
+    expect(fake.records.get(initial.id)).toEqual(durableRoot);
+    expect([...fake.sidecarRecords.entries()]).toEqual(durableSidecars);
+    await expect(loadContentReplacementJob(initial.id)).resolves.toEqual(current);
+  });
+
+  it("rejects a skipped revision without writing a forked normalized checkpoint", async () => {
+    const fake = installFakeIndexedDB();
+    const initial = createApplyReadyJob();
+    await compareAndSaveContentReplacementJob(initial, null);
+    const loaded = await loadContentReplacementJob(initial.id);
+    if (!loaded) throw new Error("Expected an Apply checkpoint.");
+    const started = reduceReplacementJob(loaded, { type: "apply/start", at: loaded.updatedAt });
+    const skipped = { ...started, revision: started.revision + 1 };
+    fake.resetWriteMetrics();
+
+    await expect(compareAndSaveContentReplacementJob(skipped, loaded.revision)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+    expect(fake.jobStorePuts).toBe(0);
+    expect(fake.sidecarStorePuts).toBe(0);
+    await expect(loadContentReplacementJob(initial.id)).resolves.toEqual(loaded);
+  });
+
+  it("deletes a normalized root and all sidecars atomically", async () => {
+    const fake = installFakeIndexedDB();
+    const job = createApplyReadyJob();
+    await compareAndSaveContentReplacementJob(job, null);
+    expect(fake.records.has(job.id)).toBe(true);
+    expect(fake.sidecarRecords.size).toBe(1);
+
+    fake.nextTransactionAbort = true;
+    await expect(deleteContentReplacementJob(job.id)).rejects.toThrow(
+      "Content replacement storage transaction aborted.",
+    );
+    expect(fake.records.has(job.id)).toBe(true);
+    expect(fake.sidecarRecords.size).toBe(1);
+
+    await deleteContentReplacementJob(job.id);
+    expect(fake.records.has(job.id)).toBe(false);
+    expect(fake.sidecarRecords.size).toBe(0);
+  });
 
   it("validates a meaningful-scale article job with metadata, results, recovery, and preview evidence", async () => {
     let job: PersistedContentReplacementJob | undefined = await createCanonicalArticleRecoveryJob(5_000);
@@ -2688,6 +2974,73 @@ async function createCanonicalAnswerBoundaryJob(
   return job;
 }
 
+async function createExactApplyBoundaryJob(
+  proposalCount: number,
+): Promise<PersistedContentReplacementJob> {
+  const targets = Array.from({ length: proposalCount }, (_, index) => ({
+    kind: "question" as const,
+    questionId: index + 1,
+  }));
+  const selection = await createExactTargetSelection(targets);
+  const configuration: ReplacementConfiguration = {
+    ...createJob().configuration,
+    contentTypes: { questions: true, answers: false, articles: false },
+    discovery: selection.discovery,
+  };
+  let job = createReplacementJob({
+    id: "exact-apply-sidecar-boundary-job",
+    fingerprint: await createJobFingerprint({
+      baseUrl: "https://example.stackenterprise.co",
+      configuration,
+      scanCompatibility: "current",
+    }),
+    baseUrl: "https://example.stackenterprise.co",
+    configuration,
+    exactTargets: selection.targets,
+    exactProofs: selection.proofs,
+    createdAt: "2026-09-01T12:00:00.000Z",
+  });
+  const proposals: PersistedContentReplacementJob["proposals"] = {};
+  const chunkSize = 256;
+  for (let offset = 0; offset < proposalCount; offset += chunkSize) {
+    const count = Math.min(chunkSize, proposalCount - offset);
+    const chunk = await Promise.all(Array.from({ length: count }, async (_unused, chunkIndex) => {
+      const index = offset + chunkIndex;
+      const ref = targets[index];
+      const proposal = await buildReplacementProposal({
+        kind: "question",
+        ref,
+        request: { title: `Question ${ref.questionId}`, body: "Old body", tags: ["migration"] },
+      }, configuration, selection.proofs[index]);
+      if (!proposal) throw new Error("Expected a canonical Exact Apply proposal fixture.");
+      return { key: `question:${ref.questionId}`, proposal };
+    }));
+    for (const { key, proposal } of chunk) {
+      proposals[key] = { proposal, included: true, attemptCount: 0, status: "pending" };
+    }
+  }
+  job = {
+    ...job,
+    stage: "review",
+    status: "completed",
+    detailQueue: [],
+    exactProofQueue: [],
+    proposals,
+    progress: {
+      ...job.progress,
+      apiRequestsCompleted: proposalCount,
+      detailsInspected: proposalCount,
+      proposalsFound: proposalCount,
+    },
+  };
+  job = reduceReplacementJob(job, {
+    type: "apply/prepare",
+    expectedSelection: createReplacementSelectionSnapshot(job.proposals),
+    at: job.updatedAt,
+  });
+  return { ...job, revision: 0 };
+}
+
 async function createCanonicalArticleRecoveryJob(
   proposalCount: number,
 ): Promise<PersistedContentReplacementJob> {
@@ -3104,6 +3457,7 @@ function storedRecordForTest(job: PersistedContentReplacementJob): Record<string
 
 class FakeIndexedDB {
   readonly records = new Map<string, unknown>();
+  readonly sidecarRecords = new Map<string, unknown>();
   readonly openCalls: Array<{ name: string; version?: number }> = [];
   readonly createdStores: Array<{ name: string; keyPath: string | string[] | null }> = [];
   readonly createdIndexes: Array<{ store: string; name: string; unique: boolean }> = [];
@@ -3113,6 +3467,8 @@ class FakeIndexedDB {
   closedDatabases = 0;
   hasStore = false;
   hasSummaryIndex = false;
+  hasItemStore = false;
+  hasItemJobIndex = false;
   nextOpenError = false;
   nextBlocked = false;
   nextBlockedThenSuccess = false;
@@ -3121,6 +3477,34 @@ class FakeIndexedDB {
   nextRequestError = false;
   nextTransactionAbort = false;
   nextTransactionError = false;
+  jobStorePutBytes = 0;
+  sidecarStorePutBytes = 0;
+  jobStorePuts = 0;
+  sidecarStorePuts = 0;
+
+  resetWriteMetrics(): void {
+    this.jobStorePutBytes = 0;
+    this.sidecarStorePutBytes = 0;
+    this.jobStorePuts = 0;
+    this.sidecarStorePuts = 0;
+  }
+
+  sidecarRecordsFor(jobId: string): unknown[] {
+    return [...this.sidecarRecords.entries()]
+      .filter(([key]) => key.startsWith(`${jobId}\u0000`))
+      .map(([, value]) => value);
+  }
+
+  recordPut(store: string, value: unknown): void {
+    const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    if (store === "jobs") {
+      this.jobStorePuts += 1;
+      this.jobStorePutBytes += bytes;
+    } else {
+      this.sidecarStorePuts += 1;
+      this.sidecarStorePutBytes += bytes;
+    }
+  }
 
   open(name: string, version?: number): IDBOpenDBRequest {
     this.openCalls.push({ name, version });
@@ -3172,7 +3556,8 @@ class FakeIndexedDB {
 }
 
 class FakeDatabase {
-  readonly objectStoreNames = { contains: (name: string) => name === "jobs" && this.owner.hasStore };
+  readonly objectStoreNames = { contains: (name: string) =>
+    name === "jobs" ? this.owner.hasStore : name === "job-items" && this.owner.hasItemStore };
   upgradeTransaction: FakeTransaction | null = null;
 
   constructor(private readonly owner: FakeIndexedDB) {}
@@ -3182,7 +3567,8 @@ class FakeDatabase {
       this.owner.nextUpgradeError = false;
       throw new Error("upgrade failed");
     }
-    this.owner.hasStore = true;
+    if (name === "jobs") this.owner.hasStore = true;
+    if (name === "job-items") this.owner.hasItemStore = true;
     this.owner.createdStores.push({ name, keyPath: options?.keyPath ?? null });
     return new FakeObjectStore(this.owner, this.upgradeTransaction!, name) as unknown as IDBObjectStore;
   }
@@ -3201,8 +3587,8 @@ class FakeTransaction {
   onabort: (() => void) | null = null;
   private pendingRequests = 0;
   private finished = false;
-  private readonly stagedWrites = new Map<string, unknown>();
-  private readonly stagedDeletes = new Set<string>();
+  private readonly stagedWrites = new Map<string, Map<string, unknown>>();
+  private readonly stagedDeletes = new Map<string, Set<string>>();
 
   constructor(private readonly owner: FakeIndexedDB, private readonly consumeFailures: boolean) {}
 
@@ -3220,7 +3606,7 @@ class FakeTransaction {
   }
 
   completeIfIdle(): void {
-    queueMicrotask(() => {
+    setTimeout(() => {
       if (this.finished || this.pendingRequests !== 0) return;
       this.finished = true;
       if (this.consumeFailures && this.owner.nextTransactionAbort) {
@@ -3230,21 +3616,43 @@ class FakeTransaction {
         this.owner.nextTransactionError = false;
         this.onerror?.();
       } else {
-        for (const key of this.stagedDeletes) this.owner.records.delete(key);
-        for (const [key, value] of this.stagedWrites) this.owner.records.set(key, value);
+        for (const [store, keys] of this.stagedDeletes) {
+          const records = store === "jobs" ? this.owner.records : this.owner.sidecarRecords;
+          for (const key of keys) records.delete(key);
+        }
+        for (const [store, writes] of this.stagedWrites) {
+          const records = store === "jobs" ? this.owner.records : this.owner.sidecarRecords;
+          for (const [key, value] of writes) records.set(key, value);
+        }
         this.oncomplete?.();
       }
-    });
+    }, 0);
   }
 
-  stagePut(value: { id: string }): void {
-    this.stagedDeletes.delete(value.id);
-    this.stagedWrites.set(value.id, value);
+  stagePut(store: string, value: { id?: string; jobId?: string; itemKey?: string }): void {
+    const key = store === "jobs" ? String(value.id) : `${value.jobId}\u0000${value.itemKey}`;
+    let deletes = this.stagedDeletes.get(store);
+    if (!deletes) {
+      deletes = new Set();
+      this.stagedDeletes.set(store, deletes);
+    }
+    deletes.delete(key);
+    let writes = this.stagedWrites.get(store);
+    if (!writes) {
+      writes = new Map();
+      this.stagedWrites.set(store, writes);
+    }
+    writes.set(key, value);
   }
 
-  stageDelete(key: string): void {
-    this.stagedWrites.delete(key);
-    this.stagedDeletes.add(key);
+  stageDelete(store: string, key: string): void {
+    this.stagedWrites.get(store)?.delete(key);
+    let deletes = this.stagedDeletes.get(store);
+    if (!deletes) {
+      deletes = new Set();
+      this.stagedDeletes.set(store, deletes);
+    }
+    deletes.add(key);
   }
 
   abort(): void {
@@ -3255,7 +3663,8 @@ class FakeTransaction {
 }
 
 class FakeObjectStore {
-  readonly indexNames = { contains: (name: string) => name === "by-summary" && this.owner.hasSummaryIndex };
+  readonly indexNames = { contains: (name: string) =>
+    name === "by-summary" ? this.owner.hasSummaryIndex : name === "by-job" && this.owner.hasItemJobIndex };
 
   constructor(
     private readonly owner: FakeIndexedDB,
@@ -3264,24 +3673,25 @@ class FakeObjectStore {
   ) {}
 
   get(key: IDBValidKey): IDBRequest<unknown> {
-    return this.request(() => this.owner.records.get(String(key)));
+    return this.request(() => this.records().get(this.serializedKey(key)));
   }
 
   getAll(): IDBRequest<unknown[]> {
     this.owner.getAllCalls += 1;
-    return this.request(() => [...this.owner.records.values()]);
+    return this.request(() => [...this.records().values()]);
   }
 
-  put(value: { id: string }): IDBRequest<IDBValidKey> {
+  put(value: { id?: string; jobId?: string; itemKey?: string }): IDBRequest<IDBValidKey> {
     return this.request<IDBValidKey>(() => {
-      this.transaction.stagePut(value);
-      return value.id;
+      this.owner.recordPut(this.name, value);
+      this.transaction.stagePut(this.name, value);
+      return this.name === "jobs" ? value.id! : [value.jobId!, value.itemKey!];
     }, true);
   }
 
   delete(key: IDBValidKey): IDBRequest<undefined> {
     return this.request(() => {
-      this.transaction.stageDelete(String(key));
+      this.transaction.stageDelete(this.name, this.serializedKey(key));
       return undefined;
     }, true);
   }
@@ -3291,9 +3701,10 @@ class FakeObjectStore {
       this.owner.nextUpgradeError = false;
       throw new Error("upgrade failed");
     }
-    this.owner.hasSummaryIndex = true;
+    if (name === "by-summary") this.owner.hasSummaryIndex = true;
+    if (name === "by-job") this.owner.hasItemJobIndex = true;
     this.owner.createdIndexes.push({ store: this.name, name, unique: options?.unique === true });
-    return new FakeIndex(this.owner, this.transaction) as unknown as IDBIndex;
+    return new FakeIndex(this.owner, this.transaction, this.name, name) as unknown as IDBIndex;
   }
 
   deleteIndex(name: string): void {
@@ -3302,8 +3713,10 @@ class FakeObjectStore {
   }
 
   index(name: string): IDBIndex {
-    if (name !== "by-summary" || !this.owner.hasSummaryIndex) throw new Error("missing index");
-    return new FakeIndex(this.owner, this.transaction) as unknown as IDBIndex;
+    const exists = name === "by-summary" ? this.owner.hasSummaryIndex :
+      name === "by-job" && this.owner.hasItemJobIndex;
+    if (!exists) throw new Error("missing index");
+    return new FakeIndex(this.owner, this.transaction, this.name, name) as unknown as IDBIndex;
   }
 
   openCursor(): IDBRequest<IDBCursorWithValue | null> {
@@ -3323,6 +3736,7 @@ class FakeObjectStore {
         this.owner.nextRequestError = false;
         request.fail();
         this.transaction.finishRequest();
+        this.transaction.abort();
         return;
       }
       request.succeed(operation());
@@ -3330,10 +3744,23 @@ class FakeObjectStore {
     });
     return request as unknown as IDBRequest<T>;
   }
+
+  private records(): Map<string, unknown> {
+    return this.name === "jobs" ? this.owner.records : this.owner.sidecarRecords;
+  }
+
+  private serializedKey(key: IDBValidKey): string {
+    return Array.isArray(key) ? `${String(key[0])}\u0000${String(key[1])}` : String(key);
+  }
 }
 
 class FakeIndex {
-  constructor(private readonly owner: FakeIndexedDB, private readonly transaction: FakeTransaction) {}
+  constructor(
+    private readonly owner: FakeIndexedDB,
+    private readonly transaction: FakeTransaction,
+    private readonly storeName = "jobs",
+    private readonly indexName = "by-summary",
+  ) {}
 
   count(): IDBRequest<number> {
     const store = new FakeObjectStore(this.owner, this.transaction, "jobs");
@@ -3347,6 +3774,24 @@ class FakeIndex {
       indexedSummaryEntries(this.owner),
       true,
     ) as unknown as IDBRequest<IDBCursor | null>;
+  }
+
+  getAll(query?: IDBValidKey): IDBRequest<unknown[]> {
+    const store = new FakeObjectStore(this.owner, this.transaction, this.storeName);
+    return store.request(() => [...this.owner.sidecarRecords.values()].filter((value) =>
+      this.indexName === "by-job" && value && typeof value === "object" &&
+      (value as { jobId?: unknown }).jobId === query));
+  }
+
+  getAllKeys(query?: IDBValidKey): IDBRequest<IDBValidKey[]> {
+    const store = new FakeObjectStore(this.owner, this.transaction, this.storeName);
+    return store.request(() => [...this.owner.sidecarRecords.values()].flatMap((value) => {
+      if (this.indexName !== "by-job" || !value || typeof value !== "object") return [];
+      const record = value as { jobId?: unknown; itemKey?: unknown };
+      return record.jobId === query && typeof record.itemKey === "string"
+        ? [[record.jobId as string, record.itemKey] as IDBValidKey]
+        : [];
+    }));
   }
 }
 
@@ -3433,7 +3878,7 @@ class FakeCursorRequest extends FakeRequest<IDBCursorWithValue | null> {
         queueMicrotask(() => this.publish());
       },
       update: (value: { id: string }) => {
-        this.transaction.stagePut(value);
+        this.transaction.stagePut("jobs", value);
         return {} as IDBRequest<IDBValidKey>;
       },
     } as unknown as IDBCursorWithValue;

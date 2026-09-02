@@ -292,6 +292,7 @@ export function useContentReplacementJob(
     if (token !== undefined && token !== operationRef.current) return false;
     const visible = jobRef.current;
     const expectedRevision = visible?.id === candidate.id ? visible.revision : null;
+    let savedJob: PersistedContentReplacementJob | undefined;
     try {
       const result = await storage.save(candidate, expectedRevision);
       if (result.status === "conflict") {
@@ -301,6 +302,7 @@ export function useContentReplacementJob(
         stopOperation();
         return false;
       }
+      savedJob = result.job;
     } catch {
       if (mountedRef.current) setStorageError(STORAGE_ERROR);
       stopOperation();
@@ -308,7 +310,7 @@ export function useContentReplacementJob(
     }
     if (token !== undefined && token !== operationRef.current) return false;
     setStorageError(null);
-    setJob(candidate);
+    setJob(savedJob ?? candidate);
     return true;
   }), [enqueueStorage, setJob, stopOperation]);
 
@@ -350,6 +352,7 @@ export function useContentReplacementJob(
       }
       return false;
     }
+    let savedJob: PersistedContentReplacementJob | undefined;
     try {
       const result = await storage.save(plan.candidate, current.revision);
       if (result.status === "conflict") {
@@ -361,6 +364,7 @@ export function useContentReplacementJob(
         }
         return false;
       }
+      savedJob = result.job;
     } catch {
       if (canPublish()) {
         if (mountedRef.current) setStorageError(STORAGE_ERROR);
@@ -370,7 +374,7 @@ export function useContentReplacementJob(
     }
     if (canPublish()) {
       setStorageError(null);
-      setJob(plan.candidate);
+      setJob(savedJob ?? plan.candidate);
     }
     return true;
   }), [enqueueStorage, setJob, stopOperation]);
