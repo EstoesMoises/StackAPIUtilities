@@ -19,6 +19,9 @@ import type {
 export interface ContentReplacementDefineStepProps {
   onStartScan(configuration: ReplacementConfiguration): Promise<void> | void;
   disabled?: boolean;
+  scanReadiness?: { ready: boolean; message: string };
+  setupError?: string | null;
+  onReconnect?: () => void;
 }
 
 interface ReviewedCheckpoint {
@@ -44,11 +47,15 @@ const RULE_ERROR_MESSAGES: Record<ReplacementRuleError["code"], string> = {
 export function ContentReplacementDefineStep({
   onStartScan,
   disabled = false,
+  scanReadiness = { ready: true, message: "" },
+  setupError = null,
+  onReconnect,
 }: ContentReplacementDefineStepProps) {
   const defaults = useMemo(createDefaultReplacementConfiguration, []);
   const nextRowId = useRef(2);
   const fileReadRequestId = useRef(0);
   const startPending = useRef(false);
+  const fieldRefs = useRef(new Map<string, HTMLInputElement>());
   const [rules, setRules] = useState<ReplacementRule[]>([
     { id: "manual-1", find: "", replace: "" },
   ]);
@@ -59,17 +66,24 @@ export function ContentReplacementDefineStep({
   const [fileErrors, setFileErrors] = useState<string[]>([]);
   const [fileStatus, setFileStatus] = useState<string | null>(null);
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [fileReading, setFileReading] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const rulesRef = useRef(rules);
+  rulesRef.current = rules;
 
   const validation = validateReplacementRules(rules, options);
-  const structuralErrors = getStructuralErrors(rules, contentTypes);
+  const fieldErrors = getFieldErrors(rules, validation.errors);
+  const structuralErrors = getStructuralErrors(rules, contentTypes, fileReading, pendingImport !== null);
+  const errorCount = fieldErrors.length + structuralErrors.length + fileErrors.length;
   const configuration = createConfiguration(contentTypes, validation.rules, options);
   const currentKey = configurationSnapshotKey(rules, contentTypes, options);
   const checkpointCurrent = reviewed?.key === currentKey;
-  const canStart = checkpointCurrent && !disabled && !starting;
+  const canStart = checkpointCurrent && errorCount === 0 && scanReadiness.ready && !disabled && !starting;
 
   function invalidateCheckpoint() {
     setReviewed(null);
+    setStartError(null);
   }
 
   function updateRule(id: string, field: "find" | "replace", value: string) {
@@ -116,8 +130,9 @@ export function ContentReplacementDefineStep({
     const requestId = fileReadRequestId.current + 1;
     fileReadRequestId.current = requestId;
     setPendingImport(null);
-    setFileErrors([]);
+    setFileReading(!!file);
     setFileStatus(file ? `Reading ${file.name}…` : null);
+    invalidateCheckpoint();
     if (!file) return;
 
     try {
@@ -125,6 +140,7 @@ export function ContentReplacementDefineStep({
       if (fileReadRequestId.current !== requestId) return;
       const parsed = parseReplacementCsv(csv);
       setFileErrors(parsed.fileErrors);
+      setFileReading(false);
       if (parsed.rows.length === 0) {
         setFileStatus(parsed.fileErrors.length === 0 ? `${file.name} contains no mappings.` : null);
         return;
@@ -133,7 +149,7 @@ export function ContentReplacementDefineStep({
         ...row,
         id: `csv-${requestId}-${row.sourceRow ?? nextRowId.current++}`,
       }));
-      if (hasNonblankRule(rules)) {
+      if (hasNonblankRule(rulesRef.current)) {
         setPendingImport({ rows: importedRows, fileName: file.name, requestId });
         setFileStatus(`${file.name} is ready. Choose how to apply its rows.`);
       } else {
@@ -141,6 +157,7 @@ export function ContentReplacementDefineStep({
       }
     } catch (error) {
       if (fileReadRequestId.current !== requestId) return;
+      setFileReading(false);
       setFileStatus(null);
       setFileErrors([error instanceof Error ? error.message : `Unable to read ${file.name}.`]);
     }
@@ -162,8 +179,12 @@ export function ContentReplacementDefineStep({
 
   function reviewRules() {
     setShowValidation(true);
-    if (validation.errors.length > 0 || structuralErrors.length > 0) {
+    if (errorCount > 0) {
       setReviewed(null);
+      const firstInvalid = rules.flatMap((rule) => fieldErrors.filter((error) => error.ruleId === rule.id))[0];
+      if (firstInvalid) {
+        queueMicrotask(() => fieldRefs.current.get(`${firstInvalid.ruleId}:${firstInvalid.field}`)?.focus());
+      }
       return;
     }
     setReviewed({ key: currentKey, configuration });
@@ -175,6 +196,9 @@ export function ContentReplacementDefineStep({
     setStarting(true);
     try {
       await onStartScan(reviewed.configuration);
+      setStartError(null);
+    } catch (error) {
+      setStartError(error instanceof Error ? error.message : "The content replacement scan could not be started.");
     } finally {
       startPending.current = false;
       setStarting(false);
@@ -210,9 +234,8 @@ export function ContentReplacementDefineStep({
             <thead><tr><th scope="col">Find</th><th scope="col">Replace with</th><th scope="col">Order and removal</th></tr></thead>
             <tbody>
               {rules.map((rule, index) => {
-                const errors = validation.errors.filter((error) => error.ruleId === rule.id);
-                const findErrors = errors.filter((error) => error.code !== "blank-replacement");
-                const replaceErrors = errors.filter((error) => error.code === "blank-replacement");
+                const findErrors = fieldErrors.filter((error) => error.ruleId === rule.id && error.field === "find");
+                const replaceErrors = fieldErrors.filter((error) => error.ruleId === rule.id && error.field === "replace");
                 return (
                   <tr key={rule.id}>
                     <td>
@@ -220,6 +243,7 @@ export function ContentReplacementDefineStep({
                       <input
                         className="s-input"
                         id={`${rule.id}-find`}
+                        ref={(node) => setFieldRef(fieldRefs.current, rule.id, "find", node)}
                         value={rule.find}
                         maxLength={MAX_FIND_LENGTH}
                         aria-invalid={showValidation && findErrors.length > 0 ? "true" : undefined}
@@ -228,7 +252,7 @@ export function ContentReplacementDefineStep({
                       />
                       {showValidation && findErrors.length > 0 && (
                         <span className="content-replacement-field-error" id={`${rule.id}-find-error`}>
-                          {formatRuleError(rule, index, findErrors[0], "find")}
+                          {findErrors.map((error) => error.message).join(" ")}
                         </span>
                       )}
                     </td>
@@ -237,6 +261,7 @@ export function ContentReplacementDefineStep({
                       <input
                         className="s-input"
                         id={`${rule.id}-replace`}
+                        ref={(node) => setFieldRef(fieldRefs.current, rule.id, "replace", node)}
                         value={rule.replace}
                         maxLength={MAX_REPLACEMENT_LENGTH}
                         aria-invalid={showValidation && replaceErrors.length > 0 ? "true" : undefined}
@@ -245,7 +270,7 @@ export function ContentReplacementDefineStep({
                       />
                       {showValidation && replaceErrors.length > 0 && (
                         <span className="content-replacement-field-error" id={`${rule.id}-replace-error`}>
-                          {formatRuleError(rule, index, replaceErrors[0], "replace")}
+                          {replaceErrors.map((error) => error.message).join(" ")}
                         </span>
                       )}
                     </td>
@@ -262,7 +287,7 @@ export function ContentReplacementDefineStep({
             </tbody>
           </table>
         </div>
-        {showValidation && structuralErrors.map((message) => <div className="s-notice s-notice__danger" role="alert" key={message}>{message}</div>)}
+        {showValidation && structuralErrors.map((message) => <div className="s-notice s-notice__danger" key={message}>{message}</div>)}
         {showValidation && validation.notices.map((notice) => <div className="s-notice s-notice__info" role="status" key={notice}>{notice}</div>)}
       </section>
 
@@ -279,7 +304,10 @@ export function ContentReplacementDefineStep({
           <input type="file" accept=".csv,text/csv" aria-label="Import replacement CSV" onChange={(event) => void handleFile(event.currentTarget.files?.[0])} />
         </label>
         {fileStatus && <p role="status">{fileStatus}</p>}
-        {fileErrors.length > 0 && <div className="s-notice s-notice__danger" role="alert"><ul>{fileErrors.map((error) => <li key={error}>{error}</li>)}</ul></div>}
+        {fileErrors.length > 0 && <div className="s-notice s-notice__danger" role="alert" aria-label="CSV import errors">
+          <ul>{fileErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+          <button className="s-btn s-btn__outlined" type="button" onClick={() => { setFileErrors([]); invalidateCheckpoint(); }}>Discard import errors</button>
+        </div>}
         {pendingImport && (
           <div className="content-replacement-import-choice s-notice s-notice__info" role="group" aria-label="Apply imported mappings">
             <p>{pendingImport.fileName} has {pendingImport.rows.length} imported {pendingImport.rows.length === 1 ? "row" : "rows"}. Append them or replace the current list?</p>
@@ -317,8 +345,18 @@ export function ContentReplacementDefineStep({
 
       <section className="content-replacement-checkpoint" aria-labelledby="content-replacement-checkpoint-heading">
         <h3 id="content-replacement-checkpoint-heading">Rule checkpoint</h3>
+        {showValidation && errorCount > 0 && (
+          <div className="s-notice s-notice__danger" role="alert" aria-label="Rule validation summary">
+            {errorCount} {errorCount === 1 ? "error prevents" : "errors prevent"} scanning. Correct the highlighted {errorCount === 1 ? "field" : "fields"} and resolve the listed import or scope issues.
+          </div>
+        )}
         {reviewed && checkpointCurrent ? <RuleSummary configuration={reviewed.configuration} /> : <p>Review the current configuration to unlock scanning.</p>}
         <p>Starting the scan performs reads only. No content is written during this stage.</p>
+        {!scanReadiness.ready && <div className="s-notice s-notice__warning">
+          <p>Scanning requires valid Enterprise write credentials. {scanReadiness.message}</p>
+          {onReconnect && <button className="s-btn s-btn__outlined" type="button" onClick={onReconnect}>Reconnect credentials</button>}
+        </div>}
+        {(setupError || startError) && <div className="s-notice s-notice__danger" role="alert" aria-label="Scan setup error">{startError ?? setupError}</div>}
         <div className="write-tool-actions content-replacement-actions">
           <button className="s-btn s-btn__outlined" type="button" onClick={reviewRules} disabled={disabled || starting}>Review rules</button>
           <button className="s-btn s-btn__primary" type="button" onClick={() => void startScan()} disabled={!canStart}>{starting ? "Starting scan…" : "Start scan"}</button>
@@ -374,22 +412,55 @@ function configurationSnapshotKey(
 function getStructuralErrors(
   rules: ReplacementRule[],
   contentTypes: ReplacementConfiguration["contentTypes"],
+  fileReading: boolean,
+  hasPendingImport: boolean,
 ): string[] {
   const errors: string[] = [];
   if (rules.length < 1) errors.push("Add at least one replacement mapping.");
   if (rules.length > MAX_REPLACEMENT_RULES) errors.push(`Use no more than ${MAX_REPLACEMENT_RULES} replacement mappings.`);
   if (!contentTypes.questions && !contentTypes.answers && !contentTypes.articles) errors.push("Select at least one content type.");
+  if (fileReading) errors.push("Wait for the CSV file read to finish.");
+  if (hasPendingImport) errors.push("Choose whether to append or replace the imported mappings.");
   return errors;
 }
 
-function formatRuleError(
-  rule: ReplacementRule,
-  index: number,
-  error: ReplacementRuleError,
-  field: "find" | "replace",
-): string {
+interface RuleFieldError {
+  ruleId: string;
+  field: "find" | "replace";
+  message: string;
+}
+
+function getFieldErrors(rules: ReplacementRule[], errors: ReplacementRuleError[]): RuleFieldError[] {
+  const output: RuleFieldError[] = [];
+  rules.forEach((rule, index) => {
+    for (const error of errors.filter((candidate) => candidate.ruleId === rule.id)) {
+      const field = error.code === "blank-replacement" ? "replace" : "find";
+      output.push({ ruleId: rule.id, field, message: formatFieldError(rule, index, field, RULE_ERROR_MESSAGES[error.code]) });
+    }
+    if (rule.find.length > MAX_FIND_LENGTH) {
+      output.push({ ruleId: rule.id, field: "find", message: formatFieldError(rule, index, "find", `use ${MAX_FIND_LENGTH} characters or fewer`) });
+    }
+    if (rule.replace.length > MAX_REPLACEMENT_LENGTH) {
+      output.push({ ruleId: rule.id, field: "replace", message: formatFieldError(rule, index, "replace", `use ${MAX_REPLACEMENT_LENGTH} characters or fewer`) });
+    }
+  });
+  return output;
+}
+
+function formatFieldError(rule: ReplacementRule, index: number, field: "find" | "replace", message: string) {
   const location = rule.sourceRow === undefined ? `Mapping ${index + 1}` : `CSV row ${rule.sourceRow}, ${field}`;
-  return `${location}: ${RULE_ERROR_MESSAGES[error.code]}.`;
+  return `${location}: ${message}.`;
+}
+
+function setFieldRef(
+  refs: Map<string, HTMLInputElement>,
+  ruleId: string,
+  field: "find" | "replace",
+  node: HTMLInputElement | null,
+) {
+  const key = `${ruleId}:${field}`;
+  if (node) refs.set(key, node);
+  else refs.delete(key);
 }
 
 function hasNonblankRule(rules: ReplacementRule[]) {

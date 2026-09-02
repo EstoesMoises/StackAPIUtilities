@@ -168,6 +168,98 @@ describe("ContentReplacementDefineStep", () => {
     await waitFor(() => expect(screen.queryByText(/Stale/)).not.toBeInTheDocument());
     expect(screen.getByRole("alert")).toHaveTextContent("Disk read failed.");
   });
+
+  it("consults current mappings when a deferred CSV read resolves", async () => {
+    const user = userEvent.setup();
+    const read = deferred<string>();
+    const file = new File(["ignored"], "deferred.csv", { type: "text/csv" });
+    Object.defineProperty(file, "text", { value: () => read.promise });
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+
+    await user.upload(screen.getByLabelText("Import replacement CSV"), file);
+    await user.type(screen.getByLabelText("Find term 1"), "Manual");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "Existing");
+    await act(async () => read.resolve("find,replace\nImported,Value"));
+
+    expect(await screen.findByRole("group", { name: "Apply imported mappings" })).toBeVisible();
+    expect(screen.getByLabelText("Find term 1")).toHaveValue("Manual");
+    expect(screen.queryByLabelText("Find term 2")).not.toBeInTheDocument();
+  });
+
+  it("keeps valid mixed-import rows editable while file-shape errors block the checkpoint", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+
+    await user.upload(
+      screen.getByLabelText("Import replacement CSV"),
+      new File(["find,replace\nMyPVM,MyPBM\nBad,Row,Extra"], "mixed.csv", { type: "text/csv" }),
+    );
+    expect(screen.getByLabelText("Find term 1")).toHaveValue("MyPVM");
+    expect(screen.getByText(/CSV row 3 must contain exactly two columns/i)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByRole("alert", { name: "Rule validation summary" })).toHaveTextContent(/1 error prevents scanning/i);
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Discard import errors" }));
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeEnabled();
+  });
+
+  it("validates overlong imported values and focuses the first invalid field", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+    const overlongFind = "x".repeat(201);
+
+    await user.upload(
+      screen.getByLabelText("Import replacement CSV"),
+      new File([`find,replace\n${overlongFind},short`], "long.csv", { type: "text/csv" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    const find = screen.getByLabelText("Find term 1");
+    expect(find).toHaveAttribute("aria-invalid", "true");
+    expect(find).toHaveFocus();
+    expect(screen.getByRole("alert", { name: "Rule validation summary" })).toHaveTextContent(/1 error prevents scanning/i);
+    expect(screen.getByText(/CSV row 2, find: use 200 characters or fewer/i)).toBeVisible();
+
+    await user.clear(find);
+    await user.type(find, "Fixed");
+    expect(screen.queryByRole("alert", { name: "Rule validation summary" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeEnabled();
+  });
+
+  it("announces failed validation and focuses the first invalid replacement", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByRole("alert", { name: "Rule validation summary" })).toHaveTextContent(
+      /1 error prevents scanning.*Correct the highlighted field/i,
+    );
+    expect(screen.getByLabelText("Replace term 1 with")).toHaveFocus();
+  });
+
+  it("keeps Review available but blocks Start when credentials are not scan-ready", async () => {
+    const user = userEvent.setup();
+    const onStartScan = vi.fn();
+    render(
+      <ContentReplacementDefineStep
+        onStartScan={onStartScan}
+        scanReadiness={{ ready: false, message: "Reconnect Enterprise OAuth with write_access." }}
+      />,
+    );
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByText("MyPVM → MyPBM")).toBeVisible();
+    expect(screen.getByText(/Reconnect Enterprise OAuth with write_access/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+    expect(onStartScan).not.toHaveBeenCalled();
+  });
 });
 
 function deferred<T>() {

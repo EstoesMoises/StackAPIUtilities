@@ -103,8 +103,8 @@ describe("ContentReplacementScanStep", () => {
     rerender(
       <ContentReplacementScanStep controller={createController(failedJob)} credentials={validCredentials} />,
     );
-    expect(screen.getByRole("status")).toHaveTextContent("Inventory scan failed");
-    expect(screen.getByText(/Review is blocked because the inventory is incomplete/i)).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Scan interrupted");
+    expect(screen.getByText(/Review remains blocked until the scan finishes/i)).toBeVisible();
     expect(screen.queryByText(/Scan complete/i)).not.toBeInTheDocument();
   });
 
@@ -119,6 +119,90 @@ describe("ContentReplacementScanStep", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent("Scan complete");
     expect(screen.getByText(/Exhaustive inventory and candidate inspection finished/i)).toBeVisible();
+  });
+
+  it("offers retry only for retryable failures and never exposes Review", async () => {
+    const user = userEvent.setup();
+    const retryable = createController(createJob({
+      status: "failed",
+      failure: {
+        category: "network",
+        message: "The scan request lost its connection.",
+        retryable: true,
+        occurredAt: "2026-09-02T12:00:00.000Z",
+      },
+    }));
+    const { rerender } = render(
+      <ContentReplacementScanStep controller={retryable} credentials={validCredentials} />,
+    );
+    expect(screen.getByRole("button", { name: "Retry scan" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Retry scan" }));
+    expect(retryable.resume).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /Review/i })).not.toBeInTheDocument();
+
+    const blocking = createController(createJob({
+      status: "failed",
+      failure: {
+        category: "validation",
+        message: "The inventory response was invalid.",
+        retryable: false,
+        occurredAt: "2026-09-02T12:00:00.000Z",
+      },
+    }));
+    rerender(<ContentReplacementScanStep controller={blocking} credentials={validCredentials} />);
+    expect(screen.queryByRole("button", { name: "Retry scan" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Inventory scan failed");
+  });
+
+  it("prioritizes authorization recovery and enables resume only after reconnection", () => {
+    const authorization = createController(createJob({
+      status: "failed",
+      failure: {
+        category: "authorization",
+        message: "Stack Enterprise rejected the token.",
+        retryable: true,
+        occurredAt: "2026-09-02T12:00:00.000Z",
+      },
+    }));
+    const expired = { ...validCredentials, accessTokenExpiresAt: "2020-01-01T00:00:00.000Z" };
+    const { rerender } = render(
+      <ContentReplacementScanStep controller={authorization} credentials={expired} onReconnect={vi.fn()} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Credential reconnection required");
+    expect(screen.queryByRole("button", { name: /Resume|Retry/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reconnect credentials" })).toBeEnabled();
+
+    rerender(
+      <ContentReplacementScanStep controller={authorization} credentials={validCredentials} onReconnect={vi.fn()} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Credentials reconnected");
+    expect(screen.getByRole("button", { name: "Resume scan" })).toBeEnabled();
+  });
+
+  it("shows the persisted configuration and labels unsafe matching modes", () => {
+    const unsafe = createJob({
+      configuration: {
+        target: { kind: "enterprise-main" },
+        contentTypes: { questions: true, answers: false, articles: true },
+        rules: [
+          { id: "one", find: "MyPVM", replace: "MyPBM" },
+          { id: "two", find: "CPR", replace: "Benefits" },
+        ],
+        options: { caseSensitive: false, wholeTerm: false, replaceInCode: true },
+      },
+    });
+    render(<ContentReplacementScanStep controller={createController(unsafe)} credentials={validCredentials} />);
+
+    const summary = screen.getByRole("group", { name: "Scan configuration" });
+    expect(summary).toHaveTextContent("Questions, Articles");
+    expect(summary).toHaveTextContent("2 mappings");
+    expect(summary).toHaveTextContent("MyPVM → MyPBM");
+    expect(summary).toHaveTextContent("CPR → Benefits");
+    expect(summary).toHaveTextContent(/Case-insensitive matching/i);
+    expect(summary).toHaveTextContent(/Partial matching/i);
+    expect(summary).toHaveTextContent(/Code included/i);
+    expect(summary).toHaveTextContent(/destinations and raw HTML attributes remain protected/i);
+    expect(screen.getByText(/Unsafe matching options are active/i)).toBeVisible();
   });
 });
 

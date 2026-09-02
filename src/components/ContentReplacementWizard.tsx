@@ -9,13 +9,17 @@ import type {
   ReplacementConfiguration,
 } from "../writeTools/contentReplacement/types";
 import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
-import { ContentReplacementScanStep } from "./ContentReplacementScanStep";
+import {
+  ContentReplacementScanStep,
+  getContentReplacementCredentialReadiness,
+} from "./ContentReplacementScanStep";
 
 export interface ContentReplacementWizardProps {
   credentials: SessionCredentials | null;
   initialJob?: PersistedContentReplacementJob | null;
   controller?: ContentReplacementJobController;
   onReconnect?: () => void;
+  now?: Date;
 }
 
 export function ContentReplacementWizard(props: ContentReplacementWizardProps) {
@@ -29,6 +33,7 @@ function ConnectedContentReplacementWizard({
   credentials,
   initialJob = null,
   onReconnect,
+  now,
 }: Omit<ContentReplacementWizardProps, "controller">) {
   const controller = useContentReplacementJob(credentials, initialJob);
   return (
@@ -36,6 +41,7 @@ function ConnectedContentReplacementWizard({
       credentials={credentials}
       controller={controller}
       onReconnect={onReconnect}
+      now={now}
     />
   );
 }
@@ -44,8 +50,10 @@ function ContentReplacementWizardView({
   credentials,
   controller,
   onReconnect,
+  now,
 }: ContentReplacementWizardProps & { controller: ContentReplacementJobController }) {
   const activeStep = wizardStep(controller.job?.stage);
+  const credentialReadiness = getContentReplacementCredentialReadiness(credentials, { now });
 
   async function startScan(configuration: ReplacementConfiguration) {
     await controller.createJob(configuration);
@@ -82,6 +90,9 @@ function ContentReplacementWizardView({
           <ContentReplacementDefineStep
             onStartScan={startScan}
             disabled={controller.busy || controller.storageError !== null}
+            scanReadiness={{ ready: credentialReadiness.valid, message: credentialReadiness.message }}
+            setupError={controller.operationError ?? controller.storageError}
+            onReconnect={onReconnect}
           />
         )}
         {activeStep === 1 && (

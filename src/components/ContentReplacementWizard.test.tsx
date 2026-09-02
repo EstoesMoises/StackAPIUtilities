@@ -73,6 +73,41 @@ describe("ContentReplacementWizard", () => {
     expect(screen.getByRole("heading", { name: "Apply reviewed changes" })).toBeVisible();
     expect(screen.getByText(/Apply controls are added in the next implementation stage/i)).toBeVisible();
   });
+
+  it("uses the controller credential predicate to block scan creation", async () => {
+    const user = userEvent.setup();
+    const jobController = controller(null);
+    const onReconnect = vi.fn();
+    const expired = { ...credentials, accessTokenExpiresAt: "2020-01-01T00:00:00.000Z" };
+    render(
+      <ContentReplacementWizard
+        credentials={expired}
+        controller={jobController}
+        now={new Date("2026-09-02T12:00:00.000Z")}
+        onReconnect={onReconnect}
+      />,
+    );
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByText(/OAuth token has expired/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Reconnect credentials" }));
+    expect(onReconnect).toHaveBeenCalledOnce();
+    expect(jobController.createJob).not.toHaveBeenCalled();
+    expect(jobController.startScan).not.toHaveBeenCalled();
+  });
+
+  it("surfaces controller failures in Define instead of silently no-oping", () => {
+    const failedController = controller(null);
+    failedController.operationError = "The content replacement job could not be created.";
+    render(<ContentReplacementWizard credentials={credentials} controller={failedController} />);
+
+    expect(screen.getByRole("alert", { name: "Scan setup error" })).toHaveTextContent(
+      "The content replacement job could not be created.",
+    );
+  });
 });
 
 function controller(currentJob: PersistedContentReplacementJob | null): ContentReplacementJobController {

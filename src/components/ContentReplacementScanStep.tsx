@@ -2,6 +2,10 @@ import { useState } from "react";
 import { validateEnterpriseV3OAuthCredentials } from "../credentials/enterpriseV3Credentials";
 import type { SessionCredentials } from "../domain/types";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
+import {
+  isOriginOnlyInstanceUrl,
+  validateSessionCredentials,
+} from "../server/contentReplacementRequestValidation";
 import { canEnterReview } from "../writeTools/contentReplacement/jobState";
 import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
 
@@ -24,11 +28,14 @@ export function ContentReplacementScanStep({
     return <section className="content-replacement-scan"><p>No scan job is available.</p></section>;
   }
 
-  const credentialState = getCredentialState(credentials, job);
+  const credentialState = getContentReplacementCredentialReadiness(credentials, { baseUrl: job.baseUrl });
   const scanCanFinish = !controller.storageError && canEnterReview(job);
   const status = getScanStatus(job, controller.storageError, credentialState);
   const active = job.stage === "scan" && job.status === "running";
   const paused = job.stage === "scan" && job.status === "paused";
+  const failed = job.stage === "scan" && job.status === "failed";
+  const needsReconnect = (paused || failed) && !credentialState.valid;
+  const canRetryFailure = failed && !!job.failure?.retryable && credentialState.valid && !controller.storageError;
 
   async function confirmCancel() {
     if (cancelling) return;
@@ -54,6 +61,8 @@ export function ContentReplacementScanStep({
         <p>{status.message}</p>
         {status.retryAt && <p>Next retry: <time dateTime={status.retryAt}>{formatAbsoluteTime(status.retryAt)}</time>.</p>}
       </div>
+
+      <ScanConfiguration job={job} />
 
       <dl className="content-replacement-scan-counts" aria-label="Scan counts">
         <Count label="Question pages" value={job.progress.questionPages} />
@@ -81,7 +90,15 @@ export function ContentReplacementScanStep({
         </div>
       )}
 
-      {paused && !credentialState.valid && (
+      {canRetryFailure && (
+        <div className="write-tool-actions content-replacement-actions">
+          <button className="s-btn s-btn__primary" type="button" onClick={() => void controller.resume()} disabled={controller.busy}>
+            {job.failure?.category === "authorization" ? "Resume scan" : "Retry scan"}
+          </button>
+        </div>
+      )}
+
+      {needsReconnect && (
         <div className="content-replacement-reconnect">
           {onReconnect && <button className="s-btn s-btn__outlined" type="button" onClick={onReconnect}>Reconnect credentials</button>}
         </div>
@@ -110,18 +127,50 @@ function Count({ label, value }: { label: string; value: number }) {
   return <div><dt>{label}</dt><dd>{value.toLocaleString()}</dd></div>;
 }
 
-function getCredentialState(
+function ScanConfiguration({ job }: { job: PersistedContentReplacementJob }) {
+  const configuration = job.configuration;
+  const contentTypes = [
+    configuration.contentTypes.questions && "Questions",
+    configuration.contentTypes.answers && "Answers",
+    configuration.contentTypes.articles && "Articles",
+  ].filter(Boolean).join(", ");
+  const unsafe = !configuration.options.caseSensitive || !configuration.options.wholeTerm || configuration.options.replaceInCode;
+  return (
+    <details className="content-replacement-scan-configuration" open role="group" aria-label="Scan configuration">
+      <summary>Scan configuration · {configuration.rules.length} {configuration.rules.length === 1 ? "mapping" : "mappings"}</summary>
+      <dl>
+        <div><dt>Content types</dt><dd>{contentTypes}</dd></div>
+        <div><dt>Case</dt><dd>{configuration.options.caseSensitive ? "Case-sensitive matching" : "Case-insensitive matching"}</dd></div>
+        <div><dt>Boundaries</dt><dd>{configuration.options.wholeTerm ? "Whole-term matching" : "Partial matching"}</dd></div>
+        <div><dt>Code</dt><dd>{configuration.options.replaceInCode ? "Code included" : "Code protected"}</dd></div>
+      </dl>
+      <ol aria-label="Replacement mappings">
+        {configuration.rules.map((rule) => <li key={rule.id}>{rule.find} → {rule.replace}</li>)}
+      </ol>
+      <p>Link, image, and autolink destinations and raw HTML attributes remain protected always.</p>
+      {unsafe && <p className="s-notice s-notice__warning"><strong>Unsafe matching options are active.</strong> Review the case, boundary, and code policy above.</p>}
+    </details>
+  );
+}
+
+export function getContentReplacementCredentialReadiness(
   credentials: SessionCredentials | null,
-  job: Pick<PersistedContentReplacementJob, "baseUrl">,
+  options: { baseUrl?: string; now?: Date } = {},
 ): { valid: boolean; message: string } {
-  const validation = validateEnterpriseV3OAuthCredentials(credentials, {
+  const parsed = validateSessionCredentials(credentials);
+  const validation = validateEnterpriseV3OAuthCredentials(parsed, {
     requiredScopes: ["write_access"],
+    now: options.now,
   });
-  if (!validation.valid || !credentials) {
+  if (!validation.valid || !parsed) {
     return { valid: false, message: validation.messages.join(" ") || "Reconnect valid Stack Enterprise credentials." };
   }
   try {
-    if (new URL(credentials.baseUrl).origin !== job.baseUrl) {
+    const origin = new URL(parsed.baseUrl).origin;
+    if (!isOriginOnlyInstanceUrl(origin)) {
+      return { valid: false, message: "Reconnect with a valid Stack Enterprise instance URL." };
+    }
+    if (options.baseUrl && origin !== options.baseUrl) {
       return { valid: false, message: "The connected Stack Enterprise origin does not match this scan." };
     }
   } catch {
@@ -149,18 +198,18 @@ function getScanStatus(
       noticeClass: "s-notice__success",
     };
   }
-  if (job.status === "failed") {
-    return {
-      heading: "Inventory scan failed",
-      message: `${job.failure?.message ?? "The scan could not continue."} Review is blocked because the inventory is incomplete.`,
-      noticeClass: "s-notice__danger",
-    };
-  }
-  if (job.failure?.category === "authorization" || (job.status === "paused" && !credentials.valid)) {
+  if ((job.status === "paused" || job.status === "failed") && !credentials.valid) {
     return {
       heading: "Credential reconnection required",
-      message: job.failure?.message ?? credentials.message,
+      message: job.failure?.category === "authorization" ? job.failure.message : credentials.message,
       noticeClass: "s-notice__warning",
+    };
+  }
+  if (job.failure?.category === "authorization") {
+    return {
+      heading: "Credentials reconnected",
+      message: "Valid matching write credentials are available. Resume the incomplete scan; Review remains blocked until it finishes.",
+      noticeClass: "s-notice__info",
     };
   }
   if (job.nextRetryAt) {
@@ -169,6 +218,20 @@ function getScanStatus(
       message: "The Stack Enterprise API asked the scan to wait before the next bounded read.",
       noticeClass: "s-notice__warning",
       retryAt: job.nextRetryAt,
+    };
+  }
+  if (job.status === "failed" && job.failure?.retryable) {
+    return {
+      heading: job.failure.category === "rate-limit" ? "Rate-limit scan interrupted" : "Scan interrupted",
+      message: `${job.failure.message} Progress is saved locally and can be retried. Review remains blocked until the scan finishes.`,
+      noticeClass: "s-notice__warning",
+    };
+  }
+  if (job.status === "failed") {
+    return {
+      heading: "Inventory scan failed",
+      message: `${job.failure?.message ?? "The scan could not continue."} Review is blocked because the inventory is incomplete.`,
+      noticeClass: "s-notice__danger",
     };
   }
   if (job.status === "paused") {
