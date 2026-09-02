@@ -588,6 +588,88 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job).toBeNull();
   });
 
+  it("serializes a deferred save and delete across hook remounts for the same job", async () => {
+    const proposal = await questionProposal();
+    const initial = await scannedReviewJob(proposal);
+    const gate = deferred<void>();
+    const deps = dependencies(vi.fn(), initial);
+    const baseSave = deps.store.save.getMockImplementation()!;
+    const baseDelete = deps.store.delete.getMockImplementation()!;
+    const events: string[] = [];
+    deps.store.save.mockImplementationOnce(async (saved) => {
+      events.push("save-start");
+      await gate.promise;
+      await baseSave(saved);
+      events.push("save-complete");
+    });
+    deps.store.delete.mockImplementationOnce(async () => {
+      events.push("delete");
+      await baseDelete();
+    });
+    const first = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+    let prepare!: Promise<void>;
+    act(() => { prepare = first.result.current.prepareApply(); });
+    await waitFor(() => expect(events).toEqual(["save-start"]));
+    first.unmount();
+
+    const second = renderHook(() => useContentReplacementJob(credentials, deps.store.current(), deps.value));
+    let deletion!: Promise<void>;
+    act(() => { deletion = second.result.current.deleteJob(); });
+    await Promise.resolve();
+    expect(events).toEqual(["save-start"]);
+
+    gate.resolve();
+    await act(async () => { await prepare; await deletion; });
+
+    expect(events).toEqual(["save-start", "save-complete", "delete"]);
+    expect(deps.store.current()).toBeNull();
+    expect(second.result.current.job).toBeNull();
+    const third = renderHook(() => useContentReplacementJob(credentials, deps.store.current(), deps.value));
+    expect(third.result.current.job).toBeNull();
+  });
+
+  it("serializes a deferred save and cancellation across hook remounts for the same job", async () => {
+    const proposal = await questionProposal();
+    const initial = reduceReplacementJob(await scannedReviewJob(proposal), {
+      type: "apply/prepare",
+      at: AT,
+    });
+    const gate = deferred<void>();
+    const deps = dependencies(vi.fn(), initial);
+    const baseSave = deps.store.save.getMockImplementation()!;
+    const events: string[] = [];
+    deps.store.save.mockImplementationOnce(async (saved) => {
+      events.push("save-start");
+      await gate.promise;
+      await baseSave(saved);
+      events.push("save-complete");
+    });
+    deps.store.save.mockImplementationOnce(async (saved) => {
+      await baseSave(saved);
+      events.push("cancel-save");
+    });
+    const first = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+    let firstCancellation!: Promise<void>;
+    act(() => { firstCancellation = first.result.current.cancel(); });
+    await waitFor(() => expect(events).toEqual(["save-start"]));
+    first.unmount();
+
+    const second = renderHook(() => useContentReplacementJob(credentials, deps.store.current(), deps.value));
+    let cancellation!: Promise<void>;
+    act(() => { cancellation = second.result.current.cancel(); });
+    await Promise.resolve();
+    expect(events).toEqual(["save-start"]);
+
+    gate.resolve();
+    await act(async () => { await firstCancellation; await cancellation; });
+
+    expect(events).toEqual(["save-start", "save-complete", "cancel-save"]);
+    expect(deps.store.current()).toMatchObject({ status: "cancelled" });
+    expect(second.result.current.job).toMatchObject({ status: "cancelled" });
+    const third = renderHook(() => useContentReplacementJob(credentials, deps.store.current(), deps.value));
+    expect(third.result.current.job).toMatchObject({ status: "cancelled" });
+  });
+
   it("rejects malformed detail proposal evidence before reducer mutation", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(jsonResponse({

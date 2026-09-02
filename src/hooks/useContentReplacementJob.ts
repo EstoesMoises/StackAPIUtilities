@@ -101,6 +101,48 @@ const defaultDependencies: ContentReplacementJobDependencies = {
   waitUntil: defaultWaitUntil,
 };
 
+interface JobStorageBarrier {
+  tail: Promise<void>;
+}
+
+const jobStorageBarriers = new WeakMap<
+  ContentReplacementJobStorageOperations,
+  Map<string, JobStorageBarrier>
+>();
+
+function enqueueJobStorage<T>(
+  storage: ContentReplacementJobStorageOperations,
+  jobId: string,
+  operation: (storage: ContentReplacementJobStorageOperations) => Promise<T>,
+): Promise<T> {
+  let barriersForStorage = jobStorageBarriers.get(storage);
+  if (!barriersForStorage) {
+    barriersForStorage = new Map();
+    jobStorageBarriers.set(storage, barriersForStorage);
+  }
+
+  let barrier = barriersForStorage.get(jobId);
+  if (!barrier) {
+    barrier = { tail: Promise.resolve() };
+    barriersForStorage.set(jobId, barrier);
+  }
+
+  const result = barrier.tail.then(
+    () => operation(storage),
+    () => operation(storage),
+  );
+  const settled = result.then(() => undefined, () => undefined);
+  barrier.tail = settled;
+
+  void settled.then(() => {
+    if (barriersForStorage?.get(jobId) !== barrier || barrier.tail !== settled) return;
+    barriersForStorage.delete(jobId);
+    if (barriersForStorage.size === 0) jobStorageBarriers.delete(storage);
+  });
+
+  return result;
+}
+
 export function useContentReplacementJob(
   credentials: SessionCredentials | null,
   initialJob: PersistedContentReplacementJob | null = null,
@@ -120,7 +162,6 @@ export function useContentReplacementJob(
   const pauseBarrierRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const initialJobIdRef = useRef(initialJob?.id);
   const rehydratedIdRef = useRef<string | null>(null);
-  const storageTailRef = useRef<Promise<void>>(Promise.resolve());
   const localMutationTailRef = useRef<Promise<void>>(Promise.resolve());
 
   credentialsRef.current = credentials;
@@ -171,19 +212,21 @@ export function useContentReplacementJob(
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [beforeUnload, busy]);
 
-  const enqueueStorage = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
-    const result = storageTailRef.current.then(operation, operation);
-    storageTailRef.current = result.then(() => undefined, () => undefined);
-    return result;
+  const enqueueStorage = useCallback(<T,>(
+    jobId: string,
+    operation: (storage: ContentReplacementJobStorageOperations) => Promise<T>,
+  ): Promise<T> => {
+    const storage = dependenciesRef.current.storage;
+    return enqueueJobStorage(storage, jobId, operation);
   }, []);
 
   const persist = useCallback((
     candidate: PersistedContentReplacementJob,
     token?: number,
-  ): Promise<boolean> => enqueueStorage(async () => {
+  ): Promise<boolean> => enqueueStorage(candidate.id, async (storage) => {
     if (token !== undefined && token !== operationRef.current) return false;
     try {
-      await dependenciesRef.current.storage.save(candidate);
+      await storage.save(candidate);
     } catch {
       if (mountedRef.current) setStorageError(STORAGE_ERROR);
       stopOperation();
@@ -446,7 +489,7 @@ export function useContentReplacementJob(
       if (!current || current.status === "running" || current.activeOperation) return;
       stopOperation();
       try {
-        await enqueueStorage(() => dependenciesRef.current.storage.delete(current.id));
+        await enqueueStorage(current.id, (storage) => storage.delete(current.id));
         setStorageError(null);
         setJob(null);
       } catch {
