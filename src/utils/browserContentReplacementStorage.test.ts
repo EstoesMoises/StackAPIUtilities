@@ -29,7 +29,7 @@ const ROOT_STAGE_STATUS_MATRIX = {
   scan: ["running", "paused", "completed", "failed", "cancelled"],
   review: ["completed", "paused", "cancelled"],
   apply: ["running", "paused", "completed", "failed", "cancelled"],
-  results: ["completed"],
+  results: ["completed", "failed"],
   recovery: ["running", "paused", "completed", "failed", "cancelled"],
 } as const;
 const ALL_ROOT_STATUSES = ["idle", "running", "paused", "completed", "failed", "cancelled"] as const;
@@ -76,6 +76,36 @@ describe("browserContentReplacementStorage", () => {
       recoverySnapshotStatus: "none";
     };
     job.recoverySnapshotStatus = "none";
+
+    await saveContentReplacementJob(job);
+
+    await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
+  });
+
+  it("persists successful apply evidence after explicitly deleting recovery snapshots", async () => {
+    installFakeIndexedDB();
+    const job = createAppliedJob();
+    delete job.proposals["question:42"].recovery;
+    job.recoverySnapshotStatus = "none";
+
+    await saveContentReplacementJob(job);
+
+    const loaded = await loadContentReplacementJob(job.id);
+    expect(loaded?.proposals["question:42"].result).toEqual(
+      job.proposals["question:42"].result,
+    );
+    expect(loaded?.proposals["question:42"].recovery).toBeUndefined();
+  });
+
+  it("persists a sanitized root failure for a focused stale-item rescan", async () => {
+    installFakeIndexedDB();
+    const job = createAppliedJob();
+    const item = job.proposals["question:42"];
+    item.status = "stale";
+    item.result = { kind: "stale", completedAt: "2026-09-01T12:02:00.000Z" };
+    delete item.recovery!.observedPostApplyChecksum;
+    job.status = "failed";
+    job.failure = createFailure();
 
     await saveContentReplacementJob(job);
 

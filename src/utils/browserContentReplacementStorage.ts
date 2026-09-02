@@ -261,7 +261,7 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
   if ((job.status === "failed") !== (job.failure !== undefined)) throw corruptJob();
   if (job.failure && !isWithinJobTime(job.failure.occurredAt, job)) throw corruptJob();
   for (const item of items) {
-    assertItemInvariants(item);
+    assertItemInvariants(item, job.recoverySnapshotStatus);
     if (item.result && !isWithinJobTime(item.result.completedAt, job)) throw corruptJob();
     if (item.recovery?.result && !isWithinJobTime(item.recovery.result.completedAt, job)) {
       throw corruptJob();
@@ -295,7 +295,7 @@ function assertStageInvariants(
     scan: new Set(["running", "paused", "completed", "failed", "cancelled"]),
     review: new Set(["completed", "paused", "cancelled"]),
     apply: new Set(["running", "paused", "completed", "failed", "cancelled"]),
-    results: new Set(["completed"]),
+    results: new Set(["completed", "failed"]),
     recovery: new Set(["running", "paused", "completed", "failed", "cancelled"]),
   };
   const allowedStatuses: Record<
@@ -325,10 +325,9 @@ function assertStageInvariants(
     (job.stage === "define" || job.stage === "scan" || job.stage === "review") &&
     job.recoverySnapshotStatus !== "none"
   ) throw corruptJob();
-  if (
-    (job.stage === "results" || job.stage === "recovery") &&
-    job.recoverySnapshotStatus !== "ready"
-  ) throw corruptJob();
+  if (job.stage === "results" && job.recoverySnapshotStatus !== "ready" &&
+    job.recoverySnapshotStatus !== "none") throw corruptJob();
+  if (job.stage === "recovery" && job.recoverySnapshotStatus !== "ready") throw corruptJob();
   if (
     job.stage === "apply" && job.recoverySnapshotStatus === "ready" &&
     items.some((item) => item.included && item.status === "pending")
@@ -361,7 +360,10 @@ function assertStageInvariants(
   ) throw corruptJob();
 }
 
-function assertItemInvariants(item: PersistedContentReplacementItem): void {
+function assertItemInvariants(
+  item: PersistedContentReplacementItem,
+  snapshotStatus: PersistedContentReplacementJob["recoverySnapshotStatus"],
+): void {
   const { failure, recovery, result, status } = item;
   if (!item.included) {
     if (
@@ -388,6 +390,10 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
     return;
   }
   if (status === "failed") {
+    if (!recovery && snapshotStatus === "none") {
+      if (item.attemptCount < 1 || result || !failure) throw corruptJob();
+      return;
+    }
     if (
       item.attemptCount < 1 || result || !failure || !isCompleteRecoverySnapshot(recovery) ||
       recovery.preview || recovery.result || recovery.observedPostApplyChecksum ||
@@ -398,6 +404,10 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
     return;
   }
   if (status === "stale") {
+    if (!recovery && snapshotStatus === "none") {
+      if (item.attemptCount < 1 || result?.kind !== "stale" || failure) throw corruptJob();
+      return;
+    }
     if (
       item.attemptCount < 1 || result?.kind !== "stale" || failure ||
       !isCompleteRecoverySnapshot(recovery) || recovery.preview || recovery.result ||
@@ -433,6 +443,14 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
       recovery.result.observedRequestChecksum === recovery.scannedRequestChecksum ||
       recovery.result.observedRequestChecksum === recovery.observedPostApplyChecksum ||
       Date.parse(result?.completedAt ?? "") > Date.parse(recovery.result.completedAt)
+    ) throw corruptJob();
+    return;
+  }
+
+  if (status === "applied" && !recovery && snapshotStatus === "none") {
+    if (
+      item.attemptCount < 1 || failure ||
+      (result?.kind !== "applied" && result?.kind !== "unchanged")
     ) throw corruptJob();
     return;
   }
