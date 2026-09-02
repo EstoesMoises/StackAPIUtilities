@@ -47,32 +47,81 @@ export interface ContentReplacementClient {
   updateItem(model: ReplacementRequestModel): Promise<void>;
 }
 
+export class ContentReplacementApiError extends Error {
+  readonly status?: number;
+
+  constructor(message: string, error?: unknown) {
+    super(message);
+    this.name = "ContentReplacementApiError";
+    const status = asRecord(error)?.status;
+    if (typeof status === "number" && Number.isFinite(status)) this.status = status;
+  }
+}
+
 export function createContentReplacementClient(transport: ContentApiTransport): ContentReplacementClient {
   return {
     async getQuestionsPage(page) {
-      return transport.getPage<QuestionSummary>("/questions", { pageSize: PAGE_SIZE }, page);
+      return readInventoryPage("question", () =>
+        transport.getPage<QuestionSummary>("/questions", { pageSize: PAGE_SIZE }, page),
+      );
     },
     async getAnswersPage(questionId, page) {
-      const result = await transport.getPage<Omit<AnswerSummary, "questionId">>(
-        `/questions/${questionId}/answers`,
-        { pageSize: PAGE_SIZE },
-        page,
+      if (!isContentId(questionId)) throw readError("answer", questionId);
+      const result = await readInventoryPage("answer", () =>
+        transport.getPage<Omit<AnswerSummary, "questionId">>(
+          `/questions/${questionId}/answers`,
+          { pageSize: PAGE_SIZE },
+          page,
+        ),
       );
-      return { ...result, items: result.items.map((answer) => ({ ...answer, questionId })) };
+      return {
+        ...result,
+        items: result.items.map((answer) => ({ ...asRecord(answer)!, questionId } as AnswerSummary)),
+      };
     },
     async getArticlesPage(page) {
-      return transport.getPage<ArticleSummary>("/articles", { pageSize: PAGE_SIZE }, page);
+      return readInventoryPage("article", () =>
+        transport.getPage<ArticleSummary>("/articles", { pageSize: PAGE_SIZE }, page),
+      );
     },
     async getItem(ref) {
-      assertValidRef(ref);
-      const response = await transport.getJson<unknown>(detailPath(ref));
-      return reconstructRequestModel(ref, response);
+      try {
+        assertValidRef(ref, "reconstruct");
+        const response = await transport.getJson<unknown>(detailPath(ref));
+        return reconstructRequestModel(ref, response);
+      } catch (error) {
+        if (error instanceof ContentReplacementApiError) throw error;
+        throw readError(ref.kind, requestedId(ref), error);
+      }
     },
     async updateItem(model) {
-      assertValidRef(model.ref);
-      await transport.putJson(detailPath(model.ref), model.request);
+      let ref: ReplacementItemRef;
+      try {
+        ref = validModelRef(model);
+        const request = exactUpdateRequest(model, ref);
+        await transport.putJson(detailPath(ref), request);
+      } catch (error) {
+        if (error instanceof ContentReplacementApiError) throw error;
+        throw updateFailure(model, error);
+      }
     },
   };
+}
+
+async function readInventoryPage<T>(
+  kind: "question" | "answer" | "article",
+  read: () => Promise<ContentInventoryPage<T>>,
+): Promise<ContentInventoryPage<T>> {
+  try {
+    const result = await read();
+    if (!Array.isArray(result.items) || result.items.some((item) => !isContentId(asRecord(item)?.id))) {
+      throw inventoryError(kind);
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof ContentReplacementApiError) throw error;
+    throw inventoryError(kind, error);
+  }
 }
 
 function reconstructRequestModel(ref: ReplacementItemRef, response: unknown): ReplacementRequestModel {
@@ -110,6 +159,41 @@ function reconstructRequestModel(ref: ReplacementItemRef, response: unknown): Re
   }
 }
 
+function exactUpdateRequest(model: ReplacementRequestModel, ref: ReplacementItemRef) {
+  if (model.kind !== ref.kind) throw updateError(ref.kind, requestedId(ref));
+  const request = asRecord(model.request);
+  if (!request) throw updateError(ref.kind, requestedId(ref));
+  try {
+    if (ref.kind === "answer") return { body: requiredString(request.body) };
+
+    const common = {
+      title: requiredString(request.title),
+      body: requiredString(request.body),
+      tags: requestTagNames(request.tags),
+    };
+    if (ref.kind === "question") return common;
+    return {
+      ...common,
+      type: articleType(request.type),
+      permissions: articlePermissionsRequest(request.permissions),
+      ...expirationDate(request),
+    };
+  } catch {
+    throw updateError(ref.kind, requestedId(ref));
+  }
+}
+
+function validModelRef(model: ReplacementRequestModel): ReplacementItemRef {
+  const record = asRecord(model);
+  const ref = asRecord(record?.ref);
+  if (!record || !isContentKind(record.kind) || !ref || ref.kind !== record.kind) {
+    throw new ContentReplacementApiError("Unable to update content item.");
+  }
+  const typedRef = ref as ReplacementItemRef;
+  assertValidRef(typedRef, "update");
+  return typedRef;
+}
+
 function withOptionalMetadata<T extends ReplacementRequestModel>(
   model: T,
   metadata: ReplacementMetadata | undefined,
@@ -127,13 +211,52 @@ function requestedId(ref: ReplacementItemRef): number {
   return ref.kind === "question" ? ref.questionId : ref.kind === "answer" ? ref.answerId : ref.articleId;
 }
 
-function assertValidRef(ref: ReplacementItemRef): void {
-  const ids = ref.kind === "answer" ? [ref.questionId, ref.answerId] : [requestedId(ref)];
-  if (!ids.every(isContentId)) throw reconstructionError(ref);
+function isContentKind(value: unknown): value is ReplacementItemRef["kind"] {
+  return value === "question" || value === "answer" || value === "article";
 }
 
-function reconstructionError(ref: ReplacementItemRef): Error {
-  return new Error(`Unable to reconstruct ${ref.kind} ${requestedId(ref)}.`);
+function assertValidRef(ref: ReplacementItemRef, operation: "reconstruct" | "update"): void {
+  const ids = ref.kind === "answer" ? [ref.questionId, ref.answerId] : [requestedId(ref)];
+  if (!ids.every(isContentId)) {
+    throw operation === "reconstruct"
+      ? reconstructionError(ref)
+      : updateError(ref.kind, requestedId(ref));
+  }
+}
+
+function reconstructionError(ref: ReplacementItemRef): ContentReplacementApiError {
+  return new ContentReplacementApiError(`Unable to reconstruct ${ref.kind} ${requestedId(ref)}.`);
+}
+
+function readError(kind: ReplacementItemRef["kind"], id: unknown, error?: unknown): ContentReplacementApiError {
+  return new ContentReplacementApiError(`Unable to read ${kind} ${id}.`, error);
+}
+
+function updateError(kind: ReplacementItemRef["kind"], id: unknown, error?: unknown): ContentReplacementApiError {
+  return new ContentReplacementApiError(`Unable to update ${kind} ${id}.`, error);
+}
+
+function inventoryError(
+  kind: "question" | "answer" | "article",
+  error?: unknown,
+): ContentReplacementApiError {
+  return new ContentReplacementApiError(`Unable to read ${kind} inventory.`, error);
+}
+
+function updateFailure(model: unknown, error: unknown): ContentReplacementApiError {
+  const record = asRecord(model);
+  const ref = asRecord(record?.ref);
+  if (!isContentKind(record?.kind) || !ref || ref.kind !== record.kind) {
+    return new ContentReplacementApiError("Unable to update content item.", error);
+  }
+  const id = record.kind === "question"
+    ? ref.questionId
+    : record.kind === "answer"
+      ? ref.answerId
+      : ref.articleId;
+  return isContentId(id)
+    ? updateError(record.kind, id, error)
+    : new ContentReplacementApiError("Unable to update content item.", error);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -158,6 +281,13 @@ function tagNames(value: unknown): string[] {
     if (typeof name !== "string" || !name) throw new Error("Invalid content tag.");
     return name;
   });
+}
+
+function requestTagNames(value: unknown): string[] {
+  if (!Array.isArray(value) || value.some((tag) => typeof tag !== "string" || !tag)) {
+    throw new Error("Invalid content tag.");
+  }
+  return [...value];
 }
 
 function articleType(value: unknown): ArticleType {
@@ -199,6 +329,25 @@ function articlePermissions(value: unknown): ArticlePermissionsRequest {
   };
 }
 
+function articlePermissionsRequest(value: unknown): ArticlePermissionsRequest {
+  const permissions = asRecord(value);
+  if (!permissions) throw new Error("Invalid article permissions.");
+  const editableBy = permissions.editableBy;
+  if (
+    editableBy !== undefined &&
+    editableBy !== "ownerOnly" &&
+    editableBy !== "specificEditors" &&
+    editableBy !== "everyone"
+  ) {
+    throw new Error("Invalid article editor scope.");
+  }
+  return {
+    ...(editableBy === undefined ? {} : { editableBy }),
+    editorUserIds: editorIdsRequest(permissions.editorUserIds),
+    editorUserGroupIds: editorIdsRequest(permissions.editorUserGroupIds),
+  };
+}
+
 function editorIds(value: unknown): number[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("Invalid article editor list.");
@@ -207,6 +356,13 @@ function editorIds(value: unknown): number[] {
     if (!isContentId(id)) throw new Error("Invalid article editor.");
     return id;
   });
+}
+
+function editorIdsRequest(value: unknown): number[] {
+  if (!Array.isArray(value) || !value.every(isContentId)) {
+    throw new Error("Invalid article editor ID list.");
+  }
+  return [...value];
 }
 
 function extractMetadata(detail: Record<string, unknown>): ReplacementMetadata | undefined {

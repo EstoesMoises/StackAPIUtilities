@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  type ContentReplacementClient,
   createContentReplacementClient,
   type ContentInventoryPage,
   type ContentApiTransport,
@@ -15,6 +16,7 @@ class FakeTransport implements ContentApiTransport {
     private readonly page: ContentInventoryPage<unknown> = {
       items: [], page: 1, totalPages: 1, hasMore: false,
     },
+    private readonly failures: { getPage?: unknown; getJson?: unknown; putJson?: unknown } = {},
   ) {}
 
   async getPage<T>(
@@ -23,16 +25,19 @@ class FakeTransport implements ContentApiTransport {
     page: number,
   ): Promise<ContentInventoryPage<T>> {
     this.pageCalls.push({ path, query, page });
+    if (this.failures.getPage !== undefined) throw this.failures.getPage;
     return this.page as ContentInventoryPage<T>;
   }
 
   async getJson<T>(path: string) {
     this.jsonCalls.push(path);
+    if (this.failures.getJson !== undefined) throw this.failures.getJson;
     return this.detail as T;
   }
 
   async putJson<T>(path: string, body: unknown) {
     this.putCalls.push({ path, body });
+    if (this.failures.putJson !== undefined) throw this.failures.putJson;
     return {} as T;
   }
 }
@@ -79,6 +84,32 @@ describe("content replacement API adapter", () => {
     });
   });
 
+  it.each([
+    ["question", (client: ReturnType<typeof createContentReplacementClient>) => client.getQuestionsPage(1)],
+    ["answer", (client: ReturnType<typeof createContentReplacementClient>) => client.getAnswersPage(42, 1)],
+    ["article", (client: ReturnType<typeof createContentReplacementClient>) => client.getArticlesPage(1)],
+  ])("blocks a %s inventory slice with a malformed item ID", async (kind, getPage) => {
+    const transport = new FakeTransport(undefined, {
+      items: [{ id: 0, title: "<p>MyPVM</p>" }], page: 1, totalPages: 1, hasMore: false,
+    });
+
+    await expect(getPage(createContentReplacementClient(transport))).rejects.toThrow(
+      `Unable to read ${kind} inventory.`,
+    );
+  });
+
+  it("rejects invalid requested IDs before requesting nested answer inventory", async () => {
+    const transport = new FakeTransport();
+    const client = createContentReplacementClient(transport);
+
+    await expect(client.getAnswersPage(0, 1)).rejects.toThrow("Unable to read answer 0.");
+    await expect(
+      client.getItem({ kind: "answer", questionId: 42, answerId: 0 } as never),
+    ).rejects.toThrow("Unable to reconstruct answer 0.");
+    expect(transport.pageCalls).toEqual([]);
+    expect(transport.jsonCalls).toEqual([]);
+  });
+
   it("reconstructs a question request from canonical Markdown and tag names in order", async () => {
     const transport = new FakeTransport({
       id: 42,
@@ -104,6 +135,23 @@ describe("content replacement API adapter", () => {
         },
       });
     expect(transport.jsonCalls).toEqual(["/questions/42"]);
+  });
+
+  it.each([
+    ["question", { kind: "question", questionId: 42 }, {
+      id: 42, title: "MyPVM", bodyMarkdown: "safe", tags: [{ name: 3 }],
+    }],
+    ["article", { kind: "article", articleId: 7 }, {
+      id: 7, title: "MyPVM", bodyMarkdown: "safe", tags: [], type: "policy",
+      permissions: { editorUsers: [{ id: 0 }] },
+    }],
+  ] as const)("rejects malformed %s tag or editor IDs without exposing detail text", async (kind, ref, detail) => {
+    const transport = new FakeTransport(detail);
+
+    await expect(createContentReplacementClient(transport).getItem(ref)).rejects.toThrow(
+      `Unable to reconstruct ${kind} ${kind === "question" ? ref.questionId : ref.articleId}.`,
+    );
+    await expect(createContentReplacementClient(transport).getItem(ref)).rejects.not.toThrow(/MyPVM/);
   });
 
   it("reconstructs an answer request only from its canonical Markdown", async () => {
@@ -179,6 +227,22 @@ describe("content replacement API adapter", () => {
       .resolves.not.toHaveProperty("request.expirationDate");
   });
 
+  it("preserves the everyone article permission scope", async () => {
+    const transport = new FakeTransport({
+      id: 7,
+      title: "MyPVM policy",
+      bodyMarkdown: "Use MyPVM.",
+      tags: [],
+      type: "policy",
+      permissions: { editableBy: "everyone" },
+    });
+
+    await expect(createContentReplacementClient(transport).getItem({ kind: "article", articleId: 7 }))
+      .resolves.toMatchObject({
+        request: { permissions: { editableBy: "everyone", editorUserIds: [], editorUserGroupIds: [] } },
+      });
+  });
+
   it("omits malformed optional metadata while retaining a safe request", async () => {
     const transport = new FakeTransport({
       id: 42,
@@ -221,6 +285,31 @@ describe("content replacement API adapter", () => {
     ).rejects.toThrow("Unable to reconstruct answer 8.");
   });
 
+  it("replaces transport failures with a sanitized adapter error retaining only numeric status", async () => {
+    const failure = Object.assign(new Error("access token=secret https://private.example"), { status: 403 });
+    const transport = new FakeTransport({}, undefined, { getJson: failure, putJson: "write key=secret" });
+    const client = createContentReplacementClient(transport);
+
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.toEqual(
+      expect.objectContaining({
+        name: "ContentReplacementApiError",
+        message: "Unable to read question 42.",
+        status: 403,
+      }),
+    );
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toThrow(/secret|private/);
+    await expect(client.updateItem({
+      kind: "answer",
+      ref: { kind: "answer", questionId: 42, answerId: 8 },
+      request: { body: "safe" },
+    })).rejects.toMatchObject({ name: "ContentReplacementApiError", status: undefined });
+    await expect(client.updateItem({
+      kind: "answer",
+      ref: { kind: "answer", questionId: 42, answerId: 8 },
+      request: { body: "safe" },
+    })).rejects.toThrow("Unable to update answer 8.");
+  });
+
   it("writes only the reconstructed request to the matching PUT path", async () => {
     const transport = new FakeTransport();
     const client = createContentReplacementClient(transport);
@@ -250,5 +339,40 @@ describe("content replacement API adapter", () => {
         permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [8] },
       },
     }]);
+  });
+
+  it("allowlists runtime question and answer PUT requests and uses their exact paths", async () => {
+    const transport = new FakeTransport();
+    const client = createContentReplacementClient(transport);
+
+    await client.updateItem({
+      kind: "question",
+      ref: { kind: "question", questionId: 42 },
+      request: { title: "MyPBM", body: "safe", tags: ["product"], responseOnly: "do not send" },
+      metadata: { webUrl: "https://private.example/question/42" },
+    } as unknown as Parameters<typeof client.updateItem>[0]);
+    await client.updateItem({
+      kind: "answer",
+      ref: { kind: "answer", questionId: 42, answerId: 8 },
+      request: { body: "safe", responseOnly: "do not send" },
+    } as unknown as Parameters<typeof client.updateItem>[0]);
+
+    expect(transport.putCalls).toEqual([
+      { path: "/questions/42", body: { title: "MyPBM", body: "safe", tags: ["product"] } },
+      { path: "/questions/42/answers/8", body: { body: "safe" } },
+    ]);
+  });
+
+  it("rejects a runtime PUT request with malformed required fields before the write", async () => {
+    const transport = new FakeTransport();
+
+    await expect(createContentReplacementClient(transport).updateItem({
+      kind: "article",
+      ref: { kind: "article", articleId: 7 },
+      request: { title: "safe", body: 3, tags: [], type: "policy", permissions: {} },
+    } as unknown as Parameters<ContentReplacementClient["updateItem"]>[0])).rejects.toThrow(
+      "Unable to update article 7.",
+    );
+    expect(transport.putCalls).toEqual([]);
   });
 });
