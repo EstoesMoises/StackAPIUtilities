@@ -102,12 +102,16 @@ guardrails: it paginates all accessible questions, each question's answer
 collection, and all articles, then fetches canonical detail records for
 conservative candidates. Inventory cursors have a 10,000-page ceiling, detail
 inspection sends at most 10 item references per request, and a persisted job is
-limited to 100,000 proposals. Search-index results are not treated as a complete
-inventory. An incomplete inventory, a response that would continue past page
-10,000, or a job that cannot be validated within the persisted proposal cap
-fails closed and cannot advance to Review or Apply; the page-limit response
-explicitly reports the 10,000-page safety limit, while invalid stored jobs are
-reported as unavailable rather than partially trusted. The review table is
+limited to exactly 100,000 proposals; a 100,001st proposal is rejected before
+its item content is inspected or any storage transaction opens. Separate finite
+content-length, collection, graph-depth, and graph-traversal safeguards still
+apply to unusually large individual proposals. Search-index results are not
+treated as a complete inventory. An incomplete inventory, a response that would
+continue past page 10,000, or a job that cannot be validated within the
+persisted proposal cap fails closed and cannot advance to Review or Apply; the
+page-limit response explicitly reports the 10,000-page safety limit, while
+invalid stored jobs are reported as unavailable rather than partially trusted.
+The review table is
 paginated in 50-row pages and offers
 filters, exact selected-post and occurrence counts, a complete credential-free
 preview CSV, and optional bounded detail. Detail includes complete before/after

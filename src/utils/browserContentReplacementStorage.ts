@@ -53,8 +53,15 @@ const JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_QUEUE_ITEMS = 100_000;
 const MAX_SCHEMA_ARRAY_LENGTH = 100_000;
 const MAX_GRAPH_DEPTH = 256;
-const MAX_GRAPH_NODES = 150_000;
-const MAX_GRAPH_ENTRIES = 500_000;
+const BASE_MAX_GRAPH_NODES = 150_000;
+const BASE_MAX_GRAPH_ENTRIES = 500_000;
+// Queue allowances cover one array slot plus the largest cursor/ref record.
+// Proposal allowances cover the 14 nodes and up to 47 descriptors in the
+// smallest serialized canonical item, with a bounded margin for representation.
+const MAX_GRAPH_NODES_PER_QUEUE_ITEM = 2;
+const MAX_GRAPH_ENTRIES_PER_QUEUE_ITEM = 5;
+const MAX_GRAPH_NODES_PER_PROPOSAL = 16;
+const MAX_GRAPH_ENTRIES_PER_PROPOSAL = 48;
 const MAX_CANONICAL_VALIDATION_CONCURRENCY = 16;
 const MAX_INVENTORY_PAGE = 10_000;
 const MAX_PROPOSALS = 100_000;
@@ -429,8 +436,8 @@ async function validateCanonicalItem(
 }
 
 function normalizeContentReplacementJob(value: unknown): PersistedContentReplacementJob {
-  assertContentReplacementJobRoot(value);
-  const safeValue = cloneSafeDataGraph(value);
+  const cardinalities = preflightContentReplacementJobRoot(value);
+  const safeValue = cloneSafeDataGraph(value, contentReplacementGraphBudget(cardinalities));
   const record = exactObject(safeValue, JOB_KEYS, ["activeOperation", "operationError", "nextRetryAt", "failure"]);
   const configuration = validateConfiguration(record.configuration);
   const baseUrl = normalizeEnterpriseBaseUrl(record.baseUrl);
@@ -497,7 +504,18 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   return normalized;
 }
 
-function assertContentReplacementJobRoot(value: unknown): void {
+interface ContentReplacementGraphCardinalities {
+  inventoryQueue: number;
+  detailQueue: number;
+  proposals: number;
+}
+
+interface SafeGraphBudget {
+  nodes: number;
+  entries: number;
+}
+
+function preflightContentReplacementJobRoot(value: unknown): ContentReplacementGraphCardinalities {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw corruptJob();
     const prototype = Reflect.getPrototypeOf(value);
@@ -510,15 +528,57 @@ function assertContentReplacementJobRoot(value: unknown): void {
       keys.some((key) => typeof key !== "string" || !allowed.has(key)) ||
       JOB_KEYS.some((key) => !optional.has(key) && !keys.includes(key))
     ) throw corruptJob();
+    const rootValues = new Map<string, unknown>();
     for (const key of keys) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || typeof descriptor.value === "function") {
         throw corruptJob();
       }
+      rootValues.set(key as string, descriptor.value);
     }
+    return {
+      inventoryQueue: preflightArrayCardinality(rootValues.get("inventoryQueue"), MAX_QUEUE_ITEMS),
+      detailQueue: preflightArrayCardinality(rootValues.get("detailQueue"), MAX_QUEUE_ITEMS),
+      proposals: preflightProposalCardinality(rootValues.get("proposals")),
+    };
   } catch {
     throw corruptJob();
   }
+}
+
+function preflightArrayCardinality(value: unknown, maximum: number): number {
+  if (!Array.isArray(value) || Reflect.getPrototypeOf(value) !== Array.prototype) throw corruptJob();
+  const length = Object.getOwnPropertyDescriptor(value, "length");
+  if (!length || !("value" in length) || !Number.isInteger(length.value) || length.value < 0 || length.value > maximum) {
+    throw corruptJob();
+  }
+  return length.value as number;
+}
+
+function preflightProposalCardinality(value: unknown): number {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw corruptJob();
+  const prototype = Reflect.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw corruptJob();
+  const keys = Reflect.ownKeys(value);
+  if (
+    keys.length > MAX_PROPOSALS ||
+    keys.some((key) => typeof key !== "string" || !isCanonicalItemKey(key))
+  ) throw corruptJob();
+  return keys.length;
+}
+
+function contentReplacementGraphBudget(
+  cardinalities: ContentReplacementGraphCardinalities,
+): SafeGraphBudget {
+  const queueItems = cardinalities.inventoryQueue + cardinalities.detailQueue;
+  return {
+    nodes: BASE_MAX_GRAPH_NODES +
+      queueItems * MAX_GRAPH_NODES_PER_QUEUE_ITEM +
+      cardinalities.proposals * MAX_GRAPH_NODES_PER_PROPOSAL,
+    entries: BASE_MAX_GRAPH_ENTRIES +
+      queueItems * MAX_GRAPH_ENTRIES_PER_QUEUE_ITEM +
+      cardinalities.proposals * MAX_GRAPH_ENTRIES_PER_PROPOSAL,
+  };
 }
 
 function assertJobInvariants(job: PersistedContentReplacementJob): void {
@@ -1522,15 +1582,18 @@ function exactDynamicMap(value: unknown): Record<string, unknown> {
   return plainRecord(value);
 }
 
-function cloneSafeDataGraph(value: unknown): unknown {
+function cloneSafeDataGraph(
+  value: unknown,
+  budget: SafeGraphBudget = { nodes: BASE_MAX_GRAPH_NODES, entries: BASE_MAX_GRAPH_ENTRIES },
+): unknown {
   try {
-    return cloneDataGraphFromDescriptors(value);
+    return cloneDataGraphFromDescriptors(value, budget);
   } catch {
     throw corruptJob();
   }
 }
 
-function cloneDataGraphFromDescriptors(value: unknown): unknown {
+function cloneDataGraphFromDescriptors(value: unknown, budget: SafeGraphBudget): unknown {
   if (!value || typeof value !== "object") return value;
   type Entry = { key: string; value: unknown };
   type Inspected = { clone: object; entries: Entry[] };
@@ -1540,7 +1603,7 @@ function cloneDataGraphFromDescriptors(value: unknown): unknown {
 
   const inspect = (item: object, depth: number): Inspected => {
     nodeCount += 1;
-    if (nodeCount > MAX_GRAPH_NODES || depth > MAX_GRAPH_DEPTH) throw corruptJob();
+    if (nodeCount > budget.nodes || depth > MAX_GRAPH_DEPTH) throw corruptJob();
 
     const isArray = Array.isArray(item);
     const prototype = Reflect.getPrototypeOf(item);
@@ -1564,7 +1627,7 @@ function cloneDataGraphFromDescriptors(value: unknown): unknown {
     const keys = Reflect.ownKeys(item);
     if (keys.length > MAX_SCHEMA_ARRAY_LENGTH + (isArray ? 1 : 0)) throw corruptJob();
     entryCount += keys.length;
-    if (entryCount > MAX_GRAPH_ENTRIES) throw corruptJob();
+    if (entryCount > budget.entries) throw corruptJob();
     const entries: Entry[] = [];
     let arrayElementCount = 0;
     for (const key of keys) {

@@ -127,6 +127,7 @@ function failure(
 
 describe("replacement job state", () => {
   it("validates 10,000 canonical proposals with deterministic batches, selections, review pages, and serialization", async () => {
+    const questionInventoryCount = 10_000;
     const refs = Array.from({ length: 10_000 }, (_, index) => ({
       kind: "answer" as const,
       questionId: index + 1,
@@ -153,6 +154,7 @@ describe("replacement job state", () => {
         status: "pending" as const,
       }];
     }));
+    const startedAt = performance.now();
     const serializedReview = JSON.stringify({
       ...configured,
       stage: "review" as const,
@@ -162,11 +164,11 @@ describe("replacement job state", () => {
       proposals,
       progress: {
         ...configured.progress,
-        questionPages: 100,
-        answerPages: 10_000,
-        inventoryItems: 10_000,
-        detailsInspected: 10_000,
-        proposalsFound: 10_000,
+        questionPages: questionInventoryCount / 100,
+        answerPages: refs.length,
+        inventoryItems: questionInventoryCount + refs.length,
+        detailsInspected: refs.length,
+        proposalsFound: refs.length,
       },
     });
     const serializedScan = JSON.stringify({
@@ -175,15 +177,29 @@ describe("replacement job state", () => {
       detailQueue: refs,
       progress: {
         ...configured.progress,
-        questionPages: 100,
-        answerPages: 10_000,
-        inventoryItems: 10_000,
+        questionPages: questionInventoryCount / 100,
+        answerPages: refs.length,
+        inventoryItems: questionInventoryCount + refs.length,
       },
     });
 
-    const startedAt = performance.now();
     const scanning = await parseContentReplacementJob(JSON.parse(serializedScan));
     const review = await parseContentReplacementJob(JSON.parse(serializedReview));
+
+    expect(scanning.progress).toMatchObject({
+      questionPages: 100,
+      answerPages: 10_000,
+      inventoryItems: 20_000,
+      detailsInspected: 0,
+      proposalsFound: 0,
+    });
+    expect(review.progress).toMatchObject({
+      questionPages: 100,
+      answerPages: 10_000,
+      inventoryItems: 20_000,
+      detailsInspected: 10_000,
+      proposalsFound: 10_000,
+    });
 
     expect(getNextDetailBatch(scanning)).toEqual(refs.slice(0, 10));
     expect(getNextDetailBatch(scanning)).toEqual(getNextDetailBatch(scanning));
@@ -219,7 +235,8 @@ describe("replacement job state", () => {
     expect(createReplacementSelectionSnapshot(review.proposals)).not.toEqual(
       createReplacementSelectionSnapshot(selected.proposals),
     );
-    expect(performance.now() - startedAt).toBeLessThan(10_000);
+    const elapsed = performance.now() - startedAt;
+    expect(elapsed).toBeLessThan(10_000);
   }, 30_000);
 
   it("starts at revision zero and advances once for each accepted reducer transition", () => {

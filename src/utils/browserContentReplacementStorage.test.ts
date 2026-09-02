@@ -1333,6 +1333,98 @@ describe("browserContentReplacementStorage", () => {
     });
   });
 
+  it("saves and loads exactly 100,000 minimal canonical proposals at the persisted boundary", async () => {
+    const fake = installFakeIndexedDB();
+    let job: PersistedContentReplacementJob | undefined = await createCanonicalAnswerBoundaryJob(100_000);
+    const startedAt = performance.now();
+
+    try {
+      const jobId = job.id;
+      await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toEqual({ status: "saved" });
+      job = undefined;
+      const loaded = await loadContentReplacementJob(jobId);
+
+      expect(loaded?.progress).toMatchObject({
+        questionPages: 1_000,
+        answerPages: 100_000,
+        inventoryItems: 200_000,
+        detailsInspected: 100_000,
+        proposalsFound: 100_000,
+      });
+      expect(Object.keys(loaded!.proposals)).toHaveLength(100_000);
+      expect(loaded!.proposals["answer:1:100001"].proposal.before.ref).toEqual({
+        kind: "answer", questionId: 1, answerId: 100_001,
+      });
+      expect(loaded!.proposals["answer:100000:200000"].proposal.before.ref).toEqual({
+        kind: "answer", questionId: 100_000, answerId: 200_000,
+      });
+      const elapsed = performance.now() - startedAt;
+      expect(elapsed).toBeLessThan(120_000);
+    } finally {
+      fake.records.clear();
+      job = undefined;
+    }
+  }, 180_000);
+
+  it("rejects 100,001 proposal keys before inspecting an item or opening storage", async () => {
+    const fake = installFakeIndexedDB();
+    const job = createJob();
+    const keys = Array.from({ length: 100_001 }, (_, index) => `answer:${index + 1}:${index + 100_002}`);
+    let itemDescriptorCalls = 0;
+    job.proposals = new Proxy({}, {
+      ownKeys: () => keys,
+      getOwnPropertyDescriptor: () => {
+        itemDescriptorCalls += 1;
+        return { value: null, enumerable: true, configurable: true, writable: true };
+      },
+    });
+
+    await expect(compareAndSaveContentReplacementJob(job, null)).rejects.toEqual(
+      new TypeError("Stored content replacement job is invalid."),
+    );
+    expect(itemDescriptorCalls).toBe(0);
+    expect(fake.openCalls).toHaveLength(0);
+  });
+
+  it("keeps a max-length malicious nested proposal inside the derived traversal budget", async () => {
+    const fake = installFakeIndexedDB();
+    const job = createJob() as any;
+    const arrayKeys = [...Array.from({ length: 100_000 }, (_, index) => String(index)), "length"];
+    let nestedDescriptorCalls = 0;
+    const maximumArray = () => new Proxy(new Array(100_000), {
+      ownKeys: () => arrayKeys,
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === "length") return Reflect.getOwnPropertyDescriptor(target, key);
+        nestedDescriptorCalls += 1;
+        return { value: null, enumerable: true, configurable: true, writable: true };
+      },
+    });
+    job.proposals = {
+      "answer:1:2": {
+        proposal: {
+          before: maximumArray(),
+          after: maximumArray(),
+          scannedRequestChecksum: "a".repeat(64),
+          proposedRequestChecksum: "b".repeat(64),
+          proposalFingerprint: "c".repeat(64),
+          fields: maximumArray(),
+          changedOccurrences: maximumArray(),
+          protectedOccurrences: maximumArray(),
+          appliedRuleIds: [],
+        },
+        included: true,
+        attemptCount: 0,
+        status: "pending",
+      },
+    };
+
+    await expect(compareAndSaveContentReplacementJob(job, null)).rejects.toEqual(
+      new TypeError("Stored content replacement job is invalid."),
+    );
+    expect(nestedDescriptorCalls).toBeLessThan(500_000);
+    expect(fake.openCalls).toHaveLength(0);
+  });
+
   it("normalizes answer and article request-model unions including exact article permissions", async () => {
     installFakeIndexedDB();
     const job = createPopulatedJob();
@@ -1802,6 +1894,40 @@ function createQuestionBeforeModel(): ReplacementRequestModel {
       lastActivityDate: null,
     },
   };
+}
+
+async function createCanonicalAnswerBoundaryJob(
+  proposalCount: number,
+): Promise<PersistedContentReplacementJob> {
+  const job = createJob();
+  job.stage = "review";
+  job.status = "completed";
+  job.inventoryQueue = [];
+  job.detailQueue = [];
+  const chunkSize = 512;
+  for (let offset = 0; offset < proposalCount; offset += chunkSize) {
+    const count = Math.min(chunkSize, proposalCount - offset);
+    const proposals = await Promise.all(Array.from({ length: count }, async (_unused, chunkIndex) => {
+      const questionId = offset + chunkIndex + 1;
+      const answerId = proposalCount + questionId;
+      const proposal = await buildReplacementProposal({
+        kind: "answer",
+        ref: { kind: "answer", questionId, answerId },
+        request: { body: "Old body" },
+      }, job.configuration);
+      if (!proposal) throw new Error("Expected a canonical boundary proposal.");
+      return { key: `answer:${questionId}:${answerId}`, proposal };
+    }));
+    for (const { key, proposal } of proposals) {
+      job.proposals[key] = { proposal, included: true, attemptCount: 0, status: "pending" };
+    }
+  }
+  job.progress.questionPages = Math.ceil(proposalCount / 100);
+  job.progress.answerPages = proposalCount;
+  job.progress.inventoryItems = proposalCount * 2;
+  job.progress.detailsInspected = proposalCount;
+  job.progress.proposalsFound = proposalCount;
+  return job;
 }
 
 function createAppliedJob(): PersistedContentReplacementJob {
