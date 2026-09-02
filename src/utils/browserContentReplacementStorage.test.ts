@@ -14,10 +14,11 @@ import {
   toReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/proposals";
 import { scanDetailBatch } from "../writeTools/contentReplacement/scanner";
-import { reduceReplacementJob } from "../writeTools/contentReplacement/jobState";
+import { createReplacementJob, reduceReplacementJob } from "../writeTools/contentReplacement/jobState";
 import type { ContentReplacementClient } from "../writeTools/contentReplacement/contentApi";
 import type {
   PersistedContentReplacementJob,
+  ReplacementConfiguration,
   ReplacementProposal,
   ReplacementRequestModel,
 } from "../writeTools/contentReplacement/types";
@@ -122,6 +123,50 @@ describe("browserContentReplacementStorage", () => {
     await saveContentReplacementJob(job);
 
     await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
+  });
+
+  it("persists Exact detail progress without inventory accounting", async () => {
+    installFakeIndexedDB();
+    const ref = { kind: "question" as const, questionId: 42 };
+    const configuration: ReplacementConfiguration = {
+      ...createJob().configuration,
+      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+    };
+    let job = createReplacementJob({
+      id: "exact-detail-job",
+      fingerprint: await createJobFingerprint({
+        baseUrl: "https://example.stackenterprise.co",
+        configuration,
+      }),
+      baseUrl: "https://example.stackenterprise.co",
+      configuration,
+      exactTargets: [ref],
+      createdAt: "2026-09-01T12:00:00.000Z",
+    });
+    const detail = await scanDetailBatch({
+      getItem: async () => ({
+        kind: "question" as const,
+        ref,
+        request: { title: "Old title", body: "No matching body.", tags: ["api"] },
+      }),
+    } as unknown as ContentReplacementClient, { refs: [ref], configuration });
+
+    job = reduceReplacementJob(job, {
+      type: "scan/details-succeeded",
+      refs: [ref],
+      result: detail,
+      at: "2026-09-01T12:01:00.000Z",
+    });
+    expect(job.progress).toMatchObject({ inventoryItems: 0, detailsInspected: 1, proposalsFound: 1 });
+
+    await saveContentReplacementJob(job);
+
+    const loaded = await loadContentReplacementJob(job.id);
+    expect(loaded).toMatchObject({
+      progress: { inventoryItems: 0, detailsInspected: 1, proposalsFound: 1 },
+      proposals: { "question:42": { status: "pending" } },
+    });
+    expect(loaded).toEqual(job);
   });
 
   it("persists the recovery snapshot gate required before apply can resume", async () => {

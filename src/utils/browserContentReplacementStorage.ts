@@ -687,7 +687,8 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
   if (
     job.progress.proposalsFound !== items.length ||
     job.progress.detailsInspected < job.progress.proposalsFound ||
-    job.progress.inventoryItems < job.progress.detailsInspected ||
+    (job.configuration.discovery.mode !== "exact" &&
+      job.progress.inventoryItems < job.progress.detailsInspected) ||
     !Number.isSafeInteger(protectedOccurrences) ||
     job.progress.protectedOccurrences < protectedOccurrences ||
     job.progress.applyCompleted !== applyCompleted ||
@@ -702,7 +703,11 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
     (job.configuration.discovery.mode !== "full" &&
       (job.progress.answerBearingQuestionsQueued !== 0 || job.progress.zeroAnswerQuestionsSkipped !== 0)) ||
     (job.configuration.discovery.mode === "exact" &&
-      (job.progress.apiRequestsCompleted !== job.progress.detailsInspected ||
+      (job.progress.inventoryItems !== 0 ||
+        job.inventoryQueue.length !== 0 ||
+        job.progress.detailsInspected > job.configuration.discovery.targetCount ||
+        job.detailQueue.length > job.configuration.discovery.targetCount ||
+        job.progress.apiRequestsCompleted !== job.progress.detailsInspected ||
         job.progress.detailsInspected + job.detailQueue.length !== job.configuration.discovery.targetCount)) ||
     job.inventoryQueue.some((cursor) => !isInventoryCursorRelevant(cursor, job.configuration)) ||
     job.detailQueue.some((ref) => !isItemRefRelevant(ref, job.configuration)) ||
