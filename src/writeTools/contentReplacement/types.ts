@@ -32,3 +32,106 @@ export type ReplacementRuleErrorCode =
   | "duplicate-source"
   | "replacement-is-source"
   | "overlapping-sources";
+
+export interface QuestionUpdateRequest {
+  title: string;
+  body: string;
+  tags: string[];
+}
+
+export interface AnswerUpdateRequest {
+  body: string;
+}
+
+export type ArticleType = "knowledgeArticle" | "announcement" | "policy" | "howToGuide";
+
+export interface ArticlePermissionsRequest {
+  editableBy?: "ownerOnly" | "specificEditors" | "everyone";
+  editorUserIds: number[];
+  editorUserGroupIds: number[];
+}
+
+export interface ArticleUpdateRequest {
+  title: string;
+  body: string;
+  tags: string[];
+  type: ArticleType;
+  expirationDate?: string | null;
+  permissions: ArticlePermissionsRequest;
+}
+
+export interface ReplacementMetadata {
+  titleContext?: string;
+  webUrl?: string;
+  owner?: { id: number; name?: string };
+  lastEditor?: { id: number; name?: string };
+  lastActivityDate?: string | null;
+}
+
+export type ReplacementRequestModel =
+  | {
+      kind: "question";
+      ref: Extract<ReplacementItemRef, { kind: "question" }>;
+      request: QuestionUpdateRequest;
+      metadata?: ReplacementMetadata;
+    }
+  | {
+      kind: "answer";
+      ref: Extract<ReplacementItemRef, { kind: "answer" }>;
+      request: AnswerUpdateRequest;
+      metadata?: ReplacementMetadata;
+    }
+  | {
+      kind: "article";
+      ref: Extract<ReplacementItemRef, { kind: "article" }>;
+      request: ArticleUpdateRequest;
+      metadata?: ReplacementMetadata;
+    };
+
+export type ReplacementProposalField = "title" | "body";
+
+export interface ReplacementOccurrence {
+  field: ReplacementProposalField;
+  ruleId: string;
+  start: number;
+  end: number;
+  before: string;
+  after: string;
+}
+
+export type ReplacementProtectedOccurrenceReason =
+  | "code"
+  | "destination"
+  | "raw-html-attribute"
+  | "raw-html-syntax"
+  | "raw-html-hidden";
+
+export interface ReplacementProtectedOccurrence {
+  field: ReplacementProposalField;
+  ruleId: string;
+  start: number;
+  end: number;
+  before: string;
+  reason: ReplacementProtectedOccurrenceReason;
+}
+
+export interface ReplacementFieldMarkdown {
+  beforeMarkdown: string;
+  afterMarkdown: string;
+}
+
+export interface ReplacementProposal {
+  before: ReplacementRequestModel;
+  after: ReplacementRequestModel;
+  scannedRequestChecksum: string;
+  proposedRequestChecksum: string;
+  proposalFingerprint: string;
+  fields: {
+    title?: ReplacementFieldMarkdown;
+    body: ReplacementFieldMarkdown;
+  };
+  changedOccurrences: ReplacementOccurrence[];
+  protectedOccurrences: ReplacementProtectedOccurrence[];
+  appliedRuleIds: string[];
+  metadata?: ReplacementMetadata;
+}
