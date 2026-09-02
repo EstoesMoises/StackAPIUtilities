@@ -145,7 +145,10 @@ async function readInventoryPage<T>(
   } catch (error) {
     throw transportBoundaryError(`Unable to read ${kind} inventory.`, error);
   }
-  if (!Array.isArray(result.items) || result.items.some((item) => !isContentId(asRecord(item)?.id))) {
+  if (
+    !Array.isArray(result.items) ||
+    (kind !== "search" && result.items.some((item) => !isContentId(asRecord(item)?.id)))
+  ) {
     throw schemaError(`Unable to read ${kind} inventory.`);
   }
   return result;
@@ -153,11 +156,23 @@ async function readInventoryPage<T>(
 
 function toSearchSummary(value: unknown): SearchSummary {
   const result = asRecord(value);
-  if (!result || !isContentId(result.id)) throw new Error("Invalid search result.");
-  if (result.type === "question") return { type: "question", questionId: result.id };
-  if (result.type === "article") return { type: "article", articleId: result.id };
-  if (result.type === "answer" && isContentId(result.parentQuestionId)) {
-    return { type: "answer", answerId: result.id, parentQuestionId: result.parentQuestionId };
+  if (!result) throw new Error("Invalid search result.");
+  if (result.type === "question" && isContentId(result.questionId)) {
+    return { type: "question", questionId: result.questionId };
+  }
+  if (result.type === "article" && isContentId(result.articleId)) {
+    return { type: "article", articleId: result.articleId };
+  }
+  if (
+    result.type === "answer" &&
+    isContentId(result.answerId) &&
+    isContentId(result.parentQuestionId)
+  ) {
+    return {
+      type: "answer",
+      answerId: result.answerId,
+      parentQuestionId: result.parentQuestionId,
+    };
   }
   throw new Error("Invalid search result.");
 }
