@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThrottleNotice } from "../api/httpClient";
 import { MAX_STACK_API_V3_BACKOFF_NOTICE_SECONDS } from "../api/stackApiV3";
 import type { SessionCredentials } from "../domain/types";
-import { validateEnterpriseV3OAuthCredentials } from "../credentials/enterpriseV3Credentials";
 import {
-  isOriginOnlyInstanceUrl,
+  getEnterpriseWriteCredentialReadiness,
+  type EnterpriseWriteCredentialReadiness,
+} from "../credentials/enterpriseV3Credentials";
+import {
   normalizeCurrentRequestModel,
-  validateSessionCredentials,
   validateExactPriorRequestModel,
 } from "../server/contentReplacementRequestValidation";
 import {
@@ -71,7 +72,8 @@ export interface ContentReplacementJobController {
   busy: boolean;
   storageError: string | null;
   operationError: string | null;
-  createJob(configuration: ReplacementConfiguration): Promise<void>;
+  credentialReadiness: Pick<EnterpriseWriteCredentialReadiness, "valid" | "message"> & { refreshRequired: boolean };
+  createJob(configuration: ReplacementConfiguration): Promise<boolean>;
   startScan(): Promise<void>;
   pause(): void;
   resume(): Promise<void>;
@@ -154,6 +156,14 @@ export function useContentReplacementJob(
   const [storageError, setStorageError] = useState<string | null>(null);
   const jobRef = useRef<PersistedContentReplacementJob | null>(interruptedInitial ? null : initialJob);
   const credentialsRef = useRef(credentials);
+  const credentialKey = credentialMemoryKey(credentials);
+  const credentialKeyRef = useRef(credentialKey);
+  if (credentialKeyRef.current !== credentialKey) {
+    credentialKeyRef.current = credentialKey;
+  }
+  const rejectedCredentialKeyRef = useRef<string | null>(
+    hasPersistedAuthorizationInterruption(initialJob) ? credentialKey : null,
+  );
   const dependenciesRef = useRef(dependencies);
   const mountedRef = useRef(true);
   const operationRef = useRef(0);
@@ -193,12 +203,34 @@ export function useContentReplacementJob(
       rehydratedIdRef.current = null;
       setJob(needsInterruptionCheckpoint(initialJob) ? null : initialJob);
       setStorageError(null);
+      rejectedCredentialKeyRef.current = hasPersistedAuthorizationInterruption(initialJob)
+        ? credentialKeyRef.current
+        : null;
     }
     return () => {
       mountedRef.current = false;
       stopOperation();
     };
   }, [initialJob, setJob, stopOperation]);
+
+  const currentCredentials = useCallback((
+    target: Pick<PersistedContentReplacementJob, "baseUrl"> | null,
+    at: string,
+  ): { credentials: SessionCredentials | null; message: string; credentialKey?: string } => {
+    const readiness = getEnterpriseWriteCredentialReadiness(credentialsRef.current, {
+      expectedOrigin: target?.baseUrl,
+      now: new Date(at),
+    });
+    if (!readiness.valid) return { credentials: null, message: readiness.message };
+    if (rejectedCredentialKeyRef.current === credentialKeyRef.current) {
+      return { credentials: null, message: "Reconnect with a different valid credential; the current credential was rejected." };
+    }
+    return { credentials: readiness.credentials, message: "", credentialKey: credentialKeyRef.current };
+  }, []);
+
+  const rejectCredential = useCallback((credentialKey: string | undefined) => {
+    rejectedCredentialKeyRef.current = credentialKey ?? credentialKeyRef.current;
+  }, []);
 
   const beforeUnload = useCallback((event: BeforeUnloadEvent) => {
     event.preventDefault();
@@ -340,12 +372,10 @@ export function useContentReplacementJob(
     return persist(reduceReplacementJob(withThrottle, { type: "run/clear-retry-at", at }), token);
   }, [persist, setBusy]);
 
-  const createJob = useCallback((configuration: ReplacementConfiguration): Promise<void> => enqueueLocalMutation(async () => {
-    const supplied = validateSessionCredentials(credentialsRef.current);
-    if (!supplied) return;
-    const baseUrl = normalizeOrigin(supplied.baseUrl);
-    const credentialCheck = compatibleCredentials(supplied, { baseUrl }, dependenciesRef.current.now());
-    if (!credentialCheck.credentials) return;
+  const createJob = useCallback((configuration: ReplacementConfiguration): Promise<boolean> => enqueueLocalMutation(async () => {
+    const credentialCheck = currentCredentials(null, dependenciesRef.current.now());
+    if (!credentialCheck.credentials) return false;
+    const baseUrl = credentialCheck.credentials.baseUrl;
     const fingerprint = await createJobFingerprint({ baseUrl, configuration });
     const createdAt = dependenciesRef.current.now();
     const candidate = createReplacementJob({
@@ -356,8 +386,8 @@ export function useContentReplacementJob(
       createdAt,
     });
     stopOperation();
-    await persist(candidate);
-  }), [enqueueLocalMutation, persist, stopOperation]);
+    return persist(candidate);
+  }), [currentCredentials, enqueueLocalMutation, persist, stopOperation]);
 
   const scanLoop = useCallback(async (token: number): Promise<void> => {
     let current = jobRef.current;
@@ -383,7 +413,7 @@ export function useContentReplacementJob(
         if (complete !== current) await persist(complete, token);
         return;
       }
-      const credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+      const credentialCheck = currentCredentials(current, dependenciesRef.current.now());
       if (!credentialCheck.credentials) {
         await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
         return;
@@ -423,6 +453,11 @@ export function useContentReplacementJob(
           current = delayed;
           continue;
         }
+        if (fetched.response.status === 401 || fetched.response.status === 403) {
+          rejectCredential(credentialCheck.credentialKey);
+          await persist(credentialInterruption(current, parsed.message, at), token);
+          return;
+        }
         await persist(scanFailure(
           current,
           parsed.invalid ? "server" : failureCategoryForStatus(fetched.response.status),
@@ -448,7 +483,7 @@ export function useContentReplacementJob(
       if (!await persistResponse(reduced, parsed.throttleNotices, at, token)) return;
       current = jobRef.current!;
     }
-  }, [persist, persistResponse, request]);
+  }, [currentCredentials, persist, persistResponse, rejectCredential, request]);
 
   const startScan = useCallback(() => runExclusive(scanLoop), [runExclusive, scanLoop]);
 
@@ -537,7 +572,7 @@ export function useContentReplacementJob(
       return;
     }
     let current = stored;
-    let credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+    let credentialCheck = currentCredentials(current, dependenciesRef.current.now());
     if (!credentialCheck.credentials) {
       await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
       return;
@@ -550,7 +585,7 @@ export function useContentReplacementJob(
       if (!item) return;
       if (!await honorPersistedDeadline(current, token, persist, abortRef, setBusy, dependenciesRef)) return;
       current = jobRef.current!;
-      credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+      credentialCheck = currentCredentials(current, dependenciesRef.current.now());
       if (!credentialCheck.credentials) {
         await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
         return;
@@ -575,6 +610,11 @@ export function useContentReplacementJob(
       const parsed = "failed" in fetched
         ? { ok: false as const, result: { status: "network" as const, error: NETWORK_FAILURE_MESSAGE }, throttleNotices: [] }
         : await parseApplyResponse(fetched.response);
+      if (parsed.result.status === "permission") {
+        rejectCredential(credentialCheck.credentialKey);
+        await persist(credentialInterruption(current, parsed.result.error, at), token);
+        return;
+      }
       const finished = reduceReplacementJob(current, {
         type: "apply/item-finished", itemKey, result: parsed.result, at,
       });
@@ -582,7 +622,7 @@ export function useContentReplacementJob(
       current = jobRef.current!;
       if (!parsed.ok && parsed.stop) return;
     }
-  }, [persist, persistResponse, request]);
+  }, [currentCredentials, persist, persistResponse, rejectCredential, request]);
 
   const runApplyRef = useRef<() => Promise<void>>(async () => undefined);
   const runApply = useCallback(() => runExclusive(applyLoop), [applyLoop, runExclusive]);
@@ -617,7 +657,7 @@ export function useContentReplacementJob(
         current = jobRef.current!;
         const batchKeys = current.activeOperation!.remainingItemKeys.slice(0, 10);
         const refs = getNextStaleRescanBatch(current);
-        const credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+        const credentialCheck = currentCredentials(current, dependenciesRef.current.now());
         if (!credentialCheck.credentials) {
           await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
           return;
@@ -650,6 +690,11 @@ export function useContentReplacementJob(
             current = delayed;
             continue;
           }
+          if (fetched.response.status === 401 || fetched.response.status === 403) {
+            rejectCredential(credentialCheck.credentialKey);
+            await persist(credentialInterruption(current, parsed.message, dependenciesRef.current.now()), token);
+            return;
+          }
           await persist(reduceReplacementJob(jobRef.current!, {
             type: "scan/stale-details-failed",
             requestedItemKeys: batchKeys,
@@ -674,7 +719,7 @@ export function useContentReplacementJob(
         if (fetched.response.status >= 400 && fetched.response.status < 500 &&
           fetched.response.status !== 429) return;
       }
-  }, [persist, persistResponse, request, setBusy]);
+  }, [currentCredentials, persist, persistResponse, rejectCredential, request, setBusy]);
   const runStaleRescanRef = useRef<() => Promise<void>>(async () => undefined);
   const runStaleRescan = useCallback(() => runExclusive(staleRescanLoop), [runExclusive, staleRescanLoop]);
   runStaleRescanRef.current = runStaleRescan;
@@ -707,7 +752,7 @@ export function useContentReplacementJob(
         if (!current || !isSuccessfullyApplied(item)) continue;
         if (!await honorPersistedDeadline(current, token, persist, abortRef, setBusy, dependenciesRef)) return;
         current = jobRef.current!;
-        const credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+        const credentialCheck = currentCredentials(current, dependenciesRef.current.now());
         if (!credentialCheck.credentials) {
           await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
           return;
@@ -732,6 +777,11 @@ export function useContentReplacementJob(
           continue;
         }
         const parsed = await parseRecoveryPreviewResponse(fetched.response, item.proposal.before.ref);
+        if (!parsed.ok && (parsed.failure?.category === "authorization" || fetched.response.status === 401 || fetched.response.status === 403)) {
+          rejectCredential(credentialCheck.credentialKey);
+          await persist(credentialInterruption(current, parsed.message, at), token);
+          return;
+        }
         const next = parsed.ok
           ? reduceReplacementJob(current, {
               type: "recovery/preview-finished", itemKey, result: parsed.result, at,
@@ -749,7 +799,7 @@ export function useContentReplacementJob(
         if (fetched.response.status >= 400 && fetched.response.status < 500 &&
           fetched.response.status !== 429) return;
       }
-  }, [persist, persistResponse, request, setBusy]);
+  }, [currentCredentials, persist, persistResponse, rejectCredential, request, setBusy]);
   const runRecoveryPreviewRef = useRef<() => Promise<void>>(async () => undefined);
   const runRecoveryPreview = useCallback(
     () => runExclusive(recoveryPreviewLoop), [recoveryPreviewLoop, runExclusive],
@@ -792,7 +842,7 @@ export function useContentReplacementJob(
           item.recovery?.preview?.status === "recoverable" && previewMatchesGeneration(item);
       });
       if (requested.length === 0) return;
-      let credentialCheck = compatibleCredentials(credentialsRef.current, stored, dependenciesRef.current.now());
+      let credentialCheck = currentCredentials(stored, dependenciesRef.current.now());
       if (!credentialCheck.credentials) {
         await persist(credentialInterruption(stored, credentialCheck.message, dependenciesRef.current.now()), token);
         return;
@@ -807,7 +857,7 @@ export function useContentReplacementJob(
         const item = current.proposals[itemKey];
         if (!isSuccessfullyApplied(item) || item.recovery?.preview?.status !== "recoverable") continue;
         const prior = toReplacementWireRequestModel(item.recovery.priorRequestModel);
-        credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+        credentialCheck = currentCredentials(current, dependenciesRef.current.now());
         if (!credentialCheck.credentials) {
           await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
           return;
@@ -830,6 +880,11 @@ export function useContentReplacementJob(
         const parsed = "failed" in fetched
           ? { result: { status: "network" as const, error: NETWORK_FAILURE_MESSAGE }, throttleNotices: [] }
           : await parseRecoveryApplyResponse(fetched.response);
+        if (parsed.result.status === "permission") {
+          rejectCredential(credentialCheck.credentialKey);
+          await persist(credentialInterruption(current, parsed.result.error, at), token);
+          return;
+        }
         const next = reduceReplacementJob(current, {
           type: "recovery/item-finished", itemKey, result: parsed.result, at,
         });
@@ -838,7 +893,7 @@ export function useContentReplacementJob(
         if (parsed.stop) return;
       }
     });
-  }, [persist, persistResponse, request, runExclusive, setBusy]);
+  }, [currentCredentials, persist, persistResponse, rejectCredential, request, runExclusive, setBusy]);
 
   const deleteRecoverySnapshots = useCallback((): Promise<void> => {
     if (runningRef.current) return Promise.resolve();
@@ -854,11 +909,29 @@ export function useContentReplacementJob(
     });
   }, [enqueueLocalMutation, persist, stopOperation]);
 
+  const rawCredentialReadiness = getEnterpriseWriteCredentialReadiness(credentials, {
+    expectedOrigin: job?.baseUrl,
+    now: new Date(),
+  });
+  const refreshRequired = rejectedCredentialKeyRef.current === credentialKeyRef.current;
+  const credentialReadiness = refreshRequired && rawCredentialReadiness.valid
+    ? {
+        valid: false as const,
+        refreshRequired: true,
+        message: "Reconnect with a different valid credential; the current credential was rejected.",
+      }
+    : {
+        valid: rawCredentialReadiness.valid,
+        refreshRequired: false,
+        message: rawCredentialReadiness.message,
+      };
+
   return {
     job,
     busy,
     storageError,
     operationError: job?.operationError?.message ?? null,
+    credentialReadiness,
     createJob,
     startScan,
     pause,
@@ -1245,33 +1318,20 @@ function failureCategoryForStatus(status: number): PersistedContentReplacementFa
   return "unknown";
 }
 
-function normalizeOrigin(value: string): string {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return value.trim();
-  }
+function credentialMemoryKey(value: SessionCredentials | null): string {
+  if (!value) return "null";
+  return JSON.stringify({
+    instanceType: value.instanceType,
+    baseUrl: value.baseUrl,
+    accessToken: value.accessToken,
+    authSource: value.authSource,
+    oauthScopes: value.oauthScopes,
+    accessTokenExpiresAt: value.accessTokenExpiresAt,
+  });
 }
 
-function compatibleCredentials(
-  value: SessionCredentials | null,
-  job: Pick<PersistedContentReplacementJob, "baseUrl">,
-  at: string,
-): { credentials: SessionCredentials | null; message: string } {
-  const credentials = validateSessionCredentials(value);
-  const validation = validateEnterpriseV3OAuthCredentials(credentials, {
-    requiredScopes: ["write_access"],
-    now: new Date(at),
-  });
-  if (!credentials || !validation.valid) return {
-    credentials: null,
-    message: validation.messages.join(" ") || "Reconnect valid Stack Enterprise credentials.",
-  };
-  const origin = normalizeOrigin(credentials.baseUrl);
-  if (!isOriginOnlyInstanceUrl(origin) || origin !== job.baseUrl) {
-    return { credentials: null, message: "The connected Stack Enterprise origin does not match this job." };
-  }
-  return { credentials: { ...credentials, baseUrl: origin }, message: "" };
+function hasPersistedAuthorizationInterruption(job: PersistedContentReplacementJob | null): boolean {
+  return job?.operationError?.category === "authorization" || job?.failure?.category === "authorization";
 }
 
 function credentialInterruption(

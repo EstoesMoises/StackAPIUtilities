@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionCredentials } from "../domain/types";
+import { getEnterpriseWriteCredentialReadiness } from "../credentials/enterpriseV3Credentials";
 import {
   MAX_WRITE_ROUTE_BYTES,
   prepareEnterpriseWriteContext,
@@ -16,6 +17,21 @@ const oauthCredentials: SessionCredentials = {
 };
 
 describe("prepareEnterpriseWriteContext", () => {
+  it.each([
+    "https://stackenterprise.co",
+    "https://demo.stackenterprise.co/",
+    "http://demo.stackenterprise.co",
+    "https://demo.stackenterprise.co/path",
+    "https://demo.stackenterprise.co?query=1",
+    "https://demo.stackenterprise.co#hash",
+    "https://user@demo.stackenterprise.co",
+    "https://stackenterprise.co.evil.example",
+  ])("has browser/server parity for %s", (baseUrl) => {
+    const supplied = { ...oauthCredentials, baseUrl };
+    expect(prepareEnterpriseWriteContext(supplied).ok).toBe(
+      getEnterpriseWriteCredentialReadiness(supplied).valid,
+    );
+  });
   it("returns a normalized write context without exposing credentials", () => {
     const result = prepareEnterpriseWriteContext({
       instanceType: "enterprise",

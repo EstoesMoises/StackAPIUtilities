@@ -260,6 +260,45 @@ describe("ContentReplacementDefineStep", () => {
     expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
     expect(onStartScan).not.toHaveBeenCalled();
   });
+
+  it("focuses the content-type group when zero scope is the first actionable blocker", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.click(screen.getByLabelText("Questions"));
+    await user.click(screen.getByLabelText("Answers"));
+    await user.click(screen.getByLabelText("Articles"));
+
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    const scope = screen.getByRole("group", { name: "Content types" });
+    expect(scope).toHaveAttribute("aria-invalid", "true");
+    expect(scope).toHaveAttribute("aria-describedby", "content-replacement-content-types-error");
+    expect(screen.getByLabelText("Questions")).toHaveFocus();
+    expect(screen.getByRole("alert", { name: "Rule validation summary" })).toHaveTextContent(
+      "1 error prevents scanning. Select at least one content type.",
+    );
+  });
+
+  it("focuses the accessible discard action when CSV errors are the only blocker", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.upload(
+      screen.getByLabelText("Import replacement CSV"),
+      new File(["wrong,headers\nfoo,bar"], "invalid.csv", { type: "text/csv" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByRole("button", { name: "Discard import errors" })).toHaveFocus();
+    expect(screen.getByRole("alert", { name: "Rule validation summary" })).toHaveTextContent(
+      /1 error prevents scanning\. Resolve the CSV import error/i,
+    );
+    expect(screen.getByRole("alert", { name: "Rule validation summary" })).not.toHaveTextContent(/highlighted field/i);
+  });
 });
 
 function deferred<T>() {

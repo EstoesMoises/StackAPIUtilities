@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type Ref } from "react";
 import { downloadTextFile } from "../utils/downloads";
 import {
   MAX_FIND_LENGTH,
@@ -21,6 +21,7 @@ export interface ContentReplacementDefineStepProps {
   disabled?: boolean;
   scanReadiness?: { ready: boolean; message: string };
   setupError?: string | null;
+  storageError?: string | null;
   onReconnect?: () => void;
 }
 
@@ -49,6 +50,7 @@ export function ContentReplacementDefineStep({
   disabled = false,
   scanReadiness = { ready: true, message: "" },
   setupError = null,
+  storageError = null,
   onReconnect,
 }: ContentReplacementDefineStepProps) {
   const defaults = useMemo(createDefaultReplacementConfiguration, []);
@@ -56,6 +58,10 @@ export function ContentReplacementDefineStep({
   const fileReadRequestId = useRef(0);
   const startPending = useRef(false);
   const fieldRefs = useRef(new Map<string, HTMLInputElement>());
+  const firstContentTypeRef = useRef<HTMLInputElement>(null);
+  const discardImportErrorsRef = useRef<HTMLButtonElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const firstImportChoiceRef = useRef<HTMLButtonElement>(null);
   const [rules, setRules] = useState<ReplacementRule[]>([
     { id: "manual-1", find: "", replace: "" },
   ]);
@@ -182,9 +188,13 @@ export function ContentReplacementDefineStep({
     if (errorCount > 0) {
       setReviewed(null);
       const firstInvalid = rules.flatMap((rule) => fieldErrors.filter((error) => error.ruleId === rule.id))[0];
-      if (firstInvalid) {
-        queueMicrotask(() => fieldRefs.current.get(`${firstInvalid.ruleId}:${firstInvalid.field}`)?.focus());
-      }
+      queueMicrotask(() => {
+        if (firstInvalid) fieldRefs.current.get(`${firstInvalid.ruleId}:${firstInvalid.field}`)?.focus();
+        else if (!contentTypes.questions && !contentTypes.answers && !contentTypes.articles) firstContentTypeRef.current?.focus();
+        else if (fileErrors.length > 0) discardImportErrorsRef.current?.focus();
+        else if (pendingImport) firstImportChoiceRef.current?.focus();
+        else if (fileReading) fileInputRef.current?.focus();
+      });
       return;
     }
     setReviewed({ key: currentKey, configuration });
@@ -301,31 +311,38 @@ export function ContentReplacementDefineStep({
         </div>
         <label className="content-replacement-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void handleFile(event.dataTransfer.files[0]); }}>
           <span>Choose or drop a replacement CSV</span>
-          <input type="file" accept=".csv,text/csv" aria-label="Import replacement CSV" onChange={(event) => void handleFile(event.currentTarget.files?.[0])} />
+          <input ref={fileInputRef} type="file" accept=".csv,text/csv" aria-label="Import replacement CSV" onChange={(event) => void handleFile(event.currentTarget.files?.[0])} />
         </label>
         {fileStatus && <p role="status">{fileStatus}</p>}
         {fileErrors.length > 0 && <div className="s-notice s-notice__danger" role="alert" aria-label="CSV import errors">
           <ul>{fileErrors.map((error) => <li key={error}>{error}</li>)}</ul>
-          <button className="s-btn s-btn__outlined" type="button" onClick={() => { setFileErrors([]); invalidateCheckpoint(); }}>Discard import errors</button>
+          <button ref={discardImportErrorsRef} className="s-btn s-btn__outlined" type="button" onClick={() => { setFileErrors([]); invalidateCheckpoint(); }}>Discard import errors</button>
         </div>}
         {pendingImport && (
           <div className="content-replacement-import-choice s-notice s-notice__info" role="group" aria-label="Apply imported mappings">
             <p>{pendingImport.fileName} has {pendingImport.rows.length} imported {pendingImport.rows.length === 1 ? "row" : "rows"}. Append them or replace the current list?</p>
             <div className="write-tool-actions content-replacement-actions">
-              <button className="s-btn s-btn__outlined" type="button" onClick={() => applyImport(pendingImport.rows, "append", pendingImport.fileName, pendingImport.requestId)}>Append imported rows</button>
+              <button ref={firstImportChoiceRef} className="s-btn s-btn__outlined" type="button" onClick={() => applyImport(pendingImport.rows, "append", pendingImport.fileName, pendingImport.requestId)}>Append imported rows</button>
               <button className="s-btn s-btn__outlined" type="button" onClick={() => applyImport(pendingImport.rows, "replace", pendingImport.fileName, pendingImport.requestId)}>Replace current rows</button>
             </div>
           </div>
         )}
       </section>
 
-      <fieldset className="content-replacement-section">
+      <fieldset
+        className="content-replacement-section"
+        aria-invalid={showValidation && !contentTypes.questions && !contentTypes.answers && !contentTypes.articles ? "true" : undefined}
+        aria-describedby={showValidation && !contentTypes.questions && !contentTypes.answers && !contentTypes.articles ? "content-replacement-content-types-error" : undefined}
+      >
         <legend>Content types</legend>
         <div className="content-replacement-checkboxes">
-          <Checkbox label="Questions" checked={contentTypes.questions} onChange={(checked) => updateContentType("questions", checked)} />
+          <Checkbox inputRef={firstContentTypeRef} label="Questions" checked={contentTypes.questions} onChange={(checked) => updateContentType("questions", checked)} />
           <Checkbox label="Answers" checked={contentTypes.answers} onChange={(checked) => updateContentType("answers", checked)} />
           <Checkbox label="Articles" checked={contentTypes.articles} onChange={(checked) => updateContentType("articles", checked)} />
         </div>
+        {showValidation && !contentTypes.questions && !contentTypes.answers && !contentTypes.articles && (
+          <p className="content-replacement-field-error" id="content-replacement-content-types-error">Select at least one content type.</p>
+        )}
       </fieldset>
 
       <details className="content-replacement-section content-replacement-advanced">
@@ -347,7 +364,7 @@ export function ContentReplacementDefineStep({
         <h3 id="content-replacement-checkpoint-heading">Rule checkpoint</h3>
         {showValidation && errorCount > 0 && (
           <div className="s-notice s-notice__danger" role="alert" aria-label="Rule validation summary">
-            {errorCount} {errorCount === 1 ? "error prevents" : "errors prevent"} scanning. Correct the highlighted {errorCount === 1 ? "field" : "fields"} and resolve the listed import or scope issues.
+            {validationSummary(errorCount, fieldErrors.length, contentTypes, fileErrors.length, fileReading, pendingImport !== null)}
           </div>
         )}
         {reviewed && checkpointCurrent ? <RuleSummary configuration={reviewed.configuration} /> : <p>Review the current configuration to unlock scanning.</p>}
@@ -359,15 +376,32 @@ export function ContentReplacementDefineStep({
         {(setupError || startError) && <div className="s-notice s-notice__danger" role="alert" aria-label="Scan setup error">{startError ?? setupError}</div>}
         <div className="write-tool-actions content-replacement-actions">
           <button className="s-btn s-btn__outlined" type="button" onClick={reviewRules} disabled={disabled || starting}>Review rules</button>
-          <button className="s-btn s-btn__primary" type="button" onClick={() => void startScan()} disabled={!canStart}>{starting ? "Starting scan…" : "Start scan"}</button>
+          <button className="s-btn s-btn__primary" type="button" onClick={() => void startScan()} disabled={!canStart}>{starting ? "Starting scan…" : storageError ? "Save job and start scan" : "Start scan"}</button>
         </div>
       </section>
     </section>
   );
 }
 
-function Checkbox({ label, checked, onChange }: { label: string; checked: boolean; onChange(checked: boolean): void }) {
-  return <label className="write-tool-checkbox"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} /> <span>{label}</span></label>;
+function Checkbox({ label, checked, onChange, inputRef }: { label: string; checked: boolean; onChange(checked: boolean): void; inputRef?: Ref<HTMLInputElement> }) {
+  return <label className="write-tool-checkbox"><input ref={inputRef} type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} /> <span>{label}</span></label>;
+}
+
+function validationSummary(
+  errorCount: number,
+  fieldErrorCount: number,
+  contentTypes: ReplacementConfiguration["contentTypes"],
+  importErrorCount: number,
+  fileReading: boolean,
+  pendingImport: boolean,
+) {
+  const prefix = `${errorCount} ${errorCount === 1 ? "error prevents" : "errors prevent"} scanning.`;
+  if (fieldErrorCount > 0) return `${prefix} Correct the highlighted ${fieldErrorCount === 1 ? "field" : "fields"}.`;
+  if (!contentTypes.questions && !contentTypes.answers && !contentTypes.articles) return `${prefix} Select at least one content type.`;
+  if (importErrorCount > 0) return `${prefix} Resolve the CSV import ${importErrorCount === 1 ? "error" : "errors"} or discard them.`;
+  if (pendingImport) return `${prefix} Choose how to apply the imported mappings.`;
+  if (fileReading) return `${prefix} Wait for the CSV file read to finish.`;
+  return `${prefix} Resolve the listed issue.`;
 }
 
 function RuleSummary({ configuration }: { configuration: ReplacementConfiguration }) {

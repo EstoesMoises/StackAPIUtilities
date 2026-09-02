@@ -1,11 +1,7 @@
 import { useState } from "react";
-import { validateEnterpriseV3OAuthCredentials } from "../credentials/enterpriseV3Credentials";
+import { getEnterpriseWriteCredentialReadiness } from "../credentials/enterpriseV3Credentials";
 import type { SessionCredentials } from "../domain/types";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
-import {
-  isOriginOnlyInstanceUrl,
-  validateSessionCredentials,
-} from "../server/contentReplacementRequestValidation";
 import { canEnterReview } from "../writeTools/contentReplacement/jobState";
 import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
 
@@ -28,7 +24,10 @@ export function ContentReplacementScanStep({
     return <section className="content-replacement-scan"><p>No scan job is available.</p></section>;
   }
 
-  const credentialState = getContentReplacementCredentialReadiness(credentials, { baseUrl: job.baseUrl });
+  const sharedReadiness = getEnterpriseWriteCredentialReadiness(credentials, { expectedOrigin: job.baseUrl });
+  const credentialState = controller.credentialReadiness.refreshRequired
+    ? controller.credentialReadiness
+    : sharedReadiness;
   const scanCanFinish = !controller.storageError && canEnterReview(job);
   const status = getScanStatus(job, controller.storageError, credentialState);
   const active = job.stage === "scan" && job.status === "running";
@@ -151,32 +150,6 @@ function ScanConfiguration({ job }: { job: PersistedContentReplacementJob }) {
       {unsafe && <p className="s-notice s-notice__warning"><strong>Unsafe matching options are active.</strong> Review the case, boundary, and code policy above.</p>}
     </details>
   );
-}
-
-export function getContentReplacementCredentialReadiness(
-  credentials: SessionCredentials | null,
-  options: { baseUrl?: string; now?: Date } = {},
-): { valid: boolean; message: string } {
-  const parsed = validateSessionCredentials(credentials);
-  const validation = validateEnterpriseV3OAuthCredentials(parsed, {
-    requiredScopes: ["write_access"],
-    now: options.now,
-  });
-  if (!validation.valid || !parsed) {
-    return { valid: false, message: validation.messages.join(" ") || "Reconnect valid Stack Enterprise credentials." };
-  }
-  try {
-    const origin = new URL(parsed.baseUrl).origin;
-    if (!isOriginOnlyInstanceUrl(origin)) {
-      return { valid: false, message: "Reconnect with a valid Stack Enterprise instance URL." };
-    }
-    if (options.baseUrl && origin !== options.baseUrl) {
-      return { valid: false, message: "The connected Stack Enterprise origin does not match this scan." };
-    }
-  } catch {
-    return { valid: false, message: "Reconnect valid Stack Enterprise credentials." };
-  }
-  return { valid: true, message: "" };
 }
 
 function getScanStatus(

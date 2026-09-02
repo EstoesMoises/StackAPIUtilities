@@ -108,6 +108,25 @@ describe("ContentReplacementWizard", () => {
       "The content replacement job could not be created.",
     );
   });
+
+  it("allows a failed local save to be retried without starting the scan twice", async () => {
+    const user = userEvent.setup();
+    const failedController = controller(null);
+    failedController.storageError = "Content replacement progress could not be saved.";
+    vi.mocked(failedController.createJob).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    render(<ContentReplacementWizard credentials={credentials} controller={failedController} />);
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    const retry = screen.getByRole("button", { name: "Save job and start scan" });
+    expect(retry).toBeEnabled();
+    await user.click(retry);
+    expect(failedController.startScan).not.toHaveBeenCalled();
+    await user.click(retry);
+    expect(failedController.createJob).toHaveBeenCalledTimes(2);
+    expect(failedController.startScan).toHaveBeenCalledOnce();
+  });
 });
 
 function controller(currentJob: PersistedContentReplacementJob | null): ContentReplacementJobController {
@@ -116,7 +135,8 @@ function controller(currentJob: PersistedContentReplacementJob | null): ContentR
     busy: false,
     storageError: null,
     operationError: null,
-    createJob: vi.fn().mockResolvedValue(undefined),
+    credentialReadiness: { valid: true, refreshRequired: false, message: "" },
+    createJob: vi.fn().mockResolvedValue(true),
     startScan: vi.fn().mockResolvedValue(undefined),
     pause: vi.fn(),
     resume: vi.fn(),

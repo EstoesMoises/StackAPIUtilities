@@ -1,4 +1,5 @@
 import type { SessionCredentials } from "../domain/types";
+import { getEnterpriseWriteCredentialReadiness } from "../credentials/enterpriseV3Credentials";
 import {
   useContentReplacementJob,
   type ContentReplacementJobController,
@@ -9,10 +10,7 @@ import type {
   ReplacementConfiguration,
 } from "../writeTools/contentReplacement/types";
 import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
-import {
-  ContentReplacementScanStep,
-  getContentReplacementCredentialReadiness,
-} from "./ContentReplacementScanStep";
+import { ContentReplacementScanStep } from "./ContentReplacementScanStep";
 
 export interface ContentReplacementWizardProps {
   credentials: SessionCredentials | null;
@@ -53,10 +51,13 @@ function ContentReplacementWizardView({
   now,
 }: ContentReplacementWizardProps & { controller: ContentReplacementJobController }) {
   const activeStep = wizardStep(controller.job?.stage);
-  const credentialReadiness = getContentReplacementCredentialReadiness(credentials, { now });
+  const baseCredentialReadiness = getEnterpriseWriteCredentialReadiness(credentials, { now });
+  const credentialReadiness = controller.credentialReadiness.refreshRequired
+    ? controller.credentialReadiness
+    : baseCredentialReadiness;
 
   async function startScan(configuration: ReplacementConfiguration) {
-    await controller.createJob(configuration);
+    if (!await controller.createJob(configuration)) return;
     await controller.startScan();
   }
 
@@ -89,9 +90,10 @@ function ContentReplacementWizardView({
         {activeStep === 0 && (
           <ContentReplacementDefineStep
             onStartScan={startScan}
-            disabled={controller.busy || controller.storageError !== null}
+            disabled={controller.busy}
             scanReadiness={{ ready: credentialReadiness.valid, message: credentialReadiness.message }}
             setupError={controller.operationError ?? controller.storageError}
+            storageError={controller.storageError}
             onReconnect={onReconnect}
           />
         )}

@@ -2,7 +2,7 @@ import {
   normalizeInstanceUrl,
   type NormalizedInstance,
 } from "../credentials/credentialRules";
-import { validateEnterpriseV3OAuthCredentials } from "../credentials/enterpriseV3Credentials";
+import { getEnterpriseWriteCredentialReadiness } from "../credentials/enterpriseV3Credentials";
 import type { SessionCredentials } from "../domain/types";
 
 export const MAX_WRITE_ROUTE_BYTES = 1_048_576;
@@ -52,55 +52,21 @@ export function prepareEnterpriseWriteContext(
 ): EnterpriseWriteContextResult {
   const normalizedCredentials = normalizeWriteCredentials(credentials);
   const redact = createCredentialRedactor(credentials, normalizedCredentials);
-  let instance: NormalizedInstance;
-
-  try {
-    instance = normalizeInstanceUrl(normalizedCredentials.baseUrl);
-  } catch {
+  const readiness = getEnterpriseWriteCredentialReadiness(normalizedCredentials);
+  if (!readiness.valid) {
     return {
       ok: false,
-      code: "invalid_instance_url",
+      code: readiness.code === "origin_mismatch" ? "unsupported_enterprise_instance" : readiness.code,
       status: 400,
-      message: "Enterprise write request requires a valid instance URL.",
+      message: serverWriteFailureMessage(readiness.code, readiness.message),
     };
   }
 
-  if (
-    normalizedCredentials.instanceType !== "enterprise" ||
-    instance.instanceType !== "enterprise"
-  ) {
-    return {
-      ok: false,
-      code: "enterprise_credentials_required",
-      status: 400,
-      message: "Enterprise write request requires Enterprise session credentials.",
-    };
-  }
-
-  if (!isSupportedEnterpriseWriteTarget(instance)) {
-    return {
-      ok: false,
-      code: "unsupported_enterprise_instance",
-      status: 400,
-      message: "Enterprise write request requires a Stack Enterprise instance URL.",
-    };
-  }
-
-  const oauthValidation = validateEnterpriseV3OAuthCredentials(normalizedCredentials, {
-    requiredScopes: ["write_access"],
-  });
-  if (!oauthValidation.valid) {
-    return {
-      ok: false,
-      code: "invalid_enterprise_credentials",
-      status: 400,
-      message: oauthValidation.messages.join(" "),
-    };
-  }
+  const instance = normalizeInstanceUrl(readiness.origin);
 
   return {
     ok: true,
-    credentials: normalizedCredentials,
+    credentials: readiness.credentials,
     instance,
     redact,
   };
@@ -175,14 +141,13 @@ function normalizeOptionalToken(token: string | undefined): string | undefined {
   return trimmedToken ? trimmedToken : undefined;
 }
 
-function isSupportedEnterpriseWriteTarget(instance: NormalizedInstance): boolean {
-  const url = new URL(instance.baseUrl);
-  const hostname = url.hostname.toLowerCase();
-
-  return (
-    url.protocol === "https:" &&
-    (hostname === "stackenterprise.co" || hostname.endsWith(".stackenterprise.co"))
-  );
+function serverWriteFailureMessage(code: string, fallback: string): string {
+  if (code === "invalid_instance_url") return "Enterprise write request requires a valid instance URL.";
+  if (code === "enterprise_credentials_required") return "Enterprise write request requires Enterprise session credentials.";
+  if (code === "unsupported_enterprise_instance" || code === "origin_mismatch") {
+    return "Enterprise write request requires a Stack Enterprise instance URL.";
+  }
+  return fallback;
 }
 
 function createCredentialRedactor(

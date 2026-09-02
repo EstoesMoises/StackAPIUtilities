@@ -70,6 +70,38 @@ describe("ContentReplacementScanStep", () => {
     expect(screen.getByRole("button", { name: "Reconnect credentials" })).toBeEnabled();
   });
 
+  it("does not treat the same rejected credential as reconnected", () => {
+    const paused = createJob({
+      status: "paused",
+      operationError: {
+        category: "authorization",
+        retryable: true,
+        message: "Stack Enterprise credentials were rejected.",
+        occurredAt: "2026-09-02T12:00:00.000Z",
+      },
+    });
+    const controller = createController(paused);
+    controller.credentialReadiness = {
+      valid: false,
+      refreshRequired: true,
+      message: "Reconnect with a different valid credential; the current credential was rejected.",
+    };
+    const { rerender } = render(
+      <ContentReplacementScanStep controller={controller} credentials={validCredentials} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Credential reconnection required");
+    expect(screen.queryByRole("button", { name: "Resume scan" })).not.toBeInTheDocument();
+
+    controller.credentialReadiness = { valid: true, refreshRequired: false, message: "" };
+    rerender(
+      <ContentReplacementScanStep
+        controller={controller}
+        credentials={{ ...validCredentials, accessToken: "fresh-token" }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Resume scan" })).toBeEnabled();
+  });
+
   it("reports rate-limit backoff with a localized absolute retry time", () => {
     const nextRetryAt = "2026-09-02T15:30:00.000Z";
     const controller = createController(createJob({ nextRetryAt }));
@@ -212,6 +244,7 @@ function createController(job: PersistedContentReplacementJob): ContentReplaceme
     busy: false,
     storageError: null,
     operationError: null,
+    credentialReadiness: { valid: true, refreshRequired: false, message: "" },
     createJob: vi.fn(),
     startScan: vi.fn(),
     pause: vi.fn(),

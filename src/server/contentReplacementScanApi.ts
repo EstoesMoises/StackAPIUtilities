@@ -90,6 +90,13 @@ export async function handleContentReplacementScanRequest(
     return plainJsonResponse({ ok: false, error: INVALID_REQUEST_MESSAGE }, 400);
   }
 
+  if (!isOriginOnlyInstanceUrl(validated.credentials.baseUrl)) {
+    return plainJsonResponse(
+      { ok: false, error: "Enterprise content scan requires an origin-only instance URL." },
+      400,
+    );
+  }
+
   const writeContext = prepareEnterpriseWriteContext(validated.credentials);
   if (!writeContext.ok) {
     return plainJsonResponse({ ok: false, error: writeContext.message }, writeContext.status);
@@ -97,13 +104,6 @@ export async function handleContentReplacementScanRequest(
 
   const browserJsonResponse = (body: ContentReplacementScanResponseBody, status: number) =>
     redactedJsonResponse(body, status, writeContext.redact, SCAN_RESPONSE_REDACTION_POLICY);
-
-  if (!isOriginOnlyInstanceUrl(validated.credentials.baseUrl)) {
-    return browserJsonResponse(
-      { ok: false, error: "Enterprise content scan requires an origin-only instance URL." },
-      400,
-    );
-  }
 
   const expectedFingerprint = await createJobFingerprint({
     baseUrl: writeContext.instance.baseUrl,

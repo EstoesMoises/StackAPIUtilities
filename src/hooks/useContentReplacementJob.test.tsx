@@ -17,7 +17,7 @@ const AT = "2026-09-01T12:00:00.000Z";
 const LATER = "2026-09-01T12:01:00.000Z";
 const credentials: SessionCredentials = {
   instanceType: "enterprise",
-  baseUrl: "https://example.stackenterprise.co/path-that-will-normalize",
+  baseUrl: "https://example.stackenterprise.co/",
   accessToken: "top-secret-token",
   apiKey: "top-secret-key",
   authSource: "oauth-pkce",
@@ -135,6 +135,116 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job).toEqual(deps.store.current());
   });
 
+  it.each([
+    "http://example.stackenterprise.co",
+    "https://example.stackenterprise.co/path",
+    "https://example.stackenterprise.co?query=1",
+    "https://user@example.stackenterprise.co",
+    "https://example.stackenterprise.co.evil.test",
+  ])("rejects unsupported write origins before persistence or fetch: %s", async (baseUrl) => {
+    const fetcher = vi.fn();
+    const deps = dependencies(fetcher);
+    const { result } = renderHook(() => useContentReplacementJob({ ...credentials, baseUrl }, null, deps.value));
+
+    let created = true;
+    await act(async () => { created = await result.current.createJob(configuration); });
+    await act(async () => result.current.startScan());
+
+    expect(created).toBe(false);
+    expect(result.current.job).toBeNull();
+    expect(deps.store.save).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("requires an actual valid credential change after an authorization rejection", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: false, error: "secret upstream detail" }, 401))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        throttleNotices: [],
+      }));
+    const deps = dependencies(fetcher);
+    const hook = renderHook(
+      ({ supplied }) => useContentReplacementJob(supplied, null, deps.value),
+      { initialProps: { supplied: credentials } },
+    );
+    await act(async () => hook.result.current.createJob(configuration));
+    await act(async () => hook.result.current.startScan());
+
+    expect(hook.result.current.job).toMatchObject({ status: "paused", operationError: { category: "authorization" } });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+    await act(async () => hook.result.current.resume());
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    hook.rerender({ supplied: { ...credentials, accessToken: "   " } });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: false });
+    await act(async () => hook.result.current.resume());
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    hook.rerender({ supplied: { ...credentials } });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+
+    hook.rerender({ supplied: { ...credentials, accessToken: "fresh-token" } });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+    await act(async () => hook.result.current.resume());
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(deps.store.current())).not.toMatch(/fresh-token|top-secret-token|credentialFingerprint/i);
+  });
+
+  it("requires a post-mount credential change for a persisted authorization interruption", async () => {
+    let interrupted = createReplacementJob({
+      id: "job-1",
+      fingerprint: "f".repeat(64),
+      baseUrl: "https://example.stackenterprise.co",
+      configuration,
+      createdAt: AT,
+    });
+    interrupted = reduceReplacementJob(interrupted, {
+      type: "run/credential-interrupted",
+      failure: { category: "authorization", retryable: true, message: "Credentials rejected." },
+      at: AT,
+    });
+    const deps = dependencies(vi.fn(), interrupted);
+    const hook = renderHook(
+      ({ supplied }) => useContentReplacementJob(supplied, interrupted, deps.value),
+      { initialProps: { supplied: credentials } },
+    );
+
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+    hook.rerender({ supplied: { ...credentials } });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+    hook.rerender({ supplied: { ...credentials, accessToken: "new-token" } });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+  });
+
+  it("rejects the credential used by an in-flight request without tainting a newer input", async () => {
+    const pending = deferred<Response>();
+    const fetcher = vi.fn()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        throttleNotices: [],
+      }));
+    const deps = dependencies(fetcher);
+    const hook = renderHook(
+      ({ supplied }) => useContentReplacementJob(supplied, null, deps.value),
+      { initialProps: { supplied: credentials } },
+    );
+    await act(async () => hook.result.current.createJob(configuration));
+    let scan!: Promise<void>;
+    act(() => { scan = hook.result.current.startScan(); });
+    await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    hook.rerender({ supplied: { ...credentials, accessToken: "fresh-before-response" } });
+    pending.resolve(jsonResponse({ ok: false, error: "rejected" }, 403));
+    await act(async () => scan);
+
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+    await act(async () => hook.result.current.resume());
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("sequences one bounded scan request at a time and persists every response before continuing", async () => {
     const proposal = await questionProposal();
     const firstSave = deferred<void>();
@@ -155,7 +265,7 @@ describe("useContentReplacementJob", () => {
     const deps = dependencies(fetcher);
     deps.store.save.mockImplementationOnce(async (job) => { await firstSave.promise; void job; });
     const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
-    let creation!: Promise<void>;
+    let creation!: Promise<boolean>;
     act(() => { creation = result.current.createJob(configuration); });
     expect(fetcher).not.toHaveBeenCalled();
     firstSave.resolve();
@@ -306,6 +416,31 @@ describe("useContentReplacementJob", () => {
     expect(fetcher).not.toHaveBeenCalled();
     expect(result.current.job).toEqual(persistedBeforeRun);
     expect(result.current.storageError).toBe("Content replacement progress could not be saved.");
+  });
+
+  it("retries a failed initial save and starts the scan only after persistence succeeds", async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher);
+    deps.store.save.mockRejectedValueOnce(new Error("quota"));
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+
+    let first = true;
+    await act(async () => { first = await result.current.createJob(configuration); });
+    expect(first).toBe(false);
+    expect(result.current.storageError).toBe("Content replacement progress could not be saved.");
+    expect(result.current.job).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+
+    let second = false;
+    await act(async () => { second = await result.current.createJob(configuration); });
+    expect(second).toBe(true);
+    expect(result.current.storageError).toBeNull();
+    await act(async () => result.current.startScan());
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it("atomically persists every recovery record before any apply request", async () => {
@@ -462,6 +597,28 @@ describe("useContentReplacementJob", () => {
 
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(result.current.job?.proposals["question:1"].status).toBe("applied");
+  });
+
+  it("turns an item-level permission response into a reconnectable credential interruption", async () => {
+    const proposal = await questionProposal();
+    const prepared = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: { status: "permission", error: "upstream detail" },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher, prepared);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, prepared, deps.value));
+
+    await act(async () => result.current.startApply());
+
+    expect(result.current.job).toMatchObject({
+      status: "paused",
+      operationError: { category: "authorization", retryable: true },
+      proposals: { "question:1": { status: "ready-to-apply" } },
+    });
+    expect(result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+    expect(JSON.stringify(deps.store.current())).not.toMatch(/top-secret-token|credentialFingerprint/i);
   });
 
   it("interrupts a persisted applying item during rehydration and requires explicit resume", async () => {
