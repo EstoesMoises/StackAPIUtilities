@@ -13,6 +13,7 @@ import {
   toReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/proposals";
 import { scanDetailBatch } from "../writeTools/contentReplacement/scanner";
+import { reduceReplacementJob } from "../writeTools/contentReplacement/jobState";
 import type { ContentReplacementClient } from "../writeTools/contentReplacement/contentApi";
 import type {
   PersistedContentReplacementJob,
@@ -339,6 +340,144 @@ describe("browserContentReplacementStorage", () => {
       ...recovery.result!,
       kind: "verification-failed",
       expectedRequestChecksum: recovery.scannedRequestChecksum,
+    };
+
+    await saveContentReplacementJob(job);
+
+    await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
+  });
+
+  it("persists recovery verification failure when the PUT readback still equals the post-apply checksum", async () => {
+    installFakeIndexedDB();
+    const job = createRecoveryTerminalJob("conflict");
+    const recovery = job.proposals["question:42"].recovery!;
+    recovery.result = {
+      ...recovery.result!,
+      kind: "verification-failed",
+      expectedRequestChecksum: recovery.scannedRequestChecksum,
+      observedRequestChecksum: recovery.observedPostApplyChecksum!,
+    };
+
+    await saveContentReplacementJob(job);
+
+    await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
+  });
+
+  it("round-trips Task 9 divergent recovery evidence through reducer and storage", async () => {
+    installFakeIndexedDB();
+    const at = "2026-09-01T12:04:00.000Z";
+    let job = createApplyReadyJob();
+    const itemKey = "question:42";
+    const proposal = job.proposals[itemKey].proposal;
+    job = reduceReplacementJob(job, { type: "apply/start", at });
+    job = reduceReplacementJob(job, { type: "apply/item-started", itemKey, at });
+    job = reduceReplacementJob(job, {
+      type: "apply/item-finished", itemKey,
+      result: { status: "updated", observedRequestChecksum: proposal.proposedRequestChecksum }, at,
+    });
+    job = reduceReplacementJob(job, {
+      type: "recovery/preview-finished", itemKey,
+      result: {
+        status: "recoverable",
+        currentRequestModel: toReplacementWireRequestModel(proposal.after),
+        observedRequestChecksum: proposal.proposedRequestChecksum,
+      }, at,
+    });
+    job = reduceReplacementJob(job, { type: "recovery/start", itemKeys: [itemKey], at });
+    job = reduceReplacementJob(job, { type: "recovery/item-started", itemKey, at });
+    job = reduceReplacementJob(job, {
+      type: "recovery/item-finished", itemKey,
+      result: { status: "recovered", observedRequestChecksum: proposal.proposedRequestChecksum }, at,
+    });
+
+    await saveContentReplacementJob(job);
+    const loaded = await loadContentReplacementJob(job.id);
+
+    expect(loaded).toEqual(job);
+    expect(loaded!.proposals[itemKey]).toMatchObject({
+      status: "recovery-conflict",
+      result: { kind: "applied", observedRequestChecksum: proposal.proposedRequestChecksum },
+      recovery: {
+        result: {
+          kind: "verification-failed",
+          expectedRequestChecksum: proposal.scannedRequestChecksum,
+          observedRequestChecksum: proposal.proposedRequestChecksum,
+        },
+      },
+    });
+  });
+
+  it.each([
+    ["empty remaining suffix", []],
+    ["reordered remaining suffix", ["question:44", "question:43", "question:42"]],
+    ["skipped remaining suffix", ["question:42", "question:44"]],
+    ["duplicated remaining suffix", ["question:42", "question:42", "question:43", "question:44"]],
+  ] as const)("rejects active operation with %s", async (_label, remainingItemKeys) => {
+    installFakeIndexedDB();
+    const job = await createActiveRecoveryOperationJob();
+    job.activeOperation!.remainingItemKeys = [...remainingItemKeys];
+
+    await expect(saveContentReplacementJob(job)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
+  it("rejects stale-rescan evidence for a key that is still unfinished", async () => {
+    installFakeIndexedDB();
+    const job = await createActiveRecoveryOperationJob();
+    for (const item of Object.values(job.proposals)) {
+      item.status = "stale";
+      item.result = { kind: "stale", completedAt: job.updatedAt };
+      delete item.failure;
+      item.recovery = {
+        priorRequestModel: structuredClone(item.proposal.before),
+        scannedRequestChecksum: item.proposal.scannedRequestChecksum,
+        proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+        status: "ready",
+      };
+    }
+    job.stage = "results";
+    job.status = "running";
+    job.activeOperation = {
+      kind: "stale-rescan",
+      requestedItemKeys: ["question:42", "question:43", "question:44"],
+      remainingItemKeys: ["question:44"],
+      completedItemKeys: ["question:42", "question:43"],
+      generation: job.updatedAt,
+      proposals: { "question:44": job.proposals["question:44"].proposal },
+      inspectedCount: 2,
+      protectedOccurrenceCount: 0,
+    };
+
+    await expect(saveContentReplacementJob(job)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
+  it("persists an exact active-operation suffix and consumed stale-rescan prefix", async () => {
+    installFakeIndexedDB();
+    const job = await createActiveRecoveryOperationJob();
+    for (const item of Object.values(job.proposals)) {
+      item.status = "stale";
+      item.result = { kind: "stale", completedAt: job.updatedAt };
+      item.recovery = {
+        priorRequestModel: structuredClone(item.proposal.before),
+        scannedRequestChecksum: item.proposal.scannedRequestChecksum,
+        proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+        status: "ready",
+      };
+    }
+    job.stage = "results";
+    job.status = "running";
+    job.activeOperation = {
+      kind: "stale-rescan",
+      requestedItemKeys: ["question:42", "question:43", "question:44"],
+      remainingItemKeys: ["question:44"],
+      completedItemKeys: ["question:42", "question:43"],
+      generation: job.updatedAt,
+      proposals: { "question:42": job.proposals["question:42"].proposal },
+      inspectedCount: 2,
+      protectedOccurrenceCount: 0,
     };
 
     await saveContentReplacementJob(job);
@@ -1338,6 +1477,50 @@ function createAppliedJob(): PersistedContentReplacementJob {
   job.progress.applyCompleted = 1;
   job.progress.recoveryCompleted = 0;
   job.updatedAt = "2026-09-01T12:04:00.000Z";
+  return job;
+}
+
+async function createActiveRecoveryOperationJob(): Promise<PersistedContentReplacementJob> {
+  const job = createAppliedJob();
+  for (const id of [43, 44]) {
+    const before = structuredClone(createQuestionBeforeModel());
+    before.ref = { kind: "question", questionId: id };
+    if (before.kind !== "question") throw new Error("Expected question fixture.");
+    before.metadata = { ...before.metadata, webUrl: `https://example.stackenterprise.co/q/${id}` };
+    const proposal = await buildReplacementProposal(before, job.configuration);
+    if (!proposal) throw new Error("Expected canonical proposal fixture.");
+    job.proposals[`question:${id}`] = {
+      proposal,
+      included: true,
+      attemptCount: 1,
+      status: "applied",
+      result: {
+        kind: "applied", observedRequestChecksum: proposal.proposedRequestChecksum,
+        completedAt: "2026-09-01T12:02:00.000Z",
+      },
+      recovery: {
+        priorRequestModel: structuredClone(proposal.before),
+        scannedRequestChecksum: proposal.scannedRequestChecksum,
+        proposedRequestChecksum: proposal.proposedRequestChecksum,
+        observedPostApplyChecksum: proposal.proposedRequestChecksum,
+        status: "ready",
+      },
+    };
+  }
+  job.stage = "recovery";
+  job.status = "paused";
+  job.progress.inventoryItems = 3;
+  job.progress.detailsInspected = 3;
+  job.progress.proposalsFound = 3;
+  job.progress.protectedOccurrences = Object.values(job.proposals)
+    .reduce((count, item) => count + item.proposal.protectedOccurrences.length, 0);
+  job.progress.applyCompleted = 3;
+  job.activeOperation = {
+    kind: "recovery-preview",
+    requestedItemKeys: ["question:42", "question:43", "question:44"],
+    remainingItemKeys: ["question:42", "question:43", "question:44"],
+    generation: job.updatedAt,
+  };
   return job;
 }
 

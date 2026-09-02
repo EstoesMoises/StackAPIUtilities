@@ -287,9 +287,7 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
   }
   if (job.activeOperation) {
     if (!isWithinJobTime(job.activeOperation.generation, job) ||
-      new Set(job.activeOperation.requestedItemKeys).size !== job.activeOperation.requestedItemKeys.length ||
-      new Set(job.activeOperation.remainingItemKeys).size !== job.activeOperation.remainingItemKeys.length ||
-      job.activeOperation.remainingItemKeys.some((key) => !job.activeOperation!.requestedItemKeys.includes(key))) {
+      !isNonemptyExactSuffix(job.activeOperation.requestedItemKeys, job.activeOperation.remainingItemKeys)) {
       throw corruptJob();
     }
     if (job.activeOperation.kind === "recovery-preview" &&
@@ -353,10 +351,15 @@ function assertStageInvariants(
   if (job.activeOperation?.kind === "stale-rescan") {
     if (job.stage !== "results" || job.status === "completed") throw corruptJob();
     const requested = new Set(job.activeOperation.requestedItemKeys);
+    const consumedCount = job.activeOperation.requestedItemKeys.length - job.activeOperation.remainingItemKeys.length;
+    const consumed = job.activeOperation.requestedItemKeys.slice(0, consumedCount);
+    const consumedSet = new Set(consumed);
     if (requested.size !== job.activeOperation.requestedItemKeys.length ||
-      new Set(job.activeOperation.remainingItemKeys).size !== job.activeOperation.remainingItemKeys.length ||
       job.activeOperation.remainingItemKeys.some((key) => !requested.has(key) || job.proposals[key]?.status !== "stale") ||
-      Object.keys(job.activeOperation.proposals).some((key) => !requested.has(key))) throw corruptJob();
+      job.activeOperation.completedItemKeys.length !== consumed.length ||
+      job.activeOperation.completedItemKeys.some((key, index) => key !== consumed[index]) ||
+      job.activeOperation.inspectedCount !== consumed.length ||
+      Object.keys(job.activeOperation.proposals).some((key) => !consumedSet.has(key))) throw corruptJob();
   }
   if (job.stage !== "scan" && (job.inventoryQueue.length > 0 || job.detailQueue.length > 0)) {
     throw corruptJob();
@@ -491,7 +494,8 @@ function assertItemInvariants(
       (recovery.result?.kind !== "conflict" && recovery.result?.kind !== "verification-failed") ||
       !matchesRecoveryGeneration(item, recovery.result) ||
       recovery.result.observedRequestChecksum === recovery.scannedRequestChecksum ||
-      recovery.result.observedRequestChecksum === recovery.observedPostApplyChecksum ||
+      (recovery.result.kind === "conflict" &&
+        recovery.result.observedRequestChecksum === recovery.observedPostApplyChecksum) ||
       Date.parse(result?.completedAt ?? "") > Date.parse(recovery.result.completedAt)
     ) throw corruptJob();
     if (recovery.result.kind === "verification-failed" &&
@@ -955,7 +959,7 @@ function parseActiveOperation(
     return { kind: raw.kind, requestedItemKeys, remainingItemKeys, generation };
   }
   if (raw.kind !== "stale-rescan") throw corruptJob();
-  exactObject(raw, [...common, "proposals", "inspectedCount", "protectedOccurrenceCount"]);
+  exactObject(raw, [...common, "completedItemKeys", "proposals", "inspectedCount", "protectedOccurrenceCount"]);
   const candidateMap = exactDynamicMap(raw.proposals);
   const parsed: Record<string, ReplacementProposal> = {};
   for (const [key, candidate] of Object.entries(candidateMap)) {
@@ -964,10 +968,18 @@ function parseActiveOperation(
   }
   return {
     kind: "stale-rescan", requestedItemKeys, remainingItemKeys, generation,
+    completedItemKeys: stringList(raw.completedItemKeys, MAX_QUEUE_ITEMS, 200),
     proposals: parsed,
     inspectedCount: count(raw.inspectedCount),
     protectedOccurrenceCount: count(raw.protectedOccurrenceCount),
   };
+}
+
+function isNonemptyExactSuffix(requested: readonly string[], remaining: readonly string[]): boolean {
+  if (requested.length === 0 || remaining.length === 0 || remaining.length > requested.length ||
+    new Set(requested).size !== requested.length || new Set(remaining).size !== remaining.length) return false;
+  const offset = requested.length - remaining.length;
+  return remaining.every((key, index) => key === requested[offset + index]);
 }
 
 function parseFailure(value: unknown): PersistedContentReplacementFailure {

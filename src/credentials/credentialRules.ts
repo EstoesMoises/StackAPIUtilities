@@ -3,6 +3,15 @@ import { planDatasetsForReports } from "../collectors/datasetPlanner";
 import { reportRegistry } from "../domain/reportRegistry";
 import { utilityRegistry } from "../domain/utilityRegistry";
 import type { InstanceType, ReportId, SessionCredentials, UtilityId } from "../domain/types";
+import {
+  validateEnterpriseV3OAuthCredentials,
+  type ValidationResult,
+} from "./enterpriseV3Credentials";
+export {
+  validateEnterpriseV3OAuthCredentials,
+  type EnterpriseOAuthValidationOptions,
+  type ValidationResult,
+} from "./enterpriseV3Credentials";
 
 export interface NormalizedInstance {
   instanceType: InstanceType;
@@ -10,16 +19,6 @@ export interface NormalizedInstance {
   teamSlug: string | null;
   apiV2Url: string;
   apiV3Url: string;
-}
-
-export interface ValidationResult {
-  valid: boolean;
-  messages: string[];
-}
-
-export interface EnterpriseOAuthValidationOptions {
-  requiredScopes?: string[];
-  now?: Date;
 }
 
 export function normalizeInstanceUrl(input: string): NormalizedInstance {
@@ -48,56 +47,6 @@ export function normalizeInstanceUrl(input: string): NormalizedInstance {
     apiV2Url: `${baseUrl}/api/2.3`,
     apiV3Url: `${baseUrl}/api/v3`,
   };
-}
-
-export function validateEnterpriseV3OAuthCredentials(
-  credentials: SessionCredentials | null,
-  options: EnterpriseOAuthValidationOptions = {},
-): ValidationResult {
-  const messages: string[] = [];
-
-  if (
-    !credentials ||
-    credentials.instanceType !== "enterprise" ||
-    !credentials.accessToken?.trim()
-  ) {
-    return {
-      valid: false,
-      messages: ["Enterprise access token is required for Stack API v3 calls."],
-    };
-  }
-
-  if (credentials.authSource === "manual-enterprise-token") {
-    return { valid: true, messages };
-  }
-
-  if (credentials.authSource !== "oauth-pkce") {
-    return {
-      valid: false,
-      messages: ["Enterprise access token is required for Stack API v3 calls."],
-    };
-  }
-
-  const scopes = new Set(Array.isArray(credentials.oauthScopes) ? credentials.oauthScopes : []);
-
-  if (credentials.accessTokenExpiresAt !== undefined) {
-    const expiresAt = new Date(credentials.accessTokenExpiresAt);
-    const now = options.now ?? new Date();
-
-    if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= now.getTime()) {
-      messages.push("Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.");
-    }
-  } else if (!scopes.has("no_expiry")) {
-    messages.push("Enterprise OAuth token has expired. Reconnect with Enterprise OAuth.");
-  }
-
-  for (const requiredScope of options.requiredScopes ?? []) {
-    if (!scopes.has(requiredScope)) {
-      messages.push(`Enterprise OAuth token is missing required scope: ${requiredScope}.`);
-    }
-  }
-
-  return { valid: messages.length === 0, messages };
 }
 
 export function validateCredentialsForReport(

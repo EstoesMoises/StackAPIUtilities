@@ -1,8 +1,8 @@
 import {
   normalizeInstanceUrl,
-  validateEnterpriseV3OAuthCredentials,
   type NormalizedInstance,
 } from "../credentials/credentialRules";
+import { validateEnterpriseV3OAuthCredentials } from "../credentials/enterpriseV3Credentials";
 import type { SessionCredentials } from "../domain/types";
 
 export const MAX_WRITE_ROUTE_BYTES = 1_048_576;

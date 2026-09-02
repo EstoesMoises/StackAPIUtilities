@@ -288,6 +288,7 @@ export type PersistedContentReplacementActiveOperation =
       kind: "stale-rescan";
       requestedItemKeys: string[];
       remainingItemKeys: string[];
+      completedItemKeys: string[];
       generation: string;
       proposals: Record<string, ReplacementProposal>;
       inspectedCount: number;

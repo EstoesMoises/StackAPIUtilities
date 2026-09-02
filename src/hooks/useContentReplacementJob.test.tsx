@@ -21,6 +21,7 @@ const credentials: SessionCredentials = {
   accessToken: "top-secret-token",
   apiKey: "top-secret-key",
   authSource: "oauth-pkce",
+  oauthScopes: ["write_access", "no_expiry"],
 };
 const configuration: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
@@ -384,6 +385,49 @@ describe("useContentReplacementJob", () => {
     expect(JSON.stringify(deps.store.current())).not.toContain("origin-b-token");
   });
 
+  it.each([
+    ["PAT-only", { instanceType: "enterprise", baseUrl: "https://example.stackenterprise.co", pat: "pat" }],
+    ["missing auth source", { ...credentials, authSource: undefined }],
+    ["missing write scope", { ...credentials, oauthScopes: ["no_expiry"] }],
+    ["missing expiry", { ...credentials, oauthScopes: ["write_access"], accessTokenExpiresAt: undefined }],
+  ] as const)("pauses before apply activation for %s credentials", async (_label, supplied) => {
+    const proposal = await questionProposal();
+    const prepared = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    const deps = dependencies(vi.fn(), prepared);
+    const { result } = renderHook(() => useContentReplacementJob(supplied as SessionCredentials, prepared, deps.value));
+
+    await act(async () => result.current.startApply());
+
+    expect(deps.value.fetch).not.toHaveBeenCalled();
+    expect(result.current.job).toMatchObject({
+      status: "paused", operationError: { category: "authorization" },
+      proposals: { "question:1": { status: "ready-to-apply", attemptCount: 0 } },
+    });
+  });
+
+  it("accepts a manual Enterprise token while ignoring stale OAuth metadata", async () => {
+    const proposal = await questionProposal();
+    const prepared = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: { status: "updated", observedRequestChecksum: proposal.proposedRequestChecksum },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher, prepared);
+    const manual = {
+      ...credentials,
+      authSource: "manual-enterprise-token" as const,
+      accessTokenExpiresAt: "2000-01-01T00:00:00.000Z",
+      oauthScopes: [],
+    };
+    const { result } = renderHook(() => useContentReplacementJob(manual, prepared, deps.value));
+
+    await act(async () => result.current.startApply());
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.job?.proposals["question:1"].status).toBe("applied");
+  });
+
   it("interrupts a persisted applying item during rehydration and requires explicit resume", async () => {
     const proposal = await questionProposal();
     let initial = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
@@ -455,6 +499,57 @@ describe("useContentReplacementJob", () => {
 
     expect(result.current.job).toMatchObject({ status: "failed", failure: { category: "server" } });
     expect(result.current.job?.detailQueue).toEqual([]);
+  });
+
+  it.each([
+    ["disabled answers", configuration, 1, [{ kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }]],
+    ["omitted answer cursor", { ...configuration, contentTypes: { questions: true, answers: true, articles: false } }, 2,
+      [{ kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }]],
+    ["substituted answer cursor", { ...configuration, contentTypes: { questions: true, answers: true, articles: false } }, 2,
+      [{ kind: "answers", questionId: 2, page: 1 }, { kind: "answers", questionId: 3, page: 1 }], [{ kind: "question", questionId: 1 }]],
+    ["duplicate answer cursor", { ...configuration, contentTypes: { questions: true, answers: true, articles: false } }, 2,
+      [{ kind: "answers", questionId: 1, page: 1 }, { kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }]],
+  ] as const)("blocks %s inventory before queue mutation", async (_label, config, inspectedCount, answerCursors, candidates) => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { candidates, answerCursors, nextCursor: null, inspectedCount, pageKind: "questions" },
+        throttleNotices: [],
+      }))
+      .mockResolvedValue(jsonResponse({ ok: false, error: "should not continue" }, 500));
+    const deps = dependencies(fetcher);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => result.current.createJob(config as ReplacementConfiguration));
+
+    await act(async () => result.current.startScan());
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.job).toMatchObject({ status: "failed", detailQueue: [] });
+  });
+
+  it("serializes a deferred local save before delete so delete wins on disk and in memory", async () => {
+    const proposal = await questionProposal();
+    const initial = await scannedReviewJob(proposal);
+    const gate = deferred<void>();
+    const deps = dependencies(vi.fn(), initial);
+    deps.store.save.mockImplementationOnce(async (saved) => {
+      await gate.promise;
+      await storage().save(saved);
+    });
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+    let prepare!: Promise<void>;
+    act(() => { prepare = result.current.prepareApply(); });
+    await waitFor(() => expect(deps.store.save).toHaveBeenCalledTimes(1));
+    let deletion!: Promise<void>;
+    act(() => { deletion = result.current.deleteJob(); });
+
+    expect(deps.store.delete).not.toHaveBeenCalled();
+    gate.resolve();
+    await act(async () => { await prepare; await deletion; });
+
+    expect(deps.store.save.mock.invocationCallOrder[0]).toBeLessThan(deps.store.delete.mock.invocationCallOrder[0]);
+    expect(deps.store.current()).toBeNull();
+    expect(result.current.job).toBeNull();
   });
 
   it("rejects malformed detail proposal evidence before reducer mutation", async () => {

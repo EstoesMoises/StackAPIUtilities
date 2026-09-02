@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThrottleNotice } from "../api/httpClient";
 import { MAX_STACK_API_V3_BACKOFF_NOTICE_SECONDS } from "../api/stackApiV3";
 import type { SessionCredentials } from "../domain/types";
+import { validateEnterpriseV3OAuthCredentials } from "../credentials/enterpriseV3Credentials";
 import {
   isOriginOnlyInstanceUrl,
   normalizeCurrentRequestModel,
@@ -119,6 +120,8 @@ export function useContentReplacementJob(
   const pauseBarrierRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const initialJobIdRef = useRef(initialJob?.id);
   const rehydratedIdRef = useRef<string | null>(null);
+  const storageTailRef = useRef<Promise<void>>(Promise.resolve());
+  const localMutationTailRef = useRef<Promise<void>>(Promise.resolve());
 
   credentialsRef.current = credentials;
   dependenciesRef.current = dependencies;
@@ -168,10 +171,16 @@ export function useContentReplacementJob(
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [beforeUnload, busy]);
 
-  const persist = useCallback(async (
+  const enqueueStorage = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const result = storageTailRef.current.then(operation, operation);
+    storageTailRef.current = result.then(() => undefined, () => undefined);
+    return result;
+  }, []);
+
+  const persist = useCallback((
     candidate: PersistedContentReplacementJob,
     token?: number,
-  ): Promise<boolean> => {
+  ): Promise<boolean> => enqueueStorage(async () => {
     try {
       await dependenciesRef.current.storage.save(candidate);
     } catch {
@@ -183,7 +192,13 @@ export function useContentReplacementJob(
     setStorageError(null);
     setJob(candidate);
     return true;
-  }, [setJob, stopOperation]);
+  }), [enqueueStorage, setJob, stopOperation]);
+
+  const enqueueLocalMutation = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const result = localMutationTailRef.current.then(operation, operation);
+    localMutationTailRef.current = result.then(() => undefined, () => undefined);
+    return result;
+  }, []);
 
   useEffect(() => {
     if (!initialJob || !needsInterruptionCheckpoint(initialJob) || rehydratedIdRef.current === initialJob.id) return;
@@ -200,7 +215,13 @@ export function useContentReplacementJob(
   ): Promise<void> => {
     if (runningRef.current) return;
     runningRef.current = true;
+    const admissionGeneration = operationRef.current;
     if (!await pauseBarrierRef.current) {
+      runningRef.current = false;
+      return;
+    }
+    await localMutationTailRef.current;
+    if (operationRef.current !== admissionGeneration) {
       runningRef.current = false;
       return;
     }
@@ -275,15 +296,12 @@ export function useContentReplacementJob(
     return persist(reduceReplacementJob(withThrottle, { type: "run/clear-retry-at", at }), token);
   }, [persist, setBusy]);
 
-  const createJob = useCallback(async (configuration: ReplacementConfiguration): Promise<void> => {
+  const createJob = useCallback((configuration: ReplacementConfiguration): Promise<void> => enqueueLocalMutation(async () => {
     const supplied = validateSessionCredentials(credentialsRef.current);
-    if (!supplied || supplied.instanceType !== "enterprise" || (!supplied.accessToken && !supplied.pat)) return;
+    if (!supplied) return;
     const baseUrl = normalizeOrigin(supplied.baseUrl);
-    const expiration = supplied.accessTokenExpiresAt === undefined ? undefined : Date.parse(supplied.accessTokenExpiresAt);
-    if (!isOriginOnlyInstanceUrl(baseUrl) ||
-      (expiration !== undefined && (!Number.isFinite(expiration) || expiration <= Date.parse(dependenciesRef.current.now())))) {
-      return;
-    }
+    const credentialCheck = compatibleCredentials(supplied, { baseUrl }, dependenciesRef.current.now());
+    if (!credentialCheck.credentials) return;
     const fingerprint = await createJobFingerprint({ baseUrl, configuration });
     const createdAt = dependenciesRef.current.now();
     const candidate = createReplacementJob({
@@ -295,7 +313,7 @@ export function useContentReplacementJob(
     });
     stopOperation();
     await persist(candidate);
-  }, [persist, stopOperation]);
+  }), [enqueueLocalMutation, persist, stopOperation]);
 
   const scanLoop = useCallback(async (token: number): Promise<void> => {
     let current = jobRef.current;
@@ -391,12 +409,15 @@ export function useContentReplacementJob(
   const startScan = useCallback(() => runExclusive(scanLoop), [runExclusive, scanLoop]);
 
   const pause = useCallback((): void => {
-    const current = jobRef.current;
     stopOperation();
-    if (!current || current.status !== "running") return;
-    const paused = reduceReplacementJob(current, { type: "run/pause", at: dependenciesRef.current.now() });
-    pauseBarrierRef.current = persist(paused, operationRef.current);
-  }, [persist, stopOperation]);
+    const token = operationRef.current;
+    pauseBarrierRef.current = enqueueLocalMutation(async () => {
+      const current = jobRef.current;
+      if (!current || current.status !== "running") return true;
+      const paused = reduceReplacementJob(current, { type: "run/pause", at: dependenciesRef.current.now() });
+      return persist(paused, token);
+    });
+  }, [enqueueLocalMutation, persist, stopOperation]);
 
   const resume = useCallback(async (): Promise<void> => {
     const current = jobRef.current;
@@ -404,7 +425,7 @@ export function useContentReplacementJob(
     if (current.stage === "scan") await startScan();
   }, [startScan]);
 
-  const cancel = useCallback(async (): Promise<void> => {
+  const cancel = useCallback((): Promise<void> => enqueueLocalMutation(async () => {
     const current = jobRef.current;
     if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
     stopOperation();
@@ -412,22 +433,22 @@ export function useContentReplacementJob(
       type: "run/cancel",
       at: dependenciesRef.current.now(),
     }));
-  }, [persist, stopOperation]);
+  }), [enqueueLocalMutation, persist, stopOperation]);
 
-  const deleteJob = useCallback(async (): Promise<void> => {
+  const deleteJob = useCallback((): Promise<void> => enqueueLocalMutation(async () => {
     const current = jobRef.current;
     if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
     stopOperation();
     try {
-      await dependenciesRef.current.storage.delete(current.id);
+      await enqueueStorage(() => dependenciesRef.current.storage.delete(current.id));
       setStorageError(null);
       setJob(null);
     } catch {
       if (mountedRef.current) setStorageError(STORAGE_ERROR);
     }
-  }, [setJob, stopOperation]);
+  }), [enqueueLocalMutation, enqueueStorage, setJob, stopOperation]);
 
-  const setItemIncluded = useCallback(async (itemKey: string, included: boolean): Promise<void> => {
+  const setItemIncluded = useCallback((itemKey: string, included: boolean): Promise<void> => enqueueLocalMutation(async () => {
     const current = jobRef.current;
     if (!current) return;
     const next = reduceReplacementJob(current, {
@@ -438,14 +459,14 @@ export function useContentReplacementJob(
       at: dependenciesRef.current.now(),
     });
     if (next !== current) await persist(next);
-  }, [persist]);
+  }), [enqueueLocalMutation, persist]);
 
-  const prepareApply = useCallback(async (): Promise<void> => {
+  const prepareApply = useCallback((): Promise<void> => enqueueLocalMutation(async () => {
     const current = jobRef.current;
     if (!current) return;
     const next = reduceReplacementJob(current, { type: "apply/prepare", at: dependenciesRef.current.now() });
     if (next !== current) await persist(next);
-  }, [persist]);
+  }), [enqueueLocalMutation, persist]);
 
   const applyLoop = useCallback(async (token: number): Promise<void> => {
     const visible = jobRef.current;
@@ -520,15 +541,18 @@ export function useContentReplacementJob(
   const startApply = runApply;
 
   const retryEligibleFailures = useCallback(async (): Promise<void> => {
+    const shouldRun = await enqueueLocalMutation(async () => {
     const current = jobRef.current;
-    if (!current) return;
+    if (!current) return false;
     const next = reduceReplacementJob(current, {
       type: "apply/retry-eligible",
       at: dependenciesRef.current.now(),
     });
-    if (next === current || !await persist(next)) return;
-    await runApplyRef.current();
-  }, [persist]);
+    if (next === current || !await persist(next)) return false;
+    return true;
+    });
+    if (shouldRun) await runApplyRef.current();
+  }, [enqueueLocalMutation, persist]);
 
   const staleRescanLoop = useCallback(async (token: number): Promise<void> => {
       let current = jobRef.current;
@@ -605,14 +629,17 @@ export function useContentReplacementJob(
   const runStaleRescan = useCallback(() => runExclusive(staleRescanLoop), [runExclusive, staleRescanLoop]);
   runStaleRescanRef.current = runStaleRescan;
   const rescanStaleItems = useCallback(async (itemKeys: string[]): Promise<void> => {
+    const shouldRun = await enqueueLocalMutation(async () => {
     const original = jobRef.current;
-    if (!original || original.activeOperation) return;
+    if (!original || original.activeOperation) return false;
     const started = reduceReplacementJob(original, {
       type: "scan/stale-rescan-started", requestedItemKeys: itemKeys, at: dependenciesRef.current.now(),
     });
-    if (started === original || !await persist(started)) return;
-    await runStaleRescanRef.current();
-  }, [persist]);
+    if (started === original || !await persist(started)) return false;
+    return true;
+    });
+    if (shouldRun) await runStaleRescanRef.current();
+  }, [enqueueLocalMutation, persist]);
 
   const recoveryPreviewLoop = useCallback(async (token: number): Promise<void> => {
       let initial = jobRef.current;
@@ -679,14 +706,17 @@ export function useContentReplacementJob(
   );
   runRecoveryPreviewRef.current = runRecoveryPreview;
   const prepareRecovery = useCallback(async (itemKeys: string[]): Promise<void> => {
+    const shouldRun = await enqueueLocalMutation(async () => {
     const initial = jobRef.current;
-    if (!initial || initial.activeOperation) return;
+    if (!initial || initial.activeOperation) return false;
     const started = reduceReplacementJob(initial, {
       type: "recovery/preview-run-started", itemKeys, at: dependenciesRef.current.now(),
     });
-    if (started === initial || !await persist(started)) return;
-    await runRecoveryPreviewRef.current();
-  }, [persist]);
+    if (started === initial || !await persist(started)) return false;
+    return true;
+    });
+    if (shouldRun) await runRecoveryPreviewRef.current();
+  }, [enqueueLocalMutation, persist]);
 
   const startRecovery = useCallback(async (itemKeys: string[]): Promise<void> => {
     const visible = jobRef.current;
@@ -760,7 +790,7 @@ export function useContentReplacementJob(
     });
   }, [persist, persistResponse, request, runExclusive, setBusy]);
 
-  const deleteRecoverySnapshots = useCallback(async (): Promise<void> => {
+  const deleteRecoverySnapshots = useCallback((): Promise<void> => enqueueLocalMutation(async () => {
     const current = jobRef.current;
     if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
     const next = reduceReplacementJob(current, {
@@ -768,7 +798,7 @@ export function useContentReplacementJob(
       at: dependenciesRef.current.now(),
     });
     if (next !== current) await persist(next);
-  }, [persist]);
+  }), [enqueueLocalMutation, persist]);
 
   return {
     job,
@@ -904,11 +934,17 @@ function parseInventoryResult(
   const answerPages = answerCursors as Extract<InventoryCursor, { kind: "answers" }>[];
   const candidateKeys = refs.map(replacementItemKey);
   const answerKeys = answerPages.map((cursor) => `${cursor.questionId}:${cursor.page}`);
+  const answerQuestionIds = new Set(answerPages.map((cursor) => cursor.questionId));
   if (refs.length > 100_000 || answerPages.length > 100_000 || refs.length > value.inspectedCount ||
     answerPages.length > value.inspectedCount || value.pageKind !== requested.kind ||
     new Set(candidateKeys).size !== candidateKeys.length ||
     new Set(answerKeys).size !== answerKeys.length || refs.some((ref) => !refMatchesInventory(ref, requested, configuration)) ||
     answerPages.some((cursor) => requested.kind !== "questions" || cursor.page !== 1) ||
+    (requested.kind !== "questions" && answerPages.length !== 0) ||
+    (requested.kind === "questions" && !configuration.contentTypes.answers && answerPages.length !== 0) ||
+    (requested.kind === "questions" && configuration.contentTypes.answers &&
+      (answerPages.length !== value.inspectedCount || refs.some((ref) =>
+        ref.kind !== "question" || !answerQuestionIds.has(ref.questionId)))) ||
     (nextCursor && !isContinuousCursor(requested, nextCursor))) return null;
   return {
     candidates: refs,
@@ -1169,13 +1205,14 @@ function compatibleCredentials(
   at: string,
 ): { credentials: SessionCredentials | null; message: string } {
   const credentials = validateSessionCredentials(value);
-  if (!credentials || credentials.instanceType !== "enterprise" ||
-    (!credentials.accessToken && !credentials.pat) ||
-    (credentials.accessTokenExpiresAt !== undefined &&
-      (!Number.isFinite(Date.parse(credentials.accessTokenExpiresAt)) ||
-        Date.parse(credentials.accessTokenExpiresAt) <= Date.parse(at)))) {
-    return { credentials: null, message: "Reconnect valid Stack Enterprise credentials." };
-  }
+  const validation = validateEnterpriseV3OAuthCredentials(credentials, {
+    requiredScopes: ["write_access"],
+    now: new Date(at),
+  });
+  if (!credentials || !validation.valid) return {
+    credentials: null,
+    message: validation.messages.join(" ") || "Reconnect valid Stack Enterprise credentials.",
+  };
   const origin = normalizeOrigin(credentials.baseUrl);
   if (!isOriginOnlyInstanceUrl(origin) || origin !== job.baseUrl) {
     return { credentials: null, message: "The connected Stack Enterprise origin does not match this job." };

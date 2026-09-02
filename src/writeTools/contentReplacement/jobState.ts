@@ -678,6 +678,7 @@ function reduceStaleRescan(
   const activeOperation = {
     ...operation,
     remainingItemKeys,
+    completedItemKeys: [...operation.completedItemKeys, ...requestedItemKeys],
     proposals: accumulated,
     inspectedCount: operation.inspectedCount + result.inspectedCount,
     protectedOccurrenceCount: operation.protectedOccurrenceCount + result.protectedOccurrenceCount,
@@ -724,6 +725,7 @@ function startStaleRescan(
       kind: "stale-rescan",
       requestedItemKeys: keys,
       remainingItemKeys: keys,
+      completedItemKeys: [],
       generation: at,
       proposals: {},
       inspectedCount: 0,
