@@ -674,7 +674,7 @@ function RecoverySection({
         </p>
       )}
 
-      {previewedEntries.length > 0 && (
+      {previewComplete && previewedEntries.length > 0 && (
         <section role="region" aria-label="Recovery preview">
           <h4>Complete selected recovery preview</h4>
           {visiblePreviewEntries.map(([key, item]) => {

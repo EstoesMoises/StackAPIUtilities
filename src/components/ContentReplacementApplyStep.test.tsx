@@ -190,29 +190,44 @@ describe("ContentReplacementApplyStep", () => {
     expect(apply.bodyReads()).toBe(0);
   });
 
-  it("does not traverse full request bodies during incremental large recovery preview progress", () => {
-    const recovery = trackedBodyJob(2_000, true);
-    const keys = Object.keys(recovery.current.proposals);
-    const previewing: PersistedContentReplacementJob = {
-      ...recovery.current,
-      stage: "recovery",
-      status: "running",
-      activeOperation: {
-        kind: "recovery-preview",
-        requestedItemKeys: keys,
-        remainingItemKeys: keys,
-        completedItemKeys: [],
-        generation: "2026-09-02T12:07:00.000Z",
-      },
-    };
-    const recoveryView = render(<ContentReplacementApplyStep controller={controller(previewing)} />);
-    recoveryView.rerender(<ContentReplacementApplyStep controller={controller({
-      ...previewing,
-      revision: previewing.revision + 1,
-      activeOperation: { ...previewing.activeOperation!, completedItemKeys: keys.slice(0, 10) },
-    })} />);
+  it("defers accumulated full recovery models until preview progress is complete", async () => {
+    const user = userEvent.setup();
+    const recovery = trackedRecoveryPreviewJob(30);
+    const recoveryView = render(
+      <ContentReplacementApplyStep controller={controller(recovery.jobAt(5, true))} />,
+    );
+    recoveryView.rerender(
+      <ContentReplacementApplyStep controller={controller(recovery.jobAt(15, true))} />,
+    );
+    recoveryView.rerender(
+      <ContentReplacementApplyStep controller={controller(recovery.jobAt(25, true))} />,
+    );
 
-    expect(recovery.bodyReads()).toBe(0);
+    expect(screen.getByText("Recovery preview: 25 of 30 checked. No recovery writes have started.")).toBeVisible();
+    expect({
+      current: recovery.currentBodyReads(),
+      prior: recovery.priorBodyReads(),
+    }).toEqual({ current: 0, prior: 0 });
+    expect(screen.queryByRole("region", { name: "Recovery preview" })).not.toBeInTheDocument();
+
+    recovery.resetReads();
+    recoveryView.rerender(
+      <ContentReplacementApplyStep controller={controller(recovery.jobAt(30, false))} />,
+    );
+
+    const preview = screen.getByRole("region", { name: "Recovery preview" });
+    expect(within(preview).getAllByRole("heading", { level: 5 })).toHaveLength(25);
+    expect(recovery.currentBodyReads()).toBeGreaterThan(0);
+    expect(recovery.priorBodyReads()).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Recover 30 posts" })).toBeDisabled();
+
+    recovery.resetReads();
+    await user.click(screen.getByRole("button", { name: "Next recovery preview page" }));
+    expect(within(preview).getAllByRole("heading", { level: 5 })).toHaveLength(5);
+    expect({
+      current: recovery.currentBodyReads(),
+      prior: recovery.priorBodyReads(),
+    }).toEqual({ current: 5, prior: 5 });
   });
 
   it("separates result categories, filters rows, and scopes retry and stale rescan actions", async () => {
@@ -881,6 +896,88 @@ function trackedBodyJob(count: number, successful: boolean): {
       progress: { ...job().progress, proposalsFound: count },
     }),
     bodyReads: () => reads,
+  };
+}
+
+function trackedRecoveryPreviewJob(count: number): {
+  jobAt(previewedCount: number, active: boolean): PersistedContentReplacementJob;
+  currentBodyReads(): number;
+  priorBodyReads(): number;
+  resetReads(): void;
+} {
+  let currentReads = 0;
+  let priorReads = 0;
+  const tracked = Array.from({ length: count }, (_, index) => {
+    const currentItem = item("question", index + 1, "applied", { resultKind: "applied" });
+    const priorRequestModel = structuredClone(currentItem.proposal.before);
+    const currentRequestModel = toWireModel(currentItem.proposal.after);
+    const priorBody = priorRequestModel.request.body;
+    const currentBody = currentRequestModel.request.body;
+    Object.defineProperty(priorRequestModel.request, "body", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        priorReads += 1;
+        return priorBody;
+      },
+    });
+    Object.defineProperty(currentRequestModel.request, "body", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        currentReads += 1;
+        return currentBody;
+      },
+    });
+    return {
+      key: `question:${index + 1}`,
+      item: currentItem,
+      priorRequestModel,
+      preview: {
+        status: "recoverable" as const,
+        currentRequestModel,
+        observedCurrentChecksum: "b".repeat(64),
+        expectedPostApplyChecksum: "b".repeat(64),
+        sourceAttemptCount: 1,
+        sourceApplyCompletedAt: "2026-09-02T12:01:00.000Z",
+        previewedAt: "2026-09-02T12:08:00.000Z",
+      },
+    };
+  });
+  const keys = tracked.map(({ key }) => key);
+  return {
+    jobAt(previewedCount, active) {
+      const proposals = Object.fromEntries(tracked.map(({ key, item: currentItem, priorRequestModel, preview }, index) => [
+        key,
+        index < previewedCount ? {
+          ...currentItem,
+          status: "ready-to-recover" as const,
+          recovery: { ...currentItem.recovery!, priorRequestModel, preview },
+        } : {
+          ...currentItem,
+          recovery: { ...currentItem.recovery!, priorRequestModel },
+        },
+      ]));
+      return job({
+        revision: previewedCount,
+        stage: "recovery",
+        status: active ? "running" : "paused",
+        proposals,
+        activeOperation: active ? {
+          kind: "recovery-preview",
+          requestedItemKeys: keys,
+          remainingItemKeys: keys.slice(previewedCount),
+          completedItemKeys: keys.slice(0, previewedCount),
+          generation: "2026-09-02T12:07:00.000Z",
+        } : undefined,
+      });
+    },
+    currentBodyReads: () => currentReads,
+    priorBodyReads: () => priorReads,
+    resetReads() {
+      currentReads = 0;
+      priorReads = 0;
+    },
   };
 }
 
