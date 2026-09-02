@@ -11,6 +11,7 @@ import { SessionOverview } from "./components/SessionOverview";
 import { SmeCoverageWorkspace, type SmeCoverageRunUiState } from "./components/SmeCoverageWorkspace";
 import { UploadsPanel, type ImportedUploadResult } from "./components/UploadsPanel";
 import { UserGroupSyncPanel } from "./components/UserGroupSyncPanel";
+import { ContentReplacementWizard } from "./components/ContentReplacementWizard";
 import { WriteToolsCatalog, type WriteToolId } from "./components/WriteToolsCatalog";
 import { UtilityCatalog } from "./components/UtilityCatalog";
 import { validateCredentialsForReport, validateCredentialsForUtility } from "./credentials/credentialRules";
@@ -49,6 +50,7 @@ export function App() {
   const [state, dispatch] = useReducer(sessionReducer, undefined, createInitialSessionState);
   const [activePanel, setActivePanel] = useState<AppPanel>("report");
   const [selectedWriteToolId, setSelectedWriteToolId] = useState<WriteToolId>("user-group-sync");
+  const [selectedContentReplacementJobId, setSelectedContentReplacementJobId] = useState<string | null>(null);
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
   const [runProgress, setRunProgress] = useState<ReportRunProgress | undefined>();
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
@@ -270,6 +272,24 @@ export function App() {
     setCredentialContext({ kind: "write-tool", writeToolId: toolId });
     setSelectedWriteToolId(toolId);
     setActivePanel("write-tools");
+  }
+
+  function openContentReplacementJob(jobId: string) {
+    clearActiveRunProgress();
+    setSelectedContentReplacementJobId(jobId);
+    setSelectedWriteToolId("content-replacement");
+    setCredentialContext({ kind: "write-tool", writeToolId: "content-replacement" });
+    setActivePanel("write-tools");
+  }
+
+  function reconnectContentReplacementCredentials() {
+    clearActiveRunProgress();
+    setCredentialContext({ kind: "write-tool", writeToolId: "content-replacement" });
+    setActivePanel("credentials");
+  }
+
+  function forgetDeletedContentReplacementJob(jobId: string) {
+    setSelectedContentReplacementJobId((current) => current === jobId ? null : current);
   }
 
   function prepareSelectedReportRun() {
@@ -611,9 +631,18 @@ export function App() {
           datasets={datasets}
           onRemoveDataset={removeDataset}
           onFlushDatasets={flushStoredDatasets}
+          onOpenContentReplacementJob={openContentReplacementJob}
+          onContentReplacementJobDeleted={forgetDeletedContentReplacementJob}
         />
       )}
-      {activePanel === "write-tools" && renderWriteToolPanel(selectedWriteToolId, state.credentials)}
+      {activePanel === "write-tools" && renderWriteToolPanel(
+        selectedWriteToolId,
+        state.credentials,
+        selectedContentReplacementJobId,
+        reconnectContentReplacementCredentials,
+        openContentReplacementJob,
+        forgetDeletedContentReplacementJob,
+      )}
       {activePanel === "utilities" && (
         <SmeCoverageWorkspace
           onRun={queueSmeCoverageRun}
@@ -722,10 +751,27 @@ function findLatestSelectedReportRunSnapshot(snapshot: PersistedDatasetSessionSn
     .find((runSnapshot) => runSnapshot.reportId === snapshot.selectedReportId);
 }
 
-function renderWriteToolPanel(toolId: WriteToolId, credentials: SessionCredentials | null) {
+function renderWriteToolPanel(
+  toolId: WriteToolId,
+  credentials: SessionCredentials | null,
+  contentReplacementJobId: string | null,
+  onReconnectContentReplacement: () => void,
+  onSelectContentReplacementJob: (jobId: string) => void,
+  onDeleteContentReplacementJob: (jobId: string) => void,
+) {
   switch (toolId) {
     case "user-group-sync":
       return <UserGroupSyncPanel credentials={credentials} />;
+    case "content-replacement":
+      return (
+        <ContentReplacementWizard
+          credentials={credentials}
+          selectedJobId={contentReplacementJobId}
+          onSelectedJobIdChange={onSelectContentReplacementJob}
+          onJobDeleted={onDeleteContentReplacementJob}
+          onReconnect={onReconnectContentReplacement}
+        />
+      );
   }
 
   const unhandledToolId: never = toolId;

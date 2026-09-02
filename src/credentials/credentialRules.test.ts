@@ -6,6 +6,7 @@ import {
   validateCredentialsForUtility,
   validateEnterpriseV3OAuthCredentials,
 } from "./credentialRules";
+import { getEnterpriseWriteCredentialReadiness } from "./enterpriseV3Credentials";
 
 const NOW = new Date("2026-07-04T12:00:00.000Z");
 const FUTURE_EXPIRY = "2026-07-05T00:00:00.000Z";
@@ -338,5 +339,41 @@ describe("validateEnterpriseV3OAuthCredentials", () => {
 
     expect(result.valid).toBe(false);
     expect(result.messages).toContain(CONNECTION_REQUIRED_MESSAGE);
+  });
+});
+
+describe("getEnterpriseWriteCredentialReadiness", () => {
+  const valid: SessionCredentials = {
+    instanceType: "enterprise",
+    baseUrl: "https://demo.stackenterprise.co",
+    accessToken: "token",
+    authSource: "oauth-pkce",
+    oauthScopes: ["write_access"],
+    accessTokenExpiresAt: FUTURE_EXPIRY,
+  };
+
+  it.each([
+    ["apex", { ...valid, baseUrl: "https://stackenterprise.co" }, true],
+    ["subdomain", valid, true],
+    ["manual token", { ...valid, authSource: "manual-enterprise-token", oauthScopes: [], accessTokenExpiresAt: undefined }, true],
+    ["HTTP", { ...valid, baseUrl: "http://demo.stackenterprise.co" }, false],
+    ["evil suffix", { ...valid, baseUrl: "https://demo.stackenterprise.co.evil.example" }, false],
+    ["lookalike", { ...valid, baseUrl: "https://evilstackenterprise.co" }, false],
+    ["path", { ...valid, baseUrl: "https://demo.stackenterprise.co/questions" }, false],
+    ["query", { ...valid, baseUrl: "https://demo.stackenterprise.co?x=1" }, false],
+    ["hash", { ...valid, baseUrl: "https://demo.stackenterprise.co#x" }, false],
+    ["userinfo", { ...valid, baseUrl: "https://user@demo.stackenterprise.co" }, false],
+    ["missing write scope", { ...valid, oauthScopes: ["no_expiry"] }, false],
+    ["expired", { ...valid, accessTokenExpiresAt: "2020-01-01T00:00:00.000Z" }, false],
+    ["unsupported auth", { ...valid, authSource: undefined }, false],
+  ] as const)("applies the exact browser/server write predicate for %s", (_label, supplied, expected) => {
+    expect(getEnterpriseWriteCredentialReadiness(supplied as SessionCredentials, { now: NOW }).valid).toBe(expected);
+  });
+
+  it("requires an exact expected origin when supplied", () => {
+    expect(getEnterpriseWriteCredentialReadiness(valid, {
+      now: NOW,
+      expectedOrigin: "https://other.stackenterprise.co",
+    })).toMatchObject({ valid: false });
   });
 });

@@ -17,6 +17,20 @@ export class StackApiError extends Error {
   }
 }
 
+export class InvalidApiResponseError extends Error {
+  constructor(apiName: string) {
+    super(`${apiName} returned invalid JSON.`);
+    this.name = "InvalidApiResponseError";
+  }
+}
+
+export class ApiTransportError extends Error {
+  constructor(apiName: string) {
+    super(`${apiName} transport failed.`);
+    this.name = "ApiTransportError";
+  }
+}
+
 export async function readJsonResponse<T>(response: Response, apiName: string): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
@@ -30,10 +44,8 @@ export async function readJsonResponse<T>(response: Response, apiName: string): 
 
   try {
     return (await response.json()) as T;
-  } catch (error) {
-    const parseError = new Error(`${apiName} returned invalid JSON from ${response.url || "unknown URL"}.`);
-    (parseError as Error & { cause?: unknown }).cause = error;
-    throw parseError;
+  } catch {
+    throw new InvalidApiResponseError(apiName);
   }
 }
 

@@ -1,0 +1,267 @@
+import { useEffect, useRef, useState } from "react";
+import type { SessionCredentials } from "../domain/types";
+import { getEnterpriseWriteCredentialReadiness } from "../credentials/enterpriseV3Credentials";
+import {
+  useContentReplacementJob,
+  type ContentReplacementJobController,
+} from "../hooks/useContentReplacementJob";
+import { loadContentReplacementJob } from "../utils/browserContentReplacementStorage";
+import type {
+  ContentReplacementJobStage,
+  PersistedContentReplacementJob,
+  ReplacementConfiguration,
+  ReplacementItemRef,
+} from "../writeTools/contentReplacement/types";
+import { ContentReplacementApplyStep } from "./ContentReplacementApplyStep";
+import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
+import { ContentReplacementReviewStep } from "./ContentReplacementReviewStep";
+import { ContentReplacementScanStep } from "./ContentReplacementScanStep";
+
+export interface ContentReplacementWizardProps {
+  credentials: SessionCredentials | null;
+  initialJob?: PersistedContentReplacementJob | null;
+  selectedJobId?: string | null;
+  controller?: ContentReplacementJobController;
+  onSelectedJobIdChange?: (jobId: string) => void;
+  onJobDeleted?: (jobId: string) => void;
+  onReconnect?: () => void;
+  now?: Date;
+}
+
+export function ContentReplacementWizard(props: ContentReplacementWizardProps) {
+  if (props.controller) {
+    return <ContentReplacementWizardView {...props} controller={props.controller} />;
+  }
+  return <ConnectedContentReplacementWizard {...props} />;
+}
+
+function ConnectedContentReplacementWizard({
+  credentials,
+  initialJob = null,
+  selectedJobId,
+  onSelectedJobIdChange,
+  onJobDeleted,
+  onReconnect,
+  now,
+}: Omit<ContentReplacementWizardProps, "controller">) {
+  const controlledSelection = selectedJobId !== undefined;
+  const [selectedJob, setSelectedJob] = useState(
+    controlledSelection ? null : initialJob,
+  );
+  const [loadingSelectedJob, setLoadingSelectedJob] = useState(
+    controlledSelection && selectedJobId !== null,
+  );
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadRevision, setLoadRevision] = useState(0);
+  const loadGeneration = useRef(0);
+  useEffect(() => {
+    if (controlledSelection) return;
+    setSelectedJob(initialJob);
+  }, [controlledSelection, initialJob]);
+  const controller = useContentReplacementJob(credentials, selectedJob, undefined, {
+    onJobSelected: onSelectedJobIdChange,
+    onJobDeleted,
+  });
+  const controllerJobRef = useRef(controller.job);
+  controllerJobRef.current = controller.job;
+
+  useEffect(() => {
+    if (!controlledSelection) return;
+    const generation = loadGeneration.current + 1;
+    loadGeneration.current = generation;
+    setLoadError(null);
+    if (selectedJobId === null) {
+      setLoadingSelectedJob(false);
+      setSelectedJob(null);
+      return;
+    }
+    if (controllerJobRef.current?.id === selectedJobId) {
+      setLoadingSelectedJob(false);
+      return;
+    }
+    setSelectedJob(null);
+    setLoadingSelectedJob(true);
+    void loadContentReplacementJob(selectedJobId).then((loaded) => {
+      if (loadGeneration.current !== generation) return;
+      if (!loaded || loaded.id !== selectedJobId) {
+        setLoadError("This browser-local replacement job is unavailable or invalid.");
+        return;
+      }
+      setSelectedJob(loaded);
+    }).catch(() => {
+      if (loadGeneration.current === generation) {
+        setLoadError("This browser-local replacement job could not be loaded.");
+      }
+    }).finally(() => {
+      if (loadGeneration.current === generation) setLoadingSelectedJob(false);
+    });
+    return () => {
+      if (loadGeneration.current === generation) loadGeneration.current += 1;
+    };
+  }, [controlledSelection, loadRevision, selectedJobId]);
+
+  return (
+    <ContentReplacementWizardView
+      credentials={credentials}
+      controller={controller}
+      onReconnect={onReconnect}
+      now={now}
+      onOpenLocalJob={(jobId) => {
+        onSelectedJobIdChange?.(jobId);
+      }}
+      onDeleteLocalJob={onJobDeleted}
+      restoring={loadingSelectedJob || controller.rehydrating}
+      loadError={loadError}
+      onRetryLoad={() => setLoadRevision((current) => current + 1)}
+    />
+  );
+}
+
+function ContentReplacementWizardView({
+  credentials,
+  controller,
+  onReconnect,
+  now,
+  onOpenLocalJob,
+  onDeleteLocalJob,
+  restoring = false,
+  loadError = null,
+  onRetryLoad,
+}: ContentReplacementWizardProps & {
+  controller: ContentReplacementJobController;
+  onOpenLocalJob?: (jobId: string) => void;
+  onDeleteLocalJob?: (jobId: string) => void;
+  restoring?: boolean;
+  loadError?: string | null;
+  onRetryLoad?: () => void;
+}) {
+  const [confirmingConfigurationEdit, setConfirmingConfigurationEdit] = useState(false);
+  const [definingNewJob, setDefiningNewJob] = useState(false);
+  const activeStep = definingNewJob ? 0 : wizardStep(controller.job?.stage);
+  const baseCredentialReadiness = getEnterpriseWriteCredentialReadiness(credentials, { now });
+  const credentialReadiness = controller.credentialReadiness.refreshRequired
+    ? controller.credentialReadiness
+    : baseCredentialReadiness;
+  const expectedOrigin = baseCredentialReadiness.valid ? baseCredentialReadiness.origin : undefined;
+
+  async function startScan(configuration: ReplacementConfiguration, exactTargets?: ReplacementItemRef[]) {
+    const created = exactTargets
+      ? await controller.createJob(configuration, exactTargets)
+      : await controller.createJob(configuration);
+    if (!created) return;
+    setDefiningNewJob(false);
+    setConfirmingConfigurationEdit(false);
+    await controller.startScan();
+  }
+
+  function openLocalJob(jobId: string) {
+    setDefiningNewJob(false);
+    setConfirmingConfigurationEdit(false);
+    onOpenLocalJob?.(jobId);
+  }
+
+  return (
+    <section className="workspace-panel content-replacement-wizard" aria-labelledby="content-replacement-heading">
+      <header className="workspace-header">
+        <div>
+          <h1 className="workspace-heading" id="content-replacement-heading">Content Replacement</h1>
+          <p className="workspace-copy">Define, scan, review, and apply literal term changes across the Enterprise main site.</p>
+        </div>
+      </header>
+
+      <nav className="content-replacement-step-nav" aria-label="Content replacement steps">
+        <ol aria-label="Content replacement progress">
+          {(["Define", "Scan", "Review", "Apply"] as const).map((label, index) => {
+            const complete = index < activeStep;
+            const current = index === activeStep;
+            return (
+              <li key={label} className={current ? "is-current" : complete ? "is-complete" : "is-future"}>
+                <span aria-current={current ? "step" : undefined}>{label}</span>
+                {complete && <span className="content-replacement-step-state">Complete</span>}
+                {current && <span className="content-replacement-step-state">Current</span>}
+              </li>
+            );
+          })}
+        </ol>
+      </nav>
+
+      <div className="content-replacement-stage">
+        {restoring && (
+          <div className="content-replacement-load-state" role="status" aria-live="polite">
+            <h2>Restoring browser-local job</h2>
+            <p>Checking the saved checkpoint before replacement actions are enabled…</p>
+          </div>
+        )}
+        {!restoring && loadError && (
+          <div className="s-notice s-notice__danger" role="alert">
+            <p>{loadError}</p>
+            {onRetryLoad && <button type="button" className="s-btn s-btn__outlined" onClick={onRetryLoad}>Retry loading job</button>}
+          </div>
+        )}
+        {!restoring && !loadError && activeStep === 0 && (
+          <ContentReplacementDefineStep
+            onStartScan={startScan}
+            expectedOrigin={expectedOrigin}
+            disabled={controller.busy || controller.rehydrating}
+            scanReadiness={{ ready: credentialReadiness.valid, message: credentialReadiness.message }}
+            setupError={controller.operationError ?? controller.storageError}
+            storageError={controller.storageError}
+            onReconnect={onReconnect}
+            onOpenLocalJob={onOpenLocalJob ? openLocalJob : undefined}
+            onDeleteLocalJob={onDeleteLocalJob}
+          />
+        )}
+        {!restoring && !loadError && activeStep === 1 && (
+          <ContentReplacementScanStep
+            controller={controller}
+            credentials={credentials}
+            onReconnect={onReconnect}
+          />
+        )}
+        {!restoring && !loadError && activeStep === 2 && (
+          <>
+            <div className="content-replacement-review-back">
+              <button
+                type="button"
+                className="s-btn s-btn__outlined"
+                disabled={controller.busy}
+                onClick={() => setConfirmingConfigurationEdit(true)}
+              >
+                Edit configuration
+              </button>
+              {confirmingConfigurationEdit && (
+                <div className="s-notice s-notice__warning" role="group" aria-label="Confirm configuration edit">
+                  <p>Changing rules, matching options, the instance, or content scope invalidates this completed scan. A confirmed edit starts a separate new job; it never mutates these reviewed proposals.</p>
+                  <div className="write-tool-actions">
+                    <button type="button" className="s-btn s-btn__outlined" onClick={() => setConfirmingConfigurationEdit(false)}>Keep reviewed proposals</button>
+                    <button
+                      type="button"
+                      className="s-btn s-btn__outlined"
+                      onClick={() => {
+                        setConfirmingConfigurationEdit(false);
+                        setDefiningNewJob(true);
+                      }}
+                    >
+                      Create a new job
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <ContentReplacementReviewStep controller={controller} />
+          </>
+        )}
+        {!restoring && !loadError && activeStep === 3 && (
+          <ContentReplacementApplyStep controller={controller} />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function wizardStep(stage: ContentReplacementJobStage | undefined): number {
+  if (!stage || stage === "define") return 0;
+  if (stage === "scan") return 1;
+  if (stage === "review") return 2;
+  return 3;
+}

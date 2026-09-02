@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiTransportError } from "./httpClient";
 import { StackApiV3Client } from "./stackApiV3";
 
 const API_V3_USER_AGENT =
@@ -14,7 +15,355 @@ function responseWithJson(body: unknown): Response {
   return response;
 }
 
+function createClient(options: Partial<ConstructorParameters<typeof StackApiV3Client>[0]> = {}) {
+  return new StackApiV3Client({
+    apiV3Url: "https://demo.stackenterprise.co/api/v3",
+    token: "token",
+    ...options,
+  });
+}
+
 describe("StackApiV3Client", () => {
+  it("fetches one requested page without walking earlier pages", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [{ id: 9 }], totalPages: 5 })),
+    );
+    const client = createClient({ fetchFn });
+
+    await expect(client.getPage<{ id: number }>("/questions", { pageSize: "100" }, 3)).resolves.toEqual({
+      items: [{ id: 9 }],
+      page: 3,
+      totalPages: 5,
+      hasMore: true,
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(String(fetchFn.mock.calls[0][0])).toContain("page=3");
+  });
+
+  it("rejects an explicitly requested page beyond the pagination safety limit", async () => {
+    const client = createClient({
+      fetchFn: vi.fn(),
+      paginationSafetyLimit: 2,
+    });
+
+    await expect(client.getPage("/questions", {}, 3)).rejects.toThrow(
+      "exceeded the internal safety limit of 2 pages. No complete result was produced.",
+    );
+  });
+
+  it.each([
+    ["zero", 0],
+    ["a negative number", -1],
+    ["a fraction", 1.5],
+    ["an unsafe integer", Number.MAX_SAFE_INTEGER + 1],
+  ])("rejects %s as an explicit page number", async (_label, page) => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], totalPages: 1 })),
+    );
+    const client = createClient({ fetchFn });
+
+    await expect(client.getPage("/questions", {}, page)).rejects.toThrow(
+      "Stack API v3 page must be a positive safe integer.",
+    );
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("retrieves one JSON detail object", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 42, title: "TermB" })),
+    );
+    const client = createClient({ fetchFn });
+
+    await expect(client.getJson<{ id: number; title: string }>("/questions/42")).resolves.toEqual({
+      id: 42,
+      title: "TermB",
+    });
+    expect(String(fetchFn.mock.calls[0][0])).toBe("https://demo.stackenterprise.co/api/v3/questions/42");
+  });
+
+  it("sends one JSON PUT request body", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 42 })));
+    const client = createClient({ fetchFn });
+
+    await expect(client.putJson<{ id: number }>("/questions/42", {
+      title: "TermB",
+      body: "Body",
+      tags: [],
+    })).resolves.toEqual({ id: 42 });
+    expect(fetchFn.mock.calls[0][1]).toEqual(expect.objectContaining({
+      method: "PUT",
+      headers: expect.objectContaining({
+        Authorization: "Bearer token",
+        "Content-Type": "application/json",
+        "User-Agent": API_V3_USER_AGENT,
+      }),
+      body: JSON.stringify({ title: "TermB", body: "Body", tags: [] }),
+    }));
+  });
+
+  it("notifies backoff before waiting to retry a throttled PUT", async () => {
+    const events: string[] = [];
+    const onThrottle = vi.fn(async (notice) => {
+      events.push(`${notice.kind}:${notice.seconds}`);
+    });
+    const waitFn = vi.fn(async (seconds) => {
+      events.push(`wait:${seconds}`);
+    });
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 429, headers: { "Retry-After": "2" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 }), { status: 200 }));
+    const client = createClient({ fetchFn, waitFn, onThrottle });
+
+    await client.putJson("/questions/42", { title: "TermB", body: "Body", tags: [] });
+
+    expect(events).toEqual(["backoff:2", "wait:2"]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([429, 502, 503, 504])(
+    "emits one backoff notice without replaying a no-retry PUT after status %i",
+    async (status) => {
+      const onThrottle = vi.fn(async () => undefined);
+      const waitFn = vi.fn(async () => undefined);
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response("upstream secret body", {
+          status,
+          headers: { "Retry-After": "30" },
+        }),
+      );
+      const client = createClient({
+        fetchFn,
+        waitFn,
+        onThrottle,
+        retryPutRequests: false,
+        maxBackoffNoticeSeconds: 86_400,
+      });
+
+      await expect(client.putJson("/questions/42", { title: "safe" })).rejects.toThrow(
+        `Stack API v3 request failed with ${status}`,
+      );
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(waitFn).not.toHaveBeenCalled();
+      expect(onThrottle).toHaveBeenCalledTimes(1);
+      expect(onThrottle).toHaveBeenCalledWith({ kind: "backoff", seconds: 30 });
+    },
+  );
+
+  it.each([400, 401, 403, 404, 409, 500])(
+    "does not emit a backoff notice for no-retry PUT status %i",
+    async (status) => {
+      const onThrottle = vi.fn(async () => undefined);
+      const fetchFn = vi.fn().mockResolvedValue(new Response("failed", { status }));
+      const client = createClient({ fetchFn, onThrottle, retryPutRequests: false });
+
+      await expect(client.putJson("/questions/42", { title: "safe" })).rejects.toThrow(
+        `Stack API v3 request failed with ${status}`,
+      );
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(onThrottle).not.toHaveBeenCalled();
+    },
+  );
+
+  it("surfaces an exact browser-cap delay without sleeping or retrying when it exceeds the server wait budget", async () => {
+    const onThrottle = vi.fn(async () => undefined);
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("upstream secret body", {
+        status: 429,
+        headers: { "Retry-After": "86400" },
+      }),
+    );
+    const client = createClient({
+      fetchFn,
+      waitFn,
+      onThrottle,
+      maxRetryWaitSeconds: 5,
+      maxCumulativeRetryWaitSeconds: 10,
+      maxBackoffNoticeSeconds: 86_400,
+    });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow(
+      "Stack API v3 request failed with 429",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).not.toHaveBeenCalled();
+    expect(onThrottle).toHaveBeenCalledTimes(1);
+    expect(onThrottle).toHaveBeenCalledWith({ kind: "backoff", seconds: 86_400 });
+  });
+
+  it("stops repeated short waits before crossing the cumulative server budget", async () => {
+    const onThrottle = vi.fn(async () => undefined);
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("limited", { status: 429, headers: { "Retry-After": "2" } }),
+    );
+    const client = createClient({
+      fetchFn,
+      waitFn,
+      onThrottle,
+      maxRetryWaitSeconds: 3,
+      maxCumulativeRetryWaitSeconds: 5,
+      maxBackoffNoticeSeconds: 86_400,
+    });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow(
+      "Stack API v3 request failed with 429",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(waitFn.mock.calls).toEqual([[2], [2]]);
+    expect(onThrottle).toHaveBeenCalledTimes(3);
+  });
+
+  it("allows waits exactly on the per-wait and cumulative budget boundaries", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("limited", { status: 429, headers: { "Retry-After": "2" } }))
+      .mockResolvedValueOnce(new Response("limited", { status: 429, headers: { "Retry-After": "3" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 }), { status: 200 }));
+    const client = createClient({
+      fetchFn,
+      waitFn,
+      maxRetryWaitSeconds: 3,
+      maxCumulativeRetryWaitSeconds: 5,
+      maxBackoffNoticeSeconds: 86_400,
+    });
+
+    await expect(client.getJson("/questions/42")).resolves.toEqual({ id: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(waitFn.mock.calls).toEqual([[2], [3]]);
+  });
+
+  it("preserves an ordinary short retry under configured server budgets", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("limited", { status: 429, headers: { "Retry-After": "2" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 }), { status: 200 }));
+    const client = createClient({
+      fetchFn,
+      waitFn,
+      maxRetryWaitSeconds: 5,
+      maxCumulativeRetryWaitSeconds: 10,
+      maxBackoffNoticeSeconds: 86_400,
+    });
+
+    await expect(client.getJson("/questions/42")).resolves.toEqual({ id: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(waitFn).toHaveBeenCalledWith(2);
+  });
+
+  it("rejects invalid configured retry budget numbers", () => {
+    for (const option of [
+      "maxRetryWaitSeconds",
+      "maxCumulativeRetryWaitSeconds",
+      "maxBackoffNoticeSeconds",
+    ] as const) {
+      for (const value of [-1, 1.5, Number.POSITIVE_INFINITY, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        expect(() => createClient({ [option]: value })).toThrow(
+          "Stack API v3 retry budgets must be non-negative safe integers.",
+        );
+      }
+    }
+  });
+
+  it("preserves the existing retry-attempt behavior when server budgets are not configured", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("unavailable", {
+        status: 503,
+        headers: { "Retry-After": String(Number.MAX_SAFE_INTEGER) },
+      }),
+    );
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow(
+      "Stack API v3 request failed with 503",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(waitFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a GET after a retryable 503 response", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 })));
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson<{ id: number }>("/questions/42")).resolves.toEqual({ id: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(waitFn).toHaveBeenCalledWith(2);
+  });
+
+  it.each([502, 504])("retries a GET after a retryable %s response", async (status) => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 })));
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson<{ id: number }>("/questions/42")).resolves.toEqual({ id: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(waitFn).toHaveBeenCalledWith(2);
+  });
+
+  it("retries idempotent network errors at most three times", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn(async () => { throw new TypeError("network unavailable"); });
+    const client = createClient({ fetchFn, waitFn });
+
+    const result = client.getJson("/questions/42");
+    await expect(result).rejects.toEqual(expect.objectContaining({
+      name: "ApiTransportError",
+      message: "Stack API v3 transport failed.",
+    }));
+    await expect(result).rejects.toBeInstanceOf(ApiTransportError);
+    await expect(result).rejects.not.toHaveProperty("cause");
+    await expect(result).rejects.not.toThrow(/network unavailable/);
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(waitFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops retrying a PUT after three retryable responses", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn(async () => new Response("unavailable", { status: 503 }));
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.putJson("/questions/42", { title: "TermB" })).rejects.toThrow(
+      "Stack API v3 request failed with 503",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(waitFn).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([400, 401, 403, 404, 409])("does not retry non-retryable GET status %s", async (status) => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(new Response("request failed", { status }));
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow(`Stack API v3 request failed with ${status}`);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["POST", "a network error", async (client: StackApiV3Client) => client.createUserGroup({ name: "Ada", userIds: [1] }), () => {
+      throw new TypeError("network unavailable");
+    }],
+    ["DELETE", "a network error", async (client: StackApiV3Client) => client.removeUserGroupMember(7, 3), () => {
+      throw new TypeError("network unavailable");
+    }],
+    ["POST", "a 503 response", async (client: StackApiV3Client) => client.createUserGroup({ name: "Ada", userIds: [1] }), () => new Response("unavailable", { status: 503 })],
+    ["DELETE", "a 503 response", async (client: StackApiV3Client) => client.removeUserGroupMember(7, 3), () => new Response("unavailable", { status: 503 })],
+  ])("does not retry %s after %s", async (_method, _failure, request, responseOrError) => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn(async () => responseOrError());
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(request(client)).rejects.toThrow();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).not.toHaveBeenCalled();
+  });
+
   it("fetches totalPages pagination", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ id: "a" }], totalPages: 2 }), { status: 200 }))

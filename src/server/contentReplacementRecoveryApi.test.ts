@@ -1,0 +1,769 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { NormalizedInstance } from "../credentials/credentialRules";
+import type { SessionCredentials } from "../domain/types";
+import {
+  ContentReplacementApiError,
+  type ContentReplacementClient,
+} from "../writeTools/contentReplacement/contentApi";
+import {
+  buildReplacementProposal,
+  checksumRequestModel,
+  createJobFingerprint,
+  toReplacementWireRequestModel,
+} from "../writeTools/contentReplacement/proposals";
+import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
+import type {
+  ReplacementConfiguration,
+  ReplacementRequestModel,
+  ReplacementWireRequestModel,
+} from "../writeTools/contentReplacement/types";
+import { MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES } from "../writeTools/contentReplacement/limits";
+import {
+  handleContentReplacementRecoveryRequest,
+  type ContentReplacementRecoveryPayload,
+} from "./contentReplacementRecoveryApi";
+
+const credentials: SessionCredentials = {
+  instanceType: "enterprise",
+  baseUrl: "https://DEMO.stackenterprise.co/",
+  accessToken: "secret-token",
+  authSource: "oauth-pkce",
+  oauthScopes: ["write_access", "no_expiry"],
+};
+
+const priorQuestion: ReplacementRequestModel = {
+  kind: "question",
+  ref: { kind: "question", questionId: 10 },
+  request: { title: "Rename TermA", body: "Use TermA.", tags: ["product"] },
+};
+
+const postApplyQuestion: ReplacementRequestModel = {
+  kind: "question",
+  ref: { kind: "question", questionId: 10 },
+  request: { title: "Rename TermB", body: "Use TermB.", tags: ["product"] },
+};
+
+const configuration: ReplacementConfiguration = {
+  target: { kind: "enterprise-main" },
+  contentTypes: { questions: true, answers: true, articles: true },
+  discovery: { mode: "full" },
+  rules: [{ id: "rule-1", find: "TermA", replace: "TermB" }],
+  options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+type CreateClient = (
+  normalizedCredentials: SessionCredentials,
+  instance: NormalizedInstance,
+  onThrottle: (notice: unknown) => void,
+) => ContentReplacementClient;
+
+async function validRecoveryPayload(
+  overrides: Partial<ContentReplacementRecoveryPayload> = {},
+): Promise<ContentReplacementRecoveryPayload> {
+  const effectiveConfiguration = overrides.configuration ?? configuration;
+  const scanCompatibility = overrides.scanCompatibility ?? "current";
+  const priorRequestModel = overrides.priorRequestModel ?? toReplacementWireRequestModel(priorQuestion);
+  const proposal = await buildReplacementProposal(
+    priorRequestModel,
+    effectiveConfiguration,
+    overrides.exactProof,
+  );
+  if (!proposal) throw new Error("Recovery fixture must produce a forward proposal.");
+  return {
+    action: "preview",
+    credentials,
+    configuration: effectiveConfiguration,
+    scanCompatibility,
+    jobFingerprint: await createJobFingerprint({
+      baseUrl: "https://demo.stackenterprise.co",
+      configuration: effectiveConfiguration,
+      scanCompatibility,
+    }),
+    itemRef: priorQuestion.ref,
+    priorRequestModel,
+    expectedPriorRequestChecksum: proposal.scannedRequestChecksum,
+    expectedPostApplyChecksum: proposal.proposedRequestChecksum,
+    reviewedProposedRequestChecksum: proposal.proposedRequestChecksum,
+    reviewedProposalFingerprint: proposal.proposalFingerprint,
+    ...(overrides.exactProof === undefined ? {} : { exactProof: overrides.exactProof }),
+    ...overrides,
+  } as ContentReplacementRecoveryPayload;
+}
+
+function fakeContentClient(
+  getItems: readonly ReplacementRequestModel[] = [postApplyQuestion],
+  updateImplementation?: (model: ReplacementRequestModel) => Promise<void>,
+): ContentReplacementClient {
+  let readIndex = 0;
+  return {
+    getQuestionsPage: vi.fn(),
+    getAnswersPage: vi.fn(),
+    getArticlesPage: vi.fn(),
+    getSearchPage: vi.fn(async () => {
+      throw new Error("Search inventory is unavailable in this fixture.");
+    }),
+    getItem: vi.fn(async () => getItems[Math.min(readIndex++, getItems.length - 1)]),
+    updateItem: vi.fn(updateImplementation ?? (async () => undefined)),
+  };
+}
+
+async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
+  const createClient = vi.fn<CreateClient>();
+  const response = await handleContentReplacementRecoveryRequest(payload, { createClient });
+
+  expect(response.status).toBe(400);
+  await expect(response.json()).resolves.toEqual({
+    ok: false,
+    error: "Content replacement recovery request is invalid.",
+  });
+  expect(createClient).not.toHaveBeenCalled();
+}
+
+describe("handleContentReplacementRecoveryRequest", () => {
+  it("rejects an aggregate-over-budget prior model before constructing a client", async () => {
+    const payload = await validRecoveryPayload();
+    const prior = payload.priorRequestModel;
+    if (prior.kind !== "question") throw new Error("Expected a question fixture.");
+    payload.priorRequestModel = {
+      ...prior,
+      request: {
+        ...prior.request,
+        body: "é".repeat(1_048_576),
+      },
+    };
+    expect(new TextEncoder().encode(JSON.stringify(payload.priorRequestModel)).byteLength)
+      .toBeGreaterThan(MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES);
+
+    await expectInvalidWithoutClient(payload);
+  });
+
+  it("authorizes legacy recovery with compatibility-bound fingerprint provenance", async () => {
+    const payload = await validRecoveryPayload();
+    const legacyPayload = {
+      ...payload,
+      scanCompatibility: "legacy-restart-required",
+      jobFingerprint: await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration,
+        scanCompatibility: "legacy-restart-required",
+      }),
+    };
+
+    const response = await handleContentReplacementRecoveryRequest(legacyPayload, {
+      createClient: () => fakeContentClient(),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects a field-only compatibility flip before recovery reads", async () => {
+    const createClient = vi.fn<CreateClient>();
+    const payload = await validRecoveryPayload();
+
+    const response = await handleContentReplacementRecoveryRequest({
+      ...payload,
+      scanCompatibility: "legacy-restart-required",
+    }, { createClient });
+
+    expect(response.status).toBe(409);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("requires a valid reviewed Exact proof before recovery reads", async () => {
+    const selection = await createExactTargetSelection([priorQuestion.ref]);
+    const exact: ReplacementConfiguration = {
+      ...configuration,
+      discovery: selection.discovery,
+    };
+    const payload = await validRecoveryPayload({
+      configuration: exact,
+      exactProof: selection.proofs[0],
+    });
+    const response = await handleContentReplacementRecoveryRequest(
+      payload,
+      { createClient: () => fakeContentClient() },
+    );
+
+    expect(response.status).toBe(200);
+    const { exactProof: _proof, ...withoutProof } = payload;
+    await expectInvalidWithoutClient(withoutProof);
+    await expectInvalidWithoutClient({
+      ...payload,
+      exactProof: { ...selection.proofs[0], manifestRoot: "0".repeat(64) },
+    });
+  });
+
+  it("rejects forged forward evidence before client creation even when the forged prior checksum is self-consistent", async () => {
+    const payload = await validRecoveryPayload();
+    const prior = payload.priorRequestModel;
+    if (prior.kind !== "question") throw new Error("Expected a question fixture.");
+    const forgedBody: ReplacementWireRequestModel = {
+      ...prior,
+      request: { ...prior.request, body: "Attacker-controlled prior" },
+    };
+    const forgedTags: ReplacementWireRequestModel = {
+      ...prior,
+      request: { ...prior.request, tags: ["changed"] },
+    };
+    const forgedRef: ReplacementWireRequestModel = {
+      ...prior,
+      ref: { kind: "question" as const, questionId: 11 },
+    };
+    const changedConfiguration: ReplacementConfiguration = {
+      ...configuration,
+      rules: [{ id: "rule-1", find: "TermA", replace: "DifferentProduct" }],
+    };
+
+    await expectInvalidWithoutClient({
+      ...payload,
+      priorRequestModel: forgedBody,
+      expectedPriorRequestChecksum: await checksumRequestModel(forgedBody),
+    });
+    await expectInvalidWithoutClient({
+      ...payload,
+      priorRequestModel: forgedTags,
+      expectedPriorRequestChecksum: await checksumRequestModel(forgedTags),
+    });
+    await expectInvalidWithoutClient({
+      ...payload,
+      itemRef: forgedRef.ref,
+      priorRequestModel: forgedRef,
+      expectedPriorRequestChecksum: await checksumRequestModel(forgedRef),
+    });
+    await expectInvalidWithoutClient({
+      ...payload,
+      configuration: changedConfiguration,
+      jobFingerprint: await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration: changedConfiguration,
+        scanCompatibility: "current",
+      }),
+    });
+    await expectInvalidWithoutClient({ ...payload, reviewedProposedRequestChecksum: "f".repeat(64) });
+    await expectInvalidWithoutClient({ ...payload, reviewedProposalFingerprint: "f".repeat(64) });
+  });
+
+  it("rejects a self-checksummed forged article permission snapshot with zero PUT", async () => {
+    const prior: ReplacementRequestModel = {
+      kind: "article",
+      ref: { kind: "article", articleId: 12 },
+      request: {
+        title: "TermA policy",
+        body: "TermA",
+        tags: ["safe"],
+        type: "policy",
+        expirationDate: null,
+        permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [3] },
+      },
+    };
+    const payload = await validRecoveryPayload({
+      itemRef: prior.ref,
+      priorRequestModel: toReplacementWireRequestModel(prior),
+    });
+    const persistedPrior = payload.priorRequestModel;
+    if (persistedPrior.kind !== "article") throw new Error("Expected an article fixture.");
+    const forged: ReplacementWireRequestModel = {
+      ...persistedPrior,
+      request: {
+        ...persistedPrior.request,
+        permissions: { editableBy: "everyone" as const, editorUserIds: [], editorUserGroupIds: [] },
+      },
+    };
+
+    await expectInvalidWithoutClient({
+      ...payload,
+      priorRequestModel: forged,
+      expectedPriorRequestChecksum: await checksumRequestModel(forged),
+    });
+  });
+
+  it("previews a recoverable item read-only with normalized current and prior models", async () => {
+    const client = fakeContentClient([{
+      ...postApplyQuestion,
+      metadata: { webUrl: "https://private.example/secret-token" },
+    }]);
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: (_credentials, _instance, onThrottle) => {
+        onThrottle({ kind: "burst", seconds: 7, remaining: 2 });
+        onThrottle({ kind: "burst", seconds: 7, remaining: 2, upstream: "secret-token" });
+        return client;
+      },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      result: {
+        status: "recoverable",
+        currentRequestModel: postApplyQuestion,
+        priorRequestModel: priorQuestion,
+        observedRequestChecksum: await checksumRequestModel(postApplyQuestion),
+      },
+      throttleNotices: [{ kind: "burst", seconds: 7, remaining: 2 }],
+    });
+    expect(client.getItem).toHaveBeenCalledTimes(1);
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
+  it("previews an already-recovered item without a PUT", async () => {
+    const client = fakeContentClient([priorQuestion]);
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      result: { status: "already-recovered" },
+    });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
+  it("previews a third checksum state as a conflict without a PUT", async () => {
+    const conflict: ReplacementRequestModel = {
+      ...postApplyQuestion,
+      request: { ...postApplyQuestion.request, tags: ["changed-later"] },
+    };
+    const client = fakeContentClient([conflict]);
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      result: {
+        status: "conflict",
+        currentRequestModel: conflict,
+        priorRequestModel: priorQuestion,
+      },
+    });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
+  it("uses only the current request model—not metadata—to validate the post-apply checksum", async () => {
+    const client = fakeContentClient([{
+      ...postApplyQuestion,
+      metadata: { titleContext: "changed response-only metadata" },
+    }]);
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({ result: { status: "recoverable" } });
+  });
+
+  it("contains a current-model identity mismatch without writing", async () => {
+    const client = fakeContentClient([{
+      ...postApplyQuestion,
+      ref: { kind: "question", questionId: 11 },
+    }]);
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({ result: { status: "failed" } });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
+  it("applies recovery only from the expected post-apply state and verifies the exact prior state", async () => {
+    const client = fakeContentClient([postApplyQuestion, priorQuestion]);
+
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ action: "apply" }),
+      { createClient: () => client },
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      result: {
+        status: "recovered",
+        observedRequestChecksum: await checksumRequestModel(priorQuestion),
+      },
+      throttleNotices: [],
+    });
+    expect(client.getItem).toHaveBeenCalledTimes(2);
+    expect(client.updateItem).toHaveBeenCalledTimes(1);
+    expect(client.updateItem).toHaveBeenCalledWith(priorQuestion);
+  });
+
+  it("returns verification-failed when the post-PUT readback is not the exact reviewed prior model", async () => {
+    const divergent: ReplacementRequestModel = {
+      ...priorQuestion,
+      request: { ...priorQuestion.request, tags: ["product", "server-added"] },
+    };
+    const client = fakeContentClient([postApplyQuestion, divergent]);
+
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ action: "apply" }),
+      { createClient: () => client },
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      result: {
+        status: "verification-failed",
+        observedRequestChecksum: await checksumRequestModel(divergent),
+      },
+    });
+    expect(client.updateItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not PUT recovery when apply finds the prior checksum", async () => {
+    const client = fakeContentClient([priorQuestion]);
+
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ action: "apply" }),
+      { createClient: () => client },
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      result: { status: "already-recovered" },
+    });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
+  it("does not PUT recovery when apply finds a third checksum state", async () => {
+    const conflict: ReplacementRequestModel = {
+      ...postApplyQuestion,
+      request: { ...postApplyQuestion.request, body: "Changed after apply" },
+    };
+    const client = fakeContentClient([conflict]);
+
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ action: "apply" }),
+      { createClient: () => client },
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ result: { status: "conflict" } });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
+  it("returns network after a lost recovery PUT response and retries as already recovered", async () => {
+    let current: ReplacementRequestModel = postApplyQuestion;
+    const updateItem = vi.fn(async (model: ReplacementRequestModel) => {
+      current = model;
+      throw new ContentReplacementApiError("Unable to update question 10.", "transport");
+    });
+    const client = fakeContentClient();
+    client.getItem = vi.fn(async () => current);
+    client.updateItem = updateItem;
+    const payload = await validRecoveryPayload({ action: "apply" });
+
+    const first = await handleContentReplacementRecoveryRequest(payload, { createClient: () => client });
+    const second = await handleContentReplacementRecoveryRequest(payload, { createClient: () => client });
+
+    await expect(first.json()).resolves.toMatchObject({ result: { status: "network" } });
+    await expect(second.json()).resolves.toMatchObject({ result: { status: "already-recovered" } });
+    expect(updateItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns network when the post-recovery observation fails after exactly one PUT", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn()
+      .mockResolvedValueOnce(postApplyQuestion)
+      .mockRejectedValueOnce(new ContentReplacementApiError("Unable to read question 10.", "transport"));
+
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ action: "apply" }),
+      { createClient: () => client },
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ result: { status: "network" } });
+    expect(client.updateItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns HTTP 401 for an invalid upstream credential without issuing a PUT", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      new ContentReplacementApiError("hostile credential detail", "http", 401),
+    );
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Stack Enterprise credentials were rejected.",
+    });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [403, "permission"], [400, "validation"], [422, "validation"],
+    [429, "network"], [502, "network"], [503, "network"], [504, "network"], [404, "failed"],
+  ] as const)("maps upstream non-credential status %i to an HTTP-200 %s item result", async (status, expected) => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      new ContentReplacementApiError("secret-token hostile body", "http", status),
+    );
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+    const serialized = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(serialized)).toMatchObject({ result: { status: expected } });
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("hostile");
+  });
+
+  it("does not trust a fake-client TypeError as transport provenance", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(new TypeError("secret-token network URL"));
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+    const serialized = await response.text();
+
+    expect(JSON.parse(serialized)).toMatchObject({ result: { status: "failed" } });
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("URL");
+  });
+
+  it("maps a sanitized adapter schema failure to failed", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      new ContentReplacementApiError("malformed secret-token detail", "schema"),
+    );
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+    const serialized = await response.text();
+
+    expect(JSON.parse(serialized)).toMatchObject({ result: { status: "failed" } });
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("malformed");
+  });
+
+  it("does not trust an unexpected error that impersonates a retryable HTTP failure", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      Object.assign(new Error("secret-token"), { status: 503, category: "transport" }),
+    );
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({ result: { status: "failed" } });
+  });
+
+  it("accepts each exact canonical prior-model kind and PUTs no response-only fields", async () => {
+    const cases: Array<{ prior: ReplacementRequestModel; post: ReplacementRequestModel }> = [
+      {
+        prior: { kind: "answer", ref: { kind: "answer", questionId: 10, answerId: 11 }, request: { body: "TermA" } },
+        post: { kind: "answer", ref: { kind: "answer", questionId: 10, answerId: 11 }, request: { body: "TermB" } },
+      },
+      {
+        prior: {
+          kind: "article", ref: { kind: "article", articleId: 12 },
+          request: {
+            title: "TermA policy", body: "TermA", tags: ["safe"], type: "policy", expirationDate: null,
+            permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [3] },
+          },
+        },
+        post: {
+          kind: "article", ref: { kind: "article", articleId: 12 },
+          request: {
+            title: "TermB policy", body: "TermB", tags: ["safe"], type: "policy", expirationDate: null,
+            permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [3] },
+          },
+        },
+      },
+    ];
+
+    for (const { prior, post } of cases) {
+      const client = fakeContentClient([post, prior]);
+      const payload = await validRecoveryPayload({
+        action: "apply",
+        itemRef: prior.ref,
+        priorRequestModel: toReplacementWireRequestModel(prior),
+        expectedPriorRequestChecksum: await checksumRequestModel(prior),
+        expectedPostApplyChecksum: await checksumRequestModel(post),
+      });
+
+      const response = await handleContentReplacementRecoveryRequest(payload, {
+        createClient: () => client,
+      });
+
+      await expect(response.json()).resolves.toMatchObject({ result: { status: "recovered" } });
+      expect(client.updateItem).toHaveBeenCalledWith(prior);
+    }
+  });
+
+  it.each([
+    ["unknown root key", async () => ({ ...(await validRecoveryPayload()), configuration: {} })],
+    ["unknown credential key", async () => ({ ...(await validRecoveryPayload()), credentials: { ...credentials, tokenCopy: "secret-token" } })],
+    ["invalid action", async () => ({ ...(await validRecoveryPayload()), action: "force" })],
+    ["invalid job fingerprint format", async () => ({ ...(await validRecoveryPayload()), jobFingerprint: "review-job" })],
+    ["invalid prior checksum format", async () => ({ ...(await validRecoveryPayload()), expectedPriorRequestChecksum: "A".repeat(64) })],
+    ["invalid post checksum format", async () => ({ ...(await validRecoveryPayload()), expectedPostApplyChecksum: "a".repeat(63) })],
+    ["unknown item-ref key", async () => ({ ...(await validRecoveryPayload()), itemRef: { kind: "question", questionId: 10, answerId: 11 } })],
+    ["unknown model key", async () => ({ ...(await validRecoveryPayload()), priorRequestModel: { ...priorQuestion, metadata: {} } })],
+    ["model kind mismatch", async () => ({ ...(await validRecoveryPayload()), priorRequestModel: { ...priorQuestion, kind: "article" } })],
+    ["model ref mismatch", async () => ({ ...(await validRecoveryPayload()), priorRequestModel: { ...priorQuestion, ref: { kind: "question", questionId: 11 } } })],
+    ["unknown request key", async () => ({ ...(await validRecoveryPayload()), priorRequestModel: { ...priorQuestion, request: { ...priorQuestion.request, owner: 3 } } })],
+    ["wrong request type", async () => ({ ...(await validRecoveryPayload()), priorRequestModel: { ...priorQuestion, request: { ...priorQuestion.request, tags: [2] } } })],
+    ["prior checksum mismatch", async () => ({ ...(await validRecoveryPayload()), expectedPriorRequestChecksum: "f".repeat(64) })],
+  ])("rejects exact recovery evidence violation before client construction: %s", async (_label, makePayload) => {
+    await expectInvalidWithoutClient(await makePayload());
+  });
+
+  it("rejects article permission and response-only extras before client construction", async () => {
+    const article: ReplacementRequestModel = {
+      kind: "article",
+      ref: { kind: "article", articleId: 12 },
+      request: {
+        title: "TermA prior", body: "TermA prior", tags: [], type: "policy",
+        permissions: { editableBy: "ownerOnly", editorUserIds: [], editorUserGroupIds: [] },
+      },
+    };
+    const payload = await validRecoveryPayload({
+      itemRef: article.ref,
+      priorRequestModel: toReplacementWireRequestModel(article),
+    });
+    await expectInvalidWithoutClient({
+      ...payload,
+      priorRequestModel: {
+        ...article,
+        request: {
+          ...article.request,
+          permissions: { ...article.request.permissions, editorUsers: [{ id: 2 }] },
+        },
+      } as never,
+    });
+  });
+
+  it.each([
+    "https://demo.stackenterprise.co/proxy",
+    "https://demo.stackenterprise.co/?proxy=1",
+    "https://demo.stackenterprise.co/#fragment",
+    "https://user:secret-token@demo.stackenterprise.co/",
+  ])("rejects non-root Enterprise context before client construction: %s", async (baseUrl) => {
+    const createClient = vi.fn<CreateClient>();
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ credentials: { ...credentials, baseUrl } }),
+      { createClient },
+    );
+    expect(response.status).toBe(400);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the compact configuration fingerprint before recovery reads", async () => {
+    const createClient = vi.fn<CreateClient>(() => fakeContentClient());
+    const payload = await validRecoveryPayload({ jobFingerprint: "a".repeat(64) });
+
+    const response = await handleContentReplacementRecoveryRequest(payload, { createClient });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Replacement job configuration changed. Start a new scan.",
+    });
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("uses the five-second production read cap without a long server wait", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("secret-token upstream body", {
+        status: 429,
+        headers: { "Retry-After": "6" },
+      }),
+    );
+    const scheduledWait = vi.fn();
+    vi.stubGlobal("fetch", fetchFn);
+    vi.stubGlobal("setTimeout", scheduledWait);
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload());
+    const serialized = await response.text();
+
+    expect(JSON.parse(serialized)).toEqual({
+      ok: true,
+      result: { status: "network", error: "Unable to read the current content item." },
+      throttleNotices: [{ kind: "backoff", seconds: 6 }],
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(scheduledWait).not.toHaveBeenCalled();
+    expect(serialized).not.toContain("secret-token");
+  });
+
+  it("returns one sanitized backoff notice for a no-retry production 503 recovery PUT", async () => {
+    const fetchFn = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({ error_message: "secret-token upstream failure" }), {
+          status: 503,
+          headers: { "Retry-After": "30", "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        id: 10,
+        title: "Rename TermB",
+        bodyMarkdown: "Use TermB.",
+        tags: [{ name: "product" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const scheduledWait = vi.fn();
+    vi.stubGlobal("fetch", fetchFn);
+    vi.stubGlobal("setTimeout", scheduledWait);
+
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ action: "apply" }),
+    );
+    const serialized = await response.text();
+
+    expect(JSON.parse(serialized)).toEqual({
+      ok: true,
+      result: { status: "network", error: "Unable to recover the content item." },
+      throttleNotices: [{ kind: "backoff", seconds: 30 }],
+    });
+    expect(fetchFn.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+    expect(scheduledWait).not.toHaveBeenCalled();
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("upstream");
+  });
+});
+
+describe("content replacement recovery route", () => {
+  it("uses the bounded JSON reader and delegates one valid request exactly once", async () => {
+    const api = await import("./contentReplacementRecoveryApi");
+    const handler = vi.spyOn(api, "handleContentReplacementRecoveryRequest").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    const { POST, runtime } = await import("../app/api/write-tools/content-replacement/recover/route");
+    const payload = await validRecoveryPayload();
+
+    const response = await POST(new Request("https://local.test/recover", {
+      method: "POST", body: JSON.stringify(payload),
+    }));
+
+    expect(runtime).toBe("nodejs");
+    expect(response.status).toBe(200);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(payload);
+  });
+
+  it("returns a bounded-reader error without delegating", async () => {
+    const api = await import("./contentReplacementRecoveryApi");
+    const handler = vi.spyOn(api, "handleContentReplacementRecoveryRequest");
+    const { POST } = await import("../app/api/write-tools/content-replacement/recover/route");
+
+    const response = await POST(new Request("https://local.test/recover", {
+      method: "POST", body: "not-json",
+    }));
+
+    expect(response.status).toBe(400);
+    expect(handler).not.toHaveBeenCalled();
+  });
+});

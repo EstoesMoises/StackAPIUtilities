@@ -14,6 +14,14 @@ import {
   loadPersistedDatasetSession,
   savePersistedDatasetSession,
 } from "../utils/browserDatasetStorage";
+import {
+  deleteContentReplacementJob,
+  listContentReplacementJobs,
+  loadContentReplacementJob,
+  saveContentReplacementJob,
+  type ContentReplacementJobSummary,
+} from "../utils/browserContentReplacementStorage";
+import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
 
 vi.mock("../utils/browserDatasetStorage", () => ({
   clearPersistedDatasetSession: vi.fn(),
@@ -21,9 +29,26 @@ vi.mock("../utils/browserDatasetStorage", () => ({
   savePersistedDatasetSession: vi.fn(),
 }));
 
+vi.mock("../utils/browserContentReplacementStorage", async () => {
+  const actual = await vi.importActual<typeof import("../utils/browserContentReplacementStorage")>(
+    "../utils/browserContentReplacementStorage",
+  );
+  return {
+    ...actual,
+    deleteContentReplacementJob: vi.fn(),
+    listContentReplacementJobs: vi.fn(),
+    loadContentReplacementJob: vi.fn(),
+    saveContentReplacementJob: vi.fn(),
+  };
+});
+
 const loadPersistedDatasetSessionMock = vi.mocked(loadPersistedDatasetSession);
 const savePersistedDatasetSessionMock = vi.mocked(savePersistedDatasetSession);
 const clearPersistedDatasetSessionMock = vi.mocked(clearPersistedDatasetSession);
+const deleteContentReplacementJobMock = vi.mocked(deleteContentReplacementJob);
+const listContentReplacementJobsMock = vi.mocked(listContentReplacementJobs);
+const loadContentReplacementJobMock = vi.mocked(loadContentReplacementJob);
+const saveContentReplacementJobMock = vi.mocked(saveContentReplacementJob);
 
 const basicBusinessPatCredentials = {
   instanceType: "basic-business",
@@ -36,6 +61,10 @@ beforeEach(() => {
   loadPersistedDatasetSessionMock.mockResolvedValue(null);
   savePersistedDatasetSessionMock.mockResolvedValue(undefined);
   clearPersistedDatasetSessionMock.mockResolvedValue(undefined);
+  deleteContentReplacementJobMock.mockResolvedValue(undefined);
+  listContentReplacementJobsMock.mockResolvedValue({ jobs: [], totalCount: 0 });
+  loadContentReplacementJobMock.mockResolvedValue(null);
+  saveContentReplacementJobMock.mockResolvedValue({ status: "saved" });
 });
 
 afterEach(() => {
@@ -1411,6 +1440,216 @@ describe("AppShell", () => {
     expect(screen.getByLabelText("Upload user export CSV")).toBeInTheDocument();
   });
 
+  it("registers Content Replacement immediately after User Group Sync and opens the full wizard", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    const catalog = screen.getByRole("heading", { name: "Write Tools" }).closest("section")!;
+    const tools = within(catalog).getAllByRole("button");
+    expect(tools.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "User Group Sync",
+      "Content Replacement",
+    ]);
+    expect(within(tools[1]).getByText("Enterprise main site")).toBeVisible();
+    expect(within(tools[1]).getByText("Preview required")).toBeVisible();
+
+    await user.click(tools[1]);
+    expect(screen.getByRole("heading", { name: "Content Replacement", level: 1 })).toBeVisible();
+    const progress = screen.getByRole("list", { name: "Content replacement progress" });
+    expect(within(progress).getByText("Define", { selector: "[aria-current='step']" })).toBeVisible();
+    expect(progress).toHaveTextContent("Scan");
+    expect(progress).toHaveTextContent("Review");
+    expect(progress).toHaveTextContent("Apply");
+  });
+
+  it("does not abort a newly created scan when controlled job identity feeds back from App", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    const firstScan = createDeferred<Response>();
+    const scanAbort = vi.fn();
+    let storedJob: PersistedContentReplacementJob | null = null;
+    saveContentReplacementJobMock.mockImplementation(async (job) => {
+      storedJob = job;
+      return { status: "saved" };
+    });
+    loadContentReplacementJobMock.mockImplementation(async (id) => storedJob?.id === id ? storedJob : null);
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input) === "/api/oauth/pkce/config") {
+        return jsonResponse({ ok: true, redirectUri: "https://utilities.example.com/api/oauth/pkce/callback" });
+      }
+      if (String(input) === "/api/oauth/pkce/start") {
+        return jsonResponse({ ok: true, authorizationUrl: "https://demo.stackenterprise.co/oauth?state=create-scan" });
+      }
+      if (String(input) === "/api/write-tools/content-replacement/scan") {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", scanAbort);
+        const body = JSON.parse(String(init?.body)) as { cursor?: { kind: "questions" | "answers" | "articles" | "search" } };
+        if (fetchMock.mock.calls.filter(([url]) => String(url) === "/api/write-tools/content-replacement/scan").length === 1) {
+          return firstScan.promise;
+        }
+        return jsonResponse({
+          ok: true,
+          result: {
+            candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0,
+            pageKind: body.cursor?.kind ?? "questions",
+            progress: {
+              apiRequestsCompleted: 1,
+              searchPages: body.cursor?.kind === "search" ? 1 : 0,
+              searchTermsCompleted: body.cursor?.kind === "search" ? 1 : 0,
+              answerBearingQuestionsQueued: 0,
+              zeroAnswerQuestionsSkipped: 0,
+            },
+          },
+          throttleNotices: [],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${String(input)}`);
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+    await user.click(screen.getByRole("button", { name: "Credentials" }));
+    await user.selectOptions(screen.getByLabelText("Instance type"), "enterprise");
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        origin: window.location.origin,
+        source: popup as unknown as MessageEventSource,
+        data: {
+          type: "stack-api-oauth-pkce-result",
+          ok: true,
+          credential: {
+            instanceType: "enterprise", baseUrl: "https://demo.stackenterprise.co",
+            accessToken: "oauth-token", authSource: "oauth-pkce", oauthClientId: "client-123",
+            oauthScopes: ["write_access", "no_expiry"],
+          },
+        },
+      }));
+    });
+    expect(await screen.findByText("Credentials saved for this browser session.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    await user.type(screen.getByLabelText("Find term 1"), "Old term");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "New term");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    const startScanButton = screen.getByRole("button", { name: "Start scan" });
+    expect(startScanButton).toBeEnabled();
+    await user.click(startScanButton);
+
+    await waitFor(() => expect(saveContentReplacementJobMock).toHaveBeenCalled());
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) =>
+      String(url) === "/api/write-tools/content-replacement/scan")).toBe(true));
+    expect(loadContentReplacementJobMock).not.toHaveBeenCalled();
+    await act(async () => { await Promise.resolve(); });
+    expect(scanAbort).not.toHaveBeenCalled();
+
+    firstScan.resolve(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0,
+        pageKind: "search",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 1,
+          searchTermsCompleted: 1,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+      throttleNotices: [],
+    }));
+    await waitFor(() => expect(storedJob?.status).toBe("completed"));
+    expect(screen.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "User Group Sync" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+    expect(await screen.findByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    expect(loadContentReplacementJobMock).toHaveBeenCalledWith(storedJob!.id);
+  });
+
+  it("keeps a job opened from Define selected across write-tool remounts", async () => {
+    const user = userEvent.setup();
+    const job = contentReplacementJob({ id: "job-from-define", stage: "scan", status: "paused" });
+    listContentReplacementJobsMock.mockResolvedValue({ jobs: [contentReplacementSummary(job)], totalCount: 1 });
+    loadContentReplacementJobMock.mockImplementation(async (id) => id === job.id ? job : null);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+    await user.click(await screen.findByRole("button", { name: `Resume content replacement job ${job.id}` }));
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "User Group Sync" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+    expect(loadContentReplacementJobMock).toHaveBeenCalledWith(job.id);
+  });
+
+  it("keeps a job opened from Datasets selected across panel remounts", async () => {
+    const user = userEvent.setup();
+    const job = contentReplacementJob({ id: "job-from-datasets", stage: "scan", status: "paused" });
+    listContentReplacementJobsMock.mockResolvedValue({ jobs: [contentReplacementSummary(job)], totalCount: 1 });
+    loadContentReplacementJobMock.mockImplementation(async (id) => id === job.id ? job : null);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(await screen.findByRole("button", { name: `Resume content replacement job ${job.id}` }));
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+  });
+
+  it("clears App selection when the Define job manager deletes the selected job", async () => {
+    const user = userEvent.setup();
+    const job = contentReplacementJob({ id: "delete-from-define", stage: "review", status: "completed" });
+    listContentReplacementJobsMock.mockResolvedValue({ jobs: [contentReplacementSummary(job)], totalCount: 1 });
+    loadContentReplacementJobMock.mockImplementation(async (id) => id === job.id ? job : null);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(await screen.findByRole("button", { name: `Resume content replacement job ${job.id}` }));
+    expect(await screen.findByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Edit configuration" }));
+    await user.click(screen.getByRole("button", { name: "Create a new job" }));
+    await user.click(await screen.findByRole("button", { name: `Delete content replacement job ${job.id}` }));
+    await user.click(screen.getByRole("button", { name: `Confirm delete ${job.id}` }));
+    await waitFor(() => expect(deleteContentReplacementJobMock).toHaveBeenCalledWith(job.id));
+
+    await user.click(screen.getByRole("button", { name: "User Group Sync" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+
+    expect(await screen.findByRole("heading", { name: "Define replacements" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Review proposed changes" })).not.toBeInTheDocument();
+  });
+
+  it("does not resurrect a job deleted from Apply after the wizard remounts", async () => {
+    const user = userEvent.setup();
+    const job = contentReplacementJob({ id: "delete-from-apply", stage: "results", status: "completed" });
+    listContentReplacementJobsMock.mockResolvedValue({ jobs: [contentReplacementSummary(job)], totalCount: 1 });
+    loadContentReplacementJobMock.mockImplementation(async (id) => id === job.id ? job : null);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(await screen.findByRole("button", { name: `Resume content replacement job ${job.id}` }));
+    expect(await screen.findByRole("heading", { name: "Apply results" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete entire local job" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete entire local job" }));
+    await waitFor(() => expect(deleteContentReplacementJobMock).toHaveBeenCalledWith(job.id));
+
+    await user.click(screen.getByRole("button", { name: "User Group Sync" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+
+    expect(await screen.findByRole("heading", { name: "Define replacements" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Apply results" })).not.toBeInTheDocument();
+  });
+
   it("loads an uploaded report output into the selected dashboard", async () => {
     const user = userEvent.setup();
 
@@ -2416,6 +2655,68 @@ function createDeferred<T>() {
   });
 
   return { promise, resolve, reject };
+}
+
+function contentReplacementJob(
+  overrides: Partial<PersistedContentReplacementJob> = {},
+): PersistedContentReplacementJob {
+  return {
+    schemaVersion: 2,
+    scanCompatibility: "current",
+    revision: 0,
+    id: "content-replacement-job",
+    fingerprint: "f".repeat(64),
+    baseUrl: "https://example.stackenterprise.co",
+    target: { kind: "enterprise-main" },
+    configuration: {
+      target: { kind: "enterprise-main" },
+      contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" },
+      rules: [{ id: "rule-1", find: "Old term", replace: "New term" }],
+      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+    },
+    stage: "scan",
+    status: "paused",
+    inventoryQueue: [],
+    detailQueue: [],
+    progress: {
+      apiRequestsCompleted: 0,
+      questionPages: 0,
+      answerPages: 0,
+      articlePages: 0,
+      searchPages: 0,
+      searchTermsCompleted: 0,
+      indexedReferences: 0,
+      answerBearingQuestionsQueued: 0,
+      zeroAnswerQuestionsSkipped: 0,
+      inventoryItems: 0,
+      detailsInspected: 0,
+      proposalsFound: 0,
+      protectedOccurrences: 0,
+      applyCompleted: 0,
+      recoveryCompleted: 0,
+    },
+    proposals: {},
+    recoverySnapshotStatus: "none",
+    createdAt: "2026-09-01T12:00:00.000Z",
+    updatedAt: "2026-09-02T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function contentReplacementSummary(job: PersistedContentReplacementJob): ContentReplacementJobSummary {
+  return {
+    id: job.id,
+    updatedAt: job.updatedAt,
+    baseUrl: job.baseUrl,
+    stage: job.stage,
+    status: job.status,
+    mappingCount: job.configuration.rules.length,
+    proposedPostCount: Object.keys(job.proposals).length,
+    recoverySnapshotStatus: job.recoverySnapshotStatus,
+    scanCompatibility: job.scanCompatibility,
+    activeOperationKind: job.activeOperation?.kind ?? "none",
+  };
 }
 
 function mockOAuthEndpoints(

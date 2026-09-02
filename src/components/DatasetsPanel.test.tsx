@@ -3,6 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionDataset } from "../domain/types";
 import { downloadSessionDataset } from "../utils/datasetDownloads";
+import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
+import type { ContentReplacementJobSummary } from "../utils/browserContentReplacementStorage";
+import type { ContentReplacementJobManagerStorage } from "./ContentReplacementJobManager";
 import { DatasetsPanel } from "./DatasetsPanel";
 
 vi.mock("../utils/datasetDownloads", () => ({
@@ -126,7 +129,116 @@ describe("DatasetsPanel", () => {
 
     expect(screen.queryByRole("button", { name: "Flush stored datasets" })).not.toBeInTheDocument();
   });
+
+  it("opens browser-local replacement jobs without treating their post content as a dataset", async () => {
+    const user = userEvent.setup();
+    const job = replacementJob();
+    const storage = replacementStorage([job]);
+    const onOpenContentReplacementJob = vi.fn();
+    render(
+      <DatasetsPanel
+        datasets={[]}
+        onRemoveDataset={vi.fn()}
+        contentReplacementStorage={storage}
+        onOpenContentReplacementJob={onOpenContentReplacementJob}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Browser-local replacement jobs" })).toBeVisible();
+    expect(screen.getByText(/sensitive local data/i)).toBeVisible();
+    expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Resume content replacement job resume-me" }));
+    expect(onOpenContentReplacementJob).toHaveBeenCalledWith(job.id);
+    expect(screen.queryByText(job.configuration.rules[0].find, { selector: "td" })).not.toBeInTheDocument();
+  });
+
+  it("removes a confirmed replacement job and its recovery record from the Datasets area", async () => {
+    const user = userEvent.setup();
+    const storage = replacementStorage([replacementJob()]);
+    const onContentReplacementJobDeleted = vi.fn();
+    render(
+      <DatasetsPanel
+        datasets={[]}
+        onRemoveDataset={vi.fn()}
+        contentReplacementStorage={storage}
+        onOpenContentReplacementJob={vi.fn()}
+        onContentReplacementJobDeleted={onContentReplacementJobDeleted}
+      />,
+    );
+
+    await screen.findByText("Review complete");
+    await user.click(screen.getByRole("button", { name: "Delete content replacement job resume-me" }));
+    expect(storage.delete).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Confirm delete resume-me" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/recovery snapshots.*deleted/i);
+    expect(onContentReplacementJobDeleted).toHaveBeenCalledWith("resume-me");
+    expect(screen.queryByText("Review complete")).not.toBeInTheDocument();
+  });
 });
+
+function replacementStorage(jobs: PersistedContentReplacementJob[]): ContentReplacementJobManagerStorage & {
+  list: ReturnType<typeof vi.fn>;
+  delete: ReturnType<typeof vi.fn>;
+} {
+  const summaries: ContentReplacementJobSummary[] = jobs.map((job) => ({
+    id: job.id,
+    baseUrl: job.baseUrl,
+    stage: job.stage,
+    status: job.status,
+    mappingCount: job.configuration.rules.length,
+    proposedPostCount: job.progress.proposalsFound,
+    recoverySnapshotStatus: job.recoverySnapshotStatus,
+    scanCompatibility: job.scanCompatibility,
+    activeOperationKind: job.activeOperation?.kind ?? "none",
+    updatedAt: job.updatedAt,
+  }));
+  return {
+    list: vi.fn(async ({ offset, limit }: { offset: number; limit: number }) => ({
+      jobs: summaries.slice(offset, offset + limit),
+      totalCount: summaries.length,
+    })),
+    delete: vi.fn(async (id: string) => {
+      const index = summaries.findIndex((summary) => summary.id === id);
+      if (index >= 0) summaries.splice(index, 1);
+    }),
+  };
+}
+
+function replacementJob(): PersistedContentReplacementJob {
+  return {
+    schemaVersion: 2,
+    scanCompatibility: "current",
+    revision: 2,
+    id: "resume-me",
+    fingerprint: "f".repeat(64),
+    baseUrl: "https://example.stackenterprise.co",
+    target: { kind: "enterprise-main" },
+    configuration: {
+      target: { kind: "enterprise-main" },
+      contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" },
+      rules: [{ id: "rule-1", find: "Private old post body", replace: "New" }],
+      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+    },
+    stage: "review",
+    status: "completed",
+    inventoryQueue: [],
+    detailQueue: [],
+    progress: {
+      apiRequestsCompleted: 0,
+      questionPages: 1, answerPages: 1, articlePages: 1, inventoryItems: 1,
+      searchPages: 0, searchTermsCompleted: 0, indexedReferences: 0,
+      answerBearingQuestionsQueued: 0, zeroAnswerQuestionsSkipped: 0,
+      detailsInspected: 1, proposalsFound: 1, protectedOccurrences: 0,
+      applyCompleted: 0, recoveryCompleted: 0,
+    },
+    proposals: { "question:1": {} as never },
+    recoverySnapshotStatus: "ready",
+    createdAt: "2026-09-01T12:00:00.000Z",
+    updatedAt: "2026-09-02T12:00:00.000Z",
+  };
+}
 
 function liveDataset(): SessionDataset {
   return {

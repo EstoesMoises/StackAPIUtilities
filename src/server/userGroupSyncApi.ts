@@ -1,9 +1,5 @@
 import { StackApiV3Client } from "../api/stackApiV3";
-import {
-  normalizeInstanceUrl,
-  validateEnterpriseV3OAuthCredentials,
-  type NormalizedInstance,
-} from "../credentials/credentialRules";
+import type { NormalizedInstance } from "../credentials/credentialRules";
 import type { SessionCredentials } from "../domain/types";
 import {
   applyUserGroupSyncPlan,
@@ -13,6 +9,13 @@ import {
   type UserGroupSyncClient,
 } from "../writeTools/userGroupSyncRunner";
 import type { UserGroupSyncMode, UserGroupSyncPlan } from "../writeTools/userGroupSync";
+import {
+  prepareEnterpriseWriteContext,
+  redactedJsonResponse,
+  type EnterpriseWriteContextFailureCode,
+  type JsonRedactionPathSegment,
+  type JsonRedactionPolicy,
+} from "./enterpriseWriteRequest";
 
 export interface UserGroupSyncRequestPayload {
   action: "preview" | "apply";
@@ -30,8 +33,6 @@ interface UserGroupSyncApiDependencies {
 export type UserGroupSyncResponseBody =
   | { ok: true; result: UserGroupSyncPlan | UserGroupSyncApplyResult }
   | { ok: false; error: string };
-
-const REDACTED_CREDENTIAL = "[redacted]";
 
 interface CanonicalUserGroupSyncPlan {
   syncMode: UserGroupSyncMode;
@@ -66,41 +67,23 @@ export async function handleUserGroupSyncRequest(
     return jsonResponse({ ok: false, error: "User group sync request is invalid." }, 400);
   }
 
-  const normalizedCredentials = normalizeWriteCredentials(payload.credentials);
-  const redactCredentialSecrets = createCredentialRedactor(payload.credentials, normalizedCredentials);
+  const writeContext = prepareEnterpriseWriteContext(payload.credentials);
+  if (!writeContext.ok) {
+    return jsonResponse(
+      { ok: false, error: userGroupSyncContextError(writeContext.code, writeContext.message) },
+      writeContext.status,
+    );
+  }
+
+  const normalizedCredentials = writeContext.credentials;
   const browserJsonResponse = (body: UserGroupSyncResponseBody, status: number) =>
-    redactedJsonResponse(body, status, redactCredentialSecrets);
-  const normalizedInstance = normalizeRequestInstance(normalizedCredentials.baseUrl);
-  if (normalizedInstance === null) {
-    return browserJsonResponse(
-      { ok: false, error: "Enterprise user group sync requires a valid instance URL." },
-      400,
+    redactedJsonResponse(
+      body,
+      status,
+      writeContext.redact,
+      USER_GROUP_SYNC_RESPONSE_REDACTION_POLICY,
     );
-  }
-
-  if (
-    normalizedCredentials.instanceType !== "enterprise" ||
-    normalizedInstance.instanceType !== "enterprise"
-  ) {
-    return browserJsonResponse(
-      { ok: false, error: "Enterprise user group sync requires Enterprise session credentials." },
-      400,
-    );
-  }
-
-  if (!isSupportedEnterpriseWriteTarget(normalizedInstance)) {
-    return browserJsonResponse(
-      { ok: false, error: "Enterprise user group sync requires a Stack Enterprise instance URL." },
-      400,
-    );
-  }
-
-  const oauthValidation = validateEnterpriseV3OAuthCredentials(normalizedCredentials, {
-    requiredScopes: ["write_access"],
-  });
-  if (!oauthValidation.valid) {
-    return browserJsonResponse({ ok: false, error: oauthValidation.messages.join(" ") }, 400);
-  }
+  const normalizedInstance = writeContext.instance;
 
   const expectedPreview =
     payload.action === "apply" && isUserGroupSyncPlan(payload.expectedPreview)
@@ -164,31 +147,6 @@ function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function normalizeWriteCredentials(credentials: SessionCredentials): SessionCredentials {
-  const normalizedCredentials: SessionCredentials = { ...credentials };
-  const accessToken = normalizeOptionalToken(credentials.accessToken);
-  const pat = normalizeOptionalToken(credentials.pat);
-
-  if (accessToken) {
-    normalizedCredentials.accessToken = accessToken;
-  } else {
-    delete normalizedCredentials.accessToken;
-  }
-
-  if (pat) {
-    normalizedCredentials.pat = pat;
-  } else {
-    delete normalizedCredentials.pat;
-  }
-
-  return normalizedCredentials;
-}
-
-function normalizeOptionalToken(token: string | undefined): string | undefined {
-  const trimmedToken = token?.trim();
-  return trimmedToken ? trimmedToken : undefined;
-}
-
 function createStackApiV3Client(
   credentials: SessionCredentials,
   normalizedInstance: NormalizedInstance,
@@ -199,21 +157,176 @@ function createStackApiV3Client(
   });
 }
 
-function normalizeRequestInstance(baseUrl: string): NormalizedInstance | null {
-  try {
-    return normalizeInstanceUrl(baseUrl);
-  } catch {
-    return null;
+function userGroupSyncContextError(
+  code: EnterpriseWriteContextFailureCode,
+  defaultMessage: string,
+): string {
+  if (code === "invalid_instance_url") {
+    return "Enterprise user group sync requires a valid instance URL.";
   }
+
+  if (code === "enterprise_credentials_required") {
+    return "Enterprise user group sync requires Enterprise session credentials.";
+  }
+
+  if (code === "unsupported_enterprise_instance") {
+    return "Enterprise user group sync requires a Stack Enterprise instance URL.";
+  }
+
+  return defaultMessage;
 }
 
-function isSupportedEnterpriseWriteTarget(normalizedInstance: NormalizedInstance): boolean {
-  const url = new URL(normalizedInstance.baseUrl);
-  const hostname = url.hostname.toLowerCase();
+const USER_GROUP_SYNC_RESPONSE_REDACTION_POLICY: JsonRedactionPolicy = {
+  preserveKey: isTrustedUserGroupSyncResponseKey,
+  preserveStringValue: isTrustedUserGroupSyncResponseString,
+};
 
+const ROOT_RESPONSE_KEYS = new Set(["ok", "result", "error"]);
+const PLAN_KEYS = new Set([
+  "syncMode",
+  "groupNameTemplate",
+  "groups",
+  "skippedRows",
+  "blockingErrors",
+]);
+const APPLY_RESULT_KEYS = new Set(["preview", "operations"]);
+const GROUP_KEYS = new Set([
+  "manager",
+  "groupName",
+  "existingGroupId",
+  "createGroup",
+  "desiredUserIds",
+  "addUserIds",
+  "removeUserIds",
+]);
+const SKIPPED_ROW_KEYS = new Set(["rowNumber", "email", "seniorManager", "reason"]);
+const OPERATION_KEYS = new Set(["kind", "groupName", "userIds", "status", "error"]);
+const OPERATION_KINDS = new Set(["create-group", "add-members", "remove-member"]);
+const OPERATION_STATUSES = new Set(["succeeded", "failed"]);
+const SKIPPED_ROW_REASONS = new Set([
+  "Missing Senior Manager",
+  "Missing Email",
+  "Duplicate Email",
+  "Email not found in Stack Enterprise",
+]);
+
+function isTrustedUserGroupSyncResponseKey(
+  path: readonly JsonRedactionPathSegment[],
+  key: string,
+): boolean {
+  if (path.length === 0) {
+    return ROOT_RESPONSE_KEYS.has(key);
+  }
+
+  if (matchesPath(path, "result")) {
+    return PLAN_KEYS.has(key) || APPLY_RESULT_KEYS.has(key);
+  }
+
+  if (matchesPath(path, "result", "preview")) {
+    return PLAN_KEYS.has(key);
+  }
+
+  if (matchesCollectionItemPath(path, "groups") || matchesPreviewCollectionItemPath(path, "groups")) {
+    return GROUP_KEYS.has(key);
+  }
+
+  if (
+    matchesCollectionItemPath(path, "skippedRows") ||
+    matchesPreviewCollectionItemPath(path, "skippedRows")
+  ) {
+    return SKIPPED_ROW_KEYS.has(key);
+  }
+
+  if (matchesCollectionItemPath(path, "operations")) {
+    return OPERATION_KEYS.has(key);
+  }
+
+  return false;
+}
+
+function isTrustedUserGroupSyncResponseString(
+  path: readonly JsonRedactionPathSegment[],
+  value: string,
+): boolean {
+  if (
+    (matchesPath(path, "result", "syncMode") ||
+      matchesPath(path, "result", "preview", "syncMode")) &&
+    isUserGroupSyncMode(value)
+  ) {
+    return true;
+  }
+
+  if (matchesCollectionItemValuePath(path, "operations", "kind")) {
+    return OPERATION_KINDS.has(value);
+  }
+
+  if (matchesCollectionItemValuePath(path, "operations", "status")) {
+    return OPERATION_STATUSES.has(value);
+  }
+
+  if (
+    (matchesCollectionItemValuePath(path, "skippedRows", "reason") ||
+      matchesPreviewCollectionItemValuePath(path, "skippedRows", "reason"))
+  ) {
+    return SKIPPED_ROW_REASONS.has(value);
+  }
+
+  return false;
+}
+
+function matchesPath(
+  path: readonly JsonRedactionPathSegment[],
+  ...expected: readonly JsonRedactionPathSegment[]
+): boolean {
+  return path.length === expected.length && path.every((segment, index) => segment === expected[index]);
+}
+
+function matchesCollectionItemPath(
+  path: readonly JsonRedactionPathSegment[],
+  collection: string,
+): boolean {
+  return path.length === 3 && path[0] === "result" && path[1] === collection && typeof path[2] === "number";
+}
+
+function matchesPreviewCollectionItemPath(
+  path: readonly JsonRedactionPathSegment[],
+  collection: string,
+): boolean {
   return (
-    url.protocol === "https:" &&
-    (hostname === "stackenterprise.co" || hostname.endsWith(".stackenterprise.co"))
+    path.length === 4 &&
+    path[0] === "result" &&
+    path[1] === "preview" &&
+    path[2] === collection &&
+    typeof path[3] === "number"
+  );
+}
+
+function matchesCollectionItemValuePath(
+  path: readonly JsonRedactionPathSegment[],
+  collection: string,
+  key: string,
+): boolean {
+  return (
+    path.length === 4 &&
+    path[0] === "result" &&
+    path[1] === collection &&
+    typeof path[2] === "number" &&
+    path[3] === key
+  );
+}
+
+function matchesPreviewCollectionItemValuePath(
+  path: readonly JsonRedactionPathSegment[],
+  collection: string,
+  key: string,
+): boolean {
+  return (
+    path.length === 5 &&
+    path[0] === "result" &&
+    path[1] === "preview" &&
+    path[2] === collection &&
+    typeof path[3] === "number" &&
+    path[4] === key
   );
 }
 
@@ -417,55 +530,6 @@ function jsonResponse(body: UserGroupSyncResponseBody, status: number): Response
       "Content-Type": "application/json",
     },
   });
-}
-
-function redactedJsonResponse(
-  body: UserGroupSyncResponseBody,
-  status: number,
-  redactCredentialSecrets: (value: string) => string,
-): Response {
-  return jsonResponse(redactBrowserStrings(body, redactCredentialSecrets) as UserGroupSyncResponseBody, status);
-}
-
-function createCredentialRedactor(
-  rawCredentials: SessionCredentials,
-  normalizedCredentials: SessionCredentials,
-): (value: string) => string {
-  const secretCandidates = [
-    rawCredentials.accessToken,
-    rawCredentials.pat,
-    normalizedCredentials.accessToken,
-    normalizedCredentials.pat,
-  ].filter(isNonBlankString);
-  const uniqueSecretCandidates = [...new Set(secretCandidates)].sort((left, right) => right.length - left.length);
-
-  return (value) =>
-    uniqueSecretCandidates.reduce(
-      (redactedValue, secret) => redactedValue.split(secret).join(REDACTED_CREDENTIAL),
-      value,
-    );
-}
-
-function redactBrowserStrings(value: unknown, redactCredentialSecrets: (value: string) => string): unknown {
-  if (typeof value === "string") {
-    return redactCredentialSecrets(value);
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => redactBrowserStrings(item, redactCredentialSecrets));
-  }
-
-  if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, redactBrowserStrings(item, redactCredentialSecrets)]),
-    );
-  }
-
-  return value;
-}
-
-function isNonBlankString(value: string | undefined): value is string {
-  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,6 +1,6 @@
 import type { CredentialRequirement, InstanceType } from "../domain/types";
 
-export type WriteToolId = "user-group-sync";
+export type WriteToolId = "user-group-sync" | "content-replacement";
 
 export interface WriteToolDefinition {
   id: WriteToolId;
@@ -22,6 +22,15 @@ export const writeTools: WriteToolDefinition[] = [
     id: "user-group-sync",
     title: "User Group Sync",
     scope: "Enterprise",
+    status: "Preview required",
+    supportedInstances: ["enterprise"],
+    credentialRequirements: ["access-token"],
+    oauthScopes: ["write_access"],
+  },
+  {
+    id: "content-replacement",
+    title: "Content Replacement",
+    scope: "Enterprise main site",
     status: "Preview required",
     supportedInstances: ["enterprise"],
     credentialRequirements: ["access-token"],
