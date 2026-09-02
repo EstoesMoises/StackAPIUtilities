@@ -256,6 +256,16 @@ describe("useContentReplacementJob", () => {
     );
     expect(second.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
 
+    second.rerender({
+      supplied: {
+        ...equivalentA,
+        authSource: "manual-enterprise-token",
+        oauthScopes: [],
+        accessTokenExpiresAt: undefined,
+      },
+    });
+    expect(second.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+
     const tokenB = { ...equivalentA, accessToken: "token-b" };
     second.rerender({ supplied: tokenB });
     expect(second.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
@@ -1003,6 +1013,85 @@ describe("useContentReplacementJob", () => {
     expect(recoveryBody.action).toBe("apply");
     expect(recoveryBody.priorRequestModel).not.toHaveProperty("metadata");
     expect(result.current.job?.proposals["question:1"].status).toBe("recovered");
+  });
+
+  it.each([401, 403])("turns a raw recovery-apply HTTP %i into reconnect state and requires a fresh-token preview", async (status) => {
+    const proposal = await questionProposal();
+    const initial = await appliedJob(proposal);
+    const previewResponse = jsonResponse({
+      ok: true,
+      result: {
+        status: "recoverable",
+        currentRequestModel: {
+          kind: "question",
+          ref: proposal.before.ref,
+          request: proposal.after.request,
+        },
+        priorRequestModel: {
+          kind: "question",
+          ref: proposal.before.ref,
+          request: proposal.before.request,
+        },
+        observedRequestChecksum: proposal.proposedRequestChecksum,
+      },
+      throttleNotices: [],
+    });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(previewResponse)
+      .mockResolvedValueOnce(jsonResponse({ ok: false, error: `response-secret-${status}` }, status))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: {
+          status: "recoverable",
+          currentRequestModel: {
+            kind: "question",
+            ref: proposal.before.ref,
+            request: proposal.after.request,
+          },
+          priorRequestModel: {
+            kind: "question",
+            ref: proposal.before.ref,
+            request: proposal.before.request,
+          },
+          observedRequestChecksum: proposal.proposedRequestChecksum,
+        },
+        throttleNotices: [],
+      }));
+    const deps = dependencies(fetcher, initial);
+    const hook = renderHook(
+      ({ supplied }) => useContentReplacementJob(supplied, initial, deps.value),
+      { initialProps: { supplied: credentials } },
+    );
+    await act(async () => hook.result.current.prepareRecovery(["question:1"]));
+    await act(async () => hook.result.current.startRecovery(["question:1"]));
+
+    expect(hook.result.current.job).toMatchObject({
+      status: "paused",
+      operationError: { category: "authorization", retryable: true },
+      activeOperation: { kind: "recovery-preview" },
+      proposals: { "question:1": { status: "applied" } },
+    });
+    expect(hook.result.current.operationError).toBe("Stack Enterprise credentials or permissions were rejected.");
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+    expect(JSON.stringify(deps.store.current())).not.toMatch(new RegExp(`response-secret-${status}|top-secret-token|rejectedCredential`, "i"));
+
+    hook.rerender({
+      supplied: {
+        ...credentials,
+        authSource: "manual-enterprise-token",
+        oauthScopes: [],
+      },
+    });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
+    await act(async () => hook.result.current.resume());
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    hook.rerender({ supplied: { ...credentials, accessToken: "fresh-recovery-token" } });
+    expect(hook.result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+    await act(async () => hook.result.current.resume());
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(fetcher.mock.calls[2][1].body as string).action).toBe("preview");
+    expect(hook.result.current.job?.proposals["question:1"].status).toBe("ready-to-recover");
   });
 
   it("persists a sanitized retryable recovery-preview network failure", async () => {

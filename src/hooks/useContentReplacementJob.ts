@@ -877,6 +877,11 @@ export function useContentReplacementJob(
         const fetched = await request(RECOVERY_URL, payload, token);
         if ("aborted" in fetched) return;
         const at = dependenciesRef.current.now();
+        if (!("failed" in fetched) && (fetched.response.status === 401 || fetched.response.status === 403)) {
+          rejectCredential(current.id, credentialCheck.credentialIdentity);
+          await persist(credentialInterruption(current, safeHttpMessage(fetched.response.status), at), token);
+          return;
+        }
         const parsed = "failed" in fetched
           ? { result: { status: "network" as const, error: NETWORK_FAILURE_MESSAGE }, throttleNotices: [] }
           : await parseRecoveryApplyResponse(fetched.response);
@@ -1327,7 +1332,6 @@ function createCredentialIdentity(credentials: SessionCredentials, normalizedOri
     "enterprise-write-v1",
     normalizedOrigin,
     credentials.accessToken?.trim() ?? "",
-    credentials.authSource ?? "",
   ]);
 }
 
