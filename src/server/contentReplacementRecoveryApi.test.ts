@@ -6,7 +6,10 @@ import {
   ContentReplacementApiError,
   type ContentReplacementClient,
 } from "../writeTools/contentReplacement/contentApi";
-import { checksumRequestModel } from "../writeTools/contentReplacement/proposals";
+import {
+  checksumRequestModel,
+  toReplacementWireRequestModel,
+} from "../writeTools/contentReplacement/proposals";
 import type { ReplacementRequestModel } from "../writeTools/contentReplacement/types";
 import {
   handleContentReplacementRecoveryRequest,
@@ -52,7 +55,7 @@ async function validRecoveryPayload(
     credentials,
     jobFingerprint: "1".repeat(64),
     itemRef: priorQuestion.ref,
-    priorRequestModel: priorQuestion,
+    priorRequestModel: toReplacementWireRequestModel(priorQuestion),
     expectedPriorRequestChecksum: await checksumRequestModel(priorQuestion),
     expectedPostApplyChecksum: await checksumRequestModel(postApplyQuestion),
     ...overrides,
@@ -358,7 +361,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
       const payload = await validRecoveryPayload({
         action: "apply",
         itemRef: prior.ref,
-        priorRequestModel: prior,
+        priorRequestModel: toReplacementWireRequestModel(prior),
         expectedPriorRequestChecksum: await checksumRequestModel(prior),
         expectedPostApplyChecksum: await checksumRequestModel(post),
       });
@@ -407,7 +410,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
           ...article.request,
           permissions: { ...article.request.permissions, editorUsers: [{ id: 2 }] },
         },
-      } as unknown as ReplacementRequestModel,
+      } as never,
       expectedPriorRequestChecksum: await checksumRequestModel(article),
     }));
   });

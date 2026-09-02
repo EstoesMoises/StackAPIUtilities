@@ -68,7 +68,7 @@ export interface ReplacementMetadata {
   lastActivityDate?: string | null;
 }
 
-export type ReplacementWireRequestModel =
+type ReplacementRequestModelBase =
   | {
       kind: "question";
       ref: Extract<ReplacementItemRef, { kind: "question" }>;
@@ -85,11 +85,16 @@ export type ReplacementWireRequestModel =
       request: ArticleUpdateRequest;
     };
 
-type WithReplacementMetadata<T> = T extends ReplacementWireRequestModel
+type WithoutReplacementMetadata<T> = T extends ReplacementRequestModelBase
+  ? T & { metadata?: never }
+  : never;
+
+type WithReplacementMetadata<T> = T extends ReplacementRequestModelBase
   ? T & { metadata?: ReplacementMetadata }
   : never;
 
-export type ReplacementRequestModel = WithReplacementMetadata<ReplacementWireRequestModel>;
+export type ReplacementWireRequestModel = WithoutReplacementMetadata<ReplacementRequestModelBase>;
+export type ReplacementRequestModel = WithReplacementMetadata<ReplacementRequestModelBase>;
 
 export type ReplacementProposalField = "title" | "body";
 
@@ -197,7 +202,8 @@ export type PersistedContentReplacementItemStatus =
   | "ready-to-recover"
   | "recovering"
   | "recovered"
-  | "recovery-conflict";
+  | "recovery-conflict"
+  | "recovery-failed";
 
 export interface PersistedContentReplacementFailure {
   category:
@@ -226,11 +232,13 @@ export type PersistedContentReplacementResult =
       completedAt: string;
     }
   | {
-      kind: "stale" | "excluded" | "recovery-conflict";
+      kind: "stale" | "excluded";
       completedAt: string;
-    }
+    };
+
+export type PersistedContentReplacementRecoveryResult =
   | {
-      kind: "recovered";
+      kind: "recovered" | "conflict";
       observedRequestChecksum: string;
       completedAt: string;
     };
@@ -242,6 +250,7 @@ export interface PersistedContentReplacementRecovery {
   observedPostApplyChecksum?: string;
   status: "pending" | "ready" | "applied" | "conflict" | "failed";
   preview?: PersistedContentReplacementRecoveryPreview;
+  result?: PersistedContentReplacementRecoveryResult;
 }
 
 export interface PersistedContentReplacementRecoveryPreview {

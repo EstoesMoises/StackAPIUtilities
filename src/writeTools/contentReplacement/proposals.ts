@@ -6,6 +6,7 @@ import type {
   ReplacementProposal,
   ReplacementRequestModel,
   ReplacementRule,
+  ReplacementWireRequestModel,
 } from "./types";
 
 interface TitleReplacementResult {
@@ -24,6 +25,49 @@ interface SemanticRule {
 
 export function stableSerialize(value: unknown): string {
   return JSON.stringify(normalizeForSerialization(value));
+}
+
+export function toReplacementWireRequestModel(
+  model: ReplacementRequestModel,
+): ReplacementWireRequestModel {
+  if (model.kind === "answer") {
+    return {
+      kind: "answer",
+      ref: { kind: "answer", questionId: model.ref.questionId, answerId: model.ref.answerId },
+      request: { body: model.request.body },
+    };
+  }
+  if (model.kind === "question") {
+    return {
+      kind: "question",
+      ref: { kind: "question", questionId: model.ref.questionId },
+      request: {
+        title: model.request.title,
+        body: model.request.body,
+        tags: [...model.request.tags],
+      },
+    };
+  }
+  return {
+    kind: "article",
+    ref: { kind: "article", articleId: model.ref.articleId },
+    request: {
+      title: model.request.title,
+      body: model.request.body,
+      tags: [...model.request.tags],
+      type: model.request.type,
+      ...(model.request.expirationDate === undefined
+        ? {}
+        : { expirationDate: model.request.expirationDate }),
+      permissions: {
+        ...(model.request.permissions.editableBy === undefined
+          ? {}
+          : { editableBy: model.request.permissions.editableBy }),
+        editorUserIds: [...model.request.permissions.editorUserIds],
+        editorUserGroupIds: [...model.request.permissions.editorUserGroupIds],
+      },
+    },
+  };
 }
 
 export async function checksumRequestModel(model: ReplacementRequestModel): Promise<string> {

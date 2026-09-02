@@ -4,9 +4,41 @@ import {
   checksumRequestModel,
   createJobFingerprint,
   stableSerialize,
+  toReplacementWireRequestModel,
 } from "./proposals";
+import type {
+  ReplacementRequestModel,
+  ReplacementWireRequestModel,
+} from "./types";
 
 describe("replacement proposals", () => {
+  it("copies only exact editable request fields into a metadata-free recovery wire model", () => {
+    const local: ReplacementRequestModel = {
+      kind: "question",
+      ref: { kind: "question", questionId: 42 },
+      request: { title: "Title", body: "Body", tags: ["product"] },
+      metadata: { webUrl: "https://demo.stackenterprise.co/q/42" },
+    };
+
+    const wire = toReplacementWireRequestModel(local);
+
+    expect(wire).toEqual({
+      kind: "question",
+      ref: { kind: "question", questionId: 42 },
+      request: { title: "Title", body: "Body", tags: ["product"] },
+    });
+    expect(wire).not.toBe(local);
+    expect(wire.ref).not.toBe(local.ref);
+    expect(wire.request).not.toBe(local.request);
+    if (wire.kind !== "question" || local.kind !== "question") throw new Error("Expected question models.");
+    expect(wire.request.tags).not.toBe(local.request.tags);
+
+    if (false) {
+      // @ts-expect-error Metadata-bearing local evidence requires explicit wire conversion.
+      const invalidWire: ReplacementWireRequestModel = local;
+      void invalidWire;
+    }
+  });
   it("changes only allowed question fields and keeps tag names", async () => {
     const proposal = await buildReplacementProposal(
       {

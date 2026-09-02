@@ -18,6 +18,7 @@ import type {
   PersistedContentReplacementItem,
   PersistedContentReplacementRecovery,
   PersistedContentReplacementRecoveryPreview,
+  PersistedContentReplacementRecoveryResult,
   PersistedContentReplacementResult,
   PersistedContentReplacementJob,
   PersistedContentReplacementProgress,
@@ -38,6 +39,7 @@ const MAX_QUEUE_ITEMS = 100_000;
 const MAX_SCHEMA_ARRAY_LENGTH = 100_000;
 const MAX_GRAPH_DEPTH = 256;
 const MAX_GRAPH_NODES = 150_000;
+const MAX_GRAPH_ENTRIES = 300_000;
 const MAX_CANONICAL_VALIDATION_CONCURRENCY = 16;
 const MAX_INVENTORY_PAGE = 10_000;
 const MAX_PROPOSALS = 100_000;
@@ -236,7 +238,8 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
   );
   const applyCompleted = items.filter((item) => isApplyCompletedStatus(item.status)).length;
   const recoveryCompleted = items.filter((item) =>
-    item.status === "recovered" || item.status === "recovery-conflict"
+    item.status === "recovered" || item.status === "recovery-conflict" ||
+    item.status === "recovery-failed"
   ).length;
   if (
     job.progress.proposalsFound !== items.length ||
@@ -244,7 +247,6 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
     job.progress.inventoryItems < job.progress.detailsInspected ||
     !Number.isSafeInteger(protectedOccurrences) ||
     job.progress.protectedOccurrences < protectedOccurrences ||
-    Math.ceil(job.progress.protectedOccurrences / MAX_OCCURRENCES) > job.progress.detailsInspected ||
     job.progress.applyCompleted !== applyCompleted ||
     job.progress.recoveryCompleted !== recoveryCompleted ||
     (!job.configuration.contentTypes.answers && job.progress.answerPages !== 0) ||
@@ -261,6 +263,9 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
   for (const item of items) {
     assertItemInvariants(item);
     if (item.result && !isWithinJobTime(item.result.completedAt, job)) throw corruptJob();
+    if (item.recovery?.result && !isWithinJobTime(item.recovery.result.completedAt, job)) {
+      throw corruptJob();
+    }
     if (item.failure && !isWithinJobTime(item.failure.occurredAt, job)) throw corruptJob();
   }
   assertStageInvariants(job, items);
@@ -268,7 +273,8 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
     job.recoverySnapshotStatus === "ready" &&
     items.some((item) => item.included && (
       !isCompleteRecoverySnapshot(item.recovery) ||
-      item.recovery.status === "pending" || item.recovery.status === "failed"
+      item.recovery.status === "pending" ||
+      (item.recovery.status === "failed" && item.status !== "recovery-failed")
     ))
   ) throw corruptJob();
   if (
@@ -281,6 +287,17 @@ function assertStageInvariants(
   job: PersistedContentReplacementJob,
   items: readonly PersistedContentReplacementItem[],
 ): void {
+  const allowedRootStatuses: Record<
+    PersistedContentReplacementJob["stage"],
+    ReadonlySet<PersistedContentReplacementJob["status"]>
+  > = {
+    define: new Set(["idle"]),
+    scan: new Set(["running", "paused", "completed", "failed", "cancelled"]),
+    review: new Set(["completed", "paused", "cancelled"]),
+    apply: new Set(["running", "paused", "completed", "failed", "cancelled"]),
+    results: new Set(["completed"]),
+    recovery: new Set(["running", "paused", "completed", "failed", "cancelled"]),
+  };
   const allowedStatuses: Record<
     PersistedContentReplacementJob["stage"],
     ReadonlySet<PersistedContentReplacementItem["status"]>
@@ -289,16 +306,21 @@ function assertStageInvariants(
     scan: new Set(["pending"]),
     review: new Set(["pending", "excluded"]),
     apply: new Set(["pending", "excluded", "ready-to-apply", "applying", "applied", "stale", "failed"]),
-    results: new Set(["excluded", "applied", "stale", "failed", "recovered", "recovery-conflict"]),
+    results: new Set(["excluded", "applied", "stale", "failed"]),
     recovery: new Set([
       "excluded", "applied", "stale", "ready-to-recover", "recovering", "recovered",
-      "recovery-conflict", "failed",
+      "recovery-conflict", "recovery-failed", "failed",
     ]),
   };
+  if (!allowedRootStatuses[job.stage].has(job.status)) throw corruptJob();
   if (items.some((item) => !allowedStatuses[job.stage].has(item.status))) throw corruptJob();
   if (job.stage !== "scan" && (job.inventoryQueue.length > 0 || job.detailQueue.length > 0)) {
     throw corruptJob();
   }
+  if (
+    job.stage === "scan" && job.status === "completed" &&
+    (job.inventoryQueue.length > 0 || job.detailQueue.length > 0)
+  ) throw corruptJob();
   if (
     (job.stage === "define" || job.stage === "scan" || job.stage === "review") &&
     job.recoverySnapshotStatus !== "none"
@@ -357,7 +379,8 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
   if (status === "ready-to-apply" || status === "applying") {
     if (
       result || failure || !isCompleteRecoverySnapshot(recovery) ||
-      recovery.status !== "ready" || recovery.preview || recovery.observedPostApplyChecksum ||
+      recovery.status !== "ready" || recovery.preview || recovery.result ||
+      recovery.observedPostApplyChecksum ||
       (status === "applying" && item.attemptCount < 1)
     ) {
       throw corruptJob();
@@ -367,7 +390,7 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
   if (status === "failed") {
     if (
       item.attemptCount < 1 || result || !failure || !isCompleteRecoverySnapshot(recovery) ||
-      recovery.preview || recovery.observedPostApplyChecksum ||
+      recovery.preview || recovery.result || recovery.observedPostApplyChecksum ||
       (recovery.status !== "ready" && recovery.status !== "failed")
     ) {
       throw corruptJob();
@@ -377,26 +400,38 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
   if (status === "stale") {
     if (
       item.attemptCount < 1 || result?.kind !== "stale" || failure ||
-      !isCompleteRecoverySnapshot(recovery) || recovery.preview || recovery.observedPostApplyChecksum ||
+      !isCompleteRecoverySnapshot(recovery) || recovery.preview || recovery.result ||
+      recovery.observedPostApplyChecksum ||
       recovery.status !== "ready"
     ) {
       throw corruptJob();
     }
     return;
   }
+  if (status === "recovery-failed") {
+    if (
+      !hasSuccessfulApplyEvidence(item) || !failure || !recovery || recovery.preview ||
+      recovery.status !== "failed" || recovery.result ||
+      Date.parse(result?.completedAt ?? "") > Date.parse(failure.occurredAt)
+    ) throw corruptJob();
+    return;
+  }
   if (status === "recovered") {
     if (
-      item.attemptCount < 1 || result?.kind !== "recovered" || failure || !recovery || recovery.preview ||
-      !recovery.observedPostApplyChecksum || recovery.status !== "applied" ||
-      result.observedRequestChecksum !== recovery.scannedRequestChecksum
+      !hasSuccessfulApplyEvidence(item) || failure || !recovery || recovery.preview ||
+      recovery.status !== "applied" || recovery.result?.kind !== "recovered" ||
+      recovery.result.observedRequestChecksum !== recovery.scannedRequestChecksum ||
+      Date.parse(result?.completedAt ?? "") > Date.parse(recovery.result.completedAt)
     ) throw corruptJob();
     return;
   }
   if (status === "recovery-conflict") {
     if (
-      item.attemptCount < 1 || result?.kind !== "recovery-conflict" || failure || !recovery ||
-      !recovery.observedPostApplyChecksum || recovery.status !== "conflict" ||
-      (recovery.preview !== undefined && recovery.preview.status !== "conflict")
+      !hasSuccessfulApplyEvidence(item) || failure || !recovery || recovery.preview ||
+      recovery.status !== "conflict" || recovery.result?.kind !== "conflict" ||
+      recovery.result.observedRequestChecksum === recovery.scannedRequestChecksum ||
+      recovery.result.observedRequestChecksum === recovery.observedPostApplyChecksum ||
+      Date.parse(result?.completedAt ?? "") > Date.parse(recovery.result.completedAt)
     ) throw corruptJob();
     return;
   }
@@ -405,7 +440,7 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
     item.attemptCount < 1 || failure || !recovery ||
     (result?.kind !== "applied" && result?.kind !== "unchanged") ||
     recovery.observedPostApplyChecksum !== result.observedRequestChecksum ||
-    recovery.status !== "ready"
+    recovery.status !== "ready" || recovery.result
   ) throw corruptJob();
   if (status === "ready-to-recover") {
     if (!recovery.preview || recovery.status !== "ready") throw corruptJob();
@@ -416,6 +451,13 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
   } else {
     throw corruptJob();
   }
+}
+
+function hasSuccessfulApplyEvidence(item: PersistedContentReplacementItem): boolean {
+  const { recovery, result } = item;
+  return item.attemptCount >= 1 && recovery !== undefined &&
+    (result?.kind === "applied" || result?.kind === "unchanged") &&
+    recovery.observedPostApplyChecksum === result.observedRequestChecksum;
 }
 
 function isWithinJobTime(
@@ -435,7 +477,7 @@ function isCompleteRecoverySnapshot(
 function isApplyCompletedStatus(status: PersistedContentReplacementItem["status"]): boolean {
   return status === "applied" || status === "stale" || status === "failed" ||
     status === "ready-to-recover" || status === "recovering" || status === "recovered" ||
-    status === "recovery-conflict";
+    status === "recovery-conflict" || status === "recovery-failed";
 }
 
 function isInventoryCursorRelevant(
@@ -718,8 +760,8 @@ function parseRecovery(
 ): PersistedContentReplacementRecovery {
   const record = exactObject(value, [
     "priorRequestModel", "scannedRequestChecksum", "proposedRequestChecksum",
-    "observedPostApplyChecksum", "status", "preview",
-  ], ["observedPostApplyChecksum", "preview"]);
+    "observedPostApplyChecksum", "status", "preview", "result",
+  ], ["observedPostApplyChecksum", "preview", "result"]);
   const priorRequestModel = parseRequestModel(record.priorRequestModel);
   const scannedRequestChecksum = digest(record.scannedRequestChecksum);
   const proposedRequestChecksum = digest(record.proposedRequestChecksum);
@@ -735,6 +777,7 @@ function parseRecovery(
   const preview = record.preview === undefined
     ? undefined
     : parseRecoveryPreview(record.preview, proposal.before.ref);
+  const result = record.result === undefined ? undefined : parseRecoveryResult(record.result);
   if (preview && observedPostApplyChecksum === undefined) throw corruptJob();
   return {
     priorRequestModel,
@@ -743,6 +786,17 @@ function parseRecovery(
     ...(observedPostApplyChecksum === undefined ? {} : { observedPostApplyChecksum }),
     status: record.status,
     ...(preview === undefined ? {} : { preview }),
+    ...(result === undefined ? {} : { result }),
+  };
+}
+
+function parseRecoveryResult(value: unknown): PersistedContentReplacementRecoveryResult {
+  const record = exactObject(value, ["kind", "observedRequestChecksum", "completedAt"]);
+  if (record.kind !== "recovered" && record.kind !== "conflict") throw corruptJob();
+  return {
+    kind: record.kind,
+    observedRequestChecksum: digest(record.observedRequestChecksum),
+    completedAt: timestamp(record.completedAt),
   };
 }
 
@@ -770,7 +824,7 @@ function parseRecoveryPreview(
 
 function parseResult(value: unknown): PersistedContentReplacementResult {
   const record = plainRecord(value);
-  if (record.kind === "applied" || record.kind === "recovered" || record.kind === "unchanged") {
+  if (record.kind === "applied" || record.kind === "unchanged") {
     exactObject(record, ["kind", "observedRequestChecksum", "completedAt"]);
     return {
       kind: record.kind,
@@ -779,8 +833,7 @@ function parseResult(value: unknown): PersistedContentReplacementResult {
     };
   }
   if (
-    record.kind === "stale" || record.kind === "excluded" ||
-    record.kind === "recovery-conflict"
+    record.kind === "stale" || record.kind === "excluded"
   ) {
     exactObject(record, ["kind", "completedAt"]);
     return { kind: record.kind, completedAt: timestamp(record.completedAt) };
@@ -882,7 +935,7 @@ function isItemStatus(value: unknown): value is PersistedContentReplacementItem[
   return value === "pending" || value === "excluded" || value === "ready-to-apply" ||
     value === "applying" || value === "applied" || value === "stale" || value === "failed" ||
     value === "ready-to-recover" || value === "recovering" || value === "recovered" ||
-    value === "recovery-conflict";
+    value === "recovery-conflict" || value === "recovery-failed";
 }
 
 function isRecoveryStatus(value: unknown): value is PersistedContentReplacementRecovery["status"] {
@@ -1032,6 +1085,7 @@ function cloneDataGraphFromDescriptors(value: unknown): unknown {
   type Inspected = { clone: object; entries: Entry[] };
   type Frame = { item: object; clone: object; entries: Entry[]; index: number; depth: number };
   let nodeCount = 0;
+  let entryCount = 0;
 
   const inspect = (item: object, depth: number): Inspected => {
     nodeCount += 1;
@@ -1058,6 +1112,8 @@ function cloneDataGraphFromDescriptors(value: unknown): unknown {
 
     const keys = Reflect.ownKeys(item);
     if (keys.length > MAX_SCHEMA_ARRAY_LENGTH + (isArray ? 1 : 0)) throw corruptJob();
+    entryCount += keys.length;
+    if (entryCount > MAX_GRAPH_ENTRIES) throw corruptJob();
     const entries: Entry[] = [];
     let arrayElementCount = 0;
     for (const key of keys) {
