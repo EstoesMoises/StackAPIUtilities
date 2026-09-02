@@ -135,3 +135,22 @@ export interface ReplacementProposal {
   appliedRuleIds: string[];
   metadata?: ReplacementMetadata;
 }
+
+export type InventoryCursor =
+  | { kind: "questions"; page: number }
+  | { kind: "answers"; questionId: number; page: number }
+  | { kind: "articles"; page: number };
+
+export interface InventorySliceResult {
+  candidates: ReplacementItemRef[];
+  answerCursors: Extract<InventoryCursor, { kind: "answers" }>[];
+  nextCursor: InventoryCursor | null;
+  inspectedCount: number;
+  pageKind: InventoryCursor["kind"];
+}
+
+export interface DetailBatchResult {
+  proposals: ReplacementProposal[];
+  inspectedCount: number;
+  protectedOccurrenceCount: number;
+}
