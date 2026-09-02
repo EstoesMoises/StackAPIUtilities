@@ -79,6 +79,51 @@ describe("ContentReplacementApplyStep", () => {
     expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent(coverage);
   });
 
+  it("keeps exactly one coverage note visible while Apply is active without showing a new confirmation", () => {
+    const applying = { ...item("question", 42, "applying"), attemptCount: 1 };
+    render(<ContentReplacementApplyStep controller={controller(applyJob({
+      status: "running",
+      proposals: { "question:42": applying },
+    }))} />);
+
+    expect(screen.getAllByRole("note", { name: "Discovery coverage" })).toHaveLength(1);
+    expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent("Exhaustive · all accessible selected content");
+    expect(screen.getByRole("button", { name: "Pause after the current request" })).toBeEnabled();
+    expect(screen.queryByRole("group", { name: "Live write confirmation" })).not.toBeInTheDocument();
+  });
+
+  it("keeps exactly one coverage note visible while a started Apply is paused without showing a new confirmation", () => {
+    const applying = { ...item("question", 42, "applying"), attemptCount: 1 };
+    render(<ContentReplacementApplyStep controller={controller(applyJob({
+      status: "paused",
+      proposals: { "question:42": applying },
+    }))} />);
+
+    expect(screen.getAllByRole("note", { name: "Discovery coverage" })).toHaveLength(1);
+    expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent("Exhaustive · all accessible selected content");
+    expect(screen.getByRole("button", { name: "Resume apply" })).toBeEnabled();
+    expect(screen.queryByRole("group", { name: "Live write confirmation" })).not.toBeInTheDocument();
+  });
+
+  it("keeps exactly one coverage note visible for a legacy recovery-only job still at Apply without reopening Apply", () => {
+    const legacyRecoveryOnly = job({
+      stage: "apply",
+      status: "paused",
+      scanCompatibility: "legacy-restart-required",
+      proposals: {
+        "question:1": item("question", 1, "applied", { resultKind: "applied" }),
+        "question:2": item("question", 2, "ready-to-apply"),
+      },
+    });
+    render(<ContentReplacementApplyStep controller={controller(legacyRecoveryOnly)} />);
+
+    expect(screen.getAllByRole("note", { name: "Discovery coverage" })).toHaveLength(1);
+    expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent("Exhaustive · all accessible selected content");
+    expect(screen.getByRole("heading", { name: "Prior apply results" })).toBeVisible();
+    expect(screen.queryByRole("group", { name: "Live write confirmation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Apply changes/i })).not.toBeInTheDocument();
+  });
+
   it("requires persisted recovery readiness, acknowledgement, and exact uppercase APPLY before writes", async () => {
     const user = userEvent.setup();
     const readyController = controller(applyJob());

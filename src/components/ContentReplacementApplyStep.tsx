@@ -230,9 +230,7 @@ function ContentReplacementApplyStepView({
 
   return (
     <section className="content-replacement-apply" aria-labelledby="content-replacement-apply-heading">
-      {(showConfirmation || job.stage === "results" || job.stage === "recovery") && (
-        <ContentReplacementCoverageEvidence configuration={job.configuration} />
-      )}
+      <ContentReplacementCoverageEvidence configuration={job.configuration} />
       {showConfirmation && (
         <>
           <header className="content-replacement-step-header">
