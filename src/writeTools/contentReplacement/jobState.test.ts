@@ -144,6 +144,7 @@ describe("replacement job state", () => {
 
     expect(getNextDetailBatch(job)).toEqual([]);
     expect(canEnterReview(job)).toBe(false);
+    expect(job.status).toBe("running");
     const blocked = reduceReplacementJob(job, { type: "scan/queues-drained", at: LATER });
     expect(blocked).toMatchObject({
       stage: "scan",
@@ -155,7 +156,41 @@ describe("replacement job state", () => {
         message: "Content replacement reached the 100,000-proposal safety limit before candidate inspection finished. Start a narrower job.",
       },
     });
+    expect(reduceReplacementJob(blocked, { type: "scan/queues-drained", at: LATER }) === blocked).toBe(true);
   });
+
+  it("does not overwrite an existing failed scan when a duplicate queues-drained event arrives at capacity", () => {
+    const refs: ReplacementItemRef[] = [{ kind: "question", questionId: 200_001 }];
+    const job = {
+      ...capacityScanJob(100_000, refs),
+      status: "failed" as const,
+      failure: {
+        category: "network" as const,
+        retryable: true,
+        message: "The prior scan request lost its connection.",
+        occurredAt: AT,
+      },
+    };
+
+    const duplicate = reduceReplacementJob(job, { type: "scan/queues-drained", at: LATER });
+
+    expect(duplicate === job).toBe(true);
+    expect(duplicate.revision).toBe(job.revision);
+    expect(duplicate.failure === job.failure).toBe(true);
+  });
+
+  it.each(["cancelled", "completed"] as const)(
+    "keeps an already %s scan unchanged when queues-drained is replayed at capacity",
+    (status) => {
+      const refs: ReplacementItemRef[] = [{ kind: "question", questionId: 200_001 }];
+      const job = { ...capacityScanJob(100_000, refs), status };
+
+      const duplicate = reduceReplacementJob(job, { type: "scan/queues-drained", at: LATER });
+
+      expect(duplicate === job).toBe(true);
+      expect(duplicate.revision).toBe(job.revision);
+    },
+  );
 
   it("rejects a malicious detail completion that would publish proposal 100,001", () => {
     const refs = Array.from({ length: 10 }, (_, index) => ({

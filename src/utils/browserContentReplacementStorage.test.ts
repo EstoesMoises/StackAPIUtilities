@@ -1331,6 +1331,144 @@ describe("browserContentReplacementStorage", () => {
     expect(proposalDescriptorCalls).toBe(0);
   });
 
+  it("does not reflect an original root proxy again through a nested back-reference", async () => {
+    const fake = installFakeIndexedDB();
+    const target = createJob() as any;
+    let rootOwnKeysCalls = 0;
+    let rootDescriptorCalls = 0;
+    let rootProxy: PersistedContentReplacementJob;
+    rootProxy = new Proxy(target, {
+      ownKeys: (object) => {
+        rootOwnKeysCalls += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor: (object, key) => {
+        rootDescriptorCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+    target.configuration = rootProxy;
+
+    await expect(compareAndSaveContentReplacementJob(rootProxy, null)).rejects.toEqual(
+      new TypeError("Stored content replacement job is invalid."),
+    );
+    expect(rootOwnKeysCalls).toBe(1);
+    expect(rootDescriptorCalls).toBe(16);
+    expect(fake.openCalls).toHaveLength(0);
+  });
+
+  it("does not reflect an original proposal-map proxy again through one of its entries", async () => {
+    const fake = installFakeIndexedDB();
+    const target: Record<string, unknown> = {};
+    let proposalOwnKeysCalls = 0;
+    let proposalDescriptorCalls = 0;
+    let proposalProxy: Record<string, unknown>;
+    proposalProxy = new Proxy(target, {
+      ownKeys: (object) => {
+        proposalOwnKeysCalls += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor: (object, key) => {
+        proposalDescriptorCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+    target["question:1"] = proposalProxy;
+    const job = createJob();
+    job.proposals = proposalProxy as PersistedContentReplacementJob["proposals"];
+
+    await expect(compareAndSaveContentReplacementJob(job, null)).rejects.toEqual(
+      new TypeError("Stored content replacement job is invalid."),
+    );
+    expect(proposalOwnKeysCalls).toBe(1);
+    expect(proposalDescriptorCalls).toBe(1);
+    expect(fake.openCalls).toHaveLength(0);
+  });
+
+  it("does not reflect cross-referenced queue proxies after their preflight snapshots", async () => {
+    const fake = installFakeIndexedDB();
+    const inventoryTarget: unknown[] = [];
+    const detailTarget: unknown[] = [];
+    let inventoryOwnKeysCalls = 0;
+    let detailOwnKeysCalls = 0;
+    let inventoryDescriptorCalls = 0;
+    let detailDescriptorCalls = 0;
+    const inventoryProxy = new Proxy(inventoryTarget, {
+      ownKeys: (object) => {
+        inventoryOwnKeysCalls += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor: (object, key) => {
+        inventoryDescriptorCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+    const detailProxy = new Proxy(detailTarget, {
+      ownKeys: (object) => {
+        detailOwnKeysCalls += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor: (object, key) => {
+        detailDescriptorCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+    inventoryTarget.push(detailProxy);
+    detailTarget.push(inventoryProxy);
+    const job = createJob();
+    job.inventoryQueue = inventoryProxy as PersistedContentReplacementJob["inventoryQueue"];
+    job.detailQueue = detailProxy as PersistedContentReplacementJob["detailQueue"];
+
+    await expect(compareAndSaveContentReplacementJob(job, null)).rejects.toEqual(
+      new TypeError("Stored content replacement job is invalid."),
+    );
+    expect(inventoryOwnKeysCalls).toBe(1);
+    expect(detailOwnKeysCalls).toBe(1);
+    expect(inventoryDescriptorCalls).toBe(2);
+    expect(detailDescriptorCalls).toBe(2);
+    expect(fake.openCalls).toHaveLength(0);
+  });
+
+  it("reflects a stable ordinary repeated object only once", async () => {
+    installFakeIndexedDB();
+    const target = { kind: "enterprise-main" as const };
+    let ownKeysCalls = 0;
+    const repeated = new Proxy(target, {
+      ownKeys: (object) => {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(object);
+      },
+    });
+    const job = createJob();
+    job.target = repeated;
+    job.configuration.target = repeated;
+
+    await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toEqual({ status: "saved" });
+    expect(ownKeysCalls).toBe(1);
+  });
+
+  it("reports a stable ordinary nested cycle without reflecting its source twice", async () => {
+    const fake = installFakeIndexedDB();
+    const target: Record<string, unknown> = { kind: "enterprise-main" };
+    let ownKeysCalls = 0;
+    let cycle: Record<string, unknown>;
+    cycle = new Proxy(target, {
+      ownKeys: (object) => {
+        ownKeysCalls += 1;
+        return Reflect.ownKeys(object);
+      },
+    });
+    target.self = cycle;
+    const job = createJob();
+    job.target = cycle as PersistedContentReplacementJob["target"];
+
+    await expect(compareAndSaveContentReplacementJob(job, null)).rejects.toEqual(
+      new TypeError("Stored content replacement job is invalid."),
+    );
+    expect(ownKeysCalls).toBe(1);
+    expect(fake.openCalls).toHaveLength(0);
+  });
+
   it("contains descriptor trap failures behind the stable content-free corruption error", async () => {
     installFakeIndexedDB();
     const hostile = new Proxy(createJob(), {

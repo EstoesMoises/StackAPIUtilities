@@ -439,7 +439,11 @@ async function validateCanonicalItem(
 
 function normalizeContentReplacementJob(value: unknown): PersistedContentReplacementJob {
   const preflight = preflightContentReplacementJobRoot(value);
-  const safeValue = cloneSafeDataGraph(preflight.snapshot, contentReplacementGraphBudget(preflight.cardinalities));
+  const safeValue = cloneSafeDataGraph(
+    preflight.snapshot,
+    contentReplacementGraphBudget(preflight.cardinalities),
+    preflight.sourceSnapshots,
+  );
   const record = exactObject(safeValue, JOB_KEYS, ["activeOperation", "operationError", "nextRetryAt", "failure"]);
   const configuration = validateConfiguration(record.configuration);
   const baseUrl = normalizeEnterpriseBaseUrl(record.baseUrl);
@@ -520,6 +524,12 @@ interface SafeGraphBudget {
 interface ContentReplacementGraphPreflight {
   snapshot: Record<string, unknown>;
   cardinalities: ContentReplacementGraphCardinalities;
+  sourceSnapshots: WeakMap<object, object>;
+}
+
+interface PreflightContainerSnapshot {
+  snapshot: object;
+  cardinality: number;
 }
 
 function preflightContentReplacementJobRoot(value: unknown): ContentReplacementGraphPreflight {
@@ -536,6 +546,8 @@ function preflightContentReplacementJobRoot(value: unknown): ContentReplacementG
       JOB_KEYS.some((key) => !optional.has(key) && !keys.includes(key))
     ) throw corruptJob();
     const snapshot = Object.create(prototype) as Record<string, unknown>;
+    const sourceSnapshots = new WeakMap<object, object>();
+    sourceSnapshots.set(value, snapshot);
     for (const key of keys) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || typeof descriptor.value === "function") {
@@ -548,26 +560,37 @@ function preflightContentReplacementJobRoot(value: unknown): ContentReplacementG
         writable: true,
       });
     }
-    const inventoryQueue = preflightArraySnapshot(snapshot.inventoryQueue, MAX_QUEUE_ITEMS);
-    const detailQueue = preflightArraySnapshot(snapshot.detailQueue, MAX_QUEUE_ITEMS);
-    const proposals = preflightProposalSnapshot(snapshot.proposals);
-    snapshot.inventoryQueue = inventoryQueue;
-    snapshot.detailQueue = detailQueue;
-    snapshot.proposals = proposals;
+    const inventoryQueue = preflightArraySnapshot(snapshot.inventoryQueue, MAX_QUEUE_ITEMS, sourceSnapshots);
+    const detailQueue = preflightArraySnapshot(snapshot.detailQueue, MAX_QUEUE_ITEMS, sourceSnapshots);
+    const proposals = preflightProposalSnapshot(snapshot.proposals, sourceSnapshots);
+    snapshot.inventoryQueue = inventoryQueue.snapshot;
+    snapshot.detailQueue = detailQueue.snapshot;
+    snapshot.proposals = proposals.snapshot;
     return {
       snapshot,
       cardinalities: {
-        inventoryQueue: inventoryQueue.length,
-        detailQueue: detailQueue.length,
-        proposals: Object.keys(proposals).length,
+        inventoryQueue: inventoryQueue.cardinality,
+        detailQueue: detailQueue.cardinality,
+        proposals: proposals.cardinality,
       },
+      sourceSnapshots,
     };
   } catch {
     throw corruptJob();
   }
 }
 
-function preflightArraySnapshot(value: unknown, maximum: number): unknown[] {
+function preflightArraySnapshot(
+  value: unknown,
+  maximum: number,
+  sourceSnapshots: WeakMap<object, object>,
+): PreflightContainerSnapshot {
+  if (value && typeof value === "object") {
+    const existing = sourceSnapshots.get(value);
+    if (existing) {
+      return { snapshot: existing, cardinality: Array.isArray(existing) ? existing.length : 0 };
+    }
+  }
   if (!Array.isArray(value) || Reflect.getPrototypeOf(value) !== Array.prototype) throw corruptJob();
   const length = Object.getOwnPropertyDescriptor(value, "length");
   if (!length || !("value" in length) || !Number.isInteger(length.value) || length.value < 0 || length.value > maximum) {
@@ -576,6 +599,7 @@ function preflightArraySnapshot(value: unknown, maximum: number): unknown[] {
   const keys = Reflect.ownKeys(value);
   if (keys.length !== length.value + 1) throw corruptJob();
   const snapshot = new Array(length.value as number);
+  sourceSnapshots.set(value, snapshot);
   let elementCount = 0;
   for (const key of keys) {
     if (key === "length") continue;
@@ -588,10 +612,22 @@ function preflightArraySnapshot(value: unknown, maximum: number): unknown[] {
     elementCount += 1;
   }
   if (elementCount !== length.value) throw corruptJob();
-  return snapshot;
+  return { snapshot, cardinality: length.value as number };
 }
 
-function preflightProposalSnapshot(value: unknown): Record<string, unknown> {
+function preflightProposalSnapshot(
+  value: unknown,
+  sourceSnapshots: WeakMap<object, object>,
+): PreflightContainerSnapshot {
+  if (value && typeof value === "object") {
+    const existing = sourceSnapshots.get(value);
+    if (existing) {
+      return {
+        snapshot: existing,
+        cardinality: Array.isArray(existing) ? 0 : Object.keys(existing).length,
+      };
+    }
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw corruptJob();
   const prototype = Reflect.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) throw corruptJob();
@@ -601,6 +637,7 @@ function preflightProposalSnapshot(value: unknown): Record<string, unknown> {
     keys.some((key) => typeof key !== "string" || !isCanonicalItemKey(key))
   ) throw corruptJob();
   const snapshot = Object.create(prototype) as Record<string, unknown>;
+  sourceSnapshots.set(value, snapshot);
   for (const key of keys) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || typeof descriptor.value === "function") {
@@ -613,7 +650,7 @@ function preflightProposalSnapshot(value: unknown): Record<string, unknown> {
       writable: true,
     });
   }
-  return snapshot;
+  return { snapshot, cardinality: keys.length };
 }
 
 function contentReplacementGraphBudget(
@@ -1634,15 +1671,20 @@ function exactDynamicMap(value: unknown): Record<string, unknown> {
 function cloneSafeDataGraph(
   value: unknown,
   budget: SafeGraphBudget = { nodes: BASE_MAX_GRAPH_NODES, entries: BASE_MAX_GRAPH_ENTRIES },
+  sourceSnapshots?: WeakMap<object, object>,
 ): unknown {
   try {
-    return cloneDataGraphFromDescriptors(value, budget);
+    return cloneDataGraphFromDescriptors(value, budget, sourceSnapshots);
   } catch {
     throw corruptJob();
   }
 }
 
-function cloneDataGraphFromDescriptors(value: unknown, budget: SafeGraphBudget): unknown {
+function cloneDataGraphFromDescriptors(
+  value: unknown,
+  budget: SafeGraphBudget,
+  sourceSnapshots?: WeakMap<object, object>,
+): unknown {
   if (!value || typeof value !== "object") return value;
   type Entry = { key: string; value: unknown };
   type Inspected = { clone: object; entries: Entry[] };
@@ -1721,7 +1763,8 @@ function cloneDataGraphFromDescriptors(value: unknown, budget: SafeGraphBudget):
     const entry = frame.entries[frame.index++];
     let clonedValue = entry.value;
     if (entry.value && typeof entry.value === "object") {
-      const child = entry.value as object;
+      const sourceChild = entry.value as object;
+      const child = sourceSnapshots?.get(sourceChild) ?? sourceChild;
       if (active.has(child)) throw corruptJob();
       const existing = seen.get(child);
       if (existing) {

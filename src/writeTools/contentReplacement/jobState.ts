@@ -230,8 +230,8 @@ function reduceReplacementJobState(
     case "scan/details-succeeded":
       return reduceDetails(job, event.refs, event.result, event.at);
     case "scan/queues-drained":
+      if (job.stage !== "scan" || (job.status !== "running" && job.status !== "paused")) return job;
       if (
-        job.stage === "scan" &&
         Object.keys(job.proposals).length >= MAX_CONTENT_REPLACEMENT_PROPOSALS &&
         job.detailQueue.length > 0
       ) {
