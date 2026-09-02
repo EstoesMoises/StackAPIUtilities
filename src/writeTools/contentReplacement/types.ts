@@ -218,7 +218,12 @@ export type PersistedContentReplacementResult =
       completedAt: string;
     }
   | {
-      kind: "unchanged" | "stale" | "excluded" | "recovery-conflict";
+      kind: "unchanged";
+      observedRequestChecksum: string;
+      completedAt: string;
+    }
+  | {
+      kind: "stale" | "excluded" | "recovery-conflict";
       completedAt: string;
     }
   | {
@@ -233,6 +238,15 @@ export interface PersistedContentReplacementRecovery {
   proposedRequestChecksum: string;
   observedPostApplyChecksum?: string;
   status: "pending" | "ready" | "applied" | "conflict" | "failed";
+  preview?: PersistedContentReplacementRecoveryPreview;
+}
+
+export interface PersistedContentReplacementRecoveryPreview {
+  status: "recoverable" | "already-recovered" | "conflict";
+  currentRequestModel: ReplacementRequestModel;
+  observedCurrentChecksum: string;
+  expectedPostApplyChecksum: string;
+  previewedAt: string;
 }
 
 export interface PersistedContentReplacementItem {

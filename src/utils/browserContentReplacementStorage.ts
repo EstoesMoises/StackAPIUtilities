@@ -2,13 +2,14 @@ import {
   isOriginOnlyInstanceUrl,
   isSha256Digest,
   sameRef,
-  validateExactPriorRequestModel,
   validateConfiguration,
   validateItemRef,
 } from "../server/contentReplacementRequestValidation";
 import {
+  buildReplacementProposal,
   checksumRequestModel,
   createJobFingerprint,
+  stableSerialize,
 } from "../writeTools/contentReplacement/proposals";
 import type {
   ArticlePermissionsRequest,
@@ -16,6 +17,7 @@ import type {
   PersistedContentReplacementFailure,
   PersistedContentReplacementItem,
   PersistedContentReplacementRecovery,
+  PersistedContentReplacementRecoveryPreview,
   PersistedContentReplacementResult,
   PersistedContentReplacementJob,
   PersistedContentReplacementProgress,
@@ -32,6 +34,10 @@ const DATABASE_VERSION = 1;
 const STORE_NAME = "jobs";
 const JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_QUEUE_ITEMS = 100_000;
+const MAX_SCHEMA_ARRAY_LENGTH = 100_000;
+const MAX_GRAPH_DEPTH = 256;
+const MAX_GRAPH_NODES = 150_000;
+const MAX_CANONICAL_VALIDATION_CONCURRENCY = 16;
 const MAX_INVENTORY_PAGE = 10_000;
 const MAX_PROPOSALS = 100_000;
 const MAX_OCCURRENCES = 100_000;
@@ -55,7 +61,8 @@ export async function listContentReplacementJobs(): Promise<PersistedContentRepl
       requestToPromise<unknown[]>(transaction.objectStore(STORE_NAME).getAll()),
       transactionToPromise(transaction),
     ]);
-    const jobs = await Promise.all(values.map(parseContentReplacementJob));
+    const jobs: PersistedContentReplacementJob[] = [];
+    for (const value of values) jobs.push(await parseContentReplacementJob(value));
     return jobs.sort(compareJobs);
   } finally {
     database.close();
@@ -111,17 +118,12 @@ async function parseContentReplacementJob(value: unknown): Promise<PersistedCont
       configuration: normalized.configuration,
     });
     if (expectedFingerprint !== normalized.fingerprint) throw corruptJob();
-    for (const item of Object.values(normalized.proposals)) {
-      const scannedChecksum = await checksumRequestModel(item.proposal.before);
-      const proposedChecksum = await checksumRequestModel(item.proposal.after);
-      if (
-        scannedChecksum !== item.proposal.scannedRequestChecksum ||
-        proposedChecksum !== item.proposal.proposedRequestChecksum
-      ) throw corruptJob();
-      if (
-        item.recovery &&
-        await checksumRequestModel(item.recovery.priorRequestModel) !== item.recovery.scannedRequestChecksum
-      ) throw corruptJob();
+    const items = Object.values(normalized.proposals);
+    for (let offset = 0; offset < items.length; offset += MAX_CANONICAL_VALIDATION_CONCURRENCY) {
+      await Promise.all(
+        items.slice(offset, offset + MAX_CANONICAL_VALIDATION_CONCURRENCY)
+          .map((item) => validateCanonicalItem(item, normalized.configuration)),
+      );
     }
     return normalized;
   } catch {
@@ -129,11 +131,41 @@ async function parseContentReplacementJob(value: unknown): Promise<PersistedCont
   }
 }
 
+async function validateCanonicalItem(
+  item: PersistedContentReplacementItem,
+  configuration: PersistedContentReplacementJob["configuration"],
+): Promise<void> {
+  const canonicalProposal = await buildReplacementProposal(item.proposal.before, configuration);
+  if (!canonicalProposal || stableSerialize(canonicalProposal) !== stableSerialize(item.proposal)) {
+    throw corruptJob();
+  }
+  if (!item.recovery) return;
+  if (
+    stableSerialize(item.recovery.priorRequestModel) !== stableSerialize(item.proposal.before) ||
+    await checksumRequestModel(item.recovery.priorRequestModel) !== item.recovery.scannedRequestChecksum
+  ) {
+    throw corruptJob();
+  }
+  const preview = item.recovery.preview;
+  if (!preview) return;
+  const observedChecksum = await checksumRequestModel(preview.currentRequestModel);
+  const expectedStatus = observedChecksum === item.recovery.scannedRequestChecksum
+    ? "already-recovered"
+    : observedChecksum === item.recovery.observedPostApplyChecksum
+      ? "recoverable"
+      : "conflict";
+  if (
+    observedChecksum !== preview.observedCurrentChecksum ||
+    preview.expectedPostApplyChecksum !== item.recovery.observedPostApplyChecksum ||
+    preview.status !== expectedStatus
+  ) throw corruptJob();
+}
+
 function normalizeContentReplacementJob(value: unknown): PersistedContentReplacementJob {
   assertSafeDataGraph(value);
   const record = exactObject(value, JOB_KEYS, ["nextRetryAt", "failure"]);
   const configuration = validateConfiguration(record.configuration);
-  const baseUrl = stringValue(record.baseUrl);
+  const baseUrl = normalizeEnterpriseBaseUrl(record.baseUrl);
   const target = exactObject(record.target, ["kind"]);
   const createdAt = timestamp(record.createdAt);
   const updatedAt = timestamp(record.updatedAt);
@@ -141,7 +173,6 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     record.schemaVersion !== 1 ||
     !isJobId(record.id) ||
     !isSha256Digest(record.fingerprint) ||
-    !isEnterpriseBaseUrl(baseUrl) ||
     target.kind !== "enterprise-main" ||
     !configuration ||
     !sameTarget(configuration.target, target) ||
@@ -166,7 +197,7 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   }
   const nextRetryAt = record.nextRetryAt === undefined ? undefined : timestamp(record.nextRetryAt);
   const failure = record.failure === undefined ? undefined : parseFailure(record.failure);
-  return {
+  const normalized: PersistedContentReplacementJob = {
     schemaVersion: 1,
     id: record.id,
     fingerprint: record.fingerprint,
@@ -185,6 +216,174 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     createdAt,
     updatedAt,
   };
+  assertJobInvariants(normalized);
+  return normalized;
+}
+
+function assertJobInvariants(job: PersistedContentReplacementJob): void {
+  const items = Object.values(job.proposals);
+  const protectedOccurrences = items.reduce(
+    (countValue, item) => countValue + item.proposal.protectedOccurrences.length,
+    0,
+  );
+  const applyCompleted = items.filter((item) => isApplyCompletedStatus(item.status)).length;
+  const recoveryCompleted = items.filter((item) =>
+    item.status === "recovered" || item.status === "recovery-conflict"
+  ).length;
+  if (
+    job.progress.proposalsFound !== items.length ||
+    job.progress.detailsInspected < job.progress.proposalsFound ||
+    job.progress.inventoryItems < job.progress.detailsInspected ||
+    !Number.isSafeInteger(protectedOccurrences) ||
+    job.progress.protectedOccurrences !== protectedOccurrences ||
+    job.progress.applyCompleted !== applyCompleted ||
+    job.progress.recoveryCompleted !== recoveryCompleted ||
+    (!job.configuration.contentTypes.answers && job.progress.answerPages !== 0) ||
+    (!job.configuration.contentTypes.articles && job.progress.articlePages !== 0) ||
+    (!(job.configuration.contentTypes.questions || job.configuration.contentTypes.answers) &&
+      job.progress.questionPages !== 0) ||
+    job.inventoryQueue.some((cursor) => !isInventoryCursorRelevant(cursor, job.configuration)) ||
+    job.detailQueue.some((ref) => !isItemRefRelevant(ref, job.configuration)) ||
+    items.some((item) => !isItemRefRelevant(item.proposal.before.ref, job.configuration))
+  ) throw corruptJob();
+
+  for (const item of items) assertItemInvariants(item);
+  assertStageInvariants(job, items);
+  if (
+    job.recoverySnapshotStatus === "ready" &&
+    items.some((item) => item.included && !isCompleteRecoverySnapshot(item.recovery))
+  ) throw corruptJob();
+}
+
+function assertStageInvariants(
+  job: PersistedContentReplacementJob,
+  items: readonly PersistedContentReplacementItem[],
+): void {
+  const allowedStatuses: Record<
+    PersistedContentReplacementJob["stage"],
+    ReadonlySet<PersistedContentReplacementItem["status"]>
+  > = {
+    define: new Set(),
+    scan: new Set(["pending"]),
+    review: new Set(["pending", "excluded"]),
+    apply: new Set(["excluded", "ready-to-apply", "applying", "applied", "stale", "failed"]),
+    results: new Set(["excluded", "applied", "stale", "failed", "recovered", "recovery-conflict"]),
+    recovery: new Set([
+      "excluded", "applied", "ready-to-recover", "recovering", "recovered",
+      "recovery-conflict", "failed",
+    ]),
+  };
+  if (items.some((item) => !allowedStatuses[job.stage].has(item.status))) throw corruptJob();
+  if (job.stage !== "scan" && (job.inventoryQueue.length > 0 || job.detailQueue.length > 0)) {
+    throw corruptJob();
+  }
+  if (
+    (job.stage === "define" || job.stage === "scan" || job.stage === "review") &&
+    job.recoverySnapshotStatus !== "none"
+  ) throw corruptJob();
+}
+
+function assertItemInvariants(item: PersistedContentReplacementItem): void {
+  const { failure, recovery, result, status } = item;
+  if (!item.included) {
+    if (
+      status !== "excluded" || !item.exclusionReason || item.attemptCount !== 0 ||
+      result?.kind !== "excluded" || failure || recovery
+    ) throw corruptJob();
+    return;
+  }
+  if (item.exclusionReason || status === "excluded" || result?.kind === "excluded") throw corruptJob();
+
+  if (status === "pending") {
+    if (item.attemptCount !== 0 || result || failure || recovery) throw corruptJob();
+    return;
+  }
+  if (status === "ready-to-apply" || status === "applying") {
+    if (
+      result || failure || !isCompleteRecoverySnapshot(recovery) ||
+      recovery.status !== "ready" || recovery.preview
+    ) {
+      throw corruptJob();
+    }
+    return;
+  }
+  if (status === "failed") {
+    if (item.attemptCount < 1 || result || !failure || !isCompleteRecoverySnapshot(recovery) || recovery.preview) {
+      throw corruptJob();
+    }
+    return;
+  }
+  if (status === "stale") {
+    if (item.attemptCount < 1 || result?.kind !== "stale" || failure || !isCompleteRecoverySnapshot(recovery) || recovery.preview) {
+      throw corruptJob();
+    }
+    return;
+  }
+  if (status === "recovered") {
+    if (
+      item.attemptCount < 1 || result?.kind !== "recovered" || failure || !recovery || recovery.preview ||
+      recovery.status !== "applied" || result.observedRequestChecksum !== recovery.scannedRequestChecksum
+    ) throw corruptJob();
+    return;
+  }
+  if (status === "recovery-conflict") {
+    if (
+      item.attemptCount < 1 || result?.kind !== "recovery-conflict" || failure || !recovery ||
+      recovery.status !== "conflict" ||
+      (recovery.preview !== undefined && recovery.preview.status !== "conflict")
+    ) throw corruptJob();
+    return;
+  }
+
+  if (
+    item.attemptCount < 1 || failure || !recovery ||
+    (result?.kind !== "applied" && result?.kind !== "unchanged") ||
+    recovery.observedPostApplyChecksum !== result.observedRequestChecksum ||
+    recovery.status !== "ready"
+  ) throw corruptJob();
+  if (status === "ready-to-recover") {
+    if (
+      !recovery.preview || recovery.preview.status === "conflict" || recovery.status !== "ready"
+    ) throw corruptJob();
+  } else if (status === "recovering") {
+    if (recovery.preview) throw corruptJob();
+  } else if (status === "applied") {
+    if (recovery.preview) throw corruptJob();
+  } else {
+    throw corruptJob();
+  }
+}
+
+function isCompleteRecoverySnapshot(
+  recovery: PersistedContentReplacementRecovery | undefined,
+): recovery is PersistedContentReplacementRecovery {
+  return recovery !== undefined;
+}
+
+function isApplyCompletedStatus(status: PersistedContentReplacementItem["status"]): boolean {
+  return status === "applied" || status === "stale" || status === "failed" ||
+    status === "ready-to-recover" || status === "recovering" || status === "recovered" ||
+    status === "recovery-conflict";
+}
+
+function isInventoryCursorRelevant(
+  cursor: InventoryCursor,
+  configuration: PersistedContentReplacementJob["configuration"],
+): boolean {
+  if (cursor.kind === "questions") {
+    return configuration.contentTypes.questions || configuration.contentTypes.answers;
+  }
+  if (cursor.kind === "answers") return configuration.contentTypes.answers;
+  return configuration.contentTypes.articles;
+}
+
+function isItemRefRelevant(
+  ref: ReplacementItemRef,
+  configuration: PersistedContentReplacementJob["configuration"],
+): boolean {
+  if (ref.kind === "question") return configuration.contentTypes.questions;
+  if (ref.kind === "answer") return configuration.contentTypes.answers;
+  return configuration.contentTypes.articles;
 }
 
 function parsePersistedItem(
@@ -424,34 +623,57 @@ function parseRecovery(
 ): PersistedContentReplacementRecovery {
   const record = exactObject(value, [
     "priorRequestModel", "scannedRequestChecksum", "proposedRequestChecksum",
-    "observedPostApplyChecksum", "status",
-  ], ["observedPostApplyChecksum"]);
-  const priorRef = parseItemRef(plainRecord(record.priorRequestModel).ref);
-  const priorRequestModel = validateExactPriorRequestModel(record.priorRequestModel, priorRef);
+    "observedPostApplyChecksum", "status", "preview",
+  ], ["observedPostApplyChecksum", "preview"]);
+  const priorRequestModel = parseRequestModel(record.priorRequestModel);
   const scannedRequestChecksum = digest(record.scannedRequestChecksum);
   const proposedRequestChecksum = digest(record.proposedRequestChecksum);
   const observedPostApplyChecksum = record.observedPostApplyChecksum === undefined
     ? undefined
     : digest(record.observedPostApplyChecksum);
   if (
-    !priorRequestModel ||
     !sameRef(priorRequestModel.ref, proposal.before.ref) ||
     scannedRequestChecksum !== proposal.scannedRequestChecksum ||
     proposedRequestChecksum !== proposal.proposedRequestChecksum ||
     !isRecoveryStatus(record.status)
   ) throw corruptJob();
+  const preview = record.preview === undefined
+    ? undefined
+    : parseRecoveryPreview(record.preview, proposal.before.ref);
+  if (preview && observedPostApplyChecksum === undefined) throw corruptJob();
   return {
     priorRequestModel,
     scannedRequestChecksum,
     proposedRequestChecksum,
     ...(observedPostApplyChecksum === undefined ? {} : { observedPostApplyChecksum }),
     status: record.status,
+    ...(preview === undefined ? {} : { preview }),
+  };
+}
+
+function parseRecoveryPreview(
+  value: unknown,
+  expectedRef: ReplacementItemRef,
+): PersistedContentReplacementRecoveryPreview {
+  const record = exactObject(value, [
+    "status", "currentRequestModel", "observedCurrentChecksum",
+    "expectedPostApplyChecksum", "previewedAt",
+  ]);
+  if (!isRecoveryPreviewStatus(record.status)) throw corruptJob();
+  const currentRequestModel = parseRequestModel(record.currentRequestModel);
+  if (!sameRef(currentRequestModel.ref, expectedRef)) throw corruptJob();
+  return {
+    status: record.status,
+    currentRequestModel,
+    observedCurrentChecksum: digest(record.observedCurrentChecksum),
+    expectedPostApplyChecksum: digest(record.expectedPostApplyChecksum),
+    previewedAt: timestamp(record.previewedAt),
   };
 }
 
 function parseResult(value: unknown): PersistedContentReplacementResult {
   const record = plainRecord(value);
-  if (record.kind === "applied" || record.kind === "recovered") {
+  if (record.kind === "applied" || record.kind === "recovered" || record.kind === "unchanged") {
     exactObject(record, ["kind", "observedRequestChecksum", "completedAt"]);
     return {
       kind: record.kind,
@@ -460,7 +682,7 @@ function parseResult(value: unknown): PersistedContentReplacementResult {
     };
   }
   if (
-    record.kind === "unchanged" || record.kind === "stale" || record.kind === "excluded" ||
+    record.kind === "stale" || record.kind === "excluded" ||
     record.kind === "recovery-conflict"
   ) {
     exactObject(record, ["kind", "completedAt"]);
@@ -530,13 +752,18 @@ function isCanonicalItemKey(value: string): boolean {
   return /^(?:question:[1-9]\d*|article:[1-9]\d*|answer:[1-9]\d*:[1-9]\d*)$/.test(value);
 }
 
-function isEnterpriseBaseUrl(value: string): boolean {
-  if (!isOriginOnlyInstanceUrl(value)) return false;
+function normalizeEnterpriseBaseUrl(value: unknown): string {
+  if (typeof value !== "string" || !isOriginOnlyInstanceUrl(value)) throw corruptJob();
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.origin === value && url.hostname.endsWith(".stackenterprise.co");
+    const hostname = url.hostname.toLowerCase();
+    if (
+      url.protocol !== "https:" ||
+      (hostname !== "stackenterprise.co" && !hostname.endsWith(".stackenterprise.co"))
+    ) throw corruptJob();
+    return url.origin;
   } catch {
-    return false;
+    throw corruptJob();
   }
 }
 
@@ -564,6 +791,12 @@ function isItemStatus(value: unknown): value is PersistedContentReplacementItem[
 function isRecoveryStatus(value: unknown): value is PersistedContentReplacementRecovery["status"] {
   return value === "pending" || value === "ready" || value === "applied" ||
     value === "conflict" || value === "failed";
+}
+
+function isRecoveryPreviewStatus(
+  value: unknown,
+): value is PersistedContentReplacementRecoveryPreview["status"] {
+  return value === "recoverable" || value === "already-recovered" || value === "conflict";
 }
 
 function isRecoverySnapshotStatus(
@@ -608,11 +841,6 @@ function timestamp(value: unknown): string {
   if (typeof value !== "string") throw corruptJob();
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== value) throw corruptJob();
-  return value;
-}
-
-function stringValue(value: unknown): string {
-  if (typeof value !== "string") throw corruptJob();
   return value;
 }
 
@@ -694,40 +922,75 @@ function exactDynamicMap(value: unknown): Record<string, unknown> {
 }
 
 function assertSafeDataGraph(value: unknown): void {
+  try {
+    walkSafeDataGraph(value);
+  } catch {
+    throw corruptJob();
+  }
+}
+
+function walkSafeDataGraph(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  type Frame = { item: object; depth: number; exiting: boolean };
   const seen = new WeakSet<object>();
   const active = new WeakSet<object>();
-  const visit = (item: unknown): void => {
-    if (!item || typeof item !== "object") return;
-    if (active.has(item as object)) throw corruptJob();
-    if (seen.has(item as object)) return;
-    const prototype = Object.getPrototypeOf(item);
-    if (Array.isArray(item)) {
-      if (prototype !== Array.prototype) throw corruptJob();
-    } else if (prototype !== Object.prototype && prototype !== null) {
-      throw corruptJob();
+  const stack: Frame[] = [{ item: value as object, depth: 0, exiting: false }];
+  let nodeCount = 0;
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.exiting) {
+      active.delete(frame.item);
+      seen.add(frame.item);
+      continue;
     }
-    active.add(item as object);
-    const descriptors = Object.getOwnPropertyDescriptors(item);
+    if (active.has(frame.item)) throw corruptJob();
+    if (seen.has(frame.item)) continue;
+    nodeCount += 1;
+    if (nodeCount > MAX_GRAPH_NODES || frame.depth > MAX_GRAPH_DEPTH) throw corruptJob();
+
+    const array = Array.isArray(frame.item) ? frame.item : null;
+    const isArray = array !== null;
+    const prototype = Object.getPrototypeOf(frame.item);
+    if (
+      (isArray && prototype !== Array.prototype) ||
+      (!isArray && prototype !== Object.prototype && prototype !== null)
+    ) throw corruptJob();
+    if (array && array.length > MAX_SCHEMA_ARRAY_LENGTH) throw corruptJob();
+
+    const descriptors = Object.getOwnPropertyDescriptors(frame.item);
     const keys = Reflect.ownKeys(descriptors);
-    if (keys.some((key) => typeof key !== "string")) throw corruptJob();
-    if (Array.isArray(item)) {
-      const expectedKeys = Array.from({ length: item.length }, (_, index) => String(index));
-      const dataKeys = keys.filter((key) => key !== "length");
-      if (dataKeys.length !== expectedKeys.length || dataKeys.some((key, index) => key !== expectedKeys[index])) {
-        throw corruptJob();
+    if (keys.length > MAX_SCHEMA_ARRAY_LENGTH + (isArray ? 1 : 0)) throw corruptJob();
+    let arrayElementCount = 0;
+    const children: object[] = [];
+    for (const key of keys) {
+      if (typeof key !== "string") throw corruptJob();
+      if (isArray && key === "length") continue;
+      if (key === "__proto__" || key === "prototype" || key === "constructor") throw corruptJob();
+      if (array) {
+        if (!isCanonicalArrayIndex(key, array.length)) throw corruptJob();
+        arrayElementCount += 1;
+      }
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw corruptJob();
+      if (descriptor.value && typeof descriptor.value === "object") {
+        children.push(descriptor.value as object);
       }
     }
-    for (const key of keys) {
-      if (key === "length" && Array.isArray(item)) continue;
-      if (key === "__proto__" || key === "prototype" || key === "constructor") throw corruptJob();
-      const descriptor = descriptors[key as string];
-      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw corruptJob();
-      visit(descriptor.value);
+    if (array && arrayElementCount !== array.length) throw corruptJob();
+
+    active.add(frame.item);
+    stack.push({ ...frame, exiting: true });
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ item: children[index], depth: frame.depth + 1, exiting: false });
     }
-    active.delete(item as object);
-    seen.add(item as object);
-  };
-  visit(value);
+  }
+}
+
+function isCanonicalArrayIndex(key: string, length: number): boolean {
+  if (!/^(?:0|[1-9]\d*)$/.test(key)) return false;
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < length && String(index) === key;
 }
 
 async function openDatabase(): Promise<IDBDatabase> {
@@ -749,9 +1012,25 @@ async function openDatabase(): Promise<IDBDatabase> {
   };
   request.onblocked = () => undefined;
   return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(new Error("Content replacement storage could not be opened."));
-    request.onblocked = () => reject(new Error("Content replacement storage upgrade was blocked."));
+    let settled = false;
+    request.onsuccess = () => {
+      if (settled) {
+        request.result.close();
+        return;
+      }
+      settled = true;
+      resolve(request.result);
+    };
+    request.onerror = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Content replacement storage could not be opened."));
+    };
+    request.onblocked = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Content replacement storage upgrade was blocked."));
+    };
   });
 }
 
