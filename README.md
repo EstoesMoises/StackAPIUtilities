@@ -61,6 +61,78 @@ Enterprise or Teams APIs without browser CORS blocking credential headers.
 Scripts that still need unsupported live datasets stop before fetching and
 direct users to upload existing CSV or JSON outputs.
 
+## Content Replacement
+
+Content Replacement is an Enterprise API v3 write tool for the Enterprise main
+site. It requires an Enterprise OAuth access token with `write_access`; Private
+Team and multi-instance jobs are not supported. One job can replace literal
+terms in question titles and bodies, answer bodies, and article titles and
+bodies. Question tags are preserved. Article tags, type, expiration date, and
+user and user-group editor permissions are also preserved in the complete API
+request model. Comments, tags, URL destinations, and other non-content fields
+are never replacement targets.
+
+Rules can be entered in the mapping table or imported locally from CSV. The
+canonical CSV headers are exactly:
+
+```csv
+find,replace
+MyPVM,MyPBM
+```
+
+Imported rows can be appended to or replace the current mapping list. Blank,
+no-op, conflicting duplicate, chained, and overlapping rules block scanning.
+Rules run simultaneously against the original field value, so replacement text
+introduced by one rule is not processed by another rule.
+
+The safe defaults are literal, case-sensitive, whole-term matching with code
+replacement off. Fenced, indented, and inline code is protected by default.
+Link and image destinations, autolink targets, raw HTML attributes and syntax,
+and hidden raw HTML content remain protected. Advanced settings may enable
+case-insensitive or partial matching and replacement inside code, but they do
+not unprotect URL destinations or raw HTML attributes.
+
+Scanning is exhaustive for the selected content types: it paginates all
+accessible questions, each question's answer collection, and all articles, then
+fetches canonical detail records for conservative candidates. Search-index
+results are not treated as a complete inventory. An incomplete inventory cannot
+advance to Review. The review table is paginated in 50-row pages and offers
+filters, exact selected-post and occurrence counts, a complete credential-free
+preview CSV, and optional bounded detail. Detail includes complete before/after
+Markdown, protected occurrences and reasons, metadata when available, rules
+applied, and the normalized API request payload.
+
+Apply uses bounded, one-post requests. Immediately before each PUT, the server
+re-fetches the post and compares a checksum of the complete allowed request
+model—not only the edited text—with the reviewed scan. This includes unchanged
+question tags and all required article fields and permissions. A changed model
+is reported as stale and skipped. Stack Enterprise does not advertise a
+conditional-update primitive, so a small read-to-PUT race remains after that
+final check; the tool issues the PUT immediately and does not claim an all-post
+transaction.
+
+Results distinguish updated, already-applied, excluded, stale, permission,
+validation, exhausted network/API, and intentionally protected outcomes. A
+failure or stale result for one item does not describe successful items as
+rolled back. Result and exception CSVs are one-shot browser downloads generated
+on demand and are not retained by the app.
+
+Recovery is a separate guarded job, not an unconditional undo. Apply stays
+disabled until complete prior request-model snapshots are durably available for
+every selected post. Recovery first previews the exact prior request model,
+re-fetches current content, and restores only a post whose full checksum still
+matches the observed successful post-apply checksum. Later edits become recovery
+conflicts and are never overwritten.
+
+Keep the browser open while a scan, apply batch, recovery preview, or recovery
+batch is actively making calls; work does not continue after the browser closes.
+Credential-free progress, proposal content, results, and recovery snapshots are
+saved in a dedicated browser IndexedDB database after each bounded operation.
+After an interruption, reopen the saved local job, reconnect valid credentials
+for the same Enterprise origin, and explicitly resume. OAuth tokens, API keys,
+authorization headers, and other credentials are never written into replacement
+job IndexedDB records or included in preview, result, or exception exports.
+
 ## Credentials
 
 The app keeps OAuth access tokens and PATs session-only and in memory. API keys
@@ -94,7 +166,9 @@ The shared credentials screen supports three authentication lanes:
 - Stack Overflow Enterprise API v3: OAuth Authorization Code with PKCE, using the Enterprise instance URL and OAuth Client ID.
 - Stack Overflow Enterprise API v2.3: API key remains available for workflows that still call v2.3 endpoints.
 
-Enterprise OAuth requests the minimum workflow scope by default. User Group Sync requests `write_access`. `no_expiry` is off by default and is included only when explicitly selected.
+Enterprise OAuth requests the minimum workflow scope by default. User Group Sync
+and Content Replacement request `write_access`. `no_expiry` is off by default
+and is included only when explicitly selected.
 
 In production, Enterprise OAuth uses the app's HTTPS request origin as the callback origin by default. If the app is behind a proxy or needs a fixed callback URL, set one of these server environment variables:
 

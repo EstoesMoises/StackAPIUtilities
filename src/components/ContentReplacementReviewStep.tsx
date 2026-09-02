@@ -3,6 +3,7 @@ import type { ContentReplacementJobController } from "../hooks/useContentReplace
 import { downloadReplacementPreview } from "../utils/contentReplacementDownloads";
 import {
   createReplacementSelectionSnapshot,
+  getReplacementReviewPage,
   replacementItemKey,
 } from "../writeTools/contentReplacement/jobState";
 import type {
@@ -14,8 +15,6 @@ import type {
   ReplacementProposalField,
   ReplacementProtectedOccurrenceReason,
 } from "../writeTools/contentReplacement/types";
-
-const PAGE_SIZE = 50;
 
 type ContentTypeFilter = "all" | ReplacementContentKind;
 type FieldFilter = "all" | ReplacementProposalField;
@@ -74,16 +73,13 @@ function ContentReplacementReviewStepView({
     () => entries.filter((entry) => matchesFilters(entry.item, entry.included, filters)),
     [entries, filters],
   );
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const boundedPage = Math.min(page, pageCount);
-  const pageEntries = filtered.slice((boundedPage - 1) * PAGE_SIZE, boundedPage * PAGE_SIZE);
+  const reviewPage = getReplacementReviewPage(filtered, page);
+  const { items: pageEntries, page: boundedPage, pageCount, start, end } = reviewPage;
   const selected = entries.filter(({ included }) => included);
   const selectedOccurrences = selected.reduce(
     (total, { item }) => total + item.proposal.changedOccurrences.length,
     0,
   );
-  const start = filtered.length === 0 ? 0 : (boundedPage - 1) * PAGE_SIZE + 1;
-  const end = Math.min(boundedPage * PAGE_SIZE, filtered.length);
   const error = selectionSaveError ?? controller.storageError ?? controller.operationError;
   const selectionBusy = pendingSelectionSaves > 0;
 

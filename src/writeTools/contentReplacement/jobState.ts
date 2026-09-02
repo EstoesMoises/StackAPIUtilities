@@ -319,6 +319,29 @@ export function getNextRecoveryItem(job: PersistedContentReplacementJob): Persis
   return null;
 }
 
+const REPLACEMENT_REVIEW_PAGE_SIZE = 50;
+
+export function getReplacementReviewPage<T>(items: readonly T[], requestedPage: number): {
+  items: T[];
+  page: number;
+  pageCount: number;
+  start: number;
+  end: number;
+} {
+  const pageCount = Math.max(1, Math.ceil(items.length / REPLACEMENT_REVIEW_PAGE_SIZE));
+  const page = Number.isSafeInteger(requestedPage)
+    ? Math.min(pageCount, Math.max(1, requestedPage))
+    : 1;
+  const offset = (page - 1) * REPLACEMENT_REVIEW_PAGE_SIZE;
+  return {
+    items: items.slice(offset, offset + REPLACEMENT_REVIEW_PAGE_SIZE),
+    page,
+    pageCount,
+    start: items.length === 0 ? 0 : offset + 1,
+    end: Math.min(offset + REPLACEMENT_REVIEW_PAGE_SIZE, items.length),
+  };
+}
+
 export function canEnterReview(job: PersistedContentReplacementJob): boolean {
   return job.stage === "scan" && (job.status === "running" || job.status === "paused") &&
     job.inventoryQueue.length === 0 && job.detailQueue.length === 0;

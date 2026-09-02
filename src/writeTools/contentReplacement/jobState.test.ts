@@ -14,7 +14,9 @@ import {
   getNextDetailBatch,
   getNextInventoryCursor,
   getNextRecoveryItem,
+  getReplacementReviewPage,
   reduceReplacementJob,
+  reduceReplacementSelectionBulk,
   replacementItemKey,
   summarizeReplacementJob,
 } from "./jobState";
@@ -122,6 +124,62 @@ function failure(
 }
 
 describe("replacement job state", () => {
+  it("handles 10,000 proposals with deterministic batches, selections, review pages, and serialization", () => {
+    const startedAt = performance.now();
+    const refs = Array.from({ length: 10_000 }, (_, index) => ({
+      kind: "answer" as const,
+      questionId: index + 1,
+      answerId: index + 10_001,
+    }));
+    const proposals = Object.fromEntries(refs.map((ref) => {
+      const candidate = proposal(ref);
+      return [replacementItemKey(ref), {
+        proposal: candidate,
+        included: true,
+        attemptCount: 0,
+        status: "pending" as const,
+      }];
+    }));
+    const review = {
+      ...createJob({ questions: false, answers: true, articles: false }),
+      stage: "review" as const,
+      status: "completed" as const,
+      inventoryQueue: [],
+      detailQueue: [],
+      proposals,
+      progress: {
+        ...createJob().progress,
+        detailsInspected: 10_000,
+        proposalsFound: 10_000,
+      },
+    };
+    const scanning = { ...review, stage: "scan" as const, detailQueue: refs };
+
+    expect(getNextDetailBatch(scanning)).toEqual(refs.slice(0, 10));
+    expect(getNextDetailBatch(scanning)).toEqual(getNextDetailBatch(scanning));
+
+    const excludedKeys = refs.slice(4_500, 5_500).map(replacementItemKey);
+    const selected = reduceReplacementSelectionBulk(review, excludedKeys, false, "bulk", LATER);
+    expect(summarizeReplacementJob(selected)).toMatchObject({
+      selectedItems: 9_000,
+      selectedChangedOccurrences: 9_000,
+      results: { excluded: 1_000 },
+    });
+
+    const entries = Object.entries(selected.proposals);
+    expect(getReplacementReviewPage(entries, 1)).toMatchObject({ page: 1, pageCount: 200, start: 1, end: 50 });
+    expect(getReplacementReviewPage(entries, 200)).toMatchObject({ page: 200, pageCount: 200, start: 9_951, end: 10_000 });
+    expect(getReplacementReviewPage(entries, 200).items).toHaveLength(50);
+
+    const serialized = JSON.stringify(selected);
+    const parsed = JSON.parse(serialized) as PersistedContentReplacementJob;
+    expect(Object.keys(parsed.proposals)).toHaveLength(10_000);
+    expect(createReplacementSelectionSnapshot(parsed.proposals)).toEqual(
+      createReplacementSelectionSnapshot(selected.proposals),
+    );
+    expect(performance.now() - startedAt).toBeLessThan(10_000);
+  }, 15_000);
+
   it("starts at revision zero and advances once for each accepted reducer transition", () => {
     const created = createJob();
     expect(created.revision).toBe(0);
