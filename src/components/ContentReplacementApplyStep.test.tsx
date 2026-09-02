@@ -11,7 +11,10 @@ import type {
   ReplacementRequestModel,
   ReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/types";
-import { ContentReplacementApplyStep } from "./ContentReplacementApplyStep";
+import {
+  ContentReplacementApplyStep,
+  visibleDeletionConfirmation,
+} from "./ContentReplacementApplyStep";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -150,6 +153,66 @@ describe("ContentReplacementApplyStep", () => {
 
     await user.click(screen.getByRole("button", { name: "Pause after the current request" }));
     expect(runningController.pause).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["expired", "The API key expired during apply. Refresh it before resuming."],
+    ["rejected", "The Enterprise API rejected this credential during apply."],
+  ])("surfaces %s credential readiness after a partial apply is paused", (_state, message) => {
+    const partial = applyJob({
+      status: "paused",
+      proposals: {
+        "question:42": item("question", 42, "applied", { resultKind: "applied" }),
+        "answer:42:84": item("answer", 84, "ready-to-apply", { questionId: 42 }),
+        "article:7": item("article", 7, "ready-to-apply"),
+      },
+      progress: { ...applyJob().progress, applyCompleted: 1 },
+    });
+    render(<ContentReplacementApplyStep controller={controller(partial, {
+      credentialReadiness: { valid: false, refreshRequired: true, message },
+    })} />);
+
+    expect(screen.getByText(message)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Resume apply" })).toBeDisabled();
+  });
+
+  it("does not traverse full request bodies during incremental large apply progress", () => {
+    const apply = trackedBodyJob(2_000, false);
+    const applyView = render(<ContentReplacementApplyStep controller={controller(apply.current)} />);
+    for (let revision = 2; revision <= 4; revision += 1) {
+      applyView.rerender(<ContentReplacementApplyStep controller={controller({
+        ...apply.current,
+        revision,
+        progress: { ...apply.current.progress, applyCompleted: revision },
+      })} />);
+    }
+
+    expect(apply.bodyReads()).toBe(0);
+  });
+
+  it("does not traverse full request bodies during incremental large recovery preview progress", () => {
+    const recovery = trackedBodyJob(2_000, true);
+    const keys = Object.keys(recovery.current.proposals);
+    const previewing: PersistedContentReplacementJob = {
+      ...recovery.current,
+      stage: "recovery",
+      status: "running",
+      activeOperation: {
+        kind: "recovery-preview",
+        requestedItemKeys: keys,
+        remainingItemKeys: keys,
+        completedItemKeys: [],
+        generation: "2026-09-02T12:07:00.000Z",
+      },
+    };
+    const recoveryView = render(<ContentReplacementApplyStep controller={controller(previewing)} />);
+    recoveryView.rerender(<ContentReplacementApplyStep controller={controller({
+      ...previewing,
+      revision: previewing.revision + 1,
+      activeOperation: { ...previewing.activeOperation!, completedItemKeys: keys.slice(0, 10) },
+    })} />);
+
+    expect(recovery.bodyReads()).toBe(0);
   });
 
   it("separates result categories, filters rows, and scopes retry and stale rescan actions", async () => {
@@ -323,6 +386,59 @@ describe("ContentReplacementApplyStep", () => {
     expect(screen.getByRole("button", { name: "Recover 1 post" })).toBeDisabled();
   });
 
+  it.each(["base URL", "configuration"] as const)(
+    "binds RECOVER authorization to actual %s when a persisted fingerprint is unchanged",
+    async (scope) => {
+      const user = userEvent.setup();
+      const initial = recoveryJob();
+      const { rerender } = render(<ContentReplacementApplyStep controller={controller(initial)} />);
+      await user.click(screen.getByLabelText(/I understand recovery writes the prior full request model/i));
+      await user.type(screen.getByLabelText("Type RECOVER to confirm"), "RECOVER");
+
+      const changed = scope === "base URL"
+        ? { ...initial, baseUrl: "https://other.stackenterprise.co" }
+        : {
+            ...initial,
+            configuration: {
+              ...initial.configuration,
+              rules: [{ ...initial.configuration.rules[0], replace: "Mutated while fingerprint stayed fixed" }],
+            },
+          };
+      rerender(<ContentReplacementApplyStep controller={controller(changed)} />);
+
+      expect(screen.getByLabelText(/I understand recovery writes the prior full request model/i)).not.toBeChecked();
+      expect(screen.getByLabelText("Type RECOVER to confirm")).toHaveValue("");
+      expect(screen.getByRole("button", { name: "Recover 1 post" })).toBeDisabled();
+    },
+  );
+
+  it("recomputes default-selected recovery items from current state before dispatch", async () => {
+    const user = userEvent.setup();
+    const currentJob = recoveryJob();
+    const currentController = controller(currentJob);
+    render(<ContentReplacementApplyStep controller={currentController} />);
+    await user.click(screen.getByLabelText(/I understand recovery writes the prior full request model/i));
+    await user.type(screen.getByLabelText("Type RECOVER to confirm"), "RECOVER");
+
+    const added = item("question", 9, "ready-to-recover", { resultKind: "applied" });
+    added.recovery = {
+      ...added.recovery!,
+      preview: {
+        status: "recoverable",
+        currentRequestModel: toWireModel(added.proposal.after),
+        observedCurrentChecksum: "b".repeat(64),
+        expectedPostApplyChecksum: "b".repeat(64),
+        sourceAttemptCount: 1,
+        sourceApplyCompletedAt: "2026-09-02T12:01:00.000Z",
+        previewedAt: "2026-09-02T12:08:00.000Z",
+      },
+    };
+    currentJob.proposals["question:9"] = added;
+    await user.click(screen.getByRole("button", { name: "Recover 1 post" }));
+
+    expect(currentController.startRecovery).not.toHaveBeenCalled();
+  });
+
   it("blocks recovery preview and confirmation when credentials are not ready", async () => {
     const user = userEvent.setup();
     const message = "Refresh the Enterprise API credential before recovery.";
@@ -398,6 +514,14 @@ describe("ContentReplacementApplyStep", () => {
     expect(screen.queryByRole("group", { name: groupName })).not.toBeInTheDocument();
     expect(secondController.deleteRecoverySnapshots).not.toHaveBeenCalled();
     expect(secondController.deleteJob).not.toHaveBeenCalled();
+  });
+
+  it("derives deletion confirmation visibility synchronously from the current job and lock", () => {
+    const pending = { jobId: "job-1", kind: "snapshots" as const };
+
+    expect(visibleDeletionConfirmation(pending, "job-2", false)).toBeNull();
+    expect(visibleDeletionConfirmation(pending, "job-1", true)).toBeNull();
+    expect(visibleDeletionConfirmation(pending, "job-1", false)).toEqual(pending);
   });
 
   it("rechecks the operation lock when a delete confirmation races with an operation start", async () => {
@@ -721,6 +845,42 @@ function withRecoveryResult(
         completedAt: "2026-09-02T12:06:00.000Z",
       },
     },
+  };
+}
+
+function trackedBodyJob(count: number, successful: boolean): {
+  current: PersistedContentReplacementJob;
+  bodyReads(): number;
+} {
+  let reads = 0;
+  const proposals = Object.fromEntries(Array.from({ length: count }, (_, index) => {
+    const currentItem = item(
+      "question",
+      index + 1,
+      successful ? "applied" : "ready-to-apply",
+      successful ? { resultKind: "applied" } : {},
+    );
+    const request = currentItem.proposal.before.request;
+    const body = request.body;
+    Object.defineProperty(request, "body", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        return body;
+      },
+    });
+    return [`question:${index + 1}`, currentItem];
+  }));
+  return {
+    current: job({
+      stage: successful ? "results" : "apply",
+      status: successful ? "completed" : "running",
+      revision: 1,
+      proposals,
+      progress: { ...job().progress, proposalsFound: count },
+    }),
+    bodyReads: () => reads,
   };
 }
 
