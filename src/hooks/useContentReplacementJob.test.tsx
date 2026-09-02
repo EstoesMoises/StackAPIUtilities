@@ -363,6 +363,171 @@ describe("useContentReplacementJob", () => {
     expect(deps.store.save.mock.calls.every(([job]) => !JSON.stringify(job).includes("fresh-token"))).toBe(true);
   });
 
+  it("never transmits credentials from a different Enterprise origin", async () => {
+    const fetcher = vi.fn();
+    const deps = dependencies(fetcher);
+    const mismatched = { ...credentials, baseUrl: "https://other.stackenterprise.co", accessToken: "origin-b-token" };
+    const hook = renderHook(
+      ({ supplied }) => useContentReplacementJob(supplied, null, deps.value),
+      { initialProps: { supplied: credentials } },
+    );
+    await act(async () => hook.result.current.createJob(configuration));
+    hook.rerender({ supplied: mismatched });
+
+    await act(async () => hook.result.current.resume());
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(hook.result.current.job).toMatchObject({
+      status: "paused",
+      operationError: { category: "authorization" },
+    });
+    expect(JSON.stringify(deps.store.current())).not.toContain("origin-b-token");
+  });
+
+  it("interrupts a persisted applying item during rehydration and requires explicit resume", async () => {
+    const proposal = await questionProposal();
+    let initial = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    initial = reduceReplacementJob(initial, { type: "apply/start", at: AT });
+    initial = reduceReplacementJob(initial, { type: "apply/item-started", itemKey: "question:1", at: AT });
+    const deps = dependencies(vi.fn(), initial);
+
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    await waitFor(() => expect(result.current.job?.status).toBe("paused"));
+    expect(result.current.job?.proposals["question:1"].status).toBe("ready-to-apply");
+    expect(deps.value.fetch).not.toHaveBeenCalled();
+    expect(deps.store.save).toHaveBeenCalled();
+  });
+
+  it("rehydrates an unmounted active scan through a persisted paused checkpoint", async () => {
+    const pending = deferred<Response>();
+    const fetcher = vi.fn().mockReturnValue(pending.promise);
+    const deps = dependencies(fetcher);
+    const first = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => first.result.current.createJob(configuration));
+    let scan!: Promise<void>;
+    act(() => { scan = first.result.current.startScan(); });
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    first.unmount();
+    const persistedRunning = deps.store.current();
+    expect(persistedRunning?.status).toBe("running");
+
+    const second = renderHook(() => useContentReplacementJob(credentials, persistedRunning, deps.value));
+    await waitFor(() => expect(second.result.current.job?.status).toBe("paused"));
+    expect(second.result.current.job?.inventoryQueue).toEqual([{ kind: "questions", page: 1 }]);
+
+    pending.resolve(jsonResponse({ ok: false, error: "stale" }, 500));
+    await act(async () => scan);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    second.unmount();
+  });
+
+  it("pauses apply before item activation when compatible credentials are unavailable", async () => {
+    const proposal = await questionProposal();
+    const prepared = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    const deps = dependencies(vi.fn(), prepared);
+    const { result } = renderHook(() => useContentReplacementJob(null, prepared, deps.value));
+
+    await act(async () => result.current.startApply());
+
+    expect(deps.value.fetch).not.toHaveBeenCalled();
+    expect(result.current.job).toMatchObject({
+      status: "paused",
+      operationError: { category: "authorization" },
+      proposals: { "question:1": { status: "ready-to-apply", attemptCount: 0 } },
+    });
+  });
+
+  it("rejects malformed or discontinuous scan success before reducer mutation", async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [{ kind: "question", questionId: 1 }], answerCursors: [],
+        nextCursor: { kind: "questions", page: 3 }, inspectedCount: 1, pageKind: "questions",
+      },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => result.current.createJob(configuration));
+
+    await act(async () => result.current.startScan());
+
+    expect(result.current.job).toMatchObject({ status: "failed", failure: { category: "server" } });
+    expect(result.current.job?.detailQueue).toEqual([]);
+  });
+
+  it("rejects malformed detail proposal evidence before reducer mutation", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: {
+          candidates: [{ kind: "question", questionId: 1 }], answerCursors: [], nextCursor: null,
+          inspectedCount: 1, pageKind: "questions",
+        }, throttleNotices: [],
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { proposals: [{}], inspectedCount: 1, protectedOccurrenceCount: 0 },
+        throttleNotices: [],
+      }));
+    const deps = dependencies(fetcher);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => result.current.createJob(configuration));
+
+    await act(async () => result.current.startScan());
+
+    expect(result.current.job).toMatchObject({ status: "failed", failure: { category: "server" } });
+    expect(result.current.job?.proposals).toEqual({});
+  });
+
+  it("persists an exhausted 429 deadline and retries the identical cursor after waiting", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: false,
+        error: {
+          code: "rate_limited", message: "Content scan is temporarily rate limited.", retryAfterSeconds: 4,
+        },
+      }, 429))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        throttleNotices: [],
+      }));
+    const deps = dependencies(fetcher);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => result.current.createJob(configuration));
+
+    await act(async () => result.current.startScan());
+
+    expect(deps.value.waitUntil).toHaveBeenCalledWith("2026-09-01T12:01:04.000Z", expect.any(AbortSignal));
+    expect(JSON.parse(fetcher.mock.calls[0][1].body as string).cursor)
+      .toEqual(JSON.parse(fetcher.mock.calls[1][1].body as string).cursor);
+    const deadlineSave = deps.store.save.mock.calls.findIndex(([saved]) => saved.nextRetryAt !== undefined);
+    expect(deadlineSave).toBeGreaterThanOrEqual(0);
+    expect(deps.store.save.mock.invocationCallOrder[deadlineSave])
+      .toBeLessThan((deps.value.waitUntil as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]);
+  });
+
+  it("does not delete snapshots while a controlled request can still complete", async () => {
+    const pending = deferred<Response>();
+    const proposal = await questionProposal();
+    const initial = await appliedJob(proposal);
+    const fetcher = vi.fn().mockReturnValue(pending.promise);
+    const deps = dependencies(fetcher, initial);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+    let preview!: Promise<void>;
+    act(() => { preview = result.current.prepareRecovery(["question:1"]); });
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+
+    await act(async () => result.current.deleteRecoverySnapshots());
+    expect(result.current.job?.recoverySnapshotStatus).toBe("ready");
+
+    pending.resolve(jsonResponse({ ok: false, error: "safe" }, 400));
+    await act(async () => preview);
+    expect(deps.store.delete).not.toHaveBeenCalled();
+  });
+
   it("previews and recovers sequentially with metadata-free exact wire models", async () => {
     const proposal = await questionProposal();
     const initial = await appliedJob(proposal);

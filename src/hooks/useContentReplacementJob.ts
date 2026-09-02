@@ -3,7 +3,9 @@ import type { ThrottleNotice } from "../api/httpClient";
 import { MAX_STACK_API_V3_BACKOFF_NOTICE_SECONDS } from "../api/stackApiV3";
 import type { SessionCredentials } from "../domain/types";
 import {
+  isOriginOnlyInstanceUrl,
   normalizeCurrentRequestModel,
+  validateSessionCredentials,
   validateExactPriorRequestModel,
 } from "../server/contentReplacementRequestValidation";
 import {
@@ -13,6 +15,7 @@ import {
 } from "../utils/browserContentReplacementStorage";
 import {
   createJobFingerprint,
+  buildReplacementProposal,
   stableSerialize,
   toReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/proposals";
@@ -21,6 +24,7 @@ import {
   getNextApplyItem,
   getNextDetailBatch,
   getNextInventoryCursor,
+  getNextStaleRescanBatch,
   reduceReplacementJob,
   replacementItemKey,
 } from "../writeTools/contentReplacement/jobState";
@@ -65,6 +69,7 @@ export interface ContentReplacementJobController {
   job: PersistedContentReplacementJob | null;
   busy: boolean;
   storageError: string | null;
+  operationError: string | null;
   createJob(configuration: ReplacementConfiguration): Promise<void>;
   startScan(): Promise<void>;
   pause(): void;
@@ -100,10 +105,11 @@ export function useContentReplacementJob(
   initialJob: PersistedContentReplacementJob | null = null,
   dependencies: ContentReplacementJobDependencies = defaultDependencies,
 ): ContentReplacementJobController {
-  const [job, setJobState] = useState<PersistedContentReplacementJob | null>(initialJob);
+  const interruptedInitial = needsInterruptionCheckpoint(initialJob);
+  const [job, setJobState] = useState<PersistedContentReplacementJob | null>(interruptedInitial ? null : initialJob);
   const [busy, setBusyState] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
-  const jobRef = useRef(initialJob);
+  const jobRef = useRef<PersistedContentReplacementJob | null>(interruptedInitial ? null : initialJob);
   const credentialsRef = useRef(credentials);
   const dependenciesRef = useRef(dependencies);
   const mountedRef = useRef(true);
@@ -112,6 +118,7 @@ export function useContentReplacementJob(
   const abortRef = useRef<AbortController | null>(null);
   const pauseBarrierRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const initialJobIdRef = useRef(initialJob?.id);
+  const rehydratedIdRef = useRef<string | null>(null);
 
   credentialsRef.current = credentials;
   dependenciesRef.current = dependencies;
@@ -139,7 +146,8 @@ export function useContentReplacementJob(
     if (initialJobIdRef.current !== nextId) {
       stopOperation();
       initialJobIdRef.current = nextId;
-      setJob(initialJob);
+      rehydratedIdRef.current = null;
+      setJob(needsInterruptionCheckpoint(initialJob) ? null : initialJob);
       setStorageError(null);
     }
     return () => {
@@ -176,6 +184,16 @@ export function useContentReplacementJob(
     setJob(candidate);
     return true;
   }, [setJob, stopOperation]);
+
+  useEffect(() => {
+    if (!initialJob || !needsInterruptionCheckpoint(initialJob) || rehydratedIdRef.current === initialJob.id) return;
+    rehydratedIdRef.current = initialJob.id;
+    const interrupted = reduceReplacementJob(initialJob, {
+      type: "run/interrupted",
+      at: dependenciesRef.current.now(),
+    });
+    void persist(interrupted);
+  }, [initialJob, persist]);
 
   const runExclusive = useCallback(async (
     operation: (token: number) => Promise<void>,
@@ -258,9 +276,14 @@ export function useContentReplacementJob(
   }, [persist, setBusy]);
 
   const createJob = useCallback(async (configuration: ReplacementConfiguration): Promise<void> => {
-    const supplied = credentialsRef.current;
-    if (!supplied) return;
+    const supplied = validateSessionCredentials(credentialsRef.current);
+    if (!supplied || supplied.instanceType !== "enterprise" || (!supplied.accessToken && !supplied.pat)) return;
     const baseUrl = normalizeOrigin(supplied.baseUrl);
+    const expiration = supplied.accessTokenExpiresAt === undefined ? undefined : Date.parse(supplied.accessTokenExpiresAt);
+    if (!isOriginOnlyInstanceUrl(baseUrl) ||
+      (expiration !== undefined && (!Number.isFinite(expiration) || expiration <= Date.parse(dependenciesRef.current.now())))) {
+      return;
+    }
     const fingerprint = await createJobFingerprint({ baseUrl, configuration });
     const createdAt = dependenciesRef.current.now();
     const candidate = createReplacementJob({
@@ -286,6 +309,8 @@ export function useContentReplacementJob(
       current = resumed;
     }
     while (token === operationRef.current) {
+      if (!await honorPersistedDeadline(current, token, persist, abortRef, setBusy, dependenciesRef)) return;
+      current = jobRef.current!;
       const cursor = getNextInventoryCursor(current);
       const refs = cursor ? [] : getNextDetailBatch(current);
       if (!cursor && refs.length === 0) {
@@ -296,22 +321,22 @@ export function useContentReplacementJob(
         if (complete !== current) await persist(complete, token);
         return;
       }
-      const supplied = credentialsRef.current;
-      if (!supplied) {
-        await persist(scanFailure(current, "authorization", false, "Reconnect Enterprise credentials.", dependenciesRef.current.now()), token);
+      const credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+      if (!credentialCheck.credentials) {
+        await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
         return;
       }
       const payload = cursor
         ? {
             action: "inventory",
-            credentials: credentialsForJob(supplied, current),
+            credentials: credentialCheck.credentials,
             configuration: current.configuration,
             jobFingerprint: current.fingerprint,
             cursor,
           }
         : {
             action: "details",
-            credentials: credentialsForJob(supplied, current),
+            credentials: credentialCheck.credentials,
             configuration: current.configuration,
             jobFingerprint: current.fingerprint,
             refs,
@@ -322,12 +347,23 @@ export function useContentReplacementJob(
         await persist(scanFailure(current, "network", true, NETWORK_FAILURE_MESSAGE, dependenciesRef.current.now()), token);
         return;
       }
-      const parsed = await parseScanResponse(fetched.response, cursor ? "inventory" : "details");
+      const parsed = await parseScanResponse(
+        fetched.response,
+        cursor ? { kind: "inventory", cursor, job: current } : { kind: "details", refs, job: current },
+      );
       const at = dependenciesRef.current.now();
       if (!parsed.ok) {
+        if (parsed.retryAfterSeconds !== undefined) {
+          const delayed = reduceReplacementJob(current, {
+            type: "run/set-retry-at", nextRetryAt: addSeconds(at, parsed.retryAfterSeconds), at,
+          });
+          if (!await persist(delayed, token)) return;
+          current = delayed;
+          continue;
+        }
         await persist(scanFailure(
           current,
-          failureCategoryForStatus(fetched.response.status),
+          parsed.invalid ? "server" : failureCategoryForStatus(fetched.response.status),
           fetched.response.status >= 500 || fetched.response.status === 429,
           parsed.message,
           at,
@@ -370,7 +406,7 @@ export function useContentReplacementJob(
 
   const cancel = useCallback(async (): Promise<void> => {
     const current = jobRef.current;
-    if (!current) return;
+    if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
     stopOperation();
     await persist(reduceReplacementJob(current, {
       type: "run/cancel",
@@ -380,7 +416,7 @@ export function useContentReplacementJob(
 
   const deleteJob = useCallback(async (): Promise<void> => {
     const current = jobRef.current;
-    if (!current) return;
+    if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
     stopOperation();
     try {
       await dependenciesRef.current.storage.delete(current.id);
@@ -430,30 +466,32 @@ export function useContentReplacementJob(
       return;
     }
     let current = stored;
+    let credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+    if (!credentialCheck.credentials) {
+      await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
+      return;
+    }
     const started = reduceReplacementJob(current, { type: "apply/start", at: dependenciesRef.current.now() });
     if (started === current || !await persist(started, token)) return;
     current = started;
     while (token === operationRef.current) {
       const item = getNextApplyItem(current);
       if (!item) return;
+      if (!await honorPersistedDeadline(current, token, persist, abortRef, setBusy, dependenciesRef)) return;
+      current = jobRef.current!;
+      credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+      if (!credentialCheck.credentials) {
+        await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
+        return;
+      }
       const itemKey = replacementItemKey(item.proposal.before.ref);
       const applying = reduceReplacementJob(current, {
         type: "apply/item-started", itemKey, at: dependenciesRef.current.now(),
       });
       if (!await persist(applying, token)) return;
       current = applying;
-      const supplied = credentialsRef.current;
-      if (!supplied) {
-        const failed = reduceReplacementJob(current, {
-          type: "apply/item-finished", itemKey,
-          result: { status: "permission", error: "Reconnect Enterprise credentials." },
-          at: dependenciesRef.current.now(),
-        });
-        await persist(failed, token);
-        return;
-      }
       const fetched = await request(APPLY_URL, {
-        credentials: credentialsForJob(supplied, current),
+        credentials: credentialCheck.credentials,
         configuration: current.configuration,
         jobFingerprint: current.fingerprint,
         itemRef: item.proposal.before.ref,
@@ -492,31 +530,29 @@ export function useContentReplacementJob(
     await runApplyRef.current();
   }, [persist]);
 
-  const rescanStaleItems = useCallback(async (itemKeys: string[]): Promise<void> => {
-    const original = jobRef.current;
-    if (!original) return;
-    const keys = orderedItemKeys(original, itemKeys)
-      .filter((key) => original.proposals[key]?.status === "stale");
-    if (keys.length === 0) return;
-    await runExclusive(async (token) => {
-      for (let offset = 0; offset < keys.length && token === operationRef.current; offset += 10) {
-        const batchKeys = keys.slice(offset, offset + 10);
-        const refs = batchKeys.map((key) => original.proposals[key].proposal.before.ref);
-        const supplied = credentialsRef.current;
-        if (!supplied) {
-          await persist(reduceReplacementJob(jobRef.current!, {
-            type: "scan/stale-details-failed",
-            requestedItemKeys: batchKeys,
-            failure: { category: "authorization", retryable: false, message: "Reconnect Enterprise credentials." },
-            at: dependenciesRef.current.now(),
-          }), token);
+  const staleRescanLoop = useCallback(async (token: number): Promise<void> => {
+      let current = jobRef.current;
+      if (!current || current.activeOperation?.kind !== "stale-rescan") return;
+      if (current.status !== "running") {
+        const resumed = reduceReplacementJob(current, { type: "run/resume", at: dependenciesRef.current.now() });
+        if (!await persist(resumed, token)) return;
+        current = resumed;
+      }
+      while (current.activeOperation?.kind === "stale-rescan" && token === operationRef.current) {
+        if (!await honorPersistedDeadline(current, token, persist, abortRef, setBusy, dependenciesRef)) return;
+        current = jobRef.current!;
+        const batchKeys = current.activeOperation!.remainingItemKeys.slice(0, 10);
+        const refs = getNextStaleRescanBatch(current);
+        const credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+        if (!credentialCheck.credentials) {
+          await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
           return;
         }
         const fetched = await request(SCAN_URL, {
           action: "details",
-          credentials: credentialsForJob(supplied, original),
-          configuration: original.configuration,
-          jobFingerprint: original.fingerprint,
+          credentials: credentialCheck.credentials,
+          configuration: current.configuration,
+          jobFingerprint: current.fingerprint,
           refs,
         }, token);
         if ("aborted" in fetched) return;
@@ -529,8 +565,17 @@ export function useContentReplacementJob(
           }), token);
           return;
         }
-        const parsed = await parseScanResponse(fetched.response, "details");
+        const parsed = await parseScanResponse(fetched.response, { kind: "details", refs, job: current });
         if (!parsed.ok) {
+          if (parsed.retryAfterSeconds !== undefined) {
+            const at = dependenciesRef.current.now();
+            const delayed = reduceReplacementJob(current, {
+              type: "run/set-retry-at", nextRetryAt: addSeconds(at, parsed.retryAfterSeconds), at,
+            });
+            if (!await persist(delayed, token)) return;
+            current = delayed;
+            continue;
+          }
           await persist(reduceReplacementJob(jobRef.current!, {
             type: "scan/stale-details-failed",
             requestedItemKeys: batchKeys,
@@ -551,30 +596,53 @@ export function useContentReplacementJob(
           at,
         });
         if (!await persistResponse(next, parsed.throttleNotices, at, token)) return;
+        current = jobRef.current!;
         if (fetched.response.status >= 400 && fetched.response.status < 500 &&
           fetched.response.status !== 429) return;
       }
+  }, [persist, persistResponse, request, setBusy]);
+  const runStaleRescanRef = useRef<() => Promise<void>>(async () => undefined);
+  const runStaleRescan = useCallback(() => runExclusive(staleRescanLoop), [runExclusive, staleRescanLoop]);
+  runStaleRescanRef.current = runStaleRescan;
+  const rescanStaleItems = useCallback(async (itemKeys: string[]): Promise<void> => {
+    const original = jobRef.current;
+    if (!original || original.activeOperation) return;
+    const started = reduceReplacementJob(original, {
+      type: "scan/stale-rescan-started", requestedItemKeys: itemKeys, at: dependenciesRef.current.now(),
     });
-  }, [persist, persistResponse, request, runExclusive]);
+    if (started === original || !await persist(started)) return;
+    await runStaleRescanRef.current();
+  }, [persist]);
 
-  const prepareRecovery = useCallback(async (itemKeys: string[]): Promise<void> => {
-    const initial = jobRef.current;
-    const requested = initial ? orderedItemKeys(initial, itemKeys) : [];
-    await runExclusive(async (token) => {
+  const recoveryPreviewLoop = useCallback(async (token: number): Promise<void> => {
+      let initial = jobRef.current;
+      if (!initial || initial.activeOperation?.kind !== "recovery-preview") return;
+      if (initial.status !== "running") {
+        const resumed = reduceReplacementJob(initial, { type: "run/resume", at: dependenciesRef.current.now() });
+        if (!await persist(resumed, token)) return;
+        initial = resumed;
+      }
+      const operation = initial.activeOperation;
+      const requested = operation?.kind === "recovery-preview" ? [...operation.remainingItemKeys] : [];
       for (const itemKey of requested) {
         let current = jobRef.current;
         const item = current?.proposals[itemKey];
         if (!current || !isSuccessfullyApplied(item)) continue;
+        if (!await honorPersistedDeadline(current, token, persist, abortRef, setBusy, dependenciesRef)) return;
+        current = jobRef.current!;
+        const credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+        if (!credentialCheck.credentials) {
+          await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
+          return;
+        }
         const previewing = reduceReplacementJob(current, {
           type: "recovery/preview-started", itemKey, at: dependenciesRef.current.now(),
         });
         if (!await persist(previewing, token)) return;
         current = previewing;
-        const supplied = credentialsRef.current;
-        if (!supplied) return;
         const prior = toReplacementWireRequestModel(item.proposal.before);
         const fetched = await request(RECOVERY_URL, recoveryPayload(
-          "preview", credentialsForJob(supplied, current), current, item, prior,
+          "preview", credentialCheck.credentials, current, item, prior,
         ), token);
         if ("aborted" in fetched) return;
         const at = dependenciesRef.current.now();
@@ -604,8 +672,21 @@ export function useContentReplacementJob(
         if (fetched.response.status >= 400 && fetched.response.status < 500 &&
           fetched.response.status !== 429) return;
       }
+  }, [persist, persistResponse, request, setBusy]);
+  const runRecoveryPreviewRef = useRef<() => Promise<void>>(async () => undefined);
+  const runRecoveryPreview = useCallback(
+    () => runExclusive(recoveryPreviewLoop), [recoveryPreviewLoop, runExclusive],
+  );
+  runRecoveryPreviewRef.current = runRecoveryPreview;
+  const prepareRecovery = useCallback(async (itemKeys: string[]): Promise<void> => {
+    const initial = jobRef.current;
+    if (!initial || initial.activeOperation) return;
+    const started = reduceReplacementJob(initial, {
+      type: "recovery/preview-run-started", itemKeys, at: dependenciesRef.current.now(),
     });
-  }, [persist, persistResponse, request, runExclusive]);
+    if (started === initial || !await persist(started)) return;
+    await runRecoveryPreviewRef.current();
+  }, [persist]);
 
   const startRecovery = useCallback(async (itemKeys: string[]): Promise<void> => {
     const visible = jobRef.current;
@@ -631,22 +712,33 @@ export function useContentReplacementJob(
           item.recovery?.preview?.status === "recoverable" && previewMatchesGeneration(item);
       });
       if (requested.length === 0) return;
+      let credentialCheck = compatibleCredentials(credentialsRef.current, stored, dependenciesRef.current.now());
+      if (!credentialCheck.credentials) {
+        await persist(credentialInterruption(stored, credentialCheck.message, dependenciesRef.current.now()), token);
+        return;
+      }
       let current = reduceReplacementJob(stored, {
         type: "recovery/start", itemKeys: requested, at: dependenciesRef.current.now(),
       });
       if (!await persist(current, token)) return;
       for (const itemKey of requested) {
+        if (!await honorPersistedDeadline(current, token, persist, abortRef, setBusy, dependenciesRef)) return;
+        current = jobRef.current!;
         const item = current.proposals[itemKey];
         if (!isSuccessfullyApplied(item) || item.recovery?.preview?.status !== "recoverable") continue;
         const prior = toReplacementWireRequestModel(item.recovery.priorRequestModel);
+        credentialCheck = compatibleCredentials(credentialsRef.current, current, dependenciesRef.current.now());
+        if (!credentialCheck.credentials) {
+          await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
+          return;
+        }
         const payload = recoveryPayload(
           "apply",
-          credentialsRef.current ? credentialsForJob(credentialsRef.current, current) : null,
+          credentialCheck.credentials,
           current,
           item,
           prior,
         );
-        if (!payload.credentials) return;
         const recovering = reduceReplacementJob(current, {
           type: "recovery/item-started", itemKey, at: dependenciesRef.current.now(),
         });
@@ -666,11 +758,11 @@ export function useContentReplacementJob(
         if (parsed.stop) return;
       }
     });
-  }, [persist, persistResponse, request, runExclusive]);
+  }, [persist, persistResponse, request, runExclusive, setBusy]);
 
   const deleteRecoverySnapshots = useCallback(async (): Promise<void> => {
     const current = jobRef.current;
-    if (!current) return;
+    if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
     const next = reduceReplacementJob(current, {
       type: "recovery/delete-snapshots",
       at: dependenciesRef.current.now(),
@@ -682,12 +774,18 @@ export function useContentReplacementJob(
     job,
     busy,
     storageError,
+    operationError: job?.operationError?.message ?? null,
     createJob,
     startScan,
     pause,
     resume: async () => {
       const current = jobRef.current;
       if (current?.stage === "apply") await runApplyRef.current();
+      else if (current?.activeOperation?.kind === "stale-rescan") await runStaleRescanRef.current();
+      else if (current?.activeOperation?.kind === "recovery-preview") await runRecoveryPreviewRef.current();
+      else if (current?.activeOperation?.kind === "recovery-apply") {
+        await startRecovery(current.activeOperation.remainingItemKeys);
+      }
       else await resume();
     },
     cancel,
@@ -753,25 +851,46 @@ function previewMatchesGeneration(item: PersistedContentReplacementItem): boolea
 
 type ParsedScanResponse =
   | { ok: true; result: InventorySliceResult | DetailBatchResult; throttleNotices: ThrottleNotice[] }
-  | { ok: false; message: string };
+  | { ok: false; message: string; invalid?: boolean; retryAfterSeconds?: number };
 
-async function parseScanResponse(response: Response, expected: "inventory" | "details"): Promise<ParsedScanResponse> {
+type ScanExpectation =
+  | { kind: "inventory"; cursor: InventoryCursor; job: PersistedContentReplacementJob }
+  | { kind: "details"; refs: ReplacementItemRef[]; job: PersistedContentReplacementJob };
+
+async function parseScanResponse(response: Response, expected: ScanExpectation): Promise<ParsedScanResponse> {
   const body = await safeJson(response);
-  if (!isRecord(body) || !hasOnlyKeys(body, response.ok ? ["ok", "result", "throttleNotices"] : ["ok", "error"])) {
-    return { ok: false, message: INVALID_RESPONSE_MESSAGE };
+  if (!isRecord(body)) return { ok: false, message: INVALID_RESPONSE_MESSAGE, invalid: true };
+  if (response.status === 429) {
+    const error = body.error;
+    if (body.ok === false && hasOnlyKeys(body, ["ok", "error"]) && isRecord(error) &&
+      hasOnlyKeys(error, ["code", "message", "retryAfterSeconds"]) && error.code === "rate_limited" &&
+      error.message === "Content scan is temporarily rate limited." && isCount(error.retryAfterSeconds) &&
+      error.retryAfterSeconds <= MAX_STACK_API_V3_BACKOFF_NOTICE_SECONDS) {
+      return { ok: false, message: error.message, retryAfterSeconds: error.retryAfterSeconds };
+    }
+    return { ok: false, message: INVALID_RESPONSE_MESSAGE, invalid: true };
+  }
+  if (!hasOnlyKeys(body, response.ok ? ["ok", "result", "throttleNotices"] : ["ok", "error"])) {
+    return { ok: false, message: INVALID_RESPONSE_MESSAGE, invalid: true };
   }
   if (body.ok !== true || !response.ok) return { ok: false, message: safeHttpMessage(response.status) };
   const notices = parseThrottleNotices(body.throttleNotices);
-  if (!notices || !isRecord(body.result)) return { ok: false, message: INVALID_RESPONSE_MESSAGE };
-  if (expected === "inventory") {
-    const result = parseInventoryResult(body.result);
-    return result ? { ok: true, result, throttleNotices: notices } : { ok: false, message: INVALID_RESPONSE_MESSAGE };
+  if (!notices || !isRecord(body.result)) return { ok: false, message: INVALID_RESPONSE_MESSAGE, invalid: true };
+  if (expected.kind === "inventory") {
+    const result = parseInventoryResult(body.result, expected.cursor, expected.job.configuration);
+    return result ? { ok: true, result, throttleNotices: notices } :
+      { ok: false, message: INVALID_RESPONSE_MESSAGE, invalid: true };
   }
-  const result = parseDetailResult(body.result);
-  return result ? { ok: true, result, throttleNotices: notices } : { ok: false, message: INVALID_RESPONSE_MESSAGE };
+  const result = await parseDetailResult(body.result, expected.refs, expected.job.configuration);
+  return result ? { ok: true, result, throttleNotices: notices } :
+    { ok: false, message: INVALID_RESPONSE_MESSAGE, invalid: true };
 }
 
-function parseInventoryResult(value: Record<string, unknown>): InventorySliceResult | null {
+function parseInventoryResult(
+  value: Record<string, unknown>,
+  requested: InventoryCursor,
+  configuration: ReplacementConfiguration,
+): InventorySliceResult | null {
   if (!hasOnlyKeys(value, ["candidates", "answerCursors", "nextCursor", "inspectedCount", "pageKind"]) ||
     !Array.isArray(value.candidates) || !Array.isArray(value.answerCursors) ||
     !isCount(value.inspectedCount) ||
@@ -781,22 +900,55 @@ function parseInventoryResult(value: Record<string, unknown>): InventorySliceRes
   const nextCursor = value.nextCursor === null ? null : parseCursor(value.nextCursor);
   if (candidates.some((item) => !item) || answerCursors.some((item) => item?.kind !== "answers") ||
     (value.nextCursor !== null && !nextCursor)) return null;
+  const refs = candidates as ReplacementItemRef[];
+  const answerPages = answerCursors as Extract<InventoryCursor, { kind: "answers" }>[];
+  const candidateKeys = refs.map(replacementItemKey);
+  const answerKeys = answerPages.map((cursor) => `${cursor.questionId}:${cursor.page}`);
+  if (refs.length > 100_000 || answerPages.length > 100_000 || refs.length > value.inspectedCount ||
+    answerPages.length > value.inspectedCount || value.pageKind !== requested.kind ||
+    new Set(candidateKeys).size !== candidateKeys.length ||
+    new Set(answerKeys).size !== answerKeys.length || refs.some((ref) => !refMatchesInventory(ref, requested, configuration)) ||
+    answerPages.some((cursor) => requested.kind !== "questions" || cursor.page !== 1) ||
+    (nextCursor && !isContinuousCursor(requested, nextCursor))) return null;
   return {
-    candidates: candidates as ReplacementItemRef[],
-    answerCursors: answerCursors as Extract<InventoryCursor, { kind: "answers" }>[],
+    candidates: refs,
+    answerCursors: answerPages,
     nextCursor,
     inspectedCount: value.inspectedCount,
     pageKind: value.pageKind,
   };
 }
 
-function parseDetailResult(value: Record<string, unknown>): DetailBatchResult | null {
+async function parseDetailResult(
+  value: Record<string, unknown>,
+  requestedRefs: readonly ReplacementItemRef[],
+  configuration: ReplacementConfiguration,
+): Promise<DetailBatchResult | null> {
   if (!hasOnlyKeys(value, ["proposals", "inspectedCount", "protectedOccurrenceCount"]) ||
     !Array.isArray(value.proposals) || !isCount(value.inspectedCount) ||
     !isCount(value.protectedOccurrenceCount)) return null;
-  if (value.proposals.some((proposal) => !isRecord(proposal))) return null;
+  if (value.inspectedCount !== requestedRefs.length || value.proposals.length > requestedRefs.length ||
+    value.proposals.some((proposal) => !isRecord(proposal))) return null;
+  const requested = new Set(requestedRefs.map(replacementItemKey));
+  const output: ReplacementProposal[] = [];
+  const seen = new Set<string>();
+  try {
+    for (const candidate of value.proposals) {
+      const proposal = candidate as ReplacementProposal;
+      const key = replacementItemKey(proposal.before.ref);
+      if (!requested.has(key) || seen.has(key)) return null;
+      const canonical = await buildReplacementProposal(proposal.before, configuration);
+      if (!canonical || stableSerialize(canonical) !== stableSerialize(proposal)) return null;
+      seen.add(key);
+      output.push(proposal);
+    }
+  } catch {
+    return null;
+  }
+  const proposalProtected = output.reduce((count, proposal) => count + proposal.protectedOccurrences.length, 0);
+  if (value.protectedOccurrenceCount < proposalProtected) return null;
   return {
-    proposals: value.proposals as ReplacementProposal[],
+    proposals: output,
     inspectedCount: value.inspectedCount,
     protectedOccurrenceCount: value.protectedOccurrenceCount,
   };
@@ -1011,11 +1163,81 @@ function normalizeOrigin(value: string): string {
   }
 }
 
-function credentialsForJob(
-  credentials: SessionCredentials,
+function compatibleCredentials(
+  value: SessionCredentials | null,
   job: Pick<PersistedContentReplacementJob, "baseUrl">,
-): SessionCredentials {
-  return { ...credentials, baseUrl: job.baseUrl };
+  at: string,
+): { credentials: SessionCredentials | null; message: string } {
+  const credentials = validateSessionCredentials(value);
+  if (!credentials || credentials.instanceType !== "enterprise" ||
+    (!credentials.accessToken && !credentials.pat) ||
+    (credentials.accessTokenExpiresAt !== undefined &&
+      (!Number.isFinite(Date.parse(credentials.accessTokenExpiresAt)) ||
+        Date.parse(credentials.accessTokenExpiresAt) <= Date.parse(at)))) {
+    return { credentials: null, message: "Reconnect valid Stack Enterprise credentials." };
+  }
+  const origin = normalizeOrigin(credentials.baseUrl);
+  if (!isOriginOnlyInstanceUrl(origin) || origin !== job.baseUrl) {
+    return { credentials: null, message: "The connected Stack Enterprise origin does not match this job." };
+  }
+  return { credentials: { ...credentials, baseUrl: origin }, message: "" };
+}
+
+function credentialInterruption(
+  job: PersistedContentReplacementJob,
+  message: string,
+  at: string,
+): PersistedContentReplacementJob {
+  return reduceReplacementJob(job, {
+    type: "run/credential-interrupted",
+    failure: { category: "authorization", retryable: true, message },
+    at,
+  });
+}
+
+function needsInterruptionCheckpoint(job: PersistedContentReplacementJob | null): boolean {
+  return !!job && (job.status === "running" || Object.values(job.proposals)
+    .some((item) => item.status === "applying" || item.status === "recovering"));
+}
+
+async function honorPersistedDeadline(
+  job: PersistedContentReplacementJob,
+  token: number,
+  persist: (job: PersistedContentReplacementJob, token?: number) => Promise<boolean>,
+  abortRef: React.MutableRefObject<AbortController | null>,
+  setBusy: (next: boolean) => void,
+  dependenciesRef: React.MutableRefObject<ContentReplacementJobDependencies>,
+): Promise<boolean> {
+  if (!job.nextRetryAt) return true;
+  const controller = new AbortController();
+  abortRef.current = controller;
+  setBusy(true);
+  try {
+    await dependenciesRef.current.waitUntil(job.nextRetryAt, controller.signal);
+  } catch {
+    return false;
+  } finally {
+    if (abortRef.current === controller) abortRef.current = null;
+    setBusy(false);
+  }
+  return persist(reduceReplacementJob(job, {
+    type: "run/clear-retry-at", at: dependenciesRef.current.now(),
+  }), token);
+}
+
+function isContinuousCursor(current: InventoryCursor, next: InventoryCursor): boolean {
+  if (current.kind !== next.kind || next.page !== current.page + 1) return false;
+  return current.kind !== "answers" || (next.kind === "answers" && next.questionId === current.questionId);
+}
+
+function refMatchesInventory(
+  ref: ReplacementItemRef,
+  cursor: InventoryCursor,
+  configuration: ReplacementConfiguration,
+): boolean {
+  if (cursor.kind === "questions") return ref.kind === "question" && configuration.contentTypes.questions;
+  if (cursor.kind === "articles") return ref.kind === "article" && configuration.contentTypes.articles;
+  return ref.kind === "answer" && ref.questionId === cursor.questionId && configuration.contentTypes.answers;
 }
 
 function orderedItemKeys(

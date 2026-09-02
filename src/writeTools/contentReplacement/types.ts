@@ -234,12 +234,19 @@ export type PersistedContentReplacementResult =
   | {
       kind: "stale" | "excluded";
       completedAt: string;
+    }
+  | {
+      kind: "verification-failed";
+      expectedRequestChecksum: string;
+      observedRequestChecksum: string;
+      completedAt: string;
     };
 
 export type PersistedContentReplacementRecoveryResult =
   | {
-      kind: "recovered" | "conflict";
+      kind: "recovered" | "conflict" | "verification-failed";
       observedRequestChecksum: string;
+      expectedRequestChecksum?: string;
       sourceAttemptCount: number;
       sourceApplyCompletedAt: string;
       completedAt: string;
@@ -276,6 +283,23 @@ export interface PersistedContentReplacementItem {
   recovery?: PersistedContentReplacementRecovery;
 }
 
+export type PersistedContentReplacementActiveOperation =
+  | {
+      kind: "stale-rescan";
+      requestedItemKeys: string[];
+      remainingItemKeys: string[];
+      generation: string;
+      proposals: Record<string, ReplacementProposal>;
+      inspectedCount: number;
+      protectedOccurrenceCount: number;
+    }
+  | {
+      kind: "recovery-preview" | "recovery-apply";
+      requestedItemKeys: string[];
+      remainingItemKeys: string[];
+      generation: string;
+    };
+
 export interface PersistedContentReplacementJob {
   schemaVersion: 1;
   id: string;
@@ -290,6 +314,8 @@ export interface PersistedContentReplacementJob {
   progress: PersistedContentReplacementProgress;
   proposals: Record<string, PersistedContentReplacementItem>;
   recoverySnapshotStatus: "none" | "preparing" | "ready" | "failed";
+  activeOperation?: PersistedContentReplacementActiveOperation;
+  operationError?: PersistedContentReplacementFailure;
   nextRetryAt?: string;
   failure?: PersistedContentReplacementFailure;
   createdAt: string;

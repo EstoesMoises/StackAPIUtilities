@@ -15,6 +15,7 @@ import type {
   ArticlePermissionsRequest,
   InventoryCursor,
   PersistedContentReplacementFailure,
+  PersistedContentReplacementActiveOperation,
   PersistedContentReplacementItem,
   PersistedContentReplacementRecovery,
   PersistedContentReplacementRecoveryPreview,
@@ -49,7 +50,7 @@ const MAX_LIST_ITEMS = 10_000;
 const JOB_KEYS = [
   "schemaVersion", "id", "fingerprint", "baseUrl", "target", "configuration",
   "stage", "status", "inventoryQueue", "detailQueue", "progress", "proposals",
-  "recoverySnapshotStatus", "nextRetryAt", "failure", "createdAt", "updatedAt",
+  "recoverySnapshotStatus", "activeOperation", "operationError", "nextRetryAt", "failure", "createdAt", "updatedAt",
 ] as const;
 const PROGRESS_KEYS = [
   "questionPages", "answerPages", "articlePages", "inventoryItems", "detailsInspected",
@@ -128,6 +129,13 @@ async function parseContentReplacementJob(value: unknown): Promise<PersistedCont
           .map((item) => validateCanonicalItem(item, normalized.configuration, normalized.updatedAt)),
       );
     }
+    if (normalized.activeOperation?.kind === "stale-rescan") {
+      for (const [key, proposal] of Object.entries(normalized.activeOperation.proposals)) {
+        const canonical = await buildReplacementProposal(proposal.before, normalized.configuration);
+        if (!canonical || canonicalItemKey(proposal.before.ref) !== key ||
+          stableSerialize(canonical) !== stableSerialize(proposal)) throw corruptJob();
+      }
+    }
     return normalized;
   } catch {
     throw corruptJob();
@@ -173,7 +181,7 @@ async function validateCanonicalItem(
 
 function normalizeContentReplacementJob(value: unknown): PersistedContentReplacementJob {
   const safeValue = cloneSafeDataGraph(value);
-  const record = exactObject(safeValue, JOB_KEYS, ["nextRetryAt", "failure"]);
+  const record = exactObject(safeValue, JOB_KEYS, ["activeOperation", "operationError", "nextRetryAt", "failure"]);
   const configuration = validateConfiguration(record.configuration);
   const baseUrl = normalizeEnterpriseBaseUrl(record.baseUrl);
   const target = exactObject(record.target, ["kind"]);
@@ -207,6 +215,10 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   }
   const nextRetryAt = record.nextRetryAt === undefined ? undefined : timestamp(record.nextRetryAt);
   const failure = record.failure === undefined ? undefined : parseFailure(record.failure);
+  const operationError = record.operationError === undefined ? undefined : parseFailure(record.operationError);
+  const activeOperation = record.activeOperation === undefined
+    ? undefined
+    : parseActiveOperation(record.activeOperation, normalizedProposals, configuredRuleIds);
   const normalized: PersistedContentReplacementJob = {
     schemaVersion: 1,
     id: record.id,
@@ -221,6 +233,8 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     progress,
     proposals: normalizedProposals,
     recoverySnapshotStatus: record.recoverySnapshotStatus,
+    ...(activeOperation === undefined ? {} : { activeOperation }),
+    ...(operationError === undefined ? {} : { operationError }),
     ...(nextRetryAt === undefined ? {} : { nextRetryAt }),
     ...(failure === undefined ? {} : { failure }),
     createdAt,
@@ -259,6 +273,9 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
   ) throw corruptJob();
 
   if ((job.status === "failed") !== (job.failure !== undefined)) throw corruptJob();
+  if (job.operationError && (job.status !== "paused" || !isWithinJobTime(job.operationError.occurredAt, job))) {
+    throw corruptJob();
+  }
   if (job.failure && !isWithinJobTime(job.failure.occurredAt, job)) throw corruptJob();
   for (const item of items) {
     assertItemInvariants(item, job.recoverySnapshotStatus);
@@ -267,6 +284,23 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
       throw corruptJob();
     }
     if (item.failure && !isWithinJobTime(item.failure.occurredAt, job)) throw corruptJob();
+  }
+  if (job.activeOperation) {
+    if (!isWithinJobTime(job.activeOperation.generation, job) ||
+      new Set(job.activeOperation.requestedItemKeys).size !== job.activeOperation.requestedItemKeys.length ||
+      new Set(job.activeOperation.remainingItemKeys).size !== job.activeOperation.remainingItemKeys.length ||
+      job.activeOperation.remainingItemKeys.some((key) => !job.activeOperation!.requestedItemKeys.includes(key))) {
+      throw corruptJob();
+    }
+    if (job.activeOperation.kind === "recovery-preview" &&
+      (job.stage !== "recovery" || job.activeOperation.remainingItemKeys.some((key) => !hasSuccessfulApplyEvidence(job.proposals[key])))) {
+      throw corruptJob();
+    }
+    if (job.activeOperation.kind === "recovery-apply" &&
+      (job.stage !== "recovery" || job.activeOperation.remainingItemKeys.some((key) => {
+        const item = job.proposals[key];
+        return item.status !== "ready-to-recover" && item.status !== "recovering";
+      }))) throw corruptJob();
   }
   assertStageInvariants(job, items);
   if (
@@ -295,7 +329,7 @@ function assertStageInvariants(
     scan: new Set(["running", "paused", "completed", "failed", "cancelled"]),
     review: new Set(["completed", "paused", "cancelled"]),
     apply: new Set(["running", "paused", "completed", "failed", "cancelled"]),
-    results: new Set(["completed", "failed"]),
+    results: new Set(["running", "paused", "completed", "failed"]),
     recovery: new Set(["running", "paused", "completed", "failed", "cancelled"]),
   };
   const allowedStatuses: Record<
@@ -313,7 +347,17 @@ function assertStageInvariants(
     ]),
   };
   if (!allowedRootStatuses[job.stage].has(job.status)) throw corruptJob();
+  if (job.stage === "results" && (job.status === "running" || job.status === "paused") &&
+    job.activeOperation?.kind !== "stale-rescan") throw corruptJob();
   if (items.some((item) => !allowedStatuses[job.stage].has(item.status))) throw corruptJob();
+  if (job.activeOperation?.kind === "stale-rescan") {
+    if (job.stage !== "results" || job.status === "completed") throw corruptJob();
+    const requested = new Set(job.activeOperation.requestedItemKeys);
+    if (requested.size !== job.activeOperation.requestedItemKeys.length ||
+      new Set(job.activeOperation.remainingItemKeys).size !== job.activeOperation.remainingItemKeys.length ||
+      job.activeOperation.remainingItemKeys.some((key) => !requested.has(key) || job.proposals[key]?.status !== "stale") ||
+      Object.keys(job.activeOperation.proposals).some((key) => !requested.has(key))) throw corruptJob();
+  }
   if (job.stage !== "scan" && (job.inventoryQueue.length > 0 || job.detailQueue.length > 0)) {
     throw corruptJob();
   }
@@ -390,12 +434,16 @@ function assertItemInvariants(
     return;
   }
   if (status === "failed") {
+    if (result?.kind === "verification-failed" &&
+      (result.expectedRequestChecksum !== item.proposal.proposedRequestChecksum ||
+        result.observedRequestChecksum === result.expectedRequestChecksum ||
+        failure?.category !== "validation" || failure.retryable)) throw corruptJob();
     if (!recovery && snapshotStatus === "none") {
-      if (item.attemptCount < 1 || result || !failure) throw corruptJob();
+      if (item.attemptCount < 1 || (result && result.kind !== "verification-failed") || !failure) throw corruptJob();
       return;
     }
     if (
-      item.attemptCount < 1 || result || !failure || !isCompleteRecoverySnapshot(recovery) ||
+      item.attemptCount < 1 || (result && result.kind !== "verification-failed") || !failure || !isCompleteRecoverySnapshot(recovery) ||
       recovery.preview || recovery.result || recovery.observedPostApplyChecksum ||
       (recovery.status !== "ready" && recovery.status !== "failed")
     ) {
@@ -431,6 +479,7 @@ function assertItemInvariants(
       !hasSuccessfulApplyEvidence(item) || failure || !recovery || recovery.preview ||
       recovery.status !== "applied" || recovery.result?.kind !== "recovered" ||
       !matchesRecoveryGeneration(item, recovery.result) ||
+      recovery.result.observedRequestChecksum !== recovery.scannedRequestChecksum ||
       Date.parse(result?.completedAt ?? "") > Date.parse(recovery.result.completedAt)
     ) throw corruptJob();
     return;
@@ -438,12 +487,16 @@ function assertItemInvariants(
   if (status === "recovery-conflict") {
     if (
       !hasSuccessfulApplyEvidence(item) || failure || !recovery || recovery.preview ||
-      recovery.status !== "conflict" || recovery.result?.kind !== "conflict" ||
+      recovery.status !== "conflict" ||
+      (recovery.result?.kind !== "conflict" && recovery.result?.kind !== "verification-failed") ||
       !matchesRecoveryGeneration(item, recovery.result) ||
       recovery.result.observedRequestChecksum === recovery.scannedRequestChecksum ||
       recovery.result.observedRequestChecksum === recovery.observedPostApplyChecksum ||
       Date.parse(result?.completedAt ?? "") > Date.parse(recovery.result.completedAt)
     ) throw corruptJob();
+    if (recovery.result.kind === "verification-failed" &&
+      (recovery.result.expectedRequestChecksum !== recovery.scannedRequestChecksum ||
+        recovery.result.observedRequestChecksum === recovery.result.expectedRequestChecksum)) throw corruptJob();
     return;
   }
 
@@ -818,13 +871,17 @@ function parseRecovery(
 }
 
 function parseRecoveryResult(value: unknown): PersistedContentReplacementRecoveryResult {
-  const record = exactObject(value, [
-    "kind", "observedRequestChecksum", "sourceAttemptCount", "sourceApplyCompletedAt", "completedAt",
-  ]);
-  if (record.kind !== "recovered" && record.kind !== "conflict") throw corruptJob();
+  const raw = plainRecord(value);
+  const verification = raw.kind === "verification-failed";
+  const record = exactObject(raw, [
+    "kind", "observedRequestChecksum", "expectedRequestChecksum", "sourceAttemptCount", "sourceApplyCompletedAt", "completedAt",
+  ], verification ? [] : ["expectedRequestChecksum"]);
+  if (record.kind !== "recovered" && record.kind !== "conflict" && !verification) throw corruptJob();
+  const kind = verification ? "verification-failed" : record.kind as "recovered" | "conflict";
   return {
-    kind: record.kind,
+    kind,
     observedRequestChecksum: digest(record.observedRequestChecksum),
+    ...(verification ? { expectedRequestChecksum: digest(record.expectedRequestChecksum) } : {}),
     sourceAttemptCount: count(record.sourceAttemptCount),
     sourceApplyCompletedAt: timestamp(record.sourceApplyCompletedAt),
     completedAt: timestamp(record.completedAt),
@@ -869,7 +926,48 @@ function parseResult(value: unknown): PersistedContentReplacementResult {
     exactObject(record, ["kind", "completedAt"]);
     return { kind: record.kind, completedAt: timestamp(record.completedAt) };
   }
+  if (record.kind === "verification-failed") {
+    exactObject(record, ["kind", "expectedRequestChecksum", "observedRequestChecksum", "completedAt"]);
+    return {
+      kind: "verification-failed",
+      expectedRequestChecksum: digest(record.expectedRequestChecksum),
+      observedRequestChecksum: digest(record.observedRequestChecksum),
+      completedAt: timestamp(record.completedAt),
+    };
+  }
   throw corruptJob();
+}
+
+function parseActiveOperation(
+  value: unknown,
+  proposals: PersistedContentReplacementJob["proposals"],
+  configuredRuleIds: ReadonlySet<string>,
+): PersistedContentReplacementActiveOperation {
+  const raw = plainRecord(value);
+  const common = ["kind", "requestedItemKeys", "remainingItemKeys", "generation"] as const;
+  const requestedItemKeys = stringList(raw.requestedItemKeys, MAX_QUEUE_ITEMS, 200);
+  const remainingItemKeys = stringList(raw.remainingItemKeys, MAX_QUEUE_ITEMS, 200);
+  if (requestedItemKeys.some((key) => !isCanonicalItemKey(key) || !proposals[key]) ||
+    remainingItemKeys.some((key) => !isCanonicalItemKey(key) || !proposals[key])) throw corruptJob();
+  const generation = timestamp(raw.generation);
+  if (raw.kind === "recovery-preview" || raw.kind === "recovery-apply") {
+    exactObject(raw, common);
+    return { kind: raw.kind, requestedItemKeys, remainingItemKeys, generation };
+  }
+  if (raw.kind !== "stale-rescan") throw corruptJob();
+  exactObject(raw, [...common, "proposals", "inspectedCount", "protectedOccurrenceCount"]);
+  const candidateMap = exactDynamicMap(raw.proposals);
+  const parsed: Record<string, ReplacementProposal> = {};
+  for (const [key, candidate] of Object.entries(candidateMap)) {
+    if (!isCanonicalItemKey(key)) throw corruptJob();
+    parsed[key] = parseProposal(candidate, key, configuredRuleIds);
+  }
+  return {
+    kind: "stale-rescan", requestedItemKeys, remainingItemKeys, generation,
+    proposals: parsed,
+    inspectedCount: count(raw.inspectedCount),
+    protectedOccurrenceCount: count(raw.protectedOccurrenceCount),
+  };
 }
 
 function parseFailure(value: unknown): PersistedContentReplacementFailure {

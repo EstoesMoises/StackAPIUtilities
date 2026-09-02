@@ -312,7 +312,7 @@ describe("browserContentReplacementStorage", () => {
     }
   });
 
-  it("persists a successful recovery with the API's divergent post-PUT readback checksum", async () => {
+  it("rejects a successful recovery claim with divergent post-PUT readback evidence", async () => {
     installFakeIndexedDB();
     const job = createRecoveryTerminalJob("recovered");
     const item = job.proposals["question:42"];
@@ -326,15 +326,48 @@ describe("browserContentReplacementStorage", () => {
     ) throw new Error("Expected a divergent observed readback checksum fixture.");
     item.recovery!.result!.observedRequestChecksum = observedReadbackChecksum;
 
-    await saveContentReplacementJob(job);
-    const loaded = await loadContentReplacementJob(job.id);
+    await expect(saveContentReplacementJob(job)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
 
-    expect(loaded).toEqual(job);
-    expect(loaded!.proposals["question:42"].recovery).toMatchObject({
-      scannedRequestChecksum: item.proposal.scannedRequestChecksum,
-      observedPostApplyChecksum: item.proposal.proposedRequestChecksum,
-      result: { kind: "recovered", observedRequestChecksum: observedReadbackChecksum },
-    });
+  it("persists divergent recovery readback as explicit verification evidence", async () => {
+    installFakeIndexedDB();
+    const job = createRecoveryTerminalJob("conflict");
+    const recovery = job.proposals["question:42"].recovery!;
+    recovery.result = {
+      ...recovery.result!,
+      kind: "verification-failed",
+      expectedRequestChecksum: recovery.scannedRequestChecksum,
+    };
+
+    await saveContentReplacementJob(job);
+
+    await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
+  });
+
+  it("persists divergent apply readback as explicit nonretryable verification evidence", async () => {
+    installFakeIndexedDB();
+    const job = createApplyReadyJob();
+    const item = job.proposals["question:42"];
+    const observed = "f".repeat(64);
+    job.stage = "results";
+    job.status = "completed";
+    job.progress.applyCompleted = 1;
+    item.status = "failed";
+    item.attemptCount = 1;
+    item.failure = {
+      category: "validation", message: "Apply evidence did not match the reviewed proposal.",
+      retryable: false, occurredAt: job.updatedAt,
+    };
+    item.result = {
+      kind: "verification-failed", expectedRequestChecksum: item.proposal.proposedRequestChecksum,
+      observedRequestChecksum: observed, completedAt: job.updatedAt,
+    };
+
+    await saveContentReplacementJob(job);
+
+    await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
   });
 
   it.each([

@@ -316,6 +316,62 @@ describe("replacement job state", () => {
     });
   });
 
+  it("retains durable retry deadlines and records a resumable credential interruption", () => {
+    let job: PersistedContentReplacementJob = { ...createJob(), status: "running", nextRetryAt: LATER };
+    job = reduceReplacementJob(job, {
+      type: "run/credential-interrupted",
+      failure: failure("authorization", true),
+      at: AT,
+    });
+
+    expect(job).toMatchObject({
+      status: "paused",
+      nextRetryAt: LATER,
+      operationError: { category: "authorization", occurredAt: AT },
+    });
+  });
+
+  it("persists a multi-batch stale rescan until every requested ref drains", () => {
+    const originals = Array.from({ length: 11 }, (_, index) => proposal({ kind: "question", questionId: index + 1 }));
+    const refs = originals.map((candidate) => candidate.before.ref);
+    let job = createJob();
+    job = { ...job, inventoryQueue: [], detailQueue: refs };
+    for (let offset = 0; offset < refs.length; offset += 10) {
+      job = reduceReplacementJob(job, {
+        type: "scan/details-succeeded", refs: refs.slice(offset, offset + 10),
+        result: {
+          proposals: originals.slice(offset, offset + 10),
+          inspectedCount: refs.slice(offset, offset + 10).length,
+          protectedOccurrenceCount: 0,
+        }, at: AT,
+      });
+    }
+    job = reduceReplacementJob(job, { type: "scan/queues-drained", at: AT });
+    job = reduceReplacementJob(job, { type: "apply/prepare", at: AT });
+    job = reduceReplacementJob(job, { type: "apply/start", at: AT });
+    for (let index = 0; index < originals.length; index += 1) {
+      const key = `question:${index + 1}`;
+      job = reduceReplacementJob(job, { type: "apply/item-started", itemKey: key, at: AT });
+      job = reduceReplacementJob(job, {
+        type: "apply/item-finished", itemKey: key,
+        result: { status: "stale", observedRequestChecksum: DIGEST_C }, at: AT,
+      });
+    }
+    const keys = originals.map((_, index) => `question:${index + 1}`);
+    job = reduceReplacementJob(job, { type: "scan/stale-rescan-started", requestedItemKeys: keys, at: LATER });
+    job = reduceReplacementJob(job, {
+      type: "scan/stale-details-succeeded", requestedItemKeys: keys.slice(0, 10),
+      result: { proposals: originals.slice(0, 10), inspectedCount: 10, protectedOccurrenceCount: 0 }, at: LATER,
+    });
+
+    expect(job).toMatchObject({
+      stage: "results",
+      status: "running",
+      activeOperation: { kind: "stale-rescan", remainingItemKeys: ["question:11"] },
+    });
+    expect(job.proposals["question:1"].status).toBe("stale");
+  });
+
   it("excludes items and derives exact selection summaries", () => {
     const first = proposal({ kind: "question", questionId: 1 });
     const second = proposal({ kind: "answer", questionId: 1, answerId: 2 });
@@ -435,7 +491,15 @@ describe("replacement job state", () => {
       result: { status: "stale", observedRequestChecksum: DIGEST_C },
       at: LATER,
     });
+    job = reduceReplacementJob(job, { type: "apply/item-started", itemKey: "question:2", at: AT });
+    job = reduceReplacementJob(job, {
+      type: "apply/item-finished", itemKey: "question:2",
+      result: { status: "updated", observedRequestChecksum: DIGEST_B }, at: LATER,
+    });
     const refreshed = { ...proposal(staleRef), proposalFingerprint: DIGEST_D };
+    job = reduceReplacementJob(job, {
+      type: "scan/stale-rescan-started", requestedItemKeys: ["question:1"], at: LATER,
+    });
     const next = reduceReplacementJob(job, {
       type: "scan/stale-details-succeeded",
       requestedItemKeys: ["question:1"],
@@ -453,6 +517,9 @@ describe("replacement job state", () => {
     job = reduceReplacementJob(job, {
       type: "apply/item-finished", itemKey: "question:1",
       result: { status: "stale", observedRequestChecksum: DIGEST_C }, at: LATER,
+    });
+    job = reduceReplacementJob(job, {
+      type: "scan/stale-rescan-started", requestedItemKeys: ["question:1"], at: LATER,
     });
 
     const next = reduceReplacementJob(job, {
@@ -474,6 +541,9 @@ describe("replacement job state", () => {
     job = reduceReplacementJob(job, {
       type: "apply/item-finished", itemKey: "question:1",
       result: { status: "stale", observedRequestChecksum: DIGEST_C }, at: LATER,
+    });
+    job = reduceReplacementJob(job, {
+      type: "scan/stale-rescan-started", requestedItemKeys: ["question:1"], at: LATER,
     });
 
     const next = reduceReplacementJob(job, {
@@ -533,6 +603,67 @@ describe("replacement job state", () => {
     expect(summarizeReplacementJob(job).results).toMatchObject({
       updated: 1,
       recoveryConflict: 1,
+    });
+  });
+
+  it("persists divergent post-write checksums as verification evidence, never success", () => {
+    const key = "question:1";
+    let job = preparedJob(proposal({ kind: "question", questionId: 1 }));
+    job = reduceReplacementJob(job, { type: "apply/start", at: AT });
+    job = reduceReplacementJob(job, { type: "apply/item-started", itemKey: key, at: AT });
+    job = reduceReplacementJob(job, {
+      type: "apply/item-finished", itemKey: key,
+      result: { status: "updated", observedRequestChecksum: DIGEST_C }, at: LATER,
+    });
+
+    expect(job.proposals[key]).toMatchObject({
+      status: "failed",
+      result: {
+        kind: "verification-failed",
+        expectedRequestChecksum: DIGEST_B,
+        observedRequestChecksum: DIGEST_C,
+      },
+      failure: { category: "validation", retryable: false },
+    });
+    expect(job.proposals[key].recovery?.observedPostApplyChecksum).toBeUndefined();
+  });
+
+  it("retains successful apply evidence when recovery readback verification diverges", () => {
+    const key = "question:1";
+    let job = preparedJob(proposal({ kind: "question", questionId: 1 }));
+    job = reduceReplacementJob(job, { type: "apply/start", at: AT });
+    job = reduceReplacementJob(job, { type: "apply/item-started", itemKey: key, at: AT });
+    job = reduceReplacementJob(job, {
+      type: "apply/item-finished", itemKey: key,
+      result: { status: "updated", observedRequestChecksum: DIGEST_B }, at: AT,
+    });
+    job = reduceReplacementJob(job, {
+      type: "recovery/preview-finished", itemKey: key,
+      result: {
+        status: "recoverable",
+        currentRequestModel: { kind: "question", ref: { kind: "question", questionId: 1 }, request: { title: "New title", body: "body", tags: ["tag"] } },
+        observedRequestChecksum: DIGEST_B,
+      }, at: LATER,
+    });
+    job = reduceReplacementJob(job, { type: "recovery/start", itemKeys: [key], at: LATER });
+    job = reduceReplacementJob(job, { type: "recovery/item-started", itemKey: key, at: LATER });
+    job = reduceReplacementJob(job, {
+      type: "recovery/item-finished", itemKey: key,
+      result: { status: "recovered", observedRequestChecksum: DIGEST_D }, at: LATER,
+    });
+
+    expect(job.proposals[key]).toMatchObject({
+      status: "recovery-conflict",
+      result: { kind: "applied", observedRequestChecksum: DIGEST_B },
+      recovery: {
+        status: "conflict",
+        observedPostApplyChecksum: DIGEST_B,
+        result: {
+          kind: "verification-failed",
+          expectedRequestChecksum: DIGEST_A,
+          observedRequestChecksum: DIGEST_D,
+        },
+      },
     });
   });
 

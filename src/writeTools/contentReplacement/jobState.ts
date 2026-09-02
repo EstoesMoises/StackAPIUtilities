@@ -37,10 +37,22 @@ type RecoveryApplyResponseResult =
 
 export type ReplacementJobEvent =
   | { type: "run/resume" | "run/pause" | "run/cancel"; at: string }
+  | { type: "run/interrupted"; at: string }
+  | { type: "run/credential-interrupted"; failure: FailureInput; at: string }
   | { type: "scan/inventory-succeeded"; cursor: InventoryCursor; result: InventorySliceResult; at: string }
   | { type: "scan/details-succeeded"; refs: ReplacementItemRef[]; result: DetailBatchResult; at: string }
   | { type: "scan/queues-drained"; at: string }
   | { type: "scan/failed"; failure: FailureInput; at: string }
+  | {
+      type: "recovery/preview-run-started";
+      itemKeys: string[];
+      at: string;
+    }
+  | {
+      type: "scan/stale-rescan-started";
+      requestedItemKeys: string[];
+      at: string;
+    }
   | {
       type: "scan/stale-details-succeeded";
       requestedItemKeys: string[];
@@ -159,12 +171,25 @@ export function reduceReplacementJob(
   switch (event.type) {
     case "run/resume":
       if (job.status !== "paused" && job.status !== "failed") return job;
-      return touch({ ...job, status: "running", failure: undefined }, event.at);
+      return touch({ ...job, status: "running", failure: undefined, operationError: undefined }, event.at);
+    case "run/interrupted":
+      if (job.status !== "running" &&
+        !Object.values(job.proposals).some((item) => item.status === "applying" || item.status === "recovering")) {
+        return job;
+      }
+      return pauseActiveWork(job, event.at);
+    case "run/credential-interrupted":
+      if (job.status === "completed" || job.status === "cancelled") return job;
+      return touch({
+        ...pauseActiveWork(job, event.at),
+        failure: undefined,
+        operationError: { ...event.failure, occurredAt: event.at },
+      }, event.at);
     case "run/pause":
       if (job.status !== "running") return job;
       return pauseActiveWork(job, event.at);
     case "run/cancel":
-      if (job.status === "completed" || job.status === "cancelled") return job;
+      if (job.status === "completed" || job.status === "cancelled" || job.activeOperation) return job;
       return touch({ ...job, status: "cancelled", nextRetryAt: undefined }, event.at);
     case "run/set-retry-at":
       if (job.status === "failed" || job.status === "cancelled") return job;
@@ -187,12 +212,14 @@ export function reduceReplacementJob(
         nextRetryAt: undefined,
         failure: { ...event.failure, occurredAt: event.at },
       }, event.at);
+    case "scan/stale-rescan-started":
+      return startStaleRescan(job, event.requestedItemKeys, event.at);
     case "scan/stale-details-succeeded":
       return reduceStaleRescan(job, event.requestedItemKeys, event.result, event.at);
     case "scan/stale-details-failed":
       if (
         job.stage !== "results" ||
-        !event.requestedItemKeys.some((key) => job.proposals[key]?.status === "stale")
+        job.activeOperation?.kind !== "stale-rescan"
       ) return job;
       return touch({
         ...job,
@@ -218,6 +245,8 @@ export function reduceReplacementJob(
       return retryApplyFailures(job, event.at);
     case "recovery/preview-started":
       return startRecoveryPreview(job, event.itemKey, event.at);
+    case "recovery/preview-run-started":
+      return startRecoveryPreviewRun(job, event.itemKeys, event.at);
     case "recovery/preview-finished":
       return finishRecoveryPreview(job, event.itemKey, event.result, event.at);
     case "recovery/preview-failed":
@@ -239,6 +268,13 @@ export function getNextInventoryCursor(job: PersistedContentReplacementJob): Inv
 
 export function getNextDetailBatch(job: PersistedContentReplacementJob): ReplacementItemRef[] {
   return job.stage === "scan" ? job.detailQueue.slice(0, 10) : [];
+}
+
+export function getNextStaleRescanBatch(job: PersistedContentReplacementJob): ReplacementItemRef[] {
+  if (job.activeOperation?.kind !== "stale-rescan") return [];
+  return job.activeOperation.remainingItemKeys.slice(0, 10)
+    .map((key) => job.proposals[key]?.proposal.before.ref)
+    .filter((ref): ref is ReplacementItemRef => ref !== undefined);
 }
 
 export function getNextApplyItem(job: PersistedContentReplacementJob): PersistedContentReplacementItem | null {
@@ -330,12 +366,16 @@ function pauseActiveWork(
     }
     return [key, item];
   }));
+  const interruptedRecovery = Object.values(job.proposals).some((item) => item.status === "recovering");
+  const activeOperation = interruptedRecovery && job.activeOperation?.kind === "recovery-apply"
+    ? { ...job.activeOperation, kind: "recovery-preview" as const }
+    : job.activeOperation;
   return touch({
     ...job,
     status: "paused",
     proposals,
+    activeOperation,
     progress: deriveTerminalProgress(job, proposals),
-    nextRetryAt: undefined,
   }, at);
 }
 
@@ -510,11 +550,16 @@ function finishApplyItem(
   if (job.stage !== "apply" || item?.status !== "applying" || !item.recovery) return job;
   let nextItem: PersistedContentReplacementItem;
   if (result.status === "updated" || result.status === "already-applied") {
-    if (
-      result.status === "already-applied" &&
-      result.observedRequestChecksum !== item.proposal.proposedRequestChecksum
-    ) {
-      nextItem = applyFailureItem(item, "validation", "Apply evidence did not match the reviewed proposal.", false, at);
+    if (result.observedRequestChecksum !== item.proposal.proposedRequestChecksum) {
+      nextItem = {
+        ...applyFailureItem(item, "validation", "Apply evidence did not match the reviewed proposal.", false, at),
+        result: {
+          kind: "verification-failed",
+          expectedRequestChecksum: item.proposal.proposedRequestChecksum,
+          observedRequestChecksum: result.observedRequestChecksum,
+          completedAt: at,
+        },
+      };
     } else {
       nextItem = {
         ...item,
@@ -620,46 +665,69 @@ function reduceStaleRescan(
   result: DetailBatchResult,
   at: string,
 ): PersistedContentReplacementJob {
-  const requested = new Set(requestedItemKeys.filter((key) => {
-    const status = job.proposals[key]?.status;
-    return status === "stale" || (job.stage === "review" && status === "pending");
-  }));
-  if (requested.size === 0) return job;
-  const replacementByKey = new Map(
-    result.proposals
-      .map((candidate) => [replacementItemKey(candidate.before.ref), candidate] as const)
-      .filter(([key]) => requested.has(key)),
+  const operation = job.activeOperation;
+  if (job.stage !== "results" || operation?.kind !== "stale-rescan") return job;
+  const expected = operation.remainingItemKeys.slice(0, requestedItemKeys.length);
+  if (requestedItemKeys.length === 0 || requestedItemKeys.length > 10 ||
+    requestedItemKeys.some((key, index) => key !== expected[index])) return job;
+  const requested = new Set(requestedItemKeys);
+  if (result.proposals.some((candidate) => !requested.has(replacementItemKey(candidate.before.ref)))) return job;
+  const accumulated = { ...operation.proposals };
+  for (const proposal of result.proposals) accumulated[replacementItemKey(proposal.before.ref)] = proposal;
+  const remainingItemKeys = operation.remainingItemKeys.slice(requestedItemKeys.length);
+  const activeOperation = {
+    ...operation,
+    remainingItemKeys,
+    proposals: accumulated,
+    inspectedCount: operation.inspectedCount + result.inspectedCount,
+    protectedOccurrenceCount: operation.protectedOccurrenceCount + result.protectedOccurrenceCount,
+  };
+  if (remainingItemKeys.length > 0) {
+    return touch({ ...job, activeOperation, nextRetryAt: undefined }, at);
+  }
+  const allRequested = new Set(operation.requestedItemKeys);
+  const replacedProtectedOccurrences = operation.requestedItemKeys.reduce(
+    (count, key) => count + (job.proposals[key]?.proposal.protectedOccurrences.length ?? 0), 0,
   );
-  const replacedProtectedOccurrences = [...requested].reduce(
-    (count, key) => count + (job.proposals[key]?.proposal.protectedOccurrences.length ?? 0),
-    0,
-  );
-  const rescanned = Object.fromEntries(
-    Object.entries(job.proposals)
-      .filter(([key]) => !requested.has(key) || replacementByKey.has(key))
-      .map(([key, item]) => [
-        key,
-        replacementByKey.has(key) ? { ...item, proposal: replacementByKey.get(key)! } : item,
-      ]),
-  );
+  const rescanned = Object.fromEntries(Object.entries(job.proposals)
+    .filter(([key]) => !allRequested.has(key) || accumulated[key])
+    .map(([key, item]) => [key, accumulated[key] ? { ...item, proposal: accumulated[key] } : item]));
   const proposals = resetReviewItems(rescanned);
   return touch({
-    ...job,
-    stage: "review",
-    status: "completed",
-    inventoryQueue: [],
-    detailQueue: [],
-    proposals,
-    recoverySnapshotStatus: "none",
-    failure: undefined,
-    nextRetryAt: undefined,
+    ...job, stage: "review", status: "completed", proposals,
+    activeOperation: undefined, recoverySnapshotStatus: "none", failure: undefined,
+    operationError: undefined, nextRetryAt: undefined,
     progress: {
       ...deriveTerminalProgress(job, proposals),
-      protectedOccurrences: Math.max(
-        0,
-        job.progress.protectedOccurrences - replacedProtectedOccurrences +
-          result.protectedOccurrenceCount,
-      ),
+      protectedOccurrences: Math.max(0,
+        job.progress.protectedOccurrences - replacedProtectedOccurrences + activeOperation.protectedOccurrenceCount),
+    },
+  }, at);
+}
+
+function startStaleRescan(
+  job: PersistedContentReplacementJob,
+  requestedItemKeys: readonly string[],
+  at: string,
+): PersistedContentReplacementJob {
+  if (job.stage !== "results" || job.status === "running" || job.activeOperation) return job;
+  const requested = new Set(requestedItemKeys);
+  const keys = Object.keys(job.proposals).filter((key) =>
+    requested.has(key) && job.proposals[key].status === "stale");
+  if (keys.length === 0) return job;
+  return touch({
+    ...job,
+    status: "running",
+    failure: undefined,
+    operationError: undefined,
+    activeOperation: {
+      kind: "stale-rescan",
+      requestedItemKeys: keys,
+      remainingItemKeys: keys,
+      generation: at,
+      proposals: {},
+      inspectedCount: 0,
+      protectedOccurrenceCount: 0,
     },
   }, at);
 }
@@ -690,12 +758,29 @@ function finishRecoveryPreview(
       recovery: { ...item.recovery, status: "ready" as const, preview, result: undefined },
     },
   };
-  return touch({
+  return touch(consumeActiveOperation({
     ...job,
     stage: "recovery",
-    status: "paused",
+    status: "running",
     proposals,
     progress: deriveTerminalProgress(job, proposals),
+  }, itemKey, "recovery-preview"), at);
+}
+
+function startRecoveryPreviewRun(
+  job: PersistedContentReplacementJob,
+  itemKeys: readonly string[],
+  at: string,
+): PersistedContentReplacementJob {
+  if (job.activeOperation || job.status === "running") return job;
+  const requested = new Set(itemKeys);
+  const keys = Object.keys(job.proposals).filter((key) => requested.has(key) && hasSuccessfulApply(job.proposals[key]));
+  if (keys.length === 0) return job;
+  return touch({
+    ...job, stage: "recovery", status: "running", operationError: undefined,
+    activeOperation: {
+      kind: "recovery-preview", requestedItemKeys: keys, remainingItemKeys: keys, generation: at,
+    },
   }, at);
 }
 
@@ -735,13 +820,16 @@ function failRecoveryPreview(
       recovery: { ...item.recovery, status: "failed" as const, preview: undefined, result: undefined },
     },
   };
-  return touch({
+  const failedJob: PersistedContentReplacementJob = {
     ...job,
     stage: "recovery",
-    status: "completed",
+    status: "running",
     proposals,
     progress: deriveTerminalProgress(job, proposals),
-  }, at);
+  };
+  return touch(failure.retryable
+    ? consumeActiveOperation(failedJob, itemKey, "recovery-preview")
+    : { ...failedJob, status: "completed", activeOperation: undefined }, at);
 }
 
 function startRecovery(
@@ -755,7 +843,16 @@ function startRecovery(
     item.recovery?.preview?.status === "recoverable"
   );
   if (job.recoverySnapshotStatus !== "ready" || !hasRecoverable) return job;
-  return touch({ ...job, stage: "recovery", status: "running", failure: undefined }, at);
+  const keys = Object.keys(job.proposals).filter((key) => requested.has(key)).filter((key) => {
+    const item = job.proposals[key];
+    return item.status === "ready-to-recover" && item.recovery?.preview?.status === "recoverable";
+  });
+  return touch({
+    ...job, stage: "recovery", status: "running", failure: undefined, operationError: undefined,
+    activeOperation: {
+      kind: "recovery-apply", requestedItemKeys: keys, remainingItemKeys: keys, generation: at,
+    },
+  }, at);
 }
 
 function startRecoveryItem(
@@ -790,7 +887,7 @@ function finishRecoveryItem(
   if (item?.status !== "recovering" || !hasSuccessfulApply(item) || !item.recovery) return job;
   let nextItem: PersistedContentReplacementItem;
   if (result.status === "recovered" || result.status === "already-recovered") {
-    nextItem = {
+    nextItem = result.observedRequestChecksum === item.recovery.scannedRequestChecksum ? {
       ...item,
       status: "recovered",
       failure: undefined,
@@ -800,6 +897,23 @@ function finishRecoveryItem(
         preview: undefined,
         result: {
           kind: "recovered",
+          observedRequestChecksum: result.observedRequestChecksum,
+          sourceAttemptCount: item.attemptCount,
+          sourceApplyCompletedAt: item.result.completedAt,
+          completedAt: at,
+        },
+      },
+    } : {
+      ...item,
+      status: "recovery-conflict",
+      failure: undefined,
+      recovery: {
+        ...item.recovery,
+        status: "conflict",
+        preview: undefined,
+        result: {
+          kind: "verification-failed",
+          expectedRequestChecksum: item.recovery.scannedRequestChecksum,
           observedRequestChecksum: result.observedRequestChecksum,
           sourceAttemptCount: item.attemptCount,
           sourceApplyCompletedAt: item.result.completedAt,
@@ -844,12 +958,29 @@ function finishRecoveryItem(
   const hasRemaining = Object.values(proposals).some(
     (candidate) => candidate.status === "ready-to-recover" || candidate.status === "recovering",
   );
-  return touch({
+  const finishedJob = {
     ...job,
     proposals,
     progress: deriveTerminalProgress(job, proposals),
     ...(hasRemaining ? {} : { status: "completed" as const }),
-  }, at);
+  };
+  const terminalRequestFailure = result.status === "permission" || result.status === "validation";
+  return touch(terminalRequestFailure
+    ? { ...finishedJob, status: "completed", activeOperation: undefined }
+    : consumeActiveOperation(finishedJob, itemKey, "recovery-apply"), at);
+}
+
+function consumeActiveOperation(
+  job: PersistedContentReplacementJob,
+  itemKey: string,
+  kind: "recovery-preview" | "recovery-apply",
+): PersistedContentReplacementJob {
+  const operation = job.activeOperation;
+  if (operation?.kind !== kind || operation.remainingItemKeys[0] !== itemKey) return job;
+  const remainingItemKeys = operation.remainingItemKeys.slice(1);
+  return remainingItemKeys.length > 0
+    ? { ...job, status: "running", activeOperation: { ...operation, remainingItemKeys } }
+    : { ...job, status: kind === "recovery-preview" ? "paused" : "completed", activeOperation: undefined };
 }
 
 function deleteRecoverySnapshots(
@@ -858,7 +989,7 @@ function deleteRecoverySnapshots(
 ): PersistedContentReplacementJob {
   if (
     (job.stage !== "results" && job.stage !== "recovery") ||
-    job.status === "running" ||
+    job.status === "running" || job.activeOperation ||
     !Object.values(job.proposals).some((item) => item.recovery)
   ) return job;
   const proposals = Object.fromEntries(Object.entries(job.proposals).map(([key, item]) => {
@@ -936,6 +1067,8 @@ function withoutUndefinedRoot(job: PersistedContentReplacementJob): PersistedCon
   const next = { ...job };
   if (next.failure === undefined) delete next.failure;
   if (next.nextRetryAt === undefined) delete next.nextRetryAt;
+  if (next.activeOperation === undefined) delete next.activeOperation;
+  if (next.operationError === undefined) delete next.operationError;
   return next;
 }
 
