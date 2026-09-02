@@ -1,8 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { buildReplacementProposal } from "../src/writeTools/contentReplacement/proposals";
+import {
+  buildReplacementProposal,
+  createJobFingerprint,
+  stableSerialize,
+} from "../src/writeTools/contentReplacement/proposals";
+import { createReplacementJob, replacementItemKey } from "../src/writeTools/contentReplacement/jobState";
+import { createExactTargetSelection } from "../src/writeTools/contentReplacement/discovery";
 import type {
   InventoryCursor,
+  PersistedContentReplacementJob,
   ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementProposal,
@@ -10,13 +17,14 @@ import type {
   ReplacementWireRequestModel,
 } from "../src/writeTools/contentReplacement/types";
 
-const ENTERPRISE_URL = "https://demo.stackenterprise.co";
+const ENTERPRISE_URL = "https://example.stackenterprise.co";
 const EXPECTED_CONFIGURATION: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
   contentTypes: { questions: true, answers: true, articles: true },
+  discovery: { mode: "full" },
   rules: [
-    { id: "manual-1", find: "MyPVM", replace: "MyPBM" },
-    { id: "csv-1-2", find: "CPR", replace: "myBenefitPlans", sourceRow: 2 },
+    { id: "manual-1", find: "LOCALONE", replace: "LOCALTWO" },
+    { id: "csv-1-2", find: "LOCALTHREE", replace: "LOCALFOUR", sourceRow: 2 },
   ],
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };
@@ -24,7 +32,6 @@ const QUESTION_REF = { kind: "question", questionId: 101 } as const;
 const ANSWER_REF = { kind: "answer", questionId: 101, answerId: 201 } as const;
 const ARTICLE_REF = { kind: "article", articleId: 301 } as const;
 const SECOND_QUESTION_REF = { kind: "question", questionId: 102 } as const;
-const EXPECTED_JOB_FINGERPRINT = "34b20a8de5a338a5de736a65e37032d6ba338bb59df46855a1001121d5c12078";
 const EXPECTED_CREDENTIALS = {
   instanceType: "enterprise",
   baseUrl: ENTERPRISE_URL,
@@ -34,36 +41,19 @@ const EXPECTED_CREDENTIALS = {
   oauthClientId: "content-replacement-e2e",
   oauthScopes: ["write_access", "no_expiry"],
 };
-const EXPECTED_PROPOSAL_EVIDENCE = {
-  question: {
-    scannedRequestChecksum: "fffc83bfe44b955edee902857ca478643472c5f2fb094cb8762d715f8b47ee23",
-    proposedRequestChecksum: "6169dd257ea7d78fcc595fbd4066353c4a9a86b194926a8d47c1c06254d6e89a",
-    proposalFingerprint: "d7c2f449db4a3443621951f9bba205b709a2f73bd0f33034b9cdab3c9096ea3f",
-  },
-  answer: {
-    scannedRequestChecksum: "d219bfb024f4ee355f417cd664a58b3d9104ea30aa728139c2d454306a6f6f87",
-    proposedRequestChecksum: "f8dff9143bddeb38dad29defabc70c8746c928289c60025294e650f8eb5f619f",
-    proposalFingerprint: "be158ffd6a6a9069b680eabb3313b7a678d28fb4e51c947945d06ea5c8a9cc49",
-  },
-  article: {
-    scannedRequestChecksum: "0701ffb2bf4dbf0ddaf2ccce7dc1c145cd11c5074a1a796362379b0977c523b0",
-    proposedRequestChecksum: "30bedec8ecf548920366f252eab0d5abbe9b3f0883beb04ebbf67ff80a3b9ee0",
-    proposalFingerprint: "1596335b38bd50e6130e714e4d1ae4afd5b1e95d7a445cd59a3c70102f79aecd",
-  },
-} as const;
 const QUESTION_PRIOR_REQUEST_MODEL: ReplacementWireRequestModel = {
   kind: "question",
   ref: QUESTION_REF,
   request: {
-    title: "MyPVM migration",
-    body: "Replace MyPVM here. Keep `MyPVM`.",
+    title: "LOCALONE migration",
+    body: "Replace LOCALONE here. Keep `LOCALONE`.",
     tags: ["benefits", "migration"],
   },
 };
 const QUESTION_PRIOR_DISPLAY_MODEL: ReplacementRequestModel = {
   ...QUESTION_PRIOR_REQUEST_MODEL,
   metadata: {
-    webUrl: `${ENTERPRISE_URL}/questions/101/my-pvm-migration`,
+    webUrl: `${ENTERPRISE_URL}/questions/101/local-one-migration`,
     owner: { id: 11, name: "Question Owner" },
     lastEditor: { id: 12, name: "Question Editor" },
     lastActivityDate: "2026-09-01T15:00:00.000Z",
@@ -73,8 +63,8 @@ const QUESTION_CURRENT_REQUEST_MODEL: ReplacementWireRequestModel = {
   kind: "question",
   ref: QUESTION_REF,
   request: {
-    title: "MyPBM migration",
-    body: "Replace MyPBM here. Keep `MyPVM`.",
+    title: "LOCALTWO migration",
+    body: "Replace LOCALTWO here. Keep `LOCALONE`.",
     tags: ["benefits", "migration"],
   },
 };
@@ -89,7 +79,7 @@ const EXPECTED_INVENTORY_CURSORS: InventoryCursor[] = [
 ];
 const EXPECTED_DETAIL_REFS: ReplacementItemRef[] = [QUESTION_REF, ARTICLE_REF, SECOND_QUESTION_REF, ANSWER_REF];
 const RESULT_HEADERS = [
-  "contentType", "itemId", "questionId", "title", "webUrl", "status", "outcome", "attemptCount",
+  "contentType", "itemId", "questionId", "title", "webUrl", "discoveryMode", "coverage", "suppliedTargetCount", "status", "outcome", "attemptCount",
   "changedOccurrences", "protectedOccurrences", "completedAt", "observedRequestChecksum",
 ] as const;
 
@@ -109,22 +99,23 @@ test("reviews and safely applies a complete mocked content replacement job", asy
   await expect(page.getByLabel("Case-sensitive matching")).toBeChecked();
   await expect(page.getByLabel("Whole-term matching")).toBeChecked();
   await expect(page.getByLabel("Replace inside code")).not.toBeChecked();
+  await page.getByLabel("Full audit").check();
 
-  await page.getByLabel("Find term 1").fill("MyPVM");
-  await page.getByLabel("Replace term 1 with").fill("MyPBM");
+  await page.getByLabel("Find term 1").fill("LOCALONE");
+  await page.getByLabel("Replace term 1 with").fill("LOCALTWO");
   await page.getByLabel("Import replacement CSV").setInputFiles({
     name: "additional-rule.csv",
     mimeType: "text/csv",
-    buffer: Buffer.from("find,replace\nCPR,myBenefitPlans\n"),
+    buffer: Buffer.from("find,replace\nLOCALTHREE,LOCALFOUR\n"),
   });
   await page.getByRole("button", { name: "Append imported rows" }).click();
-  await expect(page.getByLabel("Find term 2")).toHaveValue("CPR");
-  await expect(page.getByLabel("Replace term 2 with")).toHaveValue("myBenefitPlans");
+  await expect(page.getByLabel("Find term 2")).toHaveValue("LOCALTHREE");
+  await expect(page.getByLabel("Replace term 2 with")).toHaveValue("LOCALFOUR");
 
   await page.getByRole("button", { name: "Review rules" }).click();
   const checkpoint = page.locator('[aria-label="Reviewed rule summary"]');
-  await expect(checkpoint).toContainText("MyPVM → MyPBM");
-  await expect(checkpoint).toContainText("CPR → myBenefitPlans");
+  await expect(checkpoint).toContainText("LOCALONE → LOCALTWO");
+  await expect(checkpoint).toContainText("LOCALTHREE → LOCALFOUR");
   await expect(checkpoint).toContainText("Case-sensitive; Whole term; Code protected");
   await page.getByRole("button", { name: "Start scan" }).click();
 
@@ -166,10 +157,10 @@ test("reviews and safely applies a complete mocked content replacement job", asy
 
   await page.getByRole("button", { name: "View details for question 101" }).click();
   const questionDetail = page.getByRole("region", { name: "Question 101 proposed changes" });
-  await expect(questionDetail.getByTestId("question-101-title-before")).toHaveText("MyPVM migration");
-  await expect(questionDetail.getByTestId("question-101-title-after")).toHaveText("MyPBM migration");
-  await expect(questionDetail.getByTestId("question-101-body-before")).toHaveText("Replace MyPVM here. Keep `MyPVM`.");
-  await expect(questionDetail.getByTestId("question-101-body-after")).toHaveText("Replace MyPBM here. Keep `MyPVM`.");
+  await expect(questionDetail.getByTestId("question-101-title-before")).toHaveText("LOCALONE migration");
+  await expect(questionDetail.getByTestId("question-101-title-after")).toHaveText("LOCALTWO migration");
+  await expect(questionDetail.getByTestId("question-101-body-before")).toHaveText("Replace LOCALONE here. Keep `LOCALONE`.");
+  await expect(questionDetail.getByTestId("question-101-body-after")).toHaveText("Replace LOCALTWO here. Keep `LOCALONE`.");
   await expect(questionDetail).toContainText("Code — unchanged");
   await expect(questionDetail.getByRole("heading", { name: "Normalized API request after replacement" })).toBeVisible();
   await expect(questionDetail.locator(".content-replacement-review-request pre")).toHaveText(
@@ -235,18 +226,18 @@ test("reviews and safely applies a complete mocked content replacement job", asy
     observedRequestChecksum: row.observedRequestChecksum,
   }))).toEqual([
     {
-      contentType: "question", itemId: "101", questionId: "", title: "MyPVM migration",
-      webUrl: `${ENTERPRISE_URL}/questions/101/my-pvm-migration`, status: "applied", outcome: "applied",
+      contentType: "question", itemId: "101", questionId: "", title: "LOCALONE migration",
+      webUrl: `${ENTERPRISE_URL}/questions/101/local-one-migration`, status: "applied", outcome: "applied",
       attemptCount: "1", changedOccurrences: "2", protectedOccurrences: "1",
-      observedRequestChecksum: EXPECTED_PROPOSAL_EVIDENCE.question.proposedRequestChecksum,
+      observedRequestChecksum: fixture.evidence.question.proposedRequestChecksum,
     },
     {
-      contentType: "answer", itemId: "201", questionId: "101", title: "MyPVM migration", webUrl: "",
+      contentType: "answer", itemId: "201", questionId: "101", title: "LOCALONE migration", webUrl: "",
       status: "stale", outcome: "stale",
       attemptCount: "1", changedOccurrences: "1", protectedOccurrences: "0", observedRequestChecksum: "",
     },
     {
-      contentType: "article", itemId: "301", questionId: "", title: "CPR guide", webUrl: "",
+      contentType: "article", itemId: "301", questionId: "", title: "LOCALTHREE guide", webUrl: "",
       status: "excluded", outcome: "excluded",
       attemptCount: "0", changedOccurrences: "2", protectedOccurrences: "1", observedRequestChecksum: "",
     },
@@ -264,10 +255,10 @@ test("reviews and safely applies a complete mocked content replacement job", asy
     JSON.stringify(QUESTION_PRIOR_DISPLAY_MODEL, null, 2),
   );
   await expect(recoveryPreview.locator("dt", { hasText: "Observed current checksum" }).locator("+ dd code")).toHaveText(
-    EXPECTED_PROPOSAL_EVIDENCE.question.proposedRequestChecksum,
+    fixture.evidence.question.proposedRequestChecksum,
   );
   await expect(recoveryPreview.locator("dt", { hasText: "Expected successful apply checksum" }).locator("+ dd code")).toHaveText(
-    EXPECTED_PROPOSAL_EVIDENCE.question.proposedRequestChecksum,
+    fixture.evidence.question.proposedRequestChecksum,
   );
   await page.getByLabel(/I understand recovery writes the prior full request model/).check();
   await page.getByLabel("Type RECOVER to confirm").fill("RECOVER");
@@ -277,7 +268,7 @@ test("reviews and safely applies a complete mocked content replacement job", asy
   await expect(results).toContainText("Recovered");
 
   expect([...new Set(fixture.scanRequests.map((request) => request.jobFingerprint))]).toEqual([
-    EXPECTED_JOB_FINGERPRINT,
+    fixture.jobFingerprint,
   ]);
   expect(fixture.applyRequests).toHaveLength(2);
   expect(fixture.applyRequests.map((request) => request.itemRef)).toEqual([QUESTION_REF, ANSWER_REF]);
@@ -295,10 +286,128 @@ test("reviews and safely applies a complete mocked content replacement job", asy
   }
 });
 
+test("runs a targeted scan for two rules before any live-write confirmation", async ({ page }) => {
+  const fixture = await installTargetedRoutes(page);
+  await connectEnterpriseWriteCredentials(page);
+  await openContentReplacement(page);
+
+  await expect(page.getByRole("radio", { name: /Targeted scan/ })).toBeChecked();
+  await page.getByLabel("Find term 1").fill("LOCALALPHA");
+  await page.getByLabel("Replace term 1 with").fill("LOCALBETA");
+  await page.getByRole("button", { name: "Add mapping" }).click();
+  await page.getByLabel("Find term 2").fill("LOCALGAMMA");
+  await page.getByLabel("Replace term 2 with").fill("LOCALDELTA");
+  await page.getByRole("button", { name: "Review rules" }).click();
+  await page.getByRole("button", { name: "Start scan" }).click();
+
+  await expect(page.getByRole("note", { name: "Discovery coverage" }))
+    .toContainText("Search-assisted · may miss matches");
+  await expect(page.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+  expect(fixture.inventoryKinds).toEqual([
+    "search:manual-1:1",
+    "search:manual-1:2",
+    "search:manual-2:1",
+    "search:manual-2:2",
+  ]);
+  expect(fixture.detailRequests).toEqual([fixture.detailRefs]);
+  expect(fixture.inventoryRequests).toHaveLength(4);
+
+  await page.getByRole("button", { name: /Continue with 4 posts/ }).click();
+  const apply = page.getByRole("button", { name: "Apply changes to 4 posts" });
+  await expect(apply).toBeDisabled();
+  await page.getByLabel(/I understand these edits use the live Enterprise API/).check();
+  await page.getByLabel("Type APPLY to confirm").fill("APPLY");
+  await expect(apply).toBeDisabled();
+  await page.getByLabel("I understand search-assisted discovery may have missed matches.").check();
+  await expect(apply).toBeEnabled();
+});
+
+test("imports exact targets without inventory requests and limits coverage to those posts", async ({ page }) => {
+  const fixture = await installExactTargetRoutes(page);
+  await connectEnterpriseWriteCredentials(page);
+  await openContentReplacement(page);
+
+  await page.getByRole("radio", { name: /Exact IDs or URLs/ }).check();
+  await page.getByLabel("Find term 1").fill("LOCALEPSILON");
+  await page.getByLabel("Replace term 1 with").fill("LOCALZETA");
+  await page.getByLabel("Import target CSV").setInputFiles({
+    name: "local-targets.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("type,id,parent_question_id\nquestion,701,\nanswer,702,701\narticle,703,\n"),
+  });
+  await expect(page.getByText("Loaded 3 targets from local-targets.csv.")).toBeVisible();
+  await page.getByRole("button", { name: "Review rules" }).click();
+  await page.getByRole("button", { name: "Start scan" }).click();
+
+  await expect(page.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+  await expect(page.getByRole("note", { name: "Discovery coverage" }))
+    .toContainText("Exact target list · complete for 3 supplied posts");
+  expect(fixture.inventoryRequests).toEqual([]);
+  expect(fixture.detailRequests).toEqual([fixture.detailRefs]);
+});
+
+test("resumes a Full audit at the persisted cursor and skips only zero-answer collections", async ({ page }) => {
+  const fixture = await installFullAuditRoutes(page);
+  await connectEnterpriseWriteCredentials(page);
+  await openContentReplacement(page);
+
+  await page.getByRole("radio", { name: /Full audit/ }).check();
+  await page.getByLabel("Articles").uncheck();
+  await page.getByLabel("Find term 1").fill("LOCALTHETA");
+  await page.getByLabel("Replace term 1 with").fill("LOCALOMEGA");
+  await page.getByRole("button", { name: "Review rules" }).click();
+  await page.getByRole("button", { name: "Start scan" }).click();
+
+  await fixture.waitForBlockedCursor();
+  await page.getByRole("button", { name: "Pause scan" }).click();
+  await expect(page.getByRole("status")).toContainText("Scan paused");
+  fixture.releaseBlockedCursor();
+
+  await page.reload();
+  await connectEnterpriseWriteCredentials(page);
+  await openContentReplacement(page);
+  const openSavedJob = page.getByRole("button", { name: /Resume content replacement job/ }).first();
+  await expect(openSavedJob).toBeVisible();
+  await openSavedJob.click();
+  await expect(page.getByRole("button", { name: "Resume scan" })).toBeVisible();
+  await page.getByRole("button", { name: "Resume scan" }).click();
+
+  await expect(page.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+  await expect(page.getByRole("note", { name: "Discovery coverage" }))
+    .toContainText("Exhaustive · all accessible selected content");
+  expect(fixture.blockedCursor).toEqual({ kind: "questions", page: 2 });
+  expect(fixture.resumedCursor).toEqual({ kind: "questions", page: 2 });
+  expect(fixture.answerCollectionKinds).toEqual(["answers:802:1", "answers:803:1"]);
+  expect(fixture.inventoryKinds).toEqual([
+    "questions:1",
+    "questions:2",
+    "questions:2",
+    "answers:802:1",
+    "answers:803:1",
+  ]);
+});
+
+test("keeps paused schema-v1 jobs restart-only while completed schema-v1 jobs retain guarded recovery", async ({ page }) => {
+  await seedLegacyJobs(page);
+  await connectEnterpriseWriteCredentials(page);
+  await openContentReplacement(page);
+
+  await expect(page.getByText("New scan required", { exact: true })).toBeVisible();
+  const completedJob = page.getByRole("button", { name: "Resume content replacement job completed-v1" });
+  await expect(completedJob).toBeVisible();
+  await completedJob.click();
+
+  await expect(page.getByRole("heading", { name: "Apply results" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Guarded recovery" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Preview recovery for 1 post" })).toBeEnabled();
+});
+
 interface RouteFixture {
   question: ReplacementProposal;
   answer: ReplacementProposal;
   article: ReplacementProposal;
+  evidence: Record<"question" | "answer" | "article", ReturnType<typeof proposalEvidence>>;
+  jobFingerprint: string;
   scanRequests: Array<Record<string, any>>;
   inventoryKinds: string[];
   applyRequests: Array<Record<string, any>>;
@@ -310,9 +419,16 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
   const proposals = await Promise.all(replacementModels().map((model) => buildReplacementProposal(model, EXPECTED_CONFIGURATION)));
   if (proposals.some((proposal) => proposal === null)) throw new Error("Expected every e2e model to produce a proposal.");
   const [question, answer, article] = proposals as ReplacementProposal[];
-  expect(proposalEvidence(question)).toEqual(EXPECTED_PROPOSAL_EVIDENCE.question);
-  expect(proposalEvidence(answer)).toEqual(EXPECTED_PROPOSAL_EVIDENCE.answer);
-  expect(proposalEvidence(article)).toEqual(EXPECTED_PROPOSAL_EVIDENCE.article);
+  const evidence = {
+    question: proposalEvidence(question),
+    answer: proposalEvidence(answer),
+    article: proposalEvidence(article),
+  };
+  const jobFingerprint = await createJobFingerprint({
+    baseUrl: ENTERPRISE_URL,
+    configuration: EXPECTED_CONFIGURATION,
+    scanCompatibility: "current",
+  });
   const byKey = new Map([
     [refKey(QUESTION_REF), question],
     [refKey(ANSWER_REF), answer],
@@ -321,7 +437,8 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
   let releaseInitialInventory!: () => void;
   const initialInventoryGate = new Promise<void>((resolve) => { releaseInitialInventory = resolve; });
   const fixture: RouteFixture = {
-    question, answer, article, scanRequests: [], inventoryKinds: [], applyRequests: [], recoveryRequests: [],
+    question, answer, article, evidence, jobFingerprint,
+    scanRequests: [], inventoryKinds: [], applyRequests: [], recoveryRequests: [],
     releaseInitialInventory,
   };
 
@@ -333,7 +450,8 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
         action: "inventory",
         credentials: EXPECTED_CREDENTIALS,
         configuration: EXPECTED_CONFIGURATION,
-        jobFingerprint: EXPECTED_JOB_FINGERPRINT,
+        scanCompatibility: "current",
+        jobFingerprint,
         cursor,
       });
       fixture.scanRequests.push(request);
@@ -346,7 +464,8 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
       action: "details",
       credentials: EXPECTED_CREDENTIALS,
       configuration: EXPECTED_CONFIGURATION,
-      jobFingerprint: EXPECTED_JOB_FINGERPRINT,
+      scanCompatibility: "current",
+      jobFingerprint,
       refs: EXPECTED_DETAIL_REFS,
     });
     fixture.scanRequests.push(request);
@@ -367,17 +486,16 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
   await page.route("**/api/write-tools/content-replacement/apply", async (route) => {
     const request = route.request().postDataJSON() as Record<string, any>;
     const itemRef = [QUESTION_REF, ANSWER_REF][fixture.applyRequests.length];
-    const evidence = itemRef?.kind === "question"
-      ? EXPECTED_PROPOSAL_EVIDENCE.question
-      : EXPECTED_PROPOSAL_EVIDENCE.answer;
+    const itemEvidence = itemRef?.kind === "question" ? evidence.question : evidence.answer;
     expect(request).toEqual({
       credentials: EXPECTED_CREDENTIALS,
       configuration: EXPECTED_CONFIGURATION,
-      jobFingerprint: EXPECTED_JOB_FINGERPRINT,
+      scanCompatibility: "current",
+      jobFingerprint,
       itemRef,
-      expectedScannedRequestChecksum: evidence.scannedRequestChecksum,
-      expectedProposedRequestChecksum: evidence.proposedRequestChecksum,
-      expectedProposalFingerprint: evidence.proposalFingerprint,
+      expectedScannedRequestChecksum: itemEvidence.scannedRequestChecksum,
+      expectedProposedRequestChecksum: itemEvidence.proposedRequestChecksum,
+      expectedProposalFingerprint: itemEvidence.proposalFingerprint,
     });
     fixture.applyRequests.push(request);
     const updated = itemRef?.kind === "question";
@@ -385,7 +503,7 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
       ok: true,
       result: {
         status: updated ? "updated" : "stale",
-        observedRequestChecksum: updated ? EXPECTED_PROPOSAL_EVIDENCE.question.proposedRequestChecksum : "f".repeat(64),
+        observedRequestChecksum: updated ? evidence.question.proposedRequestChecksum : "f".repeat(64),
       },
       throttleNotices: [],
     });
@@ -397,11 +515,13 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
     expect(request).toEqual({
       action,
       credentials: EXPECTED_CREDENTIALS,
-      jobFingerprint: EXPECTED_JOB_FINGERPRINT,
+      configuration: EXPECTED_CONFIGURATION,
+      scanCompatibility: "current",
+      jobFingerprint,
       itemRef: QUESTION_REF,
       priorRequestModel: QUESTION_PRIOR_REQUEST_MODEL,
-      expectedPriorRequestChecksum: EXPECTED_PROPOSAL_EVIDENCE.question.scannedRequestChecksum,
-      expectedPostApplyChecksum: EXPECTED_PROPOSAL_EVIDENCE.question.proposedRequestChecksum,
+      expectedPriorRequestChecksum: evidence.question.scannedRequestChecksum,
+      expectedPostApplyChecksum: evidence.question.proposedRequestChecksum,
     });
     fixture.recoveryRequests.push(request);
     if (request.action === "preview") {
@@ -411,7 +531,7 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
           status: "recoverable",
           currentRequestModel: QUESTION_CURRENT_REQUEST_MODEL,
           priorRequestModel: QUESTION_PRIOR_REQUEST_MODEL,
-          observedRequestChecksum: EXPECTED_PROPOSAL_EVIDENCE.question.proposedRequestChecksum,
+          observedRequestChecksum: evidence.question.proposedRequestChecksum,
         },
         throttleNotices: [],
       });
@@ -419,7 +539,7 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
     }
     await fulfillJson(route, {
       ok: true,
-      result: { status: "recovered", observedRequestChecksum: EXPECTED_PROPOSAL_EVIDENCE.question.scannedRequestChecksum },
+      result: { status: "recovered", observedRequestChecksum: evidence.question.scannedRequestChecksum },
       throttleNotices: [],
     });
   });
@@ -432,23 +552,23 @@ function replacementModels(): ReplacementRequestModel[] {
     {
       kind: "question",
       ref: QUESTION_REF,
-      request: { title: "MyPVM migration", body: "Replace MyPVM here. Keep `MyPVM`.", tags: ["benefits", "migration"] },
+      request: { title: "LOCALONE migration", body: "Replace LOCALONE here. Keep `LOCALONE`.", tags: ["benefits", "migration"] },
       metadata: {
         owner: { id: 11, name: "Question Owner" },
         lastEditor: { id: 12, name: "Question Editor" },
         lastActivityDate: "2026-09-01T15:00:00.000Z",
-        webUrl: `${ENTERPRISE_URL}/questions/101/my-pvm-migration`,
+        webUrl: `${ENTERPRISE_URL}/questions/101/local-one-migration`,
       },
     },
     {
-      kind: "answer", ref: ANSWER_REF, request: { body: "MyPVM answer." },
-      metadata: { titleContext: "MyPVM migration", owner: { id: 21, name: "Answer Owner" } },
+      kind: "answer", ref: ANSWER_REF, request: { body: "LOCALONE answer." },
+      metadata: { titleContext: "LOCALONE migration", owner: { id: 21, name: "Answer Owner" } },
     },
     {
       kind: "article",
       ref: ARTICLE_REF,
       request: {
-        title: "CPR guide", body: "CPR details. Keep `CPR`.", tags: ["benefits"],
+        title: "LOCALTHREE guide", body: "LOCALTHREE details. Keep `LOCALTHREE`.", tags: ["benefits"],
         type: "knowledgeArticle", expirationDate: null,
         permissions: { editableBy: "specificEditors", editorUserIds: [31], editorUserGroupIds: [41] },
       },
@@ -458,10 +578,17 @@ function replacementModels(): ReplacementRequestModel[] {
 }
 
 function inventoryResult(cursor: InventoryCursor) {
+  const progress = (answerBearingQuestionsQueued = 0, zeroAnswerQuestionsSkipped = 0) => ({
+    apiRequestsCompleted: 1,
+    searchPages: 0,
+    searchTermsCompleted: 0,
+    answerBearingQuestionsQueued,
+    zeroAnswerQuestionsSkipped,
+  });
   if (cursor.kind === "questions" && cursor.page === 1) {
     return {
       candidates: [QUESTION_REF], answerCursors: [{ kind: "answers", questionId: 101, page: 1 }],
-      nextCursor: { kind: "questions", page: 2 }, inspectedCount: 1, pageKind: "questions",
+      nextCursor: { kind: "questions", page: 2 }, inspectedCount: 1, pageKind: "questions", progress: progress(1),
     };
   }
   if (cursor.kind === "questions") {
@@ -470,7 +597,7 @@ function inventoryResult(cursor: InventoryCursor) {
       answerCursors: [{ kind: "answers", questionId: 102, page: 1 }],
       nextCursor: null,
       inspectedCount: 1,
-      pageKind: "questions",
+      pageKind: "questions", progress: progress(1),
     };
   }
   if (cursor.kind === "answers") {
@@ -478,18 +605,450 @@ function inventoryResult(cursor: InventoryCursor) {
       return {
         candidates: [ANSWER_REF], answerCursors: [],
         nextCursor: { kind: "answers", questionId: 101, page: 2 },
-        inspectedCount: 1, pageKind: "answers",
+        inspectedCount: 1, pageKind: "answers", progress: progress(),
       };
     }
-    return { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "answers" };
+    return { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "answers", progress: progress() };
   }
   if (cursor.page === 1) {
     return {
       candidates: [ARTICLE_REF], answerCursors: [], nextCursor: { kind: "articles", page: 2 },
-      inspectedCount: 1, pageKind: "articles",
+      inspectedCount: 1, pageKind: "articles", progress: progress(),
     };
   }
-  return { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "articles" };
+  return { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "articles", progress: progress() };
+}
+
+interface TargetedRouteFixture {
+  inventoryKinds: string[];
+  inventoryRequests: Array<Record<string, unknown>>;
+  detailRequests: ReplacementItemRef[][];
+  detailRefs: ReplacementItemRef[];
+}
+
+async function installTargetedRoutes(page: Page): Promise<TargetedRouteFixture> {
+  const configuration: ReplacementConfiguration = {
+    target: { kind: "enterprise-main" },
+    contentTypes: { questions: true, answers: true, articles: true },
+    discovery: { mode: "targeted" },
+    rules: [
+      { id: "manual-1", find: "LOCALALPHA", replace: "LOCALBETA" },
+      { id: "manual-2", find: "LOCALGAMMA", replace: "LOCALDELTA" },
+    ],
+    options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+  };
+  const firstQuestion = { kind: "question", questionId: 601 } as const;
+  const sharedQuestion = { kind: "question", questionId: 602 } as const;
+  const article = { kind: "article", articleId: 603 } as const;
+  const answer = { kind: "answer", questionId: 602, answerId: 604 } as const;
+  const detailRefs: ReplacementItemRef[] = [firstQuestion, sharedQuestion, article, answer];
+  const proposals = await Promise.all([
+    buildReplacementProposal({
+      kind: "question", ref: firstQuestion,
+      request: { title: "LOCALALPHA first", body: "Ordinary local body.", tags: ["local"] },
+    }, configuration),
+    buildReplacementProposal({
+      kind: "question", ref: sharedQuestion,
+      request: { title: "Shared local record", body: "LOCALGAMMA shared", tags: ["local"] },
+    }, configuration),
+    buildReplacementProposal({
+      kind: "article", ref: article,
+      request: {
+        title: "LOCALALPHA article", body: "Ordinary local article.", tags: ["local"], type: "knowledgeArticle",
+        expirationDate: null,
+        permissions: { editableBy: "specificEditors", editorUserIds: [1], editorUserGroupIds: [] },
+      },
+    }, configuration),
+    buildReplacementProposal({
+      kind: "answer", ref: answer, request: { body: "LOCALGAMMA answer" },
+    }, configuration),
+  ]);
+  if (proposals.some((proposal) => proposal === null)) throw new Error("Expected targeted fixture proposals.");
+  const proposalByKey = new Map((proposals as ReplacementProposal[]).map((proposal) => [
+    replacementItemKey(proposal.before.ref), proposal,
+  ]));
+  const fingerprint = await createJobFingerprint({ baseUrl: ENTERPRISE_URL, configuration, scanCompatibility: "current" });
+  const cursors = [
+    { kind: "search" as const, ruleId: "manual-1", page: 1 },
+    { kind: "search" as const, ruleId: "manual-1", page: 2 },
+    { kind: "search" as const, ruleId: "manual-2", page: 1 },
+    { kind: "search" as const, ruleId: "manual-2", page: 2 },
+  ];
+  const fixture: TargetedRouteFixture = { inventoryKinds: [], inventoryRequests: [], detailRequests: [], detailRefs };
+
+  await page.route("**/api/write-tools/content-replacement/scan", async (route) => {
+    const request = route.request().postDataJSON() as Record<string, unknown>;
+    if (request.action === "inventory") {
+      const cursor = cursors[fixture.inventoryRequests.length];
+      expect(request).toEqual({
+        action: "inventory",
+        credentials: EXPECTED_CREDENTIALS,
+        configuration,
+        scanCompatibility: "current",
+        jobFingerprint: fingerprint,
+        cursor,
+      });
+      fixture.inventoryRequests.push(request);
+      fixture.inventoryKinds.push(searchCursorKey(cursor));
+      const candidates = cursor.ruleId === "manual-1" && cursor.page === 1
+        ? [firstQuestion, sharedQuestion]
+        : cursor.ruleId === "manual-1"
+          ? [article]
+          : cursor.page === 1 ? [sharedQuestion, answer] : [];
+      await fulfillJson(route, {
+        ok: true,
+        result: {
+          candidates,
+          answerCursors: [],
+          nextCursor: cursor.page === 1 ? { ...cursor, page: 2 } : null,
+          inspectedCount: candidates.length,
+          pageKind: "search",
+          progress: {
+            apiRequestsCompleted: 1,
+            searchPages: 1,
+            searchTermsCompleted: cursor.page === 2 ? 1 : 0,
+            answerBearingQuestionsQueued: 0,
+            zeroAnswerQuestionsSkipped: 0,
+          },
+        },
+        throttleNotices: [],
+      });
+      return;
+    }
+    expect(request).toEqual({
+      action: "details",
+      credentials: EXPECTED_CREDENTIALS,
+      configuration,
+      scanCompatibility: "current",
+      jobFingerprint: fingerprint,
+      refs: detailRefs,
+    });
+    fixture.detailRequests.push(request.refs as ReplacementItemRef[]);
+    await fulfillJson(route, {
+      ok: true,
+      result: {
+        proposals: detailRefs.map((ref) => proposalByKey.get(replacementItemKey(ref))),
+        inspectedCount: detailRefs.length,
+        protectedOccurrenceCount: 0,
+      },
+      throttleNotices: [],
+    });
+  });
+  return fixture;
+}
+
+interface ExactTargetRouteFixture {
+  inventoryRequests: Array<Record<string, unknown>>;
+  detailRequests: ReplacementItemRef[][];
+  detailRefs: ReplacementItemRef[];
+}
+
+async function installExactTargetRoutes(page: Page): Promise<ExactTargetRouteFixture> {
+  const detailRefs: ReplacementItemRef[] = [
+    { kind: "question", questionId: 701 },
+    { kind: "answer", questionId: 701, answerId: 702 },
+    { kind: "article", articleId: 703 },
+  ];
+  const selection = await createExactTargetSelection(detailRefs);
+  const configuration: ReplacementConfiguration = {
+    target: { kind: "enterprise-main" },
+    contentTypes: { questions: true, answers: true, articles: true },
+    discovery: selection.discovery,
+    rules: [{ id: "manual-1", find: "LOCALEPSILON", replace: "LOCALZETA" }],
+    options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+  };
+  const models: ReplacementRequestModel[] = [
+    {
+      kind: "question", ref: detailRefs[0] as Extract<ReplacementItemRef, { kind: "question" }>,
+      request: { title: "LOCALEPSILON question", body: "Local question body.", tags: ["local"] },
+    },
+    {
+      kind: "answer", ref: detailRefs[1] as Extract<ReplacementItemRef, { kind: "answer" }>,
+      request: { body: "LOCALEPSILON answer" },
+    },
+    {
+      kind: "article", ref: detailRefs[2] as Extract<ReplacementItemRef, { kind: "article" }>,
+      request: {
+        title: "Local article", body: "LOCALEPSILON article", tags: ["local"], type: "knowledgeArticle",
+        expirationDate: null,
+        permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [] },
+      },
+    },
+  ];
+  const proposals = await Promise.all(models.map((model) => buildReplacementProposal(model, configuration)));
+  if (proposals.some((proposal) => proposal === null)) throw new Error("Expected exact-target fixture proposals.");
+  const fingerprint = await createJobFingerprint({ baseUrl: ENTERPRISE_URL, configuration, scanCompatibility: "current" });
+  const fixture: ExactTargetRouteFixture = { inventoryRequests: [], detailRequests: [], detailRefs };
+
+  await page.route("**/api/write-tools/content-replacement/scan", async (route) => {
+    const request = route.request().postDataJSON() as Record<string, unknown>;
+    if (request.action === "inventory") {
+      fixture.inventoryRequests.push(request);
+      throw new Error("Exact target discovery must not send inventory or search requests.");
+    }
+    expect(request).toEqual({
+      action: "details",
+      credentials: EXPECTED_CREDENTIALS,
+      configuration,
+      scanCompatibility: "current",
+      jobFingerprint: fingerprint,
+      refs: detailRefs,
+    });
+    expect(request).not.toHaveProperty("exactTargets");
+    fixture.detailRequests.push(request.refs as ReplacementItemRef[]);
+    await fulfillJson(route, {
+      ok: true,
+      result: { proposals, inspectedCount: detailRefs.length, protectedOccurrenceCount: 0 },
+      throttleNotices: [],
+    });
+  });
+  return fixture;
+}
+
+interface FullAuditRouteFixture {
+  inventoryKinds: string[];
+  answerCollectionKinds: string[];
+  blockedCursor: InventoryCursor | null;
+  resumedCursor: InventoryCursor | null;
+  waitForBlockedCursor(): Promise<void>;
+  releaseBlockedCursor(): void;
+}
+
+async function installFullAuditRoutes(page: Page): Promise<FullAuditRouteFixture> {
+  const configuration: ReplacementConfiguration = {
+    target: { kind: "enterprise-main" },
+    contentTypes: { questions: true, answers: true, articles: false },
+    discovery: { mode: "full" },
+    rules: [{ id: "manual-1", find: "LOCALTHETA", replace: "LOCALOMEGA" }],
+    options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+  };
+  const fingerprint = await createJobFingerprint({ baseUrl: ENTERPRISE_URL, configuration, scanCompatibility: "current" });
+  let releaseBlockedCursor!: () => void;
+  let signalBlockedCursor!: () => void;
+  const blockedCursorGate = new Promise<void>((resolve) => { releaseBlockedCursor = resolve; });
+  const blockedCursorStarted = new Promise<void>((resolve) => { signalBlockedCursor = resolve; });
+  let blockedOnce = false;
+  const fixture: FullAuditRouteFixture = {
+    inventoryKinds: [],
+    answerCollectionKinds: [],
+    blockedCursor: null,
+    resumedCursor: null,
+    waitForBlockedCursor: () => blockedCursorStarted,
+    releaseBlockedCursor,
+  };
+  const emptyProgress = {
+    apiRequestsCompleted: 1,
+    searchPages: 0,
+    searchTermsCompleted: 0,
+    answerBearingQuestionsQueued: 0,
+    zeroAnswerQuestionsSkipped: 0,
+  };
+  const questionSummaries: Array<{ questionId: number; answerCount?: number }> = [
+    { questionId: 801, answerCount: 0 },
+    { questionId: 802, answerCount: 2 },
+    { questionId: 803 },
+  ];
+
+  await page.route("**/api/write-tools/content-replacement/scan", async (route) => {
+    const request = route.request().postDataJSON() as Record<string, unknown>;
+    if (request.action !== "inventory") throw new Error("The Full-audit fixture should not request details.");
+    const cursor = request.cursor as InventoryCursor;
+    expect(request).toEqual({
+      action: "inventory",
+      credentials: EXPECTED_CREDENTIALS,
+      configuration,
+      scanCompatibility: "current",
+      jobFingerprint: fingerprint,
+      cursor,
+    });
+    fixture.inventoryKinds.push(cursorKey(cursor));
+    if (cursor.kind === "questions" && cursor.page === 1) {
+      await fulfillJson(route, {
+        ok: true,
+        result: {
+          candidates: [],
+          answerCursors: questionSummaries
+            .filter((question) => question.answerCount !== 0)
+            .map((question) => ({ kind: "answers" as const, questionId: question.questionId, page: 1 })),
+          nextCursor: { kind: "questions", page: 2 },
+          inspectedCount: 3,
+          pageKind: "questions",
+          progress: { ...emptyProgress, answerBearingQuestionsQueued: 2, zeroAnswerQuestionsSkipped: 1 },
+        },
+        throttleNotices: [],
+      });
+      return;
+    }
+    if (cursor.kind === "questions" && cursor.page === 2 && !blockedOnce) {
+      blockedOnce = true;
+      fixture.blockedCursor = cursor;
+      signalBlockedCursor();
+      await blockedCursorGate;
+      await route.abort("failed").catch(() => undefined);
+      return;
+    }
+    if (cursor.kind === "questions" && cursor.page === 2) fixture.resumedCursor = cursor;
+    if (cursor.kind === "answers") fixture.answerCollectionKinds.push(cursorKey(cursor));
+    await fulfillJson(route, {
+      ok: true,
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0,
+        pageKind: cursor.kind, progress: emptyProgress,
+      },
+      throttleNotices: [],
+    });
+  });
+  return fixture;
+}
+
+async function seedLegacyJobs(page: Page): Promise<void> {
+  const paused = await createLegacyV1Job("paused-v1", false);
+  const completed = await createLegacyV1Job("completed-v1", true);
+  await page.goto("/");
+  await openContentReplacement(page);
+  await expect(page.getByText("No replacement jobs are stored in this browser.")).toBeVisible();
+  await page.evaluate(async (records) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("stack-api-content-replacement", 4);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+    try {
+      const transaction = database.transaction("jobs", "readwrite");
+      const store = transaction.objectStore("jobs");
+      records.forEach((record) => store.put(record));
+      await new Promise<void>((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+    } finally {
+      database.close();
+    }
+  }, [legacyRecord(paused), legacyRecord(completed)]);
+}
+
+async function createLegacyV1Job(id: string, completed: boolean): Promise<Record<string, any>> {
+  const configuration: ReplacementConfiguration = {
+    target: { kind: "enterprise-main" },
+    contentTypes: { questions: true, answers: true, articles: true },
+    discovery: { mode: "full" },
+    rules: [{ id: "legacy-rule", find: "LOCALOLD", replace: "LOCALNEW" }],
+    options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+  };
+  const createdAt = "2026-09-01T12:00:00.000Z";
+  const job = createReplacementJob({
+    id,
+    baseUrl: ENTERPRISE_URL,
+    configuration,
+    fingerprint: await createJobFingerprint({ baseUrl: ENTERPRISE_URL, configuration, scanCompatibility: "current" }),
+    createdAt,
+  });
+  if (completed) {
+    const proposal = await buildReplacementProposal({
+      kind: "question",
+      ref: { kind: "question", questionId: 901 },
+      request: { title: "LOCALOLD legacy", body: "Local recovery fixture.", tags: ["local"] },
+    }, configuration);
+    if (!proposal) throw new Error("Expected a legacy recovery proposal.");
+    const completedAt = "2026-09-01T12:02:00.000Z";
+    job.stage = "results";
+    job.status = "completed";
+    job.inventoryQueue = [];
+    job.detailQueue = [];
+    job.proposals[replacementItemKey(proposal.before.ref)] = {
+      proposal,
+      included: true,
+      attemptCount: 1,
+      status: "applied",
+      result: {
+        kind: "applied",
+        observedRequestChecksum: proposal.proposedRequestChecksum,
+        completedAt,
+      },
+      recovery: {
+        priorRequestModel: structuredClone(proposal.before),
+        scannedRequestChecksum: proposal.scannedRequestChecksum,
+        proposedRequestChecksum: proposal.proposedRequestChecksum,
+        observedPostApplyChecksum: proposal.proposedRequestChecksum,
+        status: "ready",
+      },
+    };
+    job.recoverySnapshotStatus = "ready";
+    job.progress.questionPages = 1;
+    job.progress.inventoryItems = 1;
+    job.progress.detailsInspected = 1;
+    job.progress.proposalsFound = 1;
+    job.progress.applyCompleted = 1;
+    job.updatedAt = "2026-09-01T12:04:00.000Z";
+  }
+  return toLegacyV1(job);
+}
+
+async function toLegacyV1(job: PersistedContentReplacementJob): Promise<Record<string, any>> {
+  const legacy = structuredClone(job) as Record<string, any>;
+  legacy.schemaVersion = 1;
+  delete legacy.scanCompatibility;
+  delete legacy.configuration.discovery;
+  for (const key of [
+    "apiRequestsCompleted", "searchPages", "searchTermsCompleted", "indexedReferences",
+    "answerBearingQuestionsQueued", "zeroAnswerQuestionsSkipped",
+  ]) delete legacy.progress[key];
+  legacy.fingerprint = await legacyDigest({
+    baseUrl: legacy.baseUrl,
+    configuration: legacySemanticConfiguration(legacy.configuration),
+  });
+  for (const item of Object.values(legacy.proposals) as Array<{ proposal: ReplacementProposal }>) {
+    item.proposal.proposalFingerprint = await legacyDigest({
+      ref: item.proposal.before.ref,
+      configuration: legacySemanticConfiguration(legacy.configuration),
+      scannedRequestChecksum: item.proposal.scannedRequestChecksum,
+      proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+    });
+  }
+  return legacy;
+}
+
+function legacyRecord(job: Record<string, any>) {
+  return {
+    id: job.id,
+    job,
+    summary: {
+      id: job.id,
+      sortKey: `${String(8_640_000_000_000_000 - Date.parse(job.updatedAt)).padStart(16, "0")}:${job.id}`,
+      baseUrl: job.baseUrl,
+      stage: job.stage,
+      status: job.status,
+      mappingCount: job.configuration.rules.length,
+      proposedPostCount: job.progress.proposalsFound,
+      recoverySnapshotStatus: job.recoverySnapshotStatus,
+      scanCompatibility: "legacy-restart-required",
+      activeOperationKind: "none",
+      updatedAt: job.updatedAt,
+    },
+  };
+}
+
+function legacySemanticConfiguration(configuration: Record<string, any>) {
+  return {
+    target: configuration.target,
+    contentTypes: configuration.contentTypes,
+    options: configuration.options,
+    rules: configuration.rules
+      .map(({ find, replace }: { find: string; replace: string }) => ({ find, replace }))
+      .sort((left: { find: string; replace: string }, right: { find: string; replace: string }) =>
+        left.find.localeCompare(right.find) || left.replace.localeCompare(right.replace)),
+  };
+}
+
+async function legacyDigest(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(stableSerialize(value));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function searchCursorKey(cursor: Extract<InventoryCursor, { kind: "search" }>) {
+  return `search:${cursor.ruleId}:${cursor.page}`;
 }
 
 async function connectEnterpriseWriteCredentials(page: Page) {
@@ -527,10 +1086,16 @@ async function connectEnterpriseWriteCredentials(page: Page) {
   await expect(page.getByText("Credentials saved for this browser session.")).toBeVisible();
 }
 
+async function openContentReplacement(page: Page) {
+  await page.getByRole("button", { name: "Write Tools", exact: true }).click();
+  await page.getByRole("button", { name: "Content Replacement", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Content Replacement", level: 1 })).toBeVisible();
+}
+
 async function inspectIndexedDbStructuredClone(page: Page) {
   return page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("stack-api-content-replacement", 2);
+      const request = indexedDB.open("stack-api-content-replacement", 4);
       request.onerror = () => reject(request.error);
       request.onsuccess = () => resolve(request.result);
     });

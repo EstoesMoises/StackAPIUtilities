@@ -72,12 +72,28 @@ user and user-group editor permissions are also preserved in the complete API
 request model. Comments, tags, URL destinations, and other non-content fields
 are never replacement targets.
 
+Choose the discovery mode to match the operational need:
+
+| Mode | Use when | Coverage | Request profile |
+|---|---|---|---|
+| Targeted | You know the term but not the posts | Search-assisted; may miss matches | Search pages plus canonical candidate reads |
+| Exact IDs or URLs | You know the posts or are running a canary | Complete for supplied targets | One canonical read per target, batched through the browser |
+| Full audit | Missing any accessible match is unacceptable | Exhaustive after complete inventory | Every selected collection; zero-answer questions skip answer reads |
+
+New jobs default to Targeted scan. It paginates search results separately for
+each source term and deduplicates the resulting canonical references, but a
+search index is not a complete content inventory. Exact IDs or URLs keeps the
+normalized target list in the browser-local job and reads only those canonical
+posts. Full audit inventories every accessible selected collection before
+candidate-detail reads; it skips an answer collection only when the question
+summary reports a valid zero answer count.
+
 Rules can be entered in the mapping table or imported locally from CSV. The
 canonical CSV headers are exactly:
 
 ```csv
 find,replace
-MyPVM,MyPBM
+SOURCE_TERM,REPLACEMENT_TERM
 ```
 
 Imported rows can be appended to or replace the current mapping list. Blank,
@@ -97,7 +113,7 @@ and hidden raw HTML content remain protected. Advanced settings may enable
 case-insensitive or partial matching and replacement inside code, but they do
 not unprotect URL destinations or raw HTML attributes.
 
-Scanning is exhaustive for the selected content types within the enforced
+Full-audit scanning is exhaustive for the selected content types within the enforced
 guardrails: it paginates all accessible questions, each question's answer
 collection, and all articles, then fetches canonical detail records for
 conservative candidates. Inventory cursors have a 10,000-page ceiling, detail
@@ -153,6 +169,9 @@ Keep the browser open while a scan, apply batch, recovery preview, or recovery
 batch is actively making calls; work does not continue after the browser closes.
 Credential-free progress, proposal content, results, and recovery snapshots are
 saved in a dedicated browser IndexedDB database after each bounded operation.
+Rate-limit pauses are persisted locally. Reopen the saved local job, reconnect
+valid credentials for the same Enterprise origin, and explicitly resume when
+the persisted deadline has passed.
 After an interruption, reopen the saved local job, reconnect valid credentials
 for the same Enterprise origin, and explicitly choose Resume or Retry; completed
 bounded calls are not repeated. Retryable failures remain visible with their

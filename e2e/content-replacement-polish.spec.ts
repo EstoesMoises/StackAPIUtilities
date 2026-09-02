@@ -31,6 +31,9 @@ test("has no page-horizontal overflow at desktop or narrow mobile widths", async
   for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
     await openContentReplacementPolishSurface(page);
+    await expect(page.getByRole("radio", { name: /Targeted scan/ })).toBeChecked();
+    await expect(page.getByRole("radio", { name: /Exact IDs or URLs/ })).not.toBeChecked();
+    await expect(page.getByRole("radio", { name: /Full audit/ })).not.toBeChecked();
     const dimensions = await page.evaluate(() => ({
       viewportWidth: document.documentElement.clientWidth,
       pageWidth: document.documentElement.scrollWidth,
