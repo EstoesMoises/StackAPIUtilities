@@ -87,6 +87,28 @@ describe("ContentReplacementWizard", () => {
     }));
   });
 
+  it("passes one immutable normalized exact-target seed only when starting an Exact scan", async () => {
+    const user = userEvent.setup();
+    const jobController = controller(null);
+    render(<ContentReplacementWizard credentials={credentials} controller={jobController} />);
+
+    await user.type(screen.getByLabelText("Find term 1"), "before");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "after");
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    await user.type(screen.getByLabelText("Paste target URLs"), `${credentials.baseUrl}/questions/42`);
+    await user.click(screen.getByRole("button", { name: "Add pasted targets" }));
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    await user.click(screen.getByRole("button", { name: "Start scan" }));
+
+    expect(jobController.createJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        discovery: expect.objectContaining({ mode: "exact", targetCount: 1, targetDigest: expect.any(String) }),
+      }),
+      [{ kind: "question", questionId: 42 }],
+    );
+    expect(jobController.startScan).toHaveBeenCalledOnce();
+  });
+
   it("routes persisted Review and Apply stages to their complete screens", () => {
     const reviewController = controller(job({
       stage: "review",

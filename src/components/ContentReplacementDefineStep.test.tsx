@@ -317,6 +317,60 @@ describe("ContentReplacementDefineStep", () => {
     );
     expect(screen.getByRole("alert", { name: "Rule validation summary" })).not.toHaveTextContent(/highlighted field/i);
   });
+
+  it("invalidates the checkpoint for every discovery mutation and focuses exact-target errors", async () => {
+    const user = userEvent.setup();
+    const onStartScan = vi.fn();
+    render(
+      <ContentReplacementDefineStep
+        onStartScan={onStartScan}
+        expectedOrigin="https://example.stackenterprise.co"
+      />,
+    );
+    await user.type(screen.getByLabelText("Find term 1"), "before");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "after");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeEnabled();
+
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Target type 1"), "answer");
+    await user.type(screen.getByLabelText("Target ID or URL 1"), "87");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByLabelText("Parent question ID 1")).toHaveFocus();
+
+    await user.type(screen.getByLabelText("Parent question ID 1"), "42");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeEnabled();
+    await user.click(screen.getByRole("radio", { name: /Full audit/i }));
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+    expect(onStartScan).not.toHaveBeenCalled();
+  });
+
+  it("blocks a target outside the connected origin and selected content scope", async () => {
+    const user = userEvent.setup();
+    render(
+      <ContentReplacementDefineStep
+        onStartScan={vi.fn()}
+        expectedOrigin="https://example.stackenterprise.co"
+      />,
+    );
+    await user.type(screen.getByLabelText("Find term 1"), "before");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "after");
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    await user.type(screen.getByLabelText("Paste target URLs"), "https://wrong.stackenterprise.co/questions/42");
+    await user.click(screen.getByRole("button", { name: "Add pasted targets" }));
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByLabelText("Paste target URLs")).toHaveFocus();
+
+    await user.clear(screen.getByLabelText("Paste target URLs"));
+    await user.type(screen.getByLabelText("Paste target URLs"), "https://example.stackenterprise.co/articles/9");
+    await user.click(screen.getByRole("button", { name: "Add pasted targets" }));
+    await user.click(screen.getByLabelText("Articles"));
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByText(/article targets require Articles to be selected/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+  });
 });
 
 function deferred<T>() {

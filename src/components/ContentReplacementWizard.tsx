@@ -10,6 +10,7 @@ import type {
   ContentReplacementJobStage,
   PersistedContentReplacementJob,
   ReplacementConfiguration,
+  ReplacementItemRef,
 } from "../writeTools/contentReplacement/types";
 import { ContentReplacementApplyStep } from "./ContentReplacementApplyStep";
 import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
@@ -141,9 +142,13 @@ function ContentReplacementWizardView({
   const credentialReadiness = controller.credentialReadiness.refreshRequired
     ? controller.credentialReadiness
     : baseCredentialReadiness;
+  const expectedOrigin = baseCredentialReadiness.valid ? baseCredentialReadiness.origin : undefined;
 
-  async function startScan(configuration: ReplacementConfiguration) {
-    if (!await controller.createJob(configuration)) return;
+  async function startScan(configuration: ReplacementConfiguration, exactTargets?: ReplacementItemRef[]) {
+    const created = exactTargets
+      ? await controller.createJob(configuration, exactTargets)
+      : await controller.createJob(configuration);
+    if (!created) return;
     setDefiningNewJob(false);
     setConfirmingConfigurationEdit(false);
     await controller.startScan();
@@ -196,6 +201,7 @@ function ContentReplacementWizardView({
         {!restoring && !loadError && activeStep === 0 && (
           <ContentReplacementDefineStep
             onStartScan={startScan}
+            expectedOrigin={expectedOrigin}
             disabled={controller.busy || controller.rehydrating}
             scanReadiness={{ ready: credentialReadiness.valid, message: credentialReadiness.message }}
             setupError={controller.operationError ?? controller.storageError}

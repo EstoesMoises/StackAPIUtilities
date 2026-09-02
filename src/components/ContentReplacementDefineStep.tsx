@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, type Ref } from "react";
 import { downloadTextFile } from "../utils/downloads";
+import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
 import {
   MAX_FIND_LENGTH,
   MAX_REPLACEMENT_LENGTH,
@@ -12,6 +13,7 @@ import {
 } from "../writeTools/contentReplacement/rules";
 import type {
   ReplacementConfiguration,
+  ReplacementItemRef,
   ReplacementOptions,
   ReplacementRule,
 } from "../writeTools/contentReplacement/types";
@@ -19,9 +21,17 @@ import {
   ContentReplacementJobManager,
   type ContentReplacementJobManagerStorage,
 } from "./ContentReplacementJobManager";
+import {
+  ContentReplacementDiscoveryFields,
+  createInitialContentReplacementDiscoveryFieldsValue,
+  validateContentReplacementDiscoveryFields,
+  type ContentReplacementDiscoveryFieldsHandle,
+  type ContentReplacementDiscoveryFieldsValue,
+} from "./ContentReplacementDiscoveryFields";
 
 export interface ContentReplacementDefineStepProps {
-  onStartScan(configuration: ReplacementConfiguration): Promise<void> | void;
+  onStartScan(configuration: ReplacementConfiguration, exactTargets?: ReplacementItemRef[]): Promise<void> | void;
+  expectedOrigin?: string;
   disabled?: boolean;
   scanReadiness?: { ready: boolean; message: string };
   setupError?: string | null;
@@ -34,7 +44,9 @@ export interface ContentReplacementDefineStepProps {
 
 interface ReviewedCheckpoint {
   key: string;
+  draftKey: string;
   configuration: ReplacementConfiguration;
+  exactTargets?: ReplacementItemRef[];
 }
 
 interface PendingImport {
@@ -54,6 +66,7 @@ const RULE_ERROR_MESSAGES: Record<ReplacementRuleError["code"], string> = {
 
 export function ContentReplacementDefineStep({
   onStartScan,
+  expectedOrigin,
   disabled = false,
   scanReadiness = { ready: true, message: "" },
   setupError = null,
@@ -72,11 +85,15 @@ export function ContentReplacementDefineStep({
   const discardImportErrorsRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const firstImportChoiceRef = useRef<HTMLButtonElement>(null);
+  const discoveryFieldsRef = useRef<ContentReplacementDiscoveryFieldsHandle>(null);
   const [rules, setRules] = useState<ReplacementRule[]>([
     { id: "manual-1", find: "", replace: "" },
   ]);
   const [contentTypes, setContentTypes] = useState(defaults.contentTypes);
   const [options, setOptions] = useState(defaults.options);
+  const [discoveryFields, setDiscoveryFields] = useState<ContentReplacementDiscoveryFieldsValue>(
+    createInitialContentReplacementDiscoveryFieldsValue,
+  );
   const [reviewed, setReviewed] = useState<ReviewedCheckpoint | null>(null);
   const [showValidation, setShowValidation] = useState(false);
   const [fileErrors, setFileErrors] = useState<string[]>([]);
@@ -90,11 +107,14 @@ export function ContentReplacementDefineStep({
 
   const validation = validateReplacementRules(rules, options);
   const fieldErrors = getFieldErrors(rules, validation.errors);
+  const discoveryValidation = useMemo(
+    () => validateContentReplacementDiscoveryFields(discoveryFields, contentTypes, expectedOrigin),
+    [contentTypes, discoveryFields, expectedOrigin],
+  );
   const structuralErrors = getStructuralErrors(rules, contentTypes, fileReading, pendingImport !== null);
-  const errorCount = fieldErrors.length + structuralErrors.length + fileErrors.length;
-  const configuration = createConfiguration(contentTypes, validation.rules, options);
-  const currentKey = configurationSnapshotKey(rules, contentTypes, options);
-  const checkpointCurrent = reviewed?.key === currentKey;
+  const errorCount = fieldErrors.length + structuralErrors.length + fileErrors.length + discoveryValidation.errors.length;
+  const currentDraftKey = configurationDraftSnapshotKey(rules, contentTypes, options, discoveryFields.mode, discoveryValidation.targets);
+  const checkpointCurrent = reviewed?.draftKey === currentDraftKey;
   const canStart = checkpointCurrent && errorCount === 0 && scanReadiness.ready && !disabled && !starting;
 
   function invalidateCheckpoint() {
@@ -193,7 +213,7 @@ export function ContentReplacementDefineStep({
     invalidateCheckpoint();
   }
 
-  function reviewRules() {
+  async function reviewRules() {
     setShowValidation(true);
     if (errorCount > 0) {
       setReviewed(null);
@@ -204,10 +224,33 @@ export function ContentReplacementDefineStep({
         else if (fileErrors.length > 0) discardImportErrorsRef.current?.focus();
         else if (pendingImport) firstImportChoiceRef.current?.focus();
         else if (fileReading) fileInputRef.current?.focus();
+        else discoveryFieldsRef.current?.focusFirstError();
       });
       return;
     }
-    setReviewed({ key: currentKey, configuration });
+    let discovery: ReplacementConfiguration["discovery"];
+    let exactTargets: ReplacementItemRef[] | undefined;
+    if (discoveryFields.mode === "exact") {
+      try {
+        const exactSelection = await createExactTargetSelection(discoveryValidation.targets);
+        discovery = exactSelection.discovery;
+        exactTargets = freezeExactTargets(exactSelection.targets);
+      } catch (error) {
+        setReviewed(null);
+        setStartError(error instanceof Error ? error.message : "Exact targets could not be prepared.");
+        queueMicrotask(() => discoveryFieldsRef.current?.focusFirstError());
+        return;
+      }
+    } else {
+      discovery = discoveryFields.mode === "full" ? { mode: "full" } : { mode: "targeted" };
+    }
+    const configuration = createConfiguration(contentTypes, validation.rules, options, discovery);
+    setReviewed({
+      key: configurationSnapshotKey(rules, contentTypes, options, discovery),
+      draftKey: currentDraftKey,
+      configuration,
+      exactTargets,
+    });
   }
 
   async function startScan() {
@@ -215,7 +258,8 @@ export function ContentReplacementDefineStep({
     startPending.current = true;
     setStarting(true);
     try {
-      await onStartScan(reviewed.configuration);
+      if (reviewed.exactTargets) await onStartScan(reviewed.configuration, reviewed.exactTargets);
+      else await onStartScan(reviewed.configuration);
       setStartError(null);
     } catch (error) {
       setStartError(error instanceof Error ? error.message : "The content replacement scan could not be started.");
@@ -246,6 +290,19 @@ export function ContentReplacementDefineStep({
           <div><dt>Content space</dt><dd>Enterprise main site</dd></div>
         </dl>
       </section>
+
+      <ContentReplacementDiscoveryFields
+        ref={discoveryFieldsRef}
+        value={discoveryFields}
+        onChange={(next) => {
+          setDiscoveryFields(next);
+          invalidateCheckpoint();
+        }}
+        expectedOrigin={expectedOrigin}
+        contentTypes={contentTypes}
+        showValidation={showValidation}
+        disabled={disabled || starting}
+      />
 
       <section className="content-replacement-section" aria-labelledby="content-replacement-mappings-heading">
         <div className="content-replacement-section-heading">
@@ -449,11 +506,12 @@ function createConfiguration(
   contentTypes: ReplacementConfiguration["contentTypes"],
   rules: ReplacementRule[],
   options: ReplacementOptions,
+  discovery: ReplacementConfiguration["discovery"],
 ): ReplacementConfiguration {
   return {
     target: { kind: "enterprise-main" },
     contentTypes: { ...contentTypes },
-    discovery: { mode: "targeted" },
+    discovery,
     rules: rules.map((rule) => ({ ...rule })),
     options: { ...options },
   };
@@ -463,8 +521,23 @@ function configurationSnapshotKey(
   rules: ReplacementRule[],
   contentTypes: ReplacementConfiguration["contentTypes"],
   options: ReplacementOptions,
+  discovery: ReplacementConfiguration["discovery"],
 ) {
-  return JSON.stringify({ rules, contentTypes, options });
+  return JSON.stringify({ rules, contentTypes, options, discovery });
+}
+
+function configurationDraftSnapshotKey(
+  rules: ReplacementRule[],
+  contentTypes: ReplacementConfiguration["contentTypes"],
+  options: ReplacementOptions,
+  mode: ContentReplacementDiscoveryFieldsValue["mode"],
+  exactTargets: ReplacementItemRef[],
+) {
+  return JSON.stringify({ rules, contentTypes, options, discovery: { mode, exactTargets } });
+}
+
+function freezeExactTargets(targets: ReplacementItemRef[]): ReplacementItemRef[] {
+  return Object.freeze(targets.map((target) => Object.freeze({ ...target }))) as unknown as ReplacementItemRef[];
 }
 
 function getStructuralErrors(
