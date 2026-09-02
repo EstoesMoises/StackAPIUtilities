@@ -70,6 +70,10 @@ const PROGRESS_KEYS = [
   "questionPages", "answerPages", "articlePages", "inventoryItems", "detailsInspected",
   "proposalsFound", "protectedOccurrences", "applyCompleted", "recoveryCompleted",
 ] as const;
+const SUMMARY_KEYS = [
+  "id", "sortKey", "baseUrl", "stage", "status", "mappingCount", "proposedPostCount",
+  "recoverySnapshotStatus", "updatedAt",
+] as const;
 
 export interface ContentReplacementJobSummary {
   id: string;
@@ -225,8 +229,13 @@ function assertStoredRecordCoherence(
   const wrapper = storedRecordEnvelope(value);
   if (!wrapper) return;
   if (wrapper.id !== expectedId || job.id !== expectedId) throw corruptJob();
-  const summary = cloneSafeDataGraph(wrapper.summary);
-  if (stableSerialize(summary) !== stableSerialize(summaryFromJob(job))) throw corruptJob();
+  try {
+    const summary = exactObject(cloneSafeDataGraph(wrapper.summary), SUMMARY_KEYS);
+    const expectedSummary = summaryFromJob(job);
+    if (SUMMARY_KEYS.some((key) => summary[key] !== expectedSummary[key])) throw corruptJob();
+  } catch {
+    throw corruptJob();
+  }
 }
 
 export async function deleteContentReplacementJob(id: string): Promise<void> {

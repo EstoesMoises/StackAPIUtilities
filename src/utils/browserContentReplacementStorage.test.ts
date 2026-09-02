@@ -968,6 +968,45 @@ describe("browserContentReplacementStorage", () => {
     );
   });
 
+  it("maps a BigInt stored-summary value to the stable content-free corruption error", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const job = { ...createJob(), id: "bigint-summary-job" };
+    const stored = storedRecordForTest(job);
+    (stored.summary as Record<string, unknown>).mappingCount = 9_007_199_254_740_993n;
+    fake.records.set(job.id, stored);
+
+    const error = await loadContentReplacementJob(job.id).catch((caught: unknown) => caught);
+    expect(error).toEqual(new TypeError("Stored content replacement job is invalid."));
+    expect(String(error)).not.toContain("BigInt");
+    expect(String(error)).not.toContain(job.id);
+    expect(String(error)).not.toContain("9007199254740993");
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["NaN", Number.NaN],
+    ["positive infinity", Number.POSITIVE_INFINITY],
+    ["date object", new Date("2026-09-02T12:00:00.000Z")],
+    ["map object", new Map([["private", "value"]])],
+  ])("maps a schema-forbidden %s summary value to the stable corruption error", async (label, value) => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const job = { ...createJob(), id: `hostile-summary-${label.split(" ").join("-")}` };
+    const stored = storedRecordForTest(job);
+    (stored.summary as Record<string, unknown>).mappingCount = value;
+    fake.records.set(job.id, stored);
+
+    const error = await loadContentReplacementJob(job.id).catch((caught: unknown) => caught);
+    expect(error).toEqual(new TypeError("Stored content replacement job is invalid."));
+    expect(String(error)).not.toContain(job.id);
+    expect(String(error)).not.toContain("private");
+  });
+
   it("opens exact legacy jobs and exact v2 wrappers without conflating their shapes", async () => {
     const fake = installFakeIndexedDB();
     fake.databaseVersion = 2;
