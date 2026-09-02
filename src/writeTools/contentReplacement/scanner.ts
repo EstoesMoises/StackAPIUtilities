@@ -6,6 +6,7 @@ import type {
   ContentReplacementClient,
   QuestionSummary,
 } from "./contentApi";
+import { replaceMarkdown } from "./markdown";
 import { buildReplacementProposal } from "./proposals";
 import type {
   DetailBatchResult,
@@ -86,24 +87,38 @@ export async function scanDetailBatch(
   assertValidDetailRefs(input.refs);
 
   const proposals: DetailBatchResult["proposals"] = [];
+  let protectedOccurrenceCount = 0;
   for (let offset = 0; offset < input.refs.length; offset += MAX_CONCURRENT_DETAIL_REQUESTS) {
     const batch = input.refs.slice(offset, offset + MAX_CONCURRENT_DETAIL_REQUESTS);
-    const batchProposals = await Promise.all(
+    const batchResults = await Promise.all(
       batch.map(async (ref) => {
         const detail = await client.getItem(ref);
-        return buildReplacementProposal(detail, input.configuration);
+        const proposal = await buildReplacementProposal(detail, input.configuration);
+        return {
+          proposal,
+          protectedOccurrenceCount: proposal
+            ? proposal.protectedOccurrences.length
+            : replaceMarkdown(
+                detail.request.body,
+                input.configuration.rules,
+                input.configuration.options,
+              ).protectedOccurrences.length,
+        };
       }),
     );
-    proposals.push(...batchProposals.filter((proposal) => proposal !== null));
+    proposals.push(
+      ...batchResults.flatMap(({ proposal }) => proposal === null ? [] : [proposal]),
+    );
+    protectedOccurrenceCount += batchResults.reduce(
+      (count, result) => count + result.protectedOccurrenceCount,
+      0,
+    );
   }
 
   return {
     proposals,
     inspectedCount: input.refs.length,
-    protectedOccurrenceCount: proposals.reduce(
-      (count, proposal) => count + proposal.protectedOccurrences.length,
-      0,
-    ),
+    protectedOccurrenceCount,
   };
 }
 
@@ -111,7 +126,8 @@ function isQuestionCandidate(
   summary: QuestionSummary,
   configuration: ReplacementConfiguration,
 ): boolean {
-  return fieldsContainCandidate([summary.title, summary.body], configuration);
+  return titleContainsCandidate(summary.title, configuration) ||
+    fieldsContainCandidate([summary.body], configuration);
 }
 
 function isAnswerCandidate(
@@ -125,7 +141,21 @@ function isArticleCandidate(
   summary: ArticleSummary,
   configuration: ReplacementConfiguration,
 ): boolean {
-  return fieldsContainCandidate([summary.title, summary.body], configuration);
+  return titleContainsCandidate(summary.title, configuration) ||
+    fieldsContainCandidate([summary.body], configuration);
+}
+
+function titleContainsCandidate(
+  title: unknown,
+  configuration: ReplacementConfiguration,
+): boolean {
+  if (typeof title !== "string") return true;
+  try {
+    if (configuration.rules.some((rule) => termMatches(title, rule, configuration))) return true;
+  } catch {
+    return true;
+  }
+  return fieldsContainCandidate([title], configuration);
 }
 
 function fieldsContainCandidate(
@@ -137,34 +167,41 @@ function fieldsContainCandidate(
 
   try {
     return visibleFields.some((field) =>
-      configuration.rules.some((rule) => termMatches(field!, rule, configuration)),
+      field!.some((source) =>
+        configuration.rules.some((rule) => termMatches(source, rule, configuration)),
+      ),
     );
   } catch {
     return true;
   }
 }
 
-function visibleText(value: unknown): string | null {
+function visibleText(value: unknown): string[] | null {
   if (typeof value !== "string") return null;
 
   try {
     const fragment = parseFragment(value);
-    return collectVisibleText(fragment);
+    const textNodes: string[] = [];
+    collectVisibleText(fragment, textNodes);
+    return [...textNodes, textNodes.join("")];
   } catch {
     return null;
   }
 }
 
-function collectVisibleText(node: DefaultTreeAdapterTypes.Node): string {
-  if (defaultTreeAdapter.isTextNode(node)) return node.value;
+function collectVisibleText(node: DefaultTreeAdapterTypes.Node, textNodes: string[]): void {
+  if (defaultTreeAdapter.isTextNode(node)) {
+    textNodes.push(node.value);
+    return;
+  }
   if (
     "tagName" in node &&
     (node.tagName === "script" || node.tagName === "style" || node.tagName === "template")
   ) {
-    return "";
+    return;
   }
-  if (!("childNodes" in node)) return "";
-  return node.childNodes.map(collectVisibleText).join("");
+  if (!("childNodes" in node)) return;
+  node.childNodes.forEach((child) => collectVisibleText(child, textNodes));
 }
 
 function termMatches(

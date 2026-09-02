@@ -144,6 +144,32 @@ describe("bounded content replacement scanning", () => {
     expect(result.candidates).toEqual([{ kind: "answer", questionId: 10, answerId: 8 }]);
   });
 
+  it("keeps whole-term matches when a following block starts with a word character", async () => {
+    const client = new FakeContentClient({
+      questions: page([{ id: 10, title: "Safe", body: "<p>MyPVM</p><p>x</p>" }]),
+    });
+
+    const result = await scanInventorySlice(client, {
+      cursor: { kind: "questions", page: 1 },
+      configuration,
+    });
+
+    expect(result.candidates).toEqual([{ kind: "question", questionId: 10 }]);
+  });
+
+  it("checks literal markup-like question titles in addition to decoded HTML text", async () => {
+    const client = new FakeContentClient({
+      questions: page([{ id: 10, title: "Compare <MyPVM> APIs", body: "<p>Safe</p>" }]),
+    });
+
+    const result = await scanInventorySlice(client, {
+      cursor: { kind: "questions", page: 1 },
+      configuration,
+    });
+
+    expect(result.candidates).toEqual([{ kind: "question", questionId: 10 }]);
+  });
+
   it("does not inspect URL attributes, comments, scripts, or styles as visible text", async () => {
     const client = new FakeContentClient({
       articles: page([
@@ -260,6 +286,22 @@ describe("bounded content replacement scanning", () => {
 
     expect(result.proposals).toHaveLength(1);
     expect(result.inspectedCount).toBe(2);
+    expect(result.protectedOccurrenceCount).toBe(1);
+  });
+
+  it("counts protected-only canonical body occurrences without creating a proposal", async () => {
+    const client = new FakeContentClient({}, async (ref) => ({
+      kind: "answer",
+      ref: ref as Extract<ReplacementItemRef, { kind: "answer" }>,
+      request: { body: "`MyPVM`" },
+    }));
+
+    const result = await scanDetailBatch(client, {
+      refs: [{ kind: "answer", questionId: 10, answerId: 8 }],
+      configuration,
+    });
+
+    expect(result.proposals).toEqual([]);
     expect(result.protectedOccurrenceCount).toBe(1);
   });
 
