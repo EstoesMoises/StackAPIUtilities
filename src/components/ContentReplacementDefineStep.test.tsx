@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
@@ -370,6 +370,75 @@ describe("ContentReplacementDefineStep", () => {
     await user.click(screen.getByRole("button", { name: "Review rules" }));
     expect(screen.getByText(/article targets require Articles to be selected/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+  });
+
+  it("focuses the first target editor when Exact has no supplied targets", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} expectedOrigin="https://example.stackenterprise.co" />);
+    await user.type(screen.getByLabelText("Find term 1"), "before");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "after");
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByLabelText("Target ID or URL 1")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+  });
+
+  it("focuses the incompatible content-type checkbox for an Exact target", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} expectedOrigin="https://example.stackenterprise.co" />);
+    await user.type(screen.getByLabelText("Find term 1"), "before");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "after");
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    await user.type(screen.getByLabelText("Paste target URLs"), "https://example.stackenterprise.co/articles/9");
+    await user.click(screen.getByRole("button", { name: "Add pasted targets" }));
+    await user.click(screen.getByLabelText("Articles"));
+
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByLabelText("Articles")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+  });
+
+  it("focuses the first target editor when Exact exceeds the target ceiling", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} expectedOrigin="https://example.stackenterprise.co" />);
+    await user.type(screen.getByLabelText("Find term 1"), "before");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "after");
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    const targets = Array.from(
+      { length: 100_001 },
+      (_, index) => `https://example.stackenterprise.co/questions/${index + 1}`,
+    ).join("\n");
+    fireEvent.change(screen.getByLabelText("Paste target URLs"), { target: { value: targets } });
+    await user.click(screen.getByRole("button", { name: "Add pasted targets" }));
+
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByLabelText("Target ID or URL 1")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+  });
+
+  it("blocks Review and focuses a failed target-CSV import until it is cleared", async () => {
+    const user = userEvent.setup();
+    const failedFile = new File(["ignored"], "unreadable-targets.csv", { type: "text/csv" });
+    Object.defineProperty(failedFile, "text", { value: () => Promise.reject(new Error("Target CSV could not be read.")) });
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} expectedOrigin="https://example.stackenterprise.co" />);
+    await user.type(screen.getByLabelText("Find term 1"), "before");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "after");
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    await user.type(screen.getByLabelText("Paste target URLs"), "https://example.stackenterprise.co/questions/42");
+    await user.click(screen.getByRole("button", { name: "Add pasted targets" }));
+    await user.upload(screen.getByLabelText("Import target CSV"), failedFile);
+
+    expect(await screen.findByText("Target CSV could not be read.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByLabelText("Import target CSV")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Clear target CSV error" }));
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeEnabled();
   });
 });
 

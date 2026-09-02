@@ -39,6 +39,7 @@ export interface ContentReplacementDiscoveryFieldsValue {
   importedTargets: ReplacementItemRef[];
   importedErrors: ExactTargetParseError[];
   importedDuplicateCount: number;
+  targetCsvError: string | null;
   targetCsvStatus: string | null;
   targetCsvReading: boolean;
 }
@@ -53,6 +54,8 @@ export interface ContentReplacementDiscoveryError {
   target: "rows" | "paste" | "csv" | "mode";
   rowId?: string;
   field?: "kind" | "value" | "parentQuestionId";
+  contentType?: keyof ReplacementConfiguration["contentTypes"];
+  code?: ExactTargetParseErrorCode;
   message: string;
 }
 
@@ -106,6 +109,7 @@ export function createInitialContentReplacementDiscoveryFieldsValue(): ContentRe
     importedTargets: [],
     importedErrors: [],
     importedDuplicateCount: 0,
+    targetCsvError: null,
     targetCsvStatus: null,
     targetCsvReading: false,
   };
@@ -132,6 +136,9 @@ export function validateContentReplacementDiscoveryFields(
 
   errors.push(...formatParserErrors(value.pastedErrors, "paste"));
   errors.push(...formatParserErrors(value.importedErrors, "csv"));
+  if (value.targetCsvError) {
+    errors.push({ target: "csv", message: value.targetCsvError });
+  }
   if (value.targetCsvReading) {
     errors.push({ target: "csv", message: "Wait for the target CSV file read to finish." });
   }
@@ -154,11 +161,23 @@ export function validateContentReplacementDiscoveryFields(
   }
   for (const target of targets) {
     if (target.kind === "question" && !contentTypes.questions) {
-      errors.push({ target: "mode", message: "Question targets require Questions to be selected." });
+      errors.push({
+        target: "mode",
+        contentType: "questions",
+        message: "Question targets require Questions to be selected.",
+      });
     } else if (target.kind === "answer" && !contentTypes.answers) {
-      errors.push({ target: "mode", message: "Answer targets require Answers to be selected." });
+      errors.push({
+        target: "mode",
+        contentType: "answers",
+        message: "Answer targets require Answers to be selected.",
+      });
     } else if (target.kind === "article" && !contentTypes.articles) {
-      errors.push({ target: "mode", message: "Article targets require Articles to be selected." });
+      errors.push({
+        target: "mode",
+        contentType: "articles",
+        message: "Article targets require Articles to be selected.",
+      });
     }
   }
 
@@ -188,25 +207,31 @@ export const ContentReplacementDiscoveryFields = forwardRef<
   const pasteRef = useRef<HTMLTextAreaElement>(null);
   const csvRef = useRef<HTMLInputElement>(null);
   const fileReadRequestId = useRef(0);
+  const currentValueRef = useRef(value);
+  currentValueRef.current = value;
 
   useImperativeHandle(ref, () => ({
     focusFirstError() {
       const first = validation.errors[0];
       if (!first) return;
-      if (first.target === "rows" && first.rowId && first.field) {
+      if (first.code === "too-many-targets" || first.target === "mode") {
+        const firstTarget = currentValueRef.current.exactRows[0];
+        if (firstTarget) rowRefs.current.get(`${firstTarget.id}:value`)?.focus();
+      } else if (first.target === "rows" && first.rowId && first.field) {
         rowRefs.current.get(`${first.rowId}:${first.field}`)?.focus();
       } else if (first.target === "paste") {
         pasteRef.current?.focus();
       } else if (first.target === "csv") {
         csvRef.current?.focus();
-      } else {
-        document.querySelector<HTMLInputElement>("input[name='content-replacement-discovery-mode']:checked")?.focus();
       }
     },
   }), [validation.errors]);
 
-  function update(next: Partial<ContentReplacementDiscoveryFieldsValue>) {
-    onChange({ ...value, ...next });
+  function update(
+    next: Partial<ContentReplacementDiscoveryFieldsValue> | ((current: ContentReplacementDiscoveryFieldsValue) => Partial<ContentReplacementDiscoveryFieldsValue>),
+  ) {
+    const current = currentValueRef.current;
+    onChange({ ...current, ...(typeof next === "function" ? next(current) : next) });
   }
 
   function changeMode(mode: ReplacementDiscoveryMode) {
@@ -214,38 +239,43 @@ export const ContentReplacementDiscoveryFields = forwardRef<
   }
 
   function changeRow(rowId: string, field: keyof ExactTargetDraftRow, nextValue: string) {
-    update({
-      exactRows: value.exactRows.map((row) => row.id === rowId ? { ...row, [field]: nextValue } : row),
-    });
+    update((current) => ({
+      exactRows: current.exactRows.map((row) => row.id === rowId ? { ...row, [field]: nextValue } : row),
+    }));
   }
 
   function addRow() {
-    if (value.exactRows.length >= MAX_EXACT_REPLACEMENT_TARGETS) return;
-    update({
-      exactRows: [
-        ...value.exactRows,
-        {
-          id: `exact-${value.exactRows.length + 1}-${Date.now()}`,
-          kind: "question",
-          value: "",
-          parentQuestionId: "",
-        },
-      ],
+    update((current) => {
+      if (current.exactRows.length >= MAX_EXACT_REPLACEMENT_TARGETS) return {};
+      return {
+        exactRows: [
+          ...current.exactRows,
+          {
+            id: `exact-${current.exactRows.length + 1}-${Date.now()}`,
+            kind: "question",
+            value: "",
+            parentQuestionId: "",
+          },
+        ],
+      };
     });
   }
 
   function removeRow(rowId: string) {
-    if (value.exactRows.length === 1) return;
-    update({ exactRows: value.exactRows.filter((row) => row.id !== rowId) });
+    update((current) => {
+      if (current.exactRows.length === 1) return {};
+      return { exactRows: current.exactRows.filter((row) => row.id !== rowId) };
+    });
   }
 
   function addPastedTargets() {
-    const parsed = parseExactTargetLines(value.pastedUrls, expectedOrigin ?? "");
+    const current = currentValueRef.current;
+    const parsed = parseExactTargetLines(current.pastedUrls, expectedOrigin ?? "");
     update({
-      pastedTargets: [...value.pastedTargets, ...parsed.targets],
+      pastedTargets: [...current.pastedTargets, ...parsed.targets],
       pastedErrors: parsed.errors,
-      pastedDuplicateCount: value.pastedDuplicateCount + parsed.duplicateCount,
-      pastedUrls: parsed.errors.length === 0 ? "" : value.pastedUrls,
+      pastedDuplicateCount: current.pastedDuplicateCount + parsed.duplicateCount,
+      pastedUrls: parsed.errors.length === 0 ? "" : current.pastedUrls,
     });
   }
 
@@ -254,6 +284,7 @@ export const ContentReplacementDiscoveryFields = forwardRef<
     fileReadRequestId.current = requestId;
     update({
       importedErrors: [],
+      targetCsvError: null,
       targetCsvStatus: file ? `Reading ${file.name}…` : null,
       targetCsvReading: !!file,
     });
@@ -263,11 +294,13 @@ export const ContentReplacementDiscoveryFields = forwardRef<
       const csv = await readFileText(file);
       if (fileReadRequestId.current !== requestId) return;
       const parsed = parseExactTargetCsv(csv, expectedOrigin ?? "");
+      const current = currentValueRef.current;
       onChange({
-        ...value,
-        importedTargets: [...value.importedTargets, ...parsed.targets],
+        ...current,
+        importedTargets: [...current.importedTargets, ...parsed.targets],
         importedErrors: parsed.errors,
-        importedDuplicateCount: value.importedDuplicateCount + parsed.duplicateCount,
+        importedDuplicateCount: current.importedDuplicateCount + parsed.duplicateCount,
+        targetCsvError: null,
         targetCsvStatus: parsed.errors.length === 0
           ? `Loaded ${parsed.targets.length} ${parsed.targets.length === 1 ? "target" : "targets"} from ${file.name}.`
           : null,
@@ -275,16 +308,21 @@ export const ContentReplacementDiscoveryFields = forwardRef<
       });
     } catch (error) {
       if (fileReadRequestId.current !== requestId) return;
+      const current = currentValueRef.current;
       onChange({
-        ...value,
+        ...current,
         importedErrors: [],
-        targetCsvStatus: error instanceof Error ? error.message : `Unable to read ${file.name}.`,
+        targetCsvError: error instanceof Error ? error.message : `Unable to read ${file.name}.`,
+        targetCsvStatus: null,
         targetCsvReading: false,
       });
     }
   }
 
   const visibleErrors = showValidation ? validation.errors : [];
+  const csvErrors = (showValidation || value.importedErrors.length > 0 || value.targetCsvError)
+    ? validation.errors.filter((error) => error.target === "csv")
+    : [];
   const exactActive = value.mode === "exact";
   return (
     <fieldset className="content-replacement-section content-replacement-discovery" disabled={disabled}>
@@ -328,6 +366,9 @@ export const ContentReplacementDiscoveryFields = forwardRef<
               const typeErrors = rowFieldErrors("kind");
               const valueErrors = rowFieldErrors("value");
               const parentErrors = rowFieldErrors("parentQuestionId");
+              const typeErrorId = targetRowErrorId(row.id, "kind");
+              const valueErrorId = targetRowErrorId(row.id, "value");
+              const parentErrorId = targetRowErrorId(row.id, "parentQuestionId");
               return (
                 <div className="content-replacement-exact-target-row" key={row.id}>
                   <label>
@@ -336,6 +377,7 @@ export const ContentReplacementDiscoveryFields = forwardRef<
                       className="s-select"
                       aria-label={`Target type ${index + 1}`}
                       aria-invalid={typeErrors.length > 0 ? "true" : undefined}
+                      aria-describedby={typeErrors.length > 0 ? typeErrorId : undefined}
                       ref={(node) => setFieldRef(rowRefs.current, row.id, "kind", node)}
                       value={row.kind}
                       onChange={(event) => changeRow(row.id, "kind", event.currentTarget.value)}
@@ -344,7 +386,7 @@ export const ContentReplacementDiscoveryFields = forwardRef<
                       <option value="answer">Answer</option>
                       <option value="article">Article</option>
                     </select>
-                    <FieldErrors errors={typeErrors} />
+                    <FieldErrors id={typeErrorId} errors={typeErrors} />
                   </label>
                   <label>
                     Target ID or URL {index + 1}
@@ -352,11 +394,12 @@ export const ContentReplacementDiscoveryFields = forwardRef<
                       className="s-input"
                       aria-label={`Target ID or URL ${index + 1}`}
                       aria-invalid={valueErrors.length > 0 ? "true" : undefined}
+                      aria-describedby={valueErrors.length > 0 ? valueErrorId : undefined}
                       ref={(node) => setFieldRef(rowRefs.current, row.id, "value", node)}
                       value={row.value}
                       onChange={(event) => changeRow(row.id, "value", event.currentTarget.value)}
                     />
-                    <FieldErrors errors={valueErrors} />
+                    <FieldErrors id={valueErrorId} errors={valueErrors} />
                   </label>
                   {row.kind === "answer" && (
                     <label>
@@ -366,11 +409,12 @@ export const ContentReplacementDiscoveryFields = forwardRef<
                         aria-label={`Parent question ID ${index + 1}`}
                         inputMode="numeric"
                         aria-invalid={parentErrors.length > 0 ? "true" : undefined}
+                        aria-describedby={parentErrors.length > 0 ? parentErrorId : undefined}
                         ref={(node) => setFieldRef(rowRefs.current, row.id, "parentQuestionId", node)}
                         value={row.parentQuestionId}
                         onChange={(event) => changeRow(row.id, "parentQuestionId", event.currentTarget.value)}
                       />
-                      <FieldErrors errors={parentErrors} />
+                      <FieldErrors id={parentErrorId} errors={parentErrors} />
                     </label>
                   )}
                   <button
@@ -417,12 +461,15 @@ export const ContentReplacementDiscoveryFields = forwardRef<
                   type="file"
                   accept=".csv,text/csv"
                   aria-label="Import target CSV"
+                  aria-invalid={csvErrors.length > 0 ? "true" : undefined}
+                  aria-describedby={csvErrors.length > 0 ? "content-replacement-target-csv-error" : undefined}
                   onChange={(event: ChangeEvent<HTMLInputElement>) => void handleTargetCsv(event.currentTarget.files?.[0])}
                 />
               </label>
             </div>
             {value.targetCsvStatus && <p role="status">{value.targetCsvStatus}</p>}
-            <FieldErrors errors={visibleErrors.filter((error) => error.target === "csv")} />
+            <FieldErrors id="content-replacement-target-csv-error" errors={csvErrors} />
+            {value.targetCsvError && <button className="s-btn s-btn__outlined s-btn__xs" type="button" onClick={() => update({ targetCsvError: null })}>Clear target CSV error</button>}
           </div>
 
           <div className="content-replacement-exact-target-summary" aria-live="polite">
@@ -477,6 +524,7 @@ function formatParserErrors(
 ): ContentReplacementDiscoveryError[] {
   return errors.map((error) => ({
     target,
+    code: error.code,
     message: `${target === "csv" ? "Target CSV" : "Pasted target"} line ${error.sourceLine}: ${formatParseError(error)}.`,
   }));
 }
@@ -505,6 +553,18 @@ function formatParseError(error: ExactTargetParseError): string {
 function FieldErrors({ errors, id }: { errors: ContentReplacementDiscoveryError[]; id?: string }) {
   if (errors.length === 0) return null;
   return <span className="content-replacement-field-error" id={id}>{errors.map((error) => error.message).join(" ")}</span>;
+}
+
+function targetRowErrorId(
+  rowId: string,
+  field: NonNullable<ContentReplacementDiscoveryError["field"]>,
+) {
+  const suffix: Record<NonNullable<ContentReplacementDiscoveryError["field"]>, string> = {
+    kind: "target-type",
+    value: "target-id-or-url",
+    parentQuestionId: "parent-question-id",
+  };
+  return `content-replacement-${rowId}-${suffix[field]}-error`;
 }
 
 function formatTargetCount(count: number) {

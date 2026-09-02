@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -16,13 +16,18 @@ function DiscoveryFieldsHarness() {
     createInitialContentReplacementDiscoveryFieldsValue(),
   );
   return (
-    <ContentReplacementDiscoveryFields
-      value={value}
-      onChange={setValue}
-      expectedOrigin={ORIGIN}
-      contentTypes={{ questions: true, answers: true, articles: true }}
-      showValidation
-    />
+    <>
+      <ContentReplacementDiscoveryFields
+        value={value}
+        onChange={setValue}
+        expectedOrigin={ORIGIN}
+        contentTypes={{ questions: true, answers: true, articles: true }}
+        showValidation
+      />
+      <output data-testid="discovery-draft-state">
+        {`${value.mode}:${value.exactRows.length}:${value.importedTargets.length}:${value.exactRows.map((row) => row.value).join(",")}`}
+      </output>
+    </>
   );
 }
 
@@ -33,12 +38,14 @@ describe("ContentReplacementDiscoveryFields", () => {
 
     const targeted = screen.getByRole("radio", { name: /Targeted scan/i });
     expect(targeted).toBeChecked();
+    expect(targeted.closest("label")).toHaveClass("is-selected");
     expect(screen.getByText("Search-assisted · may miss matches")).toBeVisible();
 
     targeted.focus();
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("radio", { name: /Exact IDs or URLs/i })).toBeChecked();
     expect(screen.getByRole("radio", { name: /Exact IDs or URLs/i })).toHaveFocus();
+    expect(screen.getByRole("radio", { name: /Exact IDs or URLs/i }).closest("label")).toHaveClass("is-selected");
     expect(screen.getByLabelText("Target type 1")).toHaveValue("question");
   });
 
@@ -73,6 +80,20 @@ describe("ContentReplacementDiscoveryFields", () => {
     expect(screen.getByText("1 valid target")).toBeVisible();
   });
 
+  it("associates typed-row validation with its actionable parent input", async () => {
+    const user = userEvent.setup();
+    render(<DiscoveryFieldsHarness />);
+
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    await user.selectOptions(screen.getByLabelText("Target type 1"), "answer");
+    await user.type(screen.getByLabelText("Target ID or URL 1"), "87");
+
+    const parent = screen.getByLabelText("Parent question ID 1");
+    expect(parent).toHaveAttribute("aria-invalid", "true");
+    expect(parent).toHaveAttribute("aria-describedby", "content-replacement-exact-1-parent-question-id-error");
+    expect(parent).toHaveAccessibleDescription(/answer target needs its parent question ID/i);
+  });
+
   it("provides the separate exact-target CSV template and import path", async () => {
     const user = userEvent.setup();
     render(<DiscoveryFieldsHarness />);
@@ -100,6 +121,43 @@ describe("ContentReplacementDiscoveryFields", () => {
       new File(["type,id,parent_question_id\narticle,9,"], "targets.csv", { type: "text/csv" }),
     );
     expect(await screen.findByText("1 valid target")).toBeVisible();
+  });
+
+  it("associates target-CSV parser errors with the import control", async () => {
+    const user = userEvent.setup();
+    render(<DiscoveryFieldsHarness />);
+
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    await user.upload(
+      screen.getByLabelText("Import target CSV"),
+      new File(["kind,number,parent\nquestion,42,"], "bad-targets.csv", { type: "text/csv" }),
+    );
+
+    const targetCsv = screen.getByLabelText("Import target CSV");
+    expect(targetCsv).toHaveAttribute("aria-invalid", "true");
+    expect(targetCsv).toHaveAttribute("aria-describedby", "content-replacement-target-csv-error");
+    expect(targetCsv).toHaveAccessibleDescription(/exact headers type,id,parent_question_id/i);
+  });
+
+  it("preserves latest edits and a mode switch when a deferred target CSV resolves", async () => {
+    const user = userEvent.setup();
+    const read = deferred<string>();
+    const file = new File(["ignored"], "deferred-targets.csv", { type: "text/csv" });
+    Object.defineProperty(file, "text", { value: () => read.promise });
+    render(<DiscoveryFieldsHarness />);
+
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    await user.upload(screen.getByLabelText("Import target CSV"), file);
+    await user.click(screen.getByRole("button", { name: "Add target" }));
+    await user.type(screen.getByLabelText("Target ID or URL 2"), "777");
+    await user.click(screen.getByRole("radio", { name: /Full audit/i }));
+    expect(screen.getByTestId("discovery-draft-state")).toHaveTextContent("full:2:0:,777");
+
+    await act(async () => read.resolve("type,id,parent_question_id\narticle,9,"));
+    await waitFor(() => expect(screen.getByTestId("discovery-draft-state")).toHaveTextContent("full:2:1:,777"));
+    expect(screen.getByRole("radio", { name: /Full audit/i })).toBeChecked();
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    expect(screen.getByLabelText("Target ID or URL 2")).toHaveValue("777");
   });
 
   it("reports the 100,000 unique-target ceiling before a scan can be reviewed", async () => {
@@ -139,4 +197,12 @@ async function blobText(blob: Blob): Promise<string> {
     reader.addEventListener("error", () => reject(reader.error));
     reader.readAsText(blob);
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }

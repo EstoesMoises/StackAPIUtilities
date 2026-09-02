@@ -81,7 +81,7 @@ export function ContentReplacementDefineStep({
   const fileReadRequestId = useRef(0);
   const startPending = useRef(false);
   const fieldRefs = useRef(new Map<string, HTMLInputElement>());
-  const firstContentTypeRef = useRef<HTMLInputElement>(null);
+  const contentTypeRefs = useRef(new Map<keyof ReplacementConfiguration["contentTypes"], HTMLInputElement>());
   const discardImportErrorsRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const firstImportChoiceRef = useRef<HTMLButtonElement>(null);
@@ -218,12 +218,14 @@ export function ContentReplacementDefineStep({
     if (errorCount > 0) {
       setReviewed(null);
       const firstInvalid = rules.flatMap((rule) => fieldErrors.filter((error) => error.ruleId === rule.id))[0];
+      const scopeMismatch = discoveryValidation.errors.find((error) => error.contentType);
       queueMicrotask(() => {
         if (firstInvalid) fieldRefs.current.get(`${firstInvalid.ruleId}:${firstInvalid.field}`)?.focus();
-        else if (!contentTypes.questions && !contentTypes.answers && !contentTypes.articles) firstContentTypeRef.current?.focus();
+        else if (!contentTypes.questions && !contentTypes.answers && !contentTypes.articles) contentTypeRefs.current.get("questions")?.focus();
         else if (fileErrors.length > 0) discardImportErrorsRef.current?.focus();
         else if (pendingImport) firstImportChoiceRef.current?.focus();
         else if (fileReading) fileInputRef.current?.focus();
+        else if (scopeMismatch?.contentType) contentTypeRefs.current.get(scopeMismatch.contentType)?.focus();
         else discoveryFieldsRef.current?.focusFirstError();
       });
       return;
@@ -411,9 +413,9 @@ export function ContentReplacementDefineStep({
       >
         <legend>Content types</legend>
         <div className="content-replacement-checkboxes">
-          <Checkbox inputRef={firstContentTypeRef} label="Questions" checked={contentTypes.questions} onChange={(checked) => updateContentType("questions", checked)} />
-          <Checkbox label="Answers" checked={contentTypes.answers} onChange={(checked) => updateContentType("answers", checked)} />
-          <Checkbox label="Articles" checked={contentTypes.articles} onChange={(checked) => updateContentType("articles", checked)} />
+          <Checkbox inputRef={(node) => setContentTypeRef(contentTypeRefs.current, "questions", node)} label="Questions" checked={contentTypes.questions} onChange={(checked) => updateContentType("questions", checked)} />
+          <Checkbox inputRef={(node) => setContentTypeRef(contentTypeRefs.current, "answers", node)} label="Answers" checked={contentTypes.answers} onChange={(checked) => updateContentType("answers", checked)} />
+          <Checkbox inputRef={(node) => setContentTypeRef(contentTypeRefs.current, "articles", node)} label="Articles" checked={contentTypes.articles} onChange={(checked) => updateContentType("articles", checked)} />
         </div>
         {showValidation && !contentTypes.questions && !contentTypes.answers && !contentTypes.articles && (
           <p className="content-replacement-field-error" id="content-replacement-content-types-error">Select at least one content type.</p>
@@ -460,6 +462,15 @@ export function ContentReplacementDefineStep({
 
 function Checkbox({ label, checked, onChange, inputRef }: { label: string; checked: boolean; onChange(checked: boolean): void; inputRef?: Ref<HTMLInputElement> }) {
   return <label className="write-tool-checkbox"><input ref={inputRef} type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} /> <span>{label}</span></label>;
+}
+
+function setContentTypeRef(
+  refs: Map<keyof ReplacementConfiguration["contentTypes"], HTMLInputElement>,
+  kind: keyof ReplacementConfiguration["contentTypes"],
+  node: HTMLInputElement | null,
+) {
+  if (node) refs.set(kind, node);
+  else refs.delete(kind);
 }
 
 function validationSummary(
