@@ -57,12 +57,17 @@ export function parseReplacementCsv(csvText: string): ReplacementCsvParseResult 
   }
 
   const rows = parsed.data.slice(1).flatMap((record, index) => {
-    const find = record[0] ?? "";
-    const replace = record[1] ?? "";
-
     if (record.every((value) => value.trim() === "")) {
       return [];
     }
+
+    if (record.length !== 2) {
+      fileErrors.push(`CSV row ${index + 2} must contain exactly two columns.`);
+      return [];
+    }
+
+    const find = record[0] ?? "";
+    const replace = record[1] ?? "";
 
     return [{ id: `csv-${index + 2}`, sourceRow: index + 2, find, replace }];
   });

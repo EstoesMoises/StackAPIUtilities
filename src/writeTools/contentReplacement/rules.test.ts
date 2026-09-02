@@ -60,6 +60,13 @@ describe("content replacement rules", () => {
     });
   });
 
+  it("reports extra-column CSV records by source row instead of truncating them", () => {
+    expect(parseReplacementCsv("find,replace\nMyPVM,MyPBM,unexpected")).toEqual({
+      rows: [],
+      fileErrors: ["CSV row 2 must contain exactly two columns."],
+    });
+  });
+
   it("normalizes only BOM and header padding, while omitting wholly blank CSV records", () => {
     expect(parseReplacementCsv("\uFEFF find , replace \n MyPVM , MyPBM \n,\n")).toEqual({
       rows: [{ id: "csv-2", sourceRow: 2, find: " MyPVM ", replace: " MyPBM " }],
