@@ -612,6 +612,37 @@ describe("handleUserGroupSyncRequest", () => {
     },
   );
 
+  it("blocks free-form reconstruction across User Group Sync response fields", async () => {
+    const secret = ']","groups';
+    const client = createClient({
+      getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
+      getUserGroups: vi.fn().mockResolvedValue([]),
+    });
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: manualCredentials(secret),
+        csvText,
+        groupNameTemplate: secret,
+        syncMode: "add-only",
+      },
+      { createClient: () => client },
+    );
+
+    expect(response.status).toBe(200);
+    const serialized = await response.text();
+    expect(serialized).not.toContain(secret);
+    expect(JSON.parse(serialized)).toMatchObject({
+      ok: true,
+      result: {
+        syncMode: "add-only",
+        groupNameTemplate: expect.any(String),
+        groups: expect.any(Array),
+      },
+    });
+  });
+
   it.each([
     ["Missing Senior Manager", [userExportRow({ seniorManager: "" })]],
     ["Missing Email", [userExportRow({ email: "" })]],

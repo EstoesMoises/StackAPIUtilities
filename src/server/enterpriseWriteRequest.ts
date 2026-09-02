@@ -10,6 +10,8 @@ export const MAX_WRITE_ROUTE_BYTES = 1_048_576;
 const DEFAULT_REDACTION_MARKER = "[redacted]";
 const INVALID_JSON_MESSAGE = "Request body must contain valid JSON.";
 const OVERSIZED_BODY_MESSAGE = "Request body exceeds the 1 MiB limit.";
+const REDACTOR_CANDIDATES = Symbol("redactorCandidates");
+const SAFE_JSON_FALLBACKS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] as const;
 
 export type EnterpriseWriteContextFailureCode =
   | "invalid_instance_url"
@@ -110,10 +112,9 @@ export function redactedJsonResponse<T>(
   redact: (value: string) => string,
   policy: JsonRedactionPolicy = {},
 ): Response {
-  return jsonResponse(
-    sanitizeForJson(body, redact, policy, [], new WeakSet<object>()),
-    status,
-  );
+  const sanitized = sanitizeForJson(body, redact, policy, [], new WeakSet<object>());
+  const serialized = serializeWithoutCredentials(sanitized, getRedactorCandidates(redact));
+  return serializedJsonResponse(serialized, status);
 }
 
 export async function readBoundedJsonRequest(
@@ -193,7 +194,7 @@ function createCredentialRedactor(
   const marker = chooseRedactionMarker(uniqueSecretCandidates);
   const boundaryGuard = chooseBoundaryGuard(uniqueSecretCandidates);
 
-  return (value) => {
+  const redact = (value: string) => {
     const redacted = redactInSinglePass(value, uniqueSecretCandidates, marker);
     if (!containsCredential(redacted, uniqueSecretCandidates)) {
       return redacted;
@@ -207,6 +208,11 @@ function createCredentialRedactor(
     );
     return containsCredential(guarded, uniqueSecretCandidates) ? boundaryGuard : guarded;
   };
+
+  Object.defineProperty(redact, REDACTOR_CANDIDATES, {
+    value: uniqueSecretCandidates.map((candidate) => candidate.secret),
+  });
+  return redact;
 }
 
 interface SecretCandidate {
@@ -259,10 +265,19 @@ function isSafeMarker(marker: string, candidates: SecretCandidate[]): boolean {
 }
 
 function chooseBoundaryGuard(candidates: SecretCandidate[]): string {
+  const credentialCodePoints = new Set<number>();
+  for (const candidate of candidates) {
+    for (const character of candidate.secret) {
+      const codePoint = character.codePointAt(0);
+      if (codePoint !== undefined) {
+        credentialCodePoints.add(codePoint);
+      }
+    }
+  }
+
   for (let codePoint = 0xe000; codePoint <= 0x10ffff; codePoint += 1) {
-    const guard = String.fromCodePoint(codePoint);
-    if (candidates.every((candidate) => !candidate.secret.includes(guard))) {
-      return guard;
+    if (!credentialCodePoints.has(codePoint)) {
+      return String.fromCodePoint(codePoint);
     }
   }
 
@@ -271,6 +286,81 @@ function chooseBoundaryGuard(candidates: SecretCandidate[]): string {
 
 function containsCredential(value: string, candidates: SecretCandidate[]): boolean {
   return candidates.some((candidate) => value.includes(candidate.secret));
+}
+
+function getRedactorCandidates(redact: (value: string) => string): readonly string[] {
+  const redactor = redact as typeof redact & {
+    [REDACTOR_CANDIDATES]?: readonly string[];
+  };
+  return redactor[REDACTOR_CANDIDATES] ?? [];
+}
+
+function serializeWithoutCredentials(value: unknown, candidates: readonly string[]): string {
+  const compact = JSON.stringify(value) ?? "null";
+  if (candidates.length === 0) {
+    return compact;
+  }
+
+  const spaced = JSON.stringify(value, null, 1) ?? "null";
+  const representations = [
+    compact,
+    spaced,
+    escapeAllJsonStrings(compact),
+    escapeAllJsonStrings(spaced),
+  ];
+  const safeRepresentation = representations.find(
+    (representation) => !containsAnyCandidate(representation, candidates),
+  );
+  if (safeRepresentation !== undefined) {
+    return safeRepresentation;
+  }
+
+  return (
+    SAFE_JSON_FALLBACKS.find((fallback) => !containsAnyCandidate(fallback, candidates)) ?? "0"
+  );
+}
+
+function containsAnyCandidate(value: string, candidates: readonly string[]): boolean {
+  return candidates.some((candidate) => value.includes(candidate));
+}
+
+function escapeAllJsonStrings(serialized: string): string {
+  let escaped = "";
+  let index = 0;
+
+  while (index < serialized.length) {
+    if (serialized[index] !== '"') {
+      escaped += serialized[index];
+      index += 1;
+      continue;
+    }
+
+    const start = index;
+    index += 1;
+    while (index < serialized.length) {
+      if (serialized[index] === "\\") {
+        index += 2;
+      } else if (serialized[index] === '"') {
+        index += 1;
+        break;
+      } else {
+        index += 1;
+      }
+    }
+
+    const decoded = JSON.parse(serialized.slice(start, index)) as string;
+    escaped += encodeJsonStringWithUnicodeEscapes(decoded);
+  }
+
+  return escaped;
+}
+
+function encodeJsonStringWithUnicodeEscapes(value: string): string {
+  let encoded = '"';
+  for (let index = 0; index < value.length; index += 1) {
+    encoded += `\\u${value.charCodeAt(index).toString(16).padStart(4, "0")}`;
+  }
+  return `${encoded}"`;
 }
 
 function redactInSinglePass(
@@ -438,7 +528,11 @@ function jsonErrorResponse(error: string, status: number): Response {
 }
 
 function jsonResponse(body: unknown, status: number): Response {
-  return new Response(JSON.stringify(body), {
+  return serializedJsonResponse(JSON.stringify(body), status);
+}
+
+function serializedJsonResponse(body: string | undefined, status: number): Response {
+  return new Response(body, {
     status,
     headers: {
       "Content-Type": "application/json",

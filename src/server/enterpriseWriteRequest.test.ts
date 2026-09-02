@@ -138,6 +138,27 @@ describe("prepareEnterpriseWriteContext", () => {
       "raw= [redacted] ; normalized=[redacted]; pat=[redacted]",
     );
   });
+
+  it("precomputes credential characters instead of repeatedly scanning a large token", () => {
+    const largeToken = Array.from(
+      { length: 512 },
+      (_, index) => String.fromCodePoint(0xe000 + index),
+    ).join("");
+    const includes = vi.spyOn(String.prototype, "includes");
+
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: largeToken,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+    result.redact("safe value");
+    const fullStringScanCount = includes.mock.calls.length;
+    includes.mockRestore();
+
+    expect(fullStringScanCount).toBeLessThan(20);
+  });
 });
 
 describe("redactedJsonResponse", () => {
@@ -252,6 +273,57 @@ describe("redactedJsonResponse", () => {
     );
 
     const serialized = await response.text();
+    expect(serialized).not.toContain(secret);
+  });
+
+  it.each([
+    [
+      "adjacent object fields",
+      ']","next',
+      { first: ']","next', next: "safe" },
+    ],
+    [
+      "a sanitized key and its value",
+      ']":"a',
+      { [']":"a']: "a" },
+    ],
+    [
+      "adjacent array values",
+      ']","a',
+      [']","a', "a"],
+    ],
+  ])("blocks credential reconstruction across serialized %s", async (_caseName, secret, body) => {
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: secret,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+
+    const response = redactedJsonResponse(body, 500, result.redact);
+    const serialized = await response.text();
+
+    expect(() => JSON.parse(serialized)).not.toThrow();
+    expect(serialized).not.toContain(secret);
+  });
+
+  it("fails closed with valid bounded JSON when every object representation is unsafe", async () => {
+    const secret = '"';
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: secret,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+
+    const response = redactedJsonResponse({ ok: false, error: secret }, 500, result.redact);
+    const serialized = await response.text();
+
+    expect(response.status).toBe(500);
+    expect(serialized).toBe("0");
+    expect(JSON.parse(serialized)).toBe(0);
     expect(serialized).not.toContain(secret);
   });
 
