@@ -4,6 +4,7 @@ import type { SessionCredentials } from "../domain/types";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
 import { canEnterReview } from "../writeTools/contentReplacement/jobState";
 import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
+import { ContentReplacementCoverageEvidence } from "./ContentReplacementCoverageEvidence";
 
 export interface ContentReplacementScanStepProps {
   controller: ContentReplacementJobController;
@@ -55,6 +56,8 @@ export function ContentReplacementScanStep({
         <p>The browser inventories the selected content and inspects canonical candidate details. Scanning performs reads only.</p>
       </header>
 
+      <ContentReplacementCoverageEvidence configuration={job.configuration} />
+
       <div className={`s-notice ${status.noticeClass} content-replacement-scan-status`} role="status" aria-live="polite" aria-atomic="true">
         <strong>{status.heading}</strong>
         <p>{status.message}</p>
@@ -63,14 +66,7 @@ export function ContentReplacementScanStep({
 
       <ScanConfiguration job={job} />
 
-      <dl className="content-replacement-scan-counts" aria-label="Scan counts">
-        <Count label="Question pages" value={job.progress.questionPages} />
-        <Count label="Answer collections" value={job.progress.answerPages} />
-        <Count label="Article pages" value={job.progress.articlePages} />
-        <Count label="Candidate details inspected" value={job.progress.detailsInspected} />
-        <Count label="Proposed posts" value={job.progress.proposalsFound} />
-        <Count label="Protected occurrences" value={job.progress.protectedOccurrences} />
-      </dl>
+      <ScanCounts job={job} />
 
       {controller.operationError && !job.failure && (
         <div className="s-notice s-notice__warning"><strong>Operation notice:</strong> {controller.operationError}</div>
@@ -126,6 +122,43 @@ function Count({ label, value }: { label: string; value: number }) {
   return <div><dt>{label}</dt><dd>{value.toLocaleString()}</dd></div>;
 }
 
+function ScanCounts({ job }: { job: PersistedContentReplacementJob }) {
+  const { discovery } = job.configuration;
+  const { progress } = job;
+  const counts: ReadonlyArray<readonly [string, number]> = discovery.mode === "targeted"
+    ? [
+        ["Source terms completed", progress.searchTermsCompleted],
+        ["Search pages", progress.searchPages],
+        ["Indexed references", progress.indexedReferences],
+        ["Canonical details", progress.detailsInspected],
+        ["Proposals", progress.proposalsFound],
+        ["API reads completed", progress.apiRequestsCompleted],
+      ]
+    : discovery.mode === "exact"
+      ? [
+          ["Supplied targets", discovery.targetCount],
+          ["Canonical details fetched", progress.detailsInspected],
+          ["Proposals", progress.proposalsFound],
+          ["Protected occurrences", progress.protectedOccurrences],
+          ["API reads completed", progress.apiRequestsCompleted],
+        ]
+      : [
+          ["Question pages", progress.questionPages],
+          ["Answer collections", progress.answerPages],
+          ["Article pages", progress.articlePages],
+          ["Answer-bearing questions queued", progress.answerBearingQuestionsQueued],
+          ["Zero-answer questions skipped", progress.zeroAnswerQuestionsSkipped],
+          ["Canonical details", progress.detailsInspected],
+          ["Proposals", progress.proposalsFound],
+          ["API reads completed", progress.apiRequestsCompleted],
+        ];
+  return (
+    <dl className="content-replacement-scan-counts" aria-label="Scan counts">
+      {counts.map(([label, value]) => <Count key={label} label={label} value={value} />)}
+    </dl>
+  );
+}
+
 function ScanConfiguration({ job }: { job: PersistedContentReplacementJob }) {
   const configuration = job.configuration;
   const contentTypes = [
@@ -165,9 +198,9 @@ function getScanStatus(
     };
   }
   if (job.stage !== "scan") {
+    const completed = completedScanStatus(job);
     return {
-      heading: "Scan complete",
-      message: "Exhaustive inventory and candidate inspection finished. Review can use the complete scan.",
+      ...completed,
       noticeClass: "s-notice__success",
     };
   }
@@ -225,6 +258,48 @@ function getScanStatus(
     heading: "Scan running",
     message: "Inventory and candidate-detail reads are in progress. Counts update after each saved batch.",
     noticeClass: "s-notice__info",
+  };
+}
+
+function completedScanStatus(job: PersistedContentReplacementJob): Pick<ReturnType<typeof getScanStatus>, "heading" | "message"> {
+  if (job.progress.proposalsFound > 0) {
+    if (job.configuration.discovery.mode === "targeted") {
+      return {
+        heading: "Scan complete",
+        message: "Search-assisted candidate inspection finished. Review can use the completed scan, which may miss matches.",
+      };
+    }
+    if (job.configuration.discovery.mode === "exact") {
+      return {
+        heading: "Scan complete",
+        message: "Canonical details for the supplied targets finished. Review can use the complete supplied-target scan.",
+      };
+    }
+    return {
+      heading: "Scan complete",
+      message: "Exhaustive inventory and candidate inspection finished. Review can use the complete scan.",
+    };
+  }
+  if (job.configuration.discovery.mode === "targeted") {
+    return job.progress.indexedReferences === 0
+      ? {
+          heading: "No indexed candidates found",
+          message: "Search-assisted discovery found no indexed candidates. It may miss matches outside those results.",
+        }
+      : {
+          heading: "No eligible matches in indexed candidates",
+          message: "The indexed candidates were inspected, but none produced a proposal. Search-assisted discovery may miss matches.",
+        };
+  }
+  if (job.configuration.discovery.mode === "exact") {
+    return {
+      heading: "No matches found in the supplied targets.",
+      message: "Every supplied target was inspected; none produced a proposal.",
+    };
+  }
+  return {
+    heading: "No matches found in accessible selected content.",
+    message: "The exhaustive scan completed across accessible selected content without a proposal.",
   };
 }
 

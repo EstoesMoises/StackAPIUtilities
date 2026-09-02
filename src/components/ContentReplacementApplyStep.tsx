@@ -13,6 +13,7 @@ import type {
   PersistedContentReplacementItem,
   PersistedContentReplacementJob,
 } from "../writeTools/contentReplacement/types";
+import { ContentReplacementCoverageEvidence } from "./ContentReplacementCoverageEvidence";
 
 const PAGE_SIZE = 50;
 const RECOVERY_PAGE_SIZE = 25;
@@ -68,6 +69,7 @@ function ContentReplacementApplyStepView({
   job: PersistedContentReplacementJob;
 }) {
   const [applyAcknowledgedKey, setApplyAcknowledgedKey] = useState<string | null>(null);
+  const [targetedCoverageAcknowledgedKey, setTargetedCoverageAcknowledgedKey] = useState<string | null>(null);
   const [applyConfirmation, setApplyConfirmation] = useState<ScopedConfirmation | null>(null);
   const [recoveryAcknowledgedKey, setRecoveryAcknowledgedKey] = useState<string | null>(null);
   const [recoveryConfirmation, setRecoveryConfirmation] = useState<ScopedConfirmation | null>(null);
@@ -106,11 +108,14 @@ function ContentReplacementApplyStepView({
   const recoveryReady = job.recoverySnapshotStatus === "ready" &&
     entries.filter(([, item]) => item.included).every(([, item]) => completeRecoverySnapshot(item));
   const applyAcknowledged = confirmationKey !== null && applyAcknowledgedKey === confirmationKey;
+  const targetedCoverageAcknowledged = confirmationKey !== null && targetedCoverageAcknowledgedKey === confirmationKey;
+  const requiresTargetedCoverageAcknowledgement = job.configuration.discovery.mode === "targeted";
   const applyConfirmationValue = confirmationKey !== null && applyConfirmation?.key === confirmationKey
     ? applyConfirmation.value
     : "";
   const applyOperationLocked = job.status === "running" || !!job.activeOperation;
   const canApply = confirmationKey !== null && showConfirmation && recoveryReady && applyAcknowledged &&
+    (!requiresTargetedCoverageAcknowledgement || targetedCoverageAcknowledged) &&
     applyConfirmation?.key === confirmationKey && applyConfirmation.value === "APPLY" &&
     summary.selectedItems > 0 && controller.credentialReadiness.valid && !applyOperationLocked &&
     !controller.busy && !actionPending && !controller.storageError && !controller.operationError;
@@ -214,6 +219,7 @@ function ContentReplacementApplyStepView({
 
   useEffect(() => {
     setApplyAcknowledgedKey((current) => current === confirmationKey ? current : null);
+    setTargetedCoverageAcknowledgedKey((current) => current === confirmationKey ? current : null);
     setApplyConfirmation((current) => current?.key === confirmationKey ? current : null);
   }, [confirmationKey]);
 
@@ -224,6 +230,9 @@ function ContentReplacementApplyStepView({
 
   return (
     <section className="content-replacement-apply" aria-labelledby="content-replacement-apply-heading">
+      {(showConfirmation || job.stage === "results" || job.stage === "recovery") && (
+        <ContentReplacementCoverageEvidence configuration={job.configuration} />
+      )}
       {showConfirmation && (
         <>
           <header className="content-replacement-step-header">
@@ -251,6 +260,16 @@ function ContentReplacementApplyStepView({
               />{" "}
               I understand these edits use the live Enterprise API, are not one transaction, and may partially complete.
             </label>
+            {requiresTargetedCoverageAcknowledgement && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={targetedCoverageAcknowledged}
+                  onChange={(event) => setTargetedCoverageAcknowledgedKey(event.currentTarget.checked ? confirmationKey : null)}
+                />{" "}
+                I understand search-assisted discovery may have missed matches.
+              </label>
+            )}
             <label>
               <span>Type APPLY to confirm</span>
               <input
@@ -357,10 +376,10 @@ function ContentReplacementApplyStepView({
             </div>
           )}
           <div className="write-tool-actions content-replacement-actions">
-            <button type="button" className="s-btn s-btn__outlined" onClick={() => downloadReplacementResults(items)}>
+            <button type="button" className="s-btn s-btn__outlined" onClick={() => downloadReplacementResults(items, job.configuration)}>
               Download results CSV
             </button>
-            <button type="button" className="s-btn s-btn__outlined" onClick={() => downloadReplacementExceptions(items)}>
+            <button type="button" className="s-btn s-btn__outlined" onClick={() => downloadReplacementExceptions(items, job.configuration)}>
               Download exceptions CSV
             </button>
             {!legacyStaleRescanRestart && (

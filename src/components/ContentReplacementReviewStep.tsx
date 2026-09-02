@@ -15,6 +15,7 @@ import type {
   ReplacementProposalField,
   ReplacementProtectedOccurrenceReason,
 } from "../writeTools/contentReplacement/types";
+import { ContentReplacementCoverageEvidence } from "./ContentReplacementCoverageEvidence";
 
 type ContentTypeFilter = "all" | ReplacementContentKind;
 type FieldFilter = "all" | ReplacementProposalField;
@@ -165,6 +166,8 @@ function ContentReplacementReviewStepView({
           Download complete preview CSV
         </button>
       </header>
+
+      <ContentReplacementCoverageEvidence configuration={job.configuration} />
 
       <PolicySummary controller={controller} />
 

@@ -11,6 +11,23 @@ import type {
 import { ContentReplacementReviewStep } from "./ContentReplacementReviewStep";
 
 describe("ContentReplacementReviewStep", () => {
+  it.each([
+    [{ mode: "targeted" } as const, "Search-assisted · may miss matches"],
+    [{ mode: "exact", targetCount: 2, targetDigest: "e".repeat(64) } as const, "Exact target list · complete for 2 supplied posts"],
+    [{ mode: "full" } as const, "Exhaustive · all accessible selected content"],
+  ])("keeps the persisted %s coverage visible while proposals remain inspectable", async (discovery, coverage) => {
+    const baseline = job({ "question:1": item(proposal("question", 1), true) });
+    const user = userEvent.setup();
+    render(<ContentReplacementReviewStep controller={controller({
+      ...baseline,
+      configuration: { ...baseline.configuration, discovery },
+    })} />);
+
+    expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent(coverage);
+    await user.click(screen.getByRole("button", { name: "View details for question 1" }));
+    expect(screen.getByRole("region", { name: "Question 1 proposed changes" })).toBeVisible();
+  });
+
   it("paginates at 50 rows in stable numeric order and keeps table overflow named and focusable", async () => {
     const user = userEvent.setup();
     const proposals = Object.fromEntries(

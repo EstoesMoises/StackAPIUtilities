@@ -1,4 +1,5 @@
 import { recordsToCsvWithHeaders } from "./downloads";
+import { getDiscoveryPresentation } from "../writeTools/contentReplacement/discovery";
 import type {
   PersistedContentReplacementItem,
   PersistedContentReplacementItemStatus,
@@ -17,6 +18,9 @@ const PREVIEW_HEADERS = [
   "questionId",
   "title",
   "webUrl",
+  "discoveryMode",
+  "coverage",
+  "suppliedTargetCount",
   "ruleIds",
   "fields",
   "changedOccurrences",
@@ -37,6 +41,9 @@ const RESULT_HEADERS = [
   "questionId",
   "title",
   "webUrl",
+  "discoveryMode",
+  "coverage",
+  "suppliedTargetCount",
   "status",
   "outcome",
   "attemptCount",
@@ -52,6 +59,9 @@ const EXCEPTION_HEADERS = [
   "questionId",
   "title",
   "webUrl",
+  "discoveryMode",
+  "coverage",
+  "suppliedTargetCount",
   "status",
   "category",
   "message",
@@ -91,6 +101,7 @@ export function createReplacementPreviewCsv(
     const proposal = proposalFrom(entry);
     return {
       ...identityRecord(proposal),
+      ...discoveryRecord(configuration),
       ruleIds: sortNatural(proposal.appliedRuleIds).join("; "),
       fields: sortNatural([...new Set(proposal.changedOccurrences.map(({ field }) => field))]).join("; "),
       changedOccurrences: proposal.changedOccurrences.length,
@@ -110,11 +121,13 @@ export function createReplacementPreviewCsv(
 
 export function createReplacementResultsCsv(
   items: readonly PersistedContentReplacementItem[],
+  configuration: ReplacementConfiguration,
 ): string {
   const records = sortInputs(items).map((item) => {
     const result = projectResult(item);
     return {
       ...identityRecord(item.proposal),
+      ...discoveryRecord(configuration),
       status: item.status,
       outcome: result.outcome,
       attemptCount: item.attemptCount,
@@ -129,12 +142,14 @@ export function createReplacementResultsCsv(
 
 export function createReplacementExceptionsCsv(
   items: readonly PersistedContentReplacementItem[],
+  configuration: ReplacementConfiguration,
 ): string {
   const records = sortInputs(items)
     .flatMap((item) => {
       const exception = exceptionDetails(item);
       return exception ? [{
         ...identityRecord(item.proposal),
+        ...discoveryRecord(configuration),
         status: item.status,
         ...exception,
       }] : [];
@@ -156,16 +171,18 @@ export function downloadReplacementPreview(
 
 export function downloadReplacementResults(
   items: readonly PersistedContentReplacementItem[],
+  configuration: ReplacementConfiguration,
   environment: ReplacementDownloadEnvironment = browserDownloadEnvironment(),
 ): void {
-  downloadCsv("content-replacement-results.csv", createReplacementResultsCsv(items), environment);
+  downloadCsv("content-replacement-results.csv", createReplacementResultsCsv(items, configuration), environment);
 }
 
 export function downloadReplacementExceptions(
   items: readonly PersistedContentReplacementItem[],
+  configuration: ReplacementConfiguration,
   environment: ReplacementDownloadEnvironment = browserDownloadEnvironment(),
 ): void {
-  downloadCsv("content-replacement-exceptions.csv", createReplacementExceptionsCsv(items), environment);
+  downloadCsv("content-replacement-exceptions.csv", createReplacementExceptionsCsv(items, configuration), environment);
 }
 
 function toRfc4180Csv(
@@ -219,6 +236,15 @@ function identityRecord(proposal: ReplacementProposal): Record<string, unknown> 
     questionId: proposal.before.ref.kind === "answer" ? proposal.before.ref.questionId : "",
     title: metadata?.titleContext ?? titleFrom(proposal),
     webUrl: metadata?.webUrl ?? "",
+  };
+}
+
+function discoveryRecord(configuration: ReplacementConfiguration): Record<string, string | number> {
+  const { discovery } = configuration;
+  return {
+    discoveryMode: discovery.mode,
+    coverage: getDiscoveryPresentation(discovery).label,
+    suppliedTargetCount: discovery.mode === "exact" ? discovery.targetCount : "",
   };
 }
 

@@ -21,6 +21,64 @@ afterEach(() => {
 });
 
 describe("ContentReplacementApplyStep", () => {
+  it("requires and scope-binds the Targeted coverage acknowledgement before enabling Apply", async () => {
+    const user = userEvent.setup();
+    const baseline = applyJob();
+    const targeted = applyJob({
+      configuration: { ...baseline.configuration, discovery: { mode: "targeted" } },
+    });
+    const { rerender } = render(<ContentReplacementApplyStep controller={controller(targeted)} />);
+
+    expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent("Search-assisted · may miss matches");
+    const apply = screen.getByRole("button", { name: "Apply changes to 3 posts" });
+    await user.click(screen.getByLabelText(/I understand these edits use the live Enterprise API/i));
+    await user.type(screen.getByLabelText("Type APPLY to confirm"), "APPLY");
+    expect(apply).toBeDisabled();
+
+    const coverageAcknowledgement = screen.getByLabelText(/search-assisted discovery may have missed matches/i);
+    await user.click(coverageAcknowledgement);
+    expect(apply).toBeEnabled();
+
+    rerender(<ContentReplacementApplyStep controller={controller({
+      ...targeted,
+      configuration: {
+        ...targeted.configuration,
+        options: { ...targeted.configuration.options, wholeTerm: false },
+      },
+    })} />);
+
+    expect(screen.getByLabelText(/search-assisted discovery may have missed matches/i)).not.toBeChecked();
+    expect(screen.getByLabelText("Type APPLY to confirm")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Apply changes to 3 posts" })).toBeDisabled();
+  });
+
+  it.each([
+    [{ mode: "exact", targetCount: 2, targetDigest: "e".repeat(64) } as const, "Exact target list · complete for 2 supplied posts"],
+    [{ mode: "full" } as const, "Exhaustive · all accessible selected content"],
+  ])("shows %s coverage without the Targeted-only acknowledgement", (discovery, coverage) => {
+    const baseline = applyJob();
+    render(<ContentReplacementApplyStep controller={controller(applyJob({
+      configuration: { ...baseline.configuration, discovery },
+    }))} />);
+
+    expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent(coverage);
+    expect(screen.queryByLabelText(/search-assisted discovery may have missed matches/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [{ mode: "targeted" } as const, "Search-assisted · may miss matches"],
+    [{ mode: "exact", targetCount: 2, targetDigest: "e".repeat(64) } as const, "Exact target list · complete for 2 supplied posts"],
+    [{ mode: "full" } as const, "Exhaustive · all accessible selected content"],
+  ])("keeps %s coverage visible above Results", (discovery, coverage) => {
+    const baseline = job();
+    render(<ContentReplacementApplyStep controller={controller({
+      ...baseline,
+      configuration: { ...baseline.configuration, discovery },
+    })} />);
+
+    expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent(coverage);
+  });
+
   it("requires persisted recovery readiness, acknowledgement, and exact uppercase APPLY before writes", async () => {
     const user = userEvent.setup();
     const readyController = controller(applyJob());

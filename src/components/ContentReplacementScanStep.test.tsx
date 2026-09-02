@@ -16,7 +16,7 @@ const validCredentials: SessionCredentials = {
 };
 
 describe("ContentReplacementScanStep", () => {
-  it("shows real scan counters and active controls in a live status region", () => {
+  it("shows Full-audit counters and active controls in a live status region", () => {
     const controller = createController(createJob());
     render(<ContentReplacementScanStep controller={controller} credentials={validCredentials} />);
 
@@ -25,13 +25,125 @@ describe("ContentReplacementScanStep", () => {
     expect(screen.getByText("Question pages").nextElementSibling).toHaveTextContent("3");
     expect(screen.getByText("Answer collections").nextElementSibling).toHaveTextContent("8");
     expect(screen.getByText("Article pages").nextElementSibling).toHaveTextContent("2");
-    expect(screen.getByText("Candidate details inspected").nextElementSibling).toHaveTextContent("31");
-    expect(screen.getByText("Proposed posts").nextElementSibling).toHaveTextContent("12");
-    expect(screen.getByText("Protected occurrences").nextElementSibling).toHaveTextContent("5");
+    expect(screen.getByText("Answer-bearing questions queued").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Zero-answer questions skipped").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Canonical details").nextElementSibling).toHaveTextContent("31");
+    expect(screen.getByText("Proposals").nextElementSibling).toHaveTextContent("12");
+    expect(screen.getByText("API reads completed").nextElementSibling).toHaveTextContent("0");
+    expect(screen.queryByText("Protected occurrences")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause scan" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Cancel scan" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: /Review/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/exhaustive inventory.*finished/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      name: "Targeted",
+      discovery: { mode: "targeted" } as const,
+      coverage: "Search-assisted · may miss matches",
+      metrics: [
+        ["Source terms completed", "3"],
+        ["Search pages", "5"],
+        ["Indexed references", "12"],
+        ["Canonical details", "10"],
+        ["Proposals", "4"],
+        ["API reads completed", "23"],
+      ],
+      omittedMetric: "Question pages",
+      progress: { searchTermsCompleted: 3, searchPages: 5, indexedReferences: 12, detailsInspected: 10, proposalsFound: 4, apiRequestsCompleted: 23 },
+    },
+    {
+      name: "Exact",
+      discovery: { mode: "exact", targetCount: 3, targetDigest: "x".repeat(64) } as const,
+      coverage: "Exact target list · complete for 3 supplied posts",
+      metrics: [
+        ["Supplied targets", "3"],
+        ["Canonical details fetched", "3"],
+        ["Proposals", "2"],
+        ["Protected occurrences", "1"],
+        ["API reads completed", "3"],
+      ],
+      omittedMetric: "Search pages",
+      progress: { detailsInspected: 3, proposalsFound: 2, protectedOccurrences: 1, apiRequestsCompleted: 3 },
+    },
+    {
+      name: "Full",
+      discovery: { mode: "full" } as const,
+      coverage: "Exhaustive · all accessible selected content",
+      metrics: [
+        ["Question pages", "3"],
+        ["Answer collections", "8"],
+        ["Article pages", "2"],
+        ["Answer-bearing questions queued", "6"],
+        ["Zero-answer questions skipped", "1"],
+        ["Canonical details", "31"],
+        ["Proposals", "12"],
+        ["API reads completed", "44"],
+      ],
+      omittedMetric: "Search pages",
+      progress: { answerBearingQuestionsQueued: 6, zeroAnswerQuestionsSkipped: 1, apiRequestsCompleted: 44 },
+    },
+  ])("keeps $name coverage and only its mode-specific scan metrics visible", ({ discovery, coverage, metrics, omittedMetric, progress }) => {
+    const baseline = createJob();
+    const modeJob = createJob({
+      configuration: { ...baseline.configuration, discovery },
+      progress: { ...baseline.progress, ...progress },
+    });
+    render(<ContentReplacementScanStep controller={createController(modeJob)} credentials={validCredentials} />);
+
+    expect(screen.getByRole("note", { name: "Discovery coverage" })).toHaveTextContent(coverage);
+    for (const [label, value] of metrics) {
+      expect(screen.getByText(label).nextElementSibling).toHaveTextContent(value);
+    }
+    expect(screen.queryByText(omittedMetric)).not.toBeInTheDocument();
+  });
+
+  it("uses bounded Targeted zero-result language without claiming the term is absent everywhere", () => {
+    const baseline = createJob();
+    const emptyIndexed = createJob({
+      stage: "review",
+      status: "completed",
+      configuration: { ...baseline.configuration, discovery: { mode: "targeted" } },
+      progress: { ...baseline.progress, indexedReferences: 0, detailsInspected: 0, proposalsFound: 0 },
+    });
+    const { rerender } = render(
+      <ContentReplacementScanStep controller={createController(emptyIndexed)} credentials={validCredentials} />,
+    );
+
+    expect(screen.getByText("No indexed candidates found")).toBeVisible();
+    expect(screen.queryByText(/term is absent|no matches across/i)).not.toBeInTheDocument();
+
+    const noEligibleMatches = {
+      ...emptyIndexed,
+      progress: { ...emptyIndexed.progress, indexedReferences: 4, detailsInspected: 4 },
+    };
+    rerender(<ContentReplacementScanStep controller={createController(noEligibleMatches)} credentials={validCredentials} />);
+
+    expect(screen.getByText("No eligible matches in indexed candidates")).toBeVisible();
+  });
+
+  it.each([
+    [
+      { mode: "exact", targetCount: 2, targetDigest: "e".repeat(64) } as const,
+      "No matches found in the supplied targets.",
+    ],
+    [
+      { mode: "full" } as const,
+      "No matches found in accessible selected content.",
+    ],
+  ])("keeps completed zero-result copy truthful to %s coverage", (discovery, expectedCopy) => {
+    const baseline = createJob();
+    const complete = createJob({
+      stage: "review",
+      status: "completed",
+      configuration: { ...baseline.configuration, discovery },
+      progress: { ...baseline.progress, proposalsFound: 0 },
+    });
+    render(<ContentReplacementScanStep controller={createController(complete)} credentials={validCredentials} />);
+
+    expect(screen.getByText(expectedCopy)).toBeVisible();
+    expect(screen.queryByText("No indexed candidates found")).not.toBeInTheDocument();
   });
 
   it("uses inline confirmation before cancelling active work", async () => {
