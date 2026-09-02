@@ -60,7 +60,7 @@ describe("ContentReplacementWizard", () => {
     }));
   });
 
-  it("renders the complete Review step and keeps only the Apply placeholder", () => {
+  it("routes persisted Review and Apply stages to their complete screens", () => {
     const reviewController = controller(job({
       stage: "review",
       status: "completed",
@@ -75,11 +75,48 @@ describe("ContentReplacementWizard", () => {
     expect(screen.queryByText(/Review controls are added in the next implementation stage/i)).not.toBeInTheDocument();
 
     rerender(
-      <ContentReplacementWizard credentials={credentials} controller={controller(job({ stage: "apply", status: "paused" }))} />,
+      <ContentReplacementWizard credentials={credentials} controller={controller(job({
+        stage: "apply",
+        status: "paused",
+        recoverySnapshotStatus: "ready",
+        proposals: { "question:42": applyItem() },
+      }))} />,
     );
     expect(screen.getByText("Apply", { selector: "[aria-current='step']" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Apply reviewed changes" })).toBeVisible();
-    expect(screen.getByText(/Apply controls are added in the next implementation stage/i)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Confirm reviewed changes" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Apply changes to 1 post" })).toBeDisabled();
+    expect(screen.queryByText(/Apply controls are added in the next implementation stage/i)).not.toBeInTheDocument();
+  });
+
+  it("warns before leaving Review and creates a separate job for edited configuration", async () => {
+    const user = userEvent.setup();
+    const reviewController = controller(job({
+      stage: "review",
+      status: "completed",
+      proposals: { "question:42": reviewItem() },
+    }));
+    render(<ContentReplacementWizard credentials={credentials} controller={reviewController} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit configuration" }));
+    const warning = screen.getByRole("group", { name: "Confirm configuration edit" });
+    expect(warning).toHaveTextContent(/invalidates this completed scan/i);
+    expect(screen.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Keep reviewed proposals" }));
+    await user.click(screen.getByRole("button", { name: "Edit configuration" }));
+    await user.click(screen.getByRole("button", { name: "Create a new job" }));
+
+    expect(reviewController.deleteJob).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Define replacements" })).toBeVisible();
+    expect(screen.getByText("Define", { selector: "[aria-current='step']" })).toBeVisible();
+
+    await user.type(screen.getByLabelText("Find term 1"), "New term");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "New value");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    await user.click(screen.getByRole("button", { name: "Start scan" }));
+    expect(reviewController.createJob).toHaveBeenCalledWith(expect.objectContaining({
+      rules: [expect.objectContaining({ find: "New term", replace: "New value" })],
+    }));
   });
 
   it("continues from Review through the controller after an included proposal is present", async () => {
@@ -236,6 +273,20 @@ function reviewItem(): PersistedContentReplacementItem {
       scannedRequestChecksum: "a".repeat(64),
       proposedRequestChecksum: "b".repeat(64),
       proposalFingerprint: "c".repeat(64),
+    },
+  };
+}
+
+function applyItem(): PersistedContentReplacementItem {
+  const item = reviewItem();
+  return {
+    ...item,
+    status: "ready-to-apply",
+    recovery: {
+      priorRequestModel: item.proposal.before,
+      scannedRequestChecksum: item.proposal.scannedRequestChecksum,
+      proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+      status: "ready",
     },
   };
 }

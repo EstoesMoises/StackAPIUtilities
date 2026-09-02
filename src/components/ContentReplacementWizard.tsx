@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { SessionCredentials } from "../domain/types";
 import { getEnterpriseWriteCredentialReadiness } from "../credentials/enterpriseV3Credentials";
 import {
@@ -9,6 +10,7 @@ import type {
   PersistedContentReplacementJob,
   ReplacementConfiguration,
 } from "../writeTools/contentReplacement/types";
+import { ContentReplacementApplyStep } from "./ContentReplacementApplyStep";
 import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
 import { ContentReplacementReviewStep } from "./ContentReplacementReviewStep";
 import { ContentReplacementScanStep } from "./ContentReplacementScanStep";
@@ -51,7 +53,9 @@ function ContentReplacementWizardView({
   onReconnect,
   now,
 }: ContentReplacementWizardProps & { controller: ContentReplacementJobController }) {
-  const activeStep = wizardStep(controller.job?.stage);
+  const [confirmingConfigurationEdit, setConfirmingConfigurationEdit] = useState(false);
+  const [definingNewJob, setDefiningNewJob] = useState(false);
+  const activeStep = definingNewJob ? 0 : wizardStep(controller.job?.stage);
   const baseCredentialReadiness = getEnterpriseWriteCredentialReadiness(credentials, { now });
   const credentialReadiness = controller.credentialReadiness.refreshRequired
     ? controller.credentialReadiness
@@ -59,6 +63,8 @@ function ContentReplacementWizardView({
 
   async function startScan(configuration: ReplacementConfiguration) {
     if (!await controller.createJob(configuration)) return;
+    setDefiningNewJob(false);
+    setConfirmingConfigurationEdit(false);
     await controller.startScan();
   }
 
@@ -106,13 +112,40 @@ function ContentReplacementWizardView({
           />
         )}
         {activeStep === 2 && (
-          <ContentReplacementReviewStep controller={controller} />
+          <>
+            <div className="content-replacement-review-back">
+              <button
+                type="button"
+                className="s-btn s-btn__outlined"
+                disabled={controller.busy}
+                onClick={() => setConfirmingConfigurationEdit(true)}
+              >
+                Edit configuration
+              </button>
+              {confirmingConfigurationEdit && (
+                <div className="s-notice s-notice__warning" role="group" aria-label="Confirm configuration edit">
+                  <p>Changing rules, matching options, the instance, or content scope invalidates this completed scan. A confirmed edit starts a separate new job; it never mutates these reviewed proposals.</p>
+                  <div className="write-tool-actions">
+                    <button type="button" className="s-btn s-btn__outlined" onClick={() => setConfirmingConfigurationEdit(false)}>Keep reviewed proposals</button>
+                    <button
+                      type="button"
+                      className="s-btn s-btn__outlined"
+                      onClick={() => {
+                        setConfirmingConfigurationEdit(false);
+                        setDefiningNewJob(true);
+                      }}
+                    >
+                      Create a new job
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <ContentReplacementReviewStep controller={controller} />
+          </>
         )}
         {activeStep === 3 && (
-          <section className="content-replacement-placeholder" aria-labelledby="content-replacement-apply-heading">
-            <h2 id="content-replacement-apply-heading">Apply reviewed changes</h2>
-            <p>Apply controls are added in the next implementation stage. This placeholder appears only after the job reaches Apply.</p>
-          </section>
+          <ContentReplacementApplyStep controller={controller} />
         )}
       </div>
     </section>
