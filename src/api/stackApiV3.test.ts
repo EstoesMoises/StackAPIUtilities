@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiTransportError } from "./httpClient";
 import { StackApiV3Client } from "./stackApiV3";
 
 const API_V3_USER_AGENT =
@@ -310,7 +311,14 @@ describe("StackApiV3Client", () => {
     const fetchFn = vi.fn(async () => { throw new TypeError("network unavailable"); });
     const client = createClient({ fetchFn, waitFn });
 
-    await expect(client.getJson("/questions/42")).rejects.toThrow("network unavailable");
+    const result = client.getJson("/questions/42");
+    await expect(result).rejects.toEqual(expect.objectContaining({
+      name: "ApiTransportError",
+      message: "Stack API v3 transport failed.",
+    }));
+    await expect(result).rejects.toBeInstanceOf(ApiTransportError);
+    await expect(result).rejects.not.toHaveProperty("cause");
+    await expect(result).rejects.not.toThrow(/network unavailable/);
     expect(fetchFn).toHaveBeenCalledTimes(4);
     expect(waitFn).toHaveBeenCalledTimes(3);
   });

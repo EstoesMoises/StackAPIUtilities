@@ -1,4 +1,9 @@
 import type { StackApiV3Page } from "../../api/stackApiV3";
+import {
+  ApiTransportError,
+  InvalidApiResponseError,
+  StackApiError,
+} from "../../api/httpClient";
 import type {
   ArticlePermissionsRequest,
   ArticleType,
@@ -246,28 +251,22 @@ function schemaError(message: string): ContentReplacementApiError {
 }
 
 function transportBoundaryError(message: string, error: unknown): ContentReplacementApiError {
-  const status = numericStatus(error);
-  return status === undefined
-    ? new ContentReplacementApiError(message, "transport")
-    : new ContentReplacementApiError(message, "http", status);
+  if (error instanceof StackApiError) {
+    return new ContentReplacementApiError(message, "http", error.status);
+  }
+  if (error instanceof ApiTransportError) {
+    return new ContentReplacementApiError(message, "transport");
+  }
+  if (error instanceof InvalidApiResponseError) {
+    return new ContentReplacementApiError(message, "schema");
+  }
+  return new ContentReplacementApiError(message, "schema");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
-}
-
-function numericStatus(error: unknown): number | undefined {
-  try {
-    if (!error || (typeof error !== "object" && typeof error !== "function")) return undefined;
-    const descriptor = Object.getOwnPropertyDescriptor(error, "status");
-    return descriptor && "value" in descriptor && isHttpStatus(descriptor.value)
-      ? descriptor.value
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function isHttpStatus(value: unknown): value is number {

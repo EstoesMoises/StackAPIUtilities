@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { StackApiError } from "../../api/httpClient";
+import { StackApiV3Client } from "../../api/stackApiV3";
 import {
   ContentReplacementApiError,
   type ContentReplacementClient,
@@ -292,7 +294,7 @@ describe("content replacement API adapter", () => {
     ).rejects.toThrow("Unable to reconstruct answer 8.");
   });
 
-  it("replaces transport failures with a sanitized adapter error retaining only numeric status", async () => {
+  it("does not promote an arbitrary numeric status to trusted HTTP provenance", async () => {
     const failure = Object.assign(new Error("access token=secret https://private.example"), { status: 403 });
     const transport = new FakeTransport({}, undefined, { getJson: failure, putJson: "write key=secret" });
     const client = createContentReplacementClient(transport);
@@ -301,10 +303,10 @@ describe("content replacement API adapter", () => {
       expect.objectContaining({
         name: "ContentReplacementApiError",
         message: "Unable to read question 42.",
-        category: "http",
-        status: 403,
+        category: "schema",
       }),
     );
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("status");
     await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toThrow(/secret|private/);
     await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("cause");
     await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("url");
@@ -321,7 +323,30 @@ describe("content replacement API adapter", () => {
     })).rejects.toThrow("Unable to update answer 8.");
   });
 
-  it("replaces inventory transport failures even when they impersonate adapter errors", async () => {
+  it("copies only the status from a trusted Stack API HTTP error", async () => {
+    const failure = new StackApiError(
+      "secret HTTP message",
+      403,
+      "https://private.example/secret",
+      "secret response body",
+    );
+    const client = createContentReplacementClient(
+      new FakeTransport({}, undefined, { getJson: failure }),
+    );
+
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.toEqual(
+      expect.objectContaining({
+        message: "Unable to read question 42.",
+        category: "http",
+        status: 403,
+      }),
+    );
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("cause");
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("url");
+    await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("responseText");
+  });
+
+  it("does not trust an adapter error rethrown by an arbitrary transport", async () => {
     const transport = new FakeTransport(
       undefined,
       undefined,
@@ -332,30 +357,30 @@ describe("content replacement API adapter", () => {
       expect.objectContaining({
         name: "ContentReplacementApiError",
         message: "Unable to read article inventory.",
-        category: "http",
-        status: 429,
+        category: "schema",
       }),
     );
+    await expect(createContentReplacementClient(transport).getArticlesPage(1)).rejects.not.toHaveProperty("status");
   });
 
   it.each([
     [Object.assign(new Error("secret"), { status: Number.POSITIVE_INFINITY })],
     [new Proxy({}, { get: () => { throw new Error("secret getter"); } })],
     [new ContentReplacementApiError("secret adapter error", "schema")],
-  ])("sanitizes hostile detail transport errors without retaining a status", async (failure) => {
+  ])("fails closed on unknown detail errors without retaining a status", async (failure) => {
     const transport = new FakeTransport({}, undefined, { getJson: failure });
 
     await expect(createContentReplacementClient(transport).getItem({ kind: "question", questionId: 42 }))
       .rejects.toEqual(expect.objectContaining({
         name: "ContentReplacementApiError",
         message: "Unable to read question 42.",
-        category: "transport",
+        category: "schema",
       }));
     await expect(createContentReplacementClient(transport).getItem({ kind: "question", questionId: 42 }))
       .rejects.not.toHaveProperty("status");
   });
 
-  it("marks a status-less raw transport rejection without retaining its cause", async () => {
+  it("does not trust an arbitrary TypeError as transport provenance", async () => {
     const failure = Object.assign(new TypeError("secret transport URL"), {
       cause: { authorization: "secret" },
     });
@@ -367,10 +392,55 @@ describe("content replacement API adapter", () => {
       expect.objectContaining({
         name: "ContentReplacementApiError",
         message: "Unable to read question 42.",
-        category: "transport",
+        category: "schema",
       }),
     );
     await expect(client.getItem({ kind: "question", questionId: 42 })).rejects.not.toHaveProperty("cause");
+  });
+
+  it.each([
+    ["question", { kind: "question", questionId: 42 }],
+    ["answer", { kind: "answer", questionId: 42, answerId: 8 }],
+    ["article", { kind: "article", articleId: 7 }],
+  ] as const)("maps invalid JSON for a %s detail to schema without retaining parser data", async (_kind, ref) => {
+    const transport = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "secret-token",
+      fetchFn: async () => new Response("secret invalid JSON", { status: 200 }),
+    });
+
+    const result = createContentReplacementClient(transport).getItem(ref);
+
+    await expect(result).rejects.toEqual(expect.objectContaining({ category: "schema" }));
+    await expect(result).rejects.not.toHaveProperty("status");
+    await expect(result).rejects.not.toHaveProperty("cause");
+    await expect(result).rejects.not.toThrow(/secret|invalid JSON|URL/);
+  });
+
+  it("maps trusted exhausted API retries to transport without retaining the fetch error", async () => {
+    let attempts = 0;
+    const transport = new StackApiV3Client({
+      apiV3Url: "https://demo.stackenterprise.co/api/v3",
+      token: "secret-token",
+      fetchFn: async () => {
+        attempts += 1;
+        throw new TypeError("secret fetch URL");
+      },
+      waitFn: async () => undefined,
+    });
+
+    const result = createContentReplacementClient(transport).getItem({
+      kind: "question",
+      questionId: 42,
+    });
+
+    await expect(result).rejects.toEqual(expect.objectContaining({
+      category: "transport",
+      message: "Unable to read question 42.",
+    }));
+    await expect(result).rejects.not.toHaveProperty("cause");
+    await expect(result).rejects.not.toThrow(/secret|fetch URL/);
+    expect(attempts).toBe(4);
   });
 
   it("writes only the reconstructed request to the matching PUT path", async () => {

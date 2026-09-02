@@ -1,4 +1,9 @@
-import { type FetchLike, type ThrottleNotice, readJsonResponse } from "./httpClient";
+import {
+  ApiTransportError,
+  type FetchLike,
+  type ThrottleNotice,
+  readJsonResponse,
+} from "./httpClient";
 import {
   assertSafePaginationPage,
   DEFAULT_PAGINATION_SAFETY_LIMIT,
@@ -211,7 +216,7 @@ export class StackApiV3Client {
     };
     const response = this.retryPutRequests
       ? await this.readResponse(url, init)
-      : await this.fetchFn(url, init);
+      : await this.fetchOnce(url, init);
 
     if (!this.retryPutRequests && isRetryableStatus(response.status) && this.onThrottle) {
       await this.onThrottle({
@@ -253,7 +258,7 @@ export class StackApiV3Client {
   }
 
   async removeUserGroupMember(userGroupId: number, userId: number): Promise<void> {
-    const response = await this.fetchFn(this.buildUrl(`/user-groups/${userGroupId}/members/${userId}`, {}), {
+    const response = await this.fetchOnce(this.buildUrl(`/user-groups/${userGroupId}/members/${userId}`, {}), {
       method: "DELETE",
       headers: this.createJsonHeaders(),
     });
@@ -275,7 +280,7 @@ export class StackApiV3Client {
   }
 
   private async writeJson<T>(path: string, method: "POST", body: unknown): Promise<T> {
-    const response = await this.fetchFn(this.buildUrl(path, {}), {
+    const response = await this.fetchOnce(this.buildUrl(path, {}), {
       method,
       headers: this.createJsonHeaders(),
       body: JSON.stringify(body),
@@ -292,6 +297,15 @@ export class StackApiV3Client {
     };
   }
 
+  private async fetchOnce(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    try {
+      return await this.fetchFn(input, init);
+    } catch (error) {
+      if (error instanceof TypeError) throw new ApiTransportError("Stack API v3");
+      throw error;
+    }
+  }
+
   private async readResponse(url: URL, init?: RequestInit): Promise<Response> {
     let cumulativeWaitSeconds = 0;
     for (let retryCount = 0; ; retryCount += 1) {
@@ -299,11 +313,12 @@ export class StackApiV3Client {
       try {
         response = await this.fetchFn(url, init ?? { headers: this.createJsonHeaders() });
       } catch (error) {
+        if (!(error instanceof TypeError)) throw error;
         if (
           retryCount >= MAX_IDEMPOTENT_RETRIES ||
           !this.canWaitForRetry(FALLBACK_RETRY_SECONDS, cumulativeWaitSeconds)
         ) {
-          throw error;
+          throw new ApiTransportError("Stack API v3");
         }
 
         await this.waitFn(FALLBACK_RETRY_SECONDS);

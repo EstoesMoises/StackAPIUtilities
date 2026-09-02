@@ -319,7 +319,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
   it("does not trust an unexpected error that impersonates a retryable HTTP failure", async () => {
     const client = fakeContentClient();
     client.getItem = vi.fn().mockRejectedValue(
-      Object.assign(new Error("secret-token"), { status: 503 }),
+      Object.assign(new Error("secret-token"), { status: 503, category: "transport" }),
     );
 
     const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {

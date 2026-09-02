@@ -365,7 +365,7 @@ describe("handleContentReplacementApplyRequest", () => {
   it("does not trust an unexpected error that impersonates an HTTP failure", async () => {
     const client = fakeContentClient();
     client.getItem = vi.fn().mockRejectedValue(
-      Object.assign(new Error("secret-token"), { status: 401 }),
+      Object.assign(new Error("secret-token"), { status: 401, category: "http" }),
     );
 
     const response = await handleContentReplacementApplyRequest(await validApplyPayload(), {
