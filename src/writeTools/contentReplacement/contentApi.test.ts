@@ -87,6 +87,55 @@ describe("content replacement API adapter", () => {
     });
   });
 
+  it("reads one validated search page with the maximum page size", async () => {
+    const transport = new FakeTransport(undefined, {
+      items: [
+        { type: "question", id: 42 },
+        { type: "answer", id: 8, parentQuestionId: 42 },
+        { type: "article", id: 7 },
+        { type: "question", id: 42 },
+      ],
+      page: 3,
+      totalPages: 4,
+      hasMore: true,
+    });
+    const client = createContentReplacementClient(transport);
+
+    await expect(client.getSearchPage("AcmeLegacy", 3)).resolves.toEqual({
+      items: [
+        { type: "question", questionId: 42 },
+        { type: "answer", answerId: 8, parentQuestionId: 42 },
+        { type: "article", articleId: 7 },
+        { type: "question", questionId: 42 },
+      ],
+      page: 3,
+      totalPages: 4,
+      hasMore: true,
+    });
+    expect(transport.pageCalls).toEqual([
+      { path: "/search", query: { query: "AcmeLegacy", pageSize: "100" }, page: 3 },
+    ]);
+  });
+
+  it.each([
+    { result: { type: "comment", id: 42 }, label: "unknown type" },
+    { result: { type: "question", id: 0 }, label: "invalid question ID" },
+    { result: { type: "answer", id: 8, parentQuestionId: 0 }, label: "invalid answer parent ID" },
+    { result: { type: "article", id: Number.MAX_SAFE_INTEGER + 1 }, label: "unsafe article ID" },
+  ])("rejects a search result with a $label without exposing upstream data", async ({ result }) => {
+    const transport = new FakeTransport(undefined, {
+      items: [result], page: 1, totalPages: 1, hasMore: false,
+    });
+
+    await expect(createContentReplacementClient(transport).getSearchPage("secret-query", 1))
+      .rejects.toEqual(expect.objectContaining({
+        message: "Unable to read search inventory.",
+        category: "schema",
+      }));
+    await expect(createContentReplacementClient(transport).getSearchPage("secret-query", 1))
+      .rejects.not.toThrow(/secret-query|comment/);
+  });
+
   it.each([
     ["question", (client: ReturnType<typeof createContentReplacementClient>) => client.getQuestionsPage(1)],
     ["answer", (client: ReturnType<typeof createContentReplacementClient>) => client.getAnswersPage(42, 1)],

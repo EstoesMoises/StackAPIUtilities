@@ -5,6 +5,7 @@ import type {
   ArticleSummary,
   ContentReplacementClient,
   QuestionSummary,
+  SearchSummary,
 } from "./contentApi";
 import { replaceMarkdown } from "./markdown";
 import { buildReplacementProposal } from "./proposals";
@@ -35,19 +36,48 @@ export async function scanInventorySlice(
   input: InventorySliceInput,
 ): Promise<InventorySliceResult> {
   const { cursor, configuration } = input;
+  assertCursorMatchesDiscovery(cursor, configuration);
+
+  if (cursor.kind === "search") {
+    const rule = configuration.rules.find((candidate) => candidate.id === cursor.ruleId);
+    if (!rule) throw new TypeError("Targeted search cursor must reference a configured rule.");
+    const page = await client.getSearchPage(rule.find, cursor.page);
+    return {
+      candidates: page.items
+        .filter((summary) => isSearchResultSelected(summary, configuration))
+        .map(searchRef),
+      answerCursors: [],
+      nextCursor: page.hasMore ? { kind: "search", ruleId: rule.id, page: cursor.page + 1 } : null,
+      inspectedCount: page.items.length,
+      pageKind: "search",
+      progress: inventoryProgress({
+        searchPages: 1,
+        searchTermsCompleted: page.hasMore ? 0 : 1,
+      }),
+    };
+  }
 
   if (cursor.kind === "questions") {
     const page = await client.getQuestionsPage(cursor.page);
+    const answerCursors = configuration.contentTypes.answers
+      ? page.items
+          .filter((summary) => !hasKnownZeroAnswers(summary.answerCount))
+          .map((summary) => ({ kind: "answers" as const, questionId: summary.id, page: 1 }))
+      : [];
     return {
       candidates: configuration.contentTypes.questions
         ? page.items.filter((summary) => isQuestionCandidate(summary, configuration)).map(questionRef)
         : [],
-      answerCursors: configuration.contentTypes.answers
-        ? page.items.map((summary) => ({ kind: "answers", questionId: summary.id, page: 1 }))
-        : [],
+      answerCursors,
       nextCursor: page.hasMore ? { kind: "questions", page: cursor.page + 1 } : null,
       inspectedCount: page.items.length,
       pageKind: "questions",
+      progress: inventoryProgress({
+        answerBearingQuestionsQueued: answerCursors.length,
+        zeroAnswerQuestionsSkipped: configuration.contentTypes.answers
+          ? page.items.filter((summary) => hasKnownZeroAnswers(summary.answerCount)).length
+          : 0,
+      }),
     };
   }
 
@@ -65,6 +95,7 @@ export async function scanInventorySlice(
         : null,
       inspectedCount: page.items.length,
       pageKind: "answers",
+      progress: inventoryProgress(),
     };
   }
 
@@ -77,7 +108,55 @@ export async function scanInventorySlice(
     nextCursor: page.hasMore ? { kind: "articles", page: cursor.page + 1 } : null,
     inspectedCount: page.items.length,
     pageKind: "articles",
+    progress: inventoryProgress(),
   };
+}
+
+function assertCursorMatchesDiscovery(
+  cursor: InventoryCursor,
+  configuration: ReplacementConfiguration,
+): void {
+  if (
+    (configuration.discovery.mode === "targeted" && cursor.kind === "search") ||
+    (configuration.discovery.mode === "full" && cursor.kind !== "search")
+  ) {
+    return;
+  }
+  throw new TypeError("Inventory cursor does not match replacement discovery mode.");
+}
+
+function inventoryProgress(
+  values: Partial<InventorySliceResult["progress"]> = {},
+): InventorySliceResult["progress"] {
+  return {
+    apiRequestsCompleted: 1,
+    searchPages: 0,
+    searchTermsCompleted: 0,
+    answerBearingQuestionsQueued: 0,
+    zeroAnswerQuestionsSkipped: 0,
+    ...values,
+  };
+}
+
+function hasKnownZeroAnswers(answerCount: unknown): boolean {
+  return typeof answerCount === "number" && Number.isSafeInteger(answerCount) && answerCount === 0;
+}
+
+function isSearchResultSelected(
+  summary: SearchSummary,
+  configuration: ReplacementConfiguration,
+): boolean {
+  return (summary.type === "question" && configuration.contentTypes.questions) ||
+    (summary.type === "answer" && configuration.contentTypes.answers) ||
+    (summary.type === "article" && configuration.contentTypes.articles);
+}
+
+function searchRef(summary: SearchSummary): ReplacementItemRef {
+  if (summary.type === "question") return { kind: "question", questionId: summary.questionId };
+  if (summary.type === "answer") {
+    return { kind: "answer", questionId: summary.parentQuestionId, answerId: summary.answerId };
+  }
+  return { kind: "article", articleId: summary.articleId };
 }
 
 export async function scanDetailBatch(

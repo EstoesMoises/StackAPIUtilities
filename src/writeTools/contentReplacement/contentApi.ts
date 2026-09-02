@@ -20,6 +20,7 @@ export interface QuestionSummary {
   id: number;
   title?: string | null;
   body?: string | null;
+  answerCount?: number | null;
 }
 
 export interface AnswerSummary {
@@ -33,6 +34,11 @@ export interface ArticleSummary {
   title?: string | null;
   body?: string | null;
 }
+
+export type SearchSummary =
+  | { type: "question"; questionId: number }
+  | { type: "answer"; answerId: number; parentQuestionId: number }
+  | { type: "article"; articleId: number };
 
 export interface ContentApiTransport {
   getPage<T = unknown>(
@@ -48,6 +54,7 @@ export interface ContentReplacementClient {
   getQuestionsPage(page: number): Promise<ContentInventoryPage<QuestionSummary>>;
   getAnswersPage(questionId: number, page: number): Promise<ContentInventoryPage<AnswerSummary>>;
   getArticlesPage(page: number): Promise<ContentInventoryPage<ArticleSummary>>;
+  getSearchPage(query: string, page: number): Promise<ContentInventoryPage<SearchSummary>>;
   getItem(ref: ReplacementItemRef): Promise<ReplacementRequestModel>;
   updateItem(model: ReplacementRequestModel): Promise<void>;
 }
@@ -96,6 +103,16 @@ export function createContentReplacementClient(transport: ContentApiTransport): 
         transport.getPage<ArticleSummary>("/articles", { pageSize: PAGE_SIZE }, page),
       );
     },
+    async getSearchPage(query, page) {
+      const result = await readInventoryPage("search", () =>
+        transport.getPage<unknown>("/search", { query, pageSize: PAGE_SIZE }, page),
+      );
+      try {
+        return { ...result, items: result.items.map(toSearchSummary) };
+      } catch {
+        throw schemaError("Unable to read search inventory.");
+      }
+    },
     async getItem(ref) {
       assertValidRef(ref, "reconstruct");
       let response: unknown;
@@ -119,7 +136,7 @@ export function createContentReplacementClient(transport: ContentApiTransport): 
 }
 
 async function readInventoryPage<T>(
-  kind: "question" | "answer" | "article",
+  kind: "question" | "answer" | "article" | "search",
   read: () => Promise<ContentInventoryPage<T>>,
 ): Promise<ContentInventoryPage<T>> {
   let result: ContentInventoryPage<T>;
@@ -132,6 +149,17 @@ async function readInventoryPage<T>(
     throw schemaError(`Unable to read ${kind} inventory.`);
   }
   return result;
+}
+
+function toSearchSummary(value: unknown): SearchSummary {
+  const result = asRecord(value);
+  if (!result || !isContentId(result.id)) throw new Error("Invalid search result.");
+  if (result.type === "question") return { type: "question", questionId: result.id };
+  if (result.type === "article") return { type: "article", articleId: result.id };
+  if (result.type === "answer" && isContentId(result.parentQuestionId)) {
+    return { type: "answer", answerId: result.id, parentQuestionId: result.parentQuestionId };
+  }
+  throw new Error("Invalid search result.");
 }
 
 function reconstructRequestModel(ref: ReplacementItemRef, response: unknown): ReplacementRequestModel {

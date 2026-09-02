@@ -160,7 +160,16 @@ export interface ReplacementProposal {
 export type InventoryCursor =
   | { kind: "questions"; page: number }
   | { kind: "answers"; questionId: number; page: number }
-  | { kind: "articles"; page: number };
+  | { kind: "articles"; page: number }
+  | { kind: "search"; ruleId: string; page: number };
+
+export interface InventorySliceProgress {
+  apiRequestsCompleted: number;
+  searchPages: number;
+  searchTermsCompleted: number;
+  answerBearingQuestionsQueued: number;
+  zeroAnswerQuestionsSkipped: number;
+}
 
 export interface InventorySliceResult {
   candidates: ReplacementItemRef[];
@@ -168,6 +177,7 @@ export interface InventorySliceResult {
   nextCursor: InventoryCursor | null;
   inspectedCount: number;
   pageKind: InventoryCursor["kind"];
+  progress: InventorySliceProgress;
 }
 
 export interface DetailBatchResult {

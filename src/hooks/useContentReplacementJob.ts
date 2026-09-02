@@ -1246,6 +1246,13 @@ function parseInventoryResult(
     nextCursor,
     inspectedCount: value.inspectedCount,
     pageKind: value.pageKind,
+    progress: {
+      apiRequestsCompleted: 0,
+      searchPages: 0,
+      searchTermsCompleted: 0,
+      answerBearingQuestionsQueued: 0,
+      zeroAnswerQuestionsSkipped: 0,
+    },
   };
 }
 
@@ -1551,6 +1558,7 @@ async function honorPersistedDeadline(
 
 function isContinuousCursor(current: InventoryCursor, next: InventoryCursor): boolean {
   if (current.kind !== next.kind || next.page !== current.page + 1) return false;
+  if (current.kind === "search") return false;
   return current.kind !== "answers" || (next.kind === "answers" && next.questionId === current.questionId);
 }
 
@@ -1561,6 +1569,7 @@ function refMatchesInventory(
 ): boolean {
   if (cursor.kind === "questions") return ref.kind === "question" && configuration.contentTypes.questions;
   if (cursor.kind === "articles") return ref.kind === "article" && configuration.contentTypes.articles;
+  if (cursor.kind === "search") return false;
   return ref.kind === "answer" && ref.questionId === cursor.questionId && configuration.contentTypes.answers;
 }
 

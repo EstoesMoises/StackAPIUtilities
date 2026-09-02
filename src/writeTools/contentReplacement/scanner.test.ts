@@ -6,6 +6,7 @@ import type {
   ContentInventoryPage,
   ContentReplacementClient,
   QuestionSummary,
+  SearchSummary,
 } from "./contentApi";
 import { scanDetailBatch, scanInventorySlice } from "./scanner";
 import type {
@@ -31,6 +32,7 @@ class FakeContentClient implements ContentReplacementClient {
       questions?: ContentInventoryPage<QuestionSummary>;
       answers?: ContentInventoryPage<AnswerSummary>;
       articles?: ContentInventoryPage<ArticleSummary>;
+      search?: ContentInventoryPage<SearchSummary>;
     } = {},
     private readonly readItem: (ref: ReplacementItemRef) => Promise<ReplacementRequestModel> =
       async (ref) => modelFor(ref),
@@ -49,6 +51,11 @@ class FakeContentClient implements ContentReplacementClient {
   async getArticlesPage(page: number) {
     this.inventoryCalls.push(`articles:${page}`);
     return this.pages.articles ?? emptyPage<ArticleSummary>(page);
+  }
+
+  async getSearchPage(query: string, page: number) {
+    this.inventoryCalls.push(`search:${query}:${page}`);
+    return this.pages.search ?? emptyPage<SearchSummary>(page);
   }
 
   async getItem(ref: ReplacementItemRef) {
@@ -86,8 +93,112 @@ describe("bounded content replacement scanning", () => {
       nextCursor: { kind: "questions", page: 2 },
       inspectedCount: 2,
       pageKind: "questions",
+      progress: {
+        apiRequestsCompleted: 1,
+        searchPages: 0,
+        searchTermsCompleted: 0,
+        answerBearingQuestionsQueued: 2,
+        zeroAnswerQuestionsSkipped: 0,
+      },
     });
     expect(client.inventoryCalls).toEqual(["questions:1"]);
+  });
+
+  it.each([
+    { answerCount: 0, expected: 0, skipped: 1 },
+    { answerCount: 2, expected: 1, skipped: 0 },
+    { answerCount: undefined, expected: 1, skipped: 0 },
+    { answerCount: -1, expected: 1, skipped: 0 },
+    { answerCount: 1.5, expected: 1, skipped: 0 },
+    { answerCount: Number.MAX_SAFE_INTEGER + 1, expected: 1, skipped: 0 },
+  ])("queues answers conservatively for $answerCount", async ({ answerCount, expected, skipped }) => {
+    const client = new FakeContentClient({
+      questions: page([{ id: 42, answerCount }]),
+    });
+
+    const result = await scanInventorySlice(client, {
+      cursor: { kind: "questions", page: 1 },
+      configuration,
+    });
+
+    expect(result.answerCursors).toHaveLength(expected);
+    expect(result.progress.zeroAnswerQuestionsSkipped).toBe(skipped);
+  });
+
+  it("uses the configured rule for a targeted search cursor and keeps duplicate result refs", async () => {
+    const client = new FakeContentClient({
+      search: page([
+        { type: "question", questionId: 42 },
+        { type: "answer", answerId: 8, parentQuestionId: 42 },
+        { type: "article", articleId: 7 },
+        { type: "question", questionId: 42 },
+      ], 3, true),
+    });
+    const targeted = { ...configuration, discovery: { mode: "targeted" as const } };
+
+    const result = await scanInventorySlice(client, {
+      cursor: { kind: "search", ruleId: "r1", page: 3 },
+      configuration: targeted,
+    });
+
+    expect(client.inventoryCalls).toEqual(["search:MyPVM:3"]);
+    expect(result).toMatchObject({
+      candidates: [
+        { kind: "question", questionId: 42 },
+        { kind: "answer", questionId: 42, answerId: 8 },
+        { kind: "article", articleId: 7 },
+        { kind: "question", questionId: 42 },
+      ],
+      answerCursors: [],
+      nextCursor: { kind: "search", ruleId: "r1", page: 4 },
+      inspectedCount: 4,
+      pageKind: "search",
+      progress: {
+        apiRequestsCompleted: 1,
+        searchPages: 1,
+        searchTermsCompleted: 0,
+        answerBearingQuestionsQueued: 0,
+        zeroAnswerQuestionsSkipped: 0,
+      },
+    });
+  });
+
+  it("filters unselected targeted search result types and completes the rule on its final page", async () => {
+    const client = new FakeContentClient({
+      search: page([
+        { type: "question", questionId: 42 },
+        { type: "answer", answerId: 8, parentQuestionId: 42 },
+        { type: "article", articleId: 7 },
+      ]),
+    });
+    const targeted = {
+      ...configuration,
+      discovery: { mode: "targeted" as const },
+      contentTypes: { questions: false, answers: true, articles: false },
+    };
+
+    const result = await scanInventorySlice(client, {
+      cursor: { kind: "search", ruleId: "r1", page: 1 },
+      configuration: targeted,
+    });
+
+    expect(result.candidates).toEqual([{ kind: "answer", questionId: 42, answerId: 8 }]);
+    expect(result.nextCursor).toBeNull();
+    expect(result.progress.searchTermsCompleted).toBe(1);
+  });
+
+  it.each([
+    [{ mode: "full" as const }, { kind: "search", ruleId: "r1", page: 1 }],
+    [{ mode: "targeted" as const }, { kind: "questions", page: 1 }],
+    [{ mode: "exact" as const, targetCount: 1, targetDigest: "digest" }, { kind: "articles", page: 1 }],
+  ])("rejects an inventory cursor that does not match its discovery mode", async (discovery, cursor) => {
+    const client = new FakeContentClient();
+
+    await expect(scanInventorySlice(client, {
+      cursor: cursor as Parameters<typeof scanInventorySlice>[1]["cursor"],
+      configuration: { ...configuration, discovery },
+    })).rejects.toThrow("Inventory cursor does not match replacement discovery mode.");
+    expect(client.inventoryCalls).toEqual([]);
   });
 
   it("inventories questions for answer cursors without emitting unselected question candidates", async () => {

@@ -83,6 +83,9 @@ function fakeContentClient(
     getQuestionsPage: vi.fn(),
     getAnswersPage: vi.fn(),
     getArticlesPage: vi.fn(),
+    getSearchPage: vi.fn(async () => {
+      throw new Error("Search inventory is unavailable in this fixture.");
+    }),
     getItem: vi.fn(async () => getItems[Math.min(readIndex++, getItems.length - 1)]),
     updateItem: vi.fn(updateImplementation ?? (async () => undefined)),
   };

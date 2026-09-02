@@ -371,6 +371,13 @@ describe("replacement job state", () => {
         nextCursor: { kind: "questions", page: 2 },
         inspectedCount: 1,
         pageKind: "questions",
+        progress: {
+          apiRequestsCompleted: 0,
+          searchPages: 0,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
       },
       at: LATER,
     });
@@ -393,6 +400,13 @@ describe("replacement job state", () => {
           nextCursor: null,
           inspectedCount: 0,
           pageKind: "articles",
+          progress: {
+            apiRequestsCompleted: 0,
+            searchPages: 0,
+            searchTermsCompleted: 0,
+            answerBearingQuestionsQueued: 0,
+            zeroAnswerQuestionsSkipped: 0,
+          },
         },
         at: LATER,
       },
@@ -411,6 +425,13 @@ describe("replacement job state", () => {
         nextCursor: null,
         inspectedCount: 1,
         pageKind: "questions",
+        progress: {
+          apiRequestsCompleted: 0,
+          searchPages: 0,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
       },
       at: LATER,
     });
@@ -433,6 +454,13 @@ describe("replacement job state", () => {
         nextCursor: null,
         inspectedCount: 14,
         pageKind: "questions",
+        progress: {
+          apiRequestsCompleted: 0,
+          searchPages: 0,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
       },
       at: AT,
     });

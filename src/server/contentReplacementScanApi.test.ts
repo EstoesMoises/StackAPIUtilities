@@ -83,6 +83,12 @@ function fakeContentClient(
       totalPages: 1,
       hasMore: false,
     }),
+    getSearchPage: vi.fn().mockResolvedValue({
+      items: [],
+      page: 1,
+      totalPages: 1,
+      hasMore: false,
+    }),
     getItem: vi.fn().mockResolvedValue({
       kind: "question",
       ref: { kind: "question", questionId: 10 },
@@ -130,6 +136,13 @@ describe("handleContentReplacementScanRequest", () => {
         nextCursor: { kind: "questions", page: 2 },
         inspectedCount: 1,
         pageKind: "questions",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 0,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 1,
+          zeroAnswerQuestionsSkipped: 0,
+        },
       },
       throttleNotices: [{ kind: "burst", seconds: 7, remaining: 2 }],
     });
