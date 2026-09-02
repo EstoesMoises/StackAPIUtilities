@@ -320,6 +320,8 @@ test("runs a targeted scan for two rules before any live-write confirmation", as
   await expect(apply).toBeDisabled();
   await page.getByLabel("I understand search-assisted discovery may have missed matches.").check();
   await expect(apply).toBeEnabled();
+  expect(fixture.noWriteRequests.apply).toHaveLength(0);
+  expect(fixture.noWriteRequests.recover).toHaveLength(0);
 });
 
 test("imports exact targets without inventory requests and limits coverage to those posts", async ({ page }) => {
@@ -344,6 +346,8 @@ test("imports exact targets without inventory requests and limits coverage to th
     .toContainText("Exact target list · complete for 3 supplied posts");
   expect(fixture.inventoryRequests).toEqual([]);
   expect(fixture.detailRequests).toEqual([fixture.detailRefs]);
+  expect(fixture.noWriteRequests.apply).toHaveLength(0);
+  expect(fixture.noWriteRequests.recover).toHaveLength(0);
 });
 
 test("resumes a Full audit at the persisted cursor and skips only zero-answer collections", async ({ page }) => {
@@ -385,6 +389,8 @@ test("resumes a Full audit at the persisted cursor and skips only zero-answer co
     "answers:802:1",
     "answers:803:1",
   ]);
+  expect(fixture.noWriteRequests.apply).toHaveLength(0);
+  expect(fixture.noWriteRequests.recover).toHaveLength(0);
 });
 
 test("keeps paused schema-v1 jobs restart-only while completed schema-v1 jobs retain guarded recovery", async ({ page }) => {
@@ -624,6 +630,27 @@ interface TargetedRouteFixture {
   inventoryRequests: Array<Record<string, unknown>>;
   detailRequests: ReplacementItemRef[][];
   detailRefs: ReplacementItemRef[];
+  noWriteRequests: NoWriteRequests;
+}
+
+interface NoWriteRequests {
+  apply: Array<Record<string, unknown>>;
+  recover: Array<Record<string, unknown>>;
+}
+
+async function installNoWriteGuards(page: Page): Promise<NoWriteRequests> {
+  const requests: NoWriteRequests = { apply: [], recover: [] };
+  await page.route("**/api/write-tools/content-replacement/apply", async (route) => {
+    requests.apply.push(route.request().postDataJSON() as Record<string, unknown>);
+    await route.abort("failed");
+    throw new Error("A no-write discovery workflow unexpectedly called the apply route.");
+  });
+  await page.route("**/api/write-tools/content-replacement/recover", async (route) => {
+    requests.recover.push(route.request().postDataJSON() as Record<string, unknown>);
+    await route.abort("failed");
+    throw new Error("A no-write discovery workflow unexpectedly called the recovery route.");
+  });
+  return requests;
 }
 
 async function installTargetedRoutes(page: Page): Promise<TargetedRouteFixture> {
@@ -674,7 +701,10 @@ async function installTargetedRoutes(page: Page): Promise<TargetedRouteFixture> 
     { kind: "search" as const, ruleId: "manual-2", page: 1 },
     { kind: "search" as const, ruleId: "manual-2", page: 2 },
   ];
-  const fixture: TargetedRouteFixture = { inventoryKinds: [], inventoryRequests: [], detailRequests: [], detailRefs };
+  const fixture: TargetedRouteFixture = {
+    inventoryKinds: [], inventoryRequests: [], detailRequests: [], detailRefs,
+    noWriteRequests: await installNoWriteGuards(page),
+  };
 
   await page.route("**/api/write-tools/content-replacement/scan", async (route) => {
     const request = route.request().postDataJSON() as Record<string, unknown>;
@@ -741,6 +771,7 @@ interface ExactTargetRouteFixture {
   inventoryRequests: Array<Record<string, unknown>>;
   detailRequests: ReplacementItemRef[][];
   detailRefs: ReplacementItemRef[];
+  noWriteRequests: NoWriteRequests;
 }
 
 async function installExactTargetRoutes(page: Page): Promise<ExactTargetRouteFixture> {
@@ -778,7 +809,10 @@ async function installExactTargetRoutes(page: Page): Promise<ExactTargetRouteFix
   const proposals = await Promise.all(models.map((model) => buildReplacementProposal(model, configuration)));
   if (proposals.some((proposal) => proposal === null)) throw new Error("Expected exact-target fixture proposals.");
   const fingerprint = await createJobFingerprint({ baseUrl: ENTERPRISE_URL, configuration, scanCompatibility: "current" });
-  const fixture: ExactTargetRouteFixture = { inventoryRequests: [], detailRequests: [], detailRefs };
+  const fixture: ExactTargetRouteFixture = {
+    inventoryRequests: [], detailRequests: [], detailRefs,
+    noWriteRequests: await installNoWriteGuards(page),
+  };
 
   await page.route("**/api/write-tools/content-replacement/scan", async (route) => {
     const request = route.request().postDataJSON() as Record<string, unknown>;
@@ -810,6 +844,7 @@ interface FullAuditRouteFixture {
   answerCollectionKinds: string[];
   blockedCursor: InventoryCursor | null;
   resumedCursor: InventoryCursor | null;
+  noWriteRequests: NoWriteRequests;
   waitForBlockedCursor(): Promise<void>;
   releaseBlockedCursor(): void;
 }
@@ -833,6 +868,7 @@ async function installFullAuditRoutes(page: Page): Promise<FullAuditRouteFixture
     answerCollectionKinds: [],
     blockedCursor: null,
     resumedCursor: null,
+    noWriteRequests: await installNoWriteGuards(page),
     waitForBlockedCursor: () => blockedCursorStarted,
     releaseBlockedCursor,
   };

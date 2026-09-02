@@ -4907,7 +4907,12 @@ select:disabled {
     width: 100%;
   }
 
-  .content-replacement-job-summary dl,
+  .content-replacement-job-summary dl {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
   .content-replacement-job-summary dl > div {
     display: grid;
     grid-template-columns: 72px minmax(0, 1fr);
