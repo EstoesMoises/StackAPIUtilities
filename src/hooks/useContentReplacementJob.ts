@@ -1215,10 +1215,12 @@ function parseInventoryResult(
   requested: InventoryCursor,
   configuration: ReplacementConfiguration,
 ): InventorySliceResult | null {
-  if (!hasOnlyKeys(value, ["candidates", "answerCursors", "nextCursor", "inspectedCount", "pageKind"]) ||
+  if (!hasOnlyKeys(value, ["candidates", "answerCursors", "nextCursor", "inspectedCount", "pageKind", "progress"]) ||
     !Array.isArray(value.candidates) || !Array.isArray(value.answerCursors) ||
     !isCount(value.inspectedCount) ||
     (value.pageKind !== "questions" && value.pageKind !== "answers" && value.pageKind !== "articles")) return null;
+  const progress = parseInventoryProgress(value.progress);
+  if (!progress) return null;
   const candidates = value.candidates.map(parseRef);
   const answerCursors = value.answerCursors.map(parseCursor);
   const nextCursor = value.nextCursor === null ? null : parseCursor(value.nextCursor);
@@ -1228,17 +1230,18 @@ function parseInventoryResult(
   const answerPages = answerCursors as Extract<InventoryCursor, { kind: "answers" }>[];
   const candidateKeys = refs.map(replacementItemKey);
   const answerKeys = answerPages.map((cursor) => `${cursor.questionId}:${cursor.page}`);
-  const answerQuestionIds = new Set(answerPages.map((cursor) => cursor.questionId));
   if (refs.length > 100_000 || answerPages.length > 100_000 || refs.length > value.inspectedCount ||
     answerPages.length > value.inspectedCount || value.pageKind !== requested.kind ||
     new Set(candidateKeys).size !== candidateKeys.length ||
     new Set(answerKeys).size !== answerKeys.length || refs.some((ref) => !refMatchesInventory(ref, requested, configuration)) ||
     answerPages.some((cursor) => requested.kind !== "questions" || cursor.page !== 1) ||
     (requested.kind !== "questions" && answerPages.length !== 0) ||
-    (requested.kind === "questions" && !configuration.contentTypes.answers && answerPages.length !== 0) ||
+    (requested.kind === "questions" && !configuration.contentTypes.answers &&
+      (answerPages.length !== 0 || progress.answerBearingQuestionsQueued !== 0 ||
+        progress.zeroAnswerQuestionsSkipped !== 0)) ||
     (requested.kind === "questions" && configuration.contentTypes.answers &&
-      (answerPages.length !== value.inspectedCount || refs.some((ref) =>
-        ref.kind !== "question" || !answerQuestionIds.has(ref.questionId)))) ||
+      (answerPages.length !== progress.answerBearingQuestionsQueued ||
+        progress.answerBearingQuestionsQueued + progress.zeroAnswerQuestionsSkipped !== value.inspectedCount)) ||
     (nextCursor && !isContinuousCursor(requested, nextCursor))) return null;
   return {
     candidates: refs,
@@ -1246,13 +1249,28 @@ function parseInventoryResult(
     nextCursor,
     inspectedCount: value.inspectedCount,
     pageKind: value.pageKind,
-    progress: {
-      apiRequestsCompleted: 0,
-      searchPages: 0,
-      searchTermsCompleted: 0,
-      answerBearingQuestionsQueued: 0,
-      zeroAnswerQuestionsSkipped: 0,
-    },
+    progress,
+  };
+}
+
+function parseInventoryProgress(value: unknown): InventorySliceResult["progress"] | null {
+  if (!isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "apiRequestsCompleted",
+      "searchPages",
+      "searchTermsCompleted",
+      "answerBearingQuestionsQueued",
+      "zeroAnswerQuestionsSkipped",
+    ]) ||
+    !isCount(value.apiRequestsCompleted) || !isCount(value.searchPages) ||
+    !isCount(value.searchTermsCompleted) || !isCount(value.answerBearingQuestionsQueued) ||
+    !isCount(value.zeroAnswerQuestionsSkipped)) return null;
+  return {
+    apiRequestsCompleted: value.apiRequestsCompleted,
+    searchPages: value.searchPages,
+    searchTermsCompleted: value.searchTermsCompleted,
+    answerBearingQuestionsQueued: value.answerBearingQuestionsQueued,
+    zeroAnswerQuestionsSkipped: value.zeroAnswerQuestionsSkipped,
   };
 }
 

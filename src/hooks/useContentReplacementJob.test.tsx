@@ -35,6 +35,16 @@ const configuration: ReplacementConfiguration = {
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };
 
+function inventoryProgress() {
+  return {
+    apiRequestsCompleted: 1,
+    searchPages: 0,
+    searchTermsCompleted: 0,
+    answerBearingQuestionsQueued: 0,
+    zeroAnswerQuestionsSkipped: 0,
+  };
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -196,7 +206,10 @@ describe("useContentReplacementJob", () => {
       .mockResolvedValueOnce(jsonResponse({ ok: false, error: "secret upstream detail" }, 401))
       .mockResolvedValueOnce(jsonResponse({
         ok: true,
-        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        result: {
+          candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+          progress: inventoryProgress(),
+        },
         throttleNotices: [],
       }));
     const deps = dependencies(fetcher);
@@ -257,7 +270,10 @@ describe("useContentReplacementJob", () => {
       .mockReturnValueOnce(firstResponse.promise)
       .mockResolvedValueOnce(jsonResponse({
         ok: true,
-        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        result: {
+          candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+          progress: inventoryProgress(),
+        },
         throttleNotices: [],
       }));
     const deps = dependencies(fetcher);
@@ -336,7 +352,10 @@ describe("useContentReplacementJob", () => {
       .mockReturnValueOnce(pending.promise)
       .mockResolvedValueOnce(jsonResponse({
         ok: true,
-        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        result: {
+          candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+          progress: inventoryProgress(),
+        },
         throttleNotices: [],
       }));
     const deps = dependencies(fetcher);
@@ -366,6 +385,7 @@ describe("useContentReplacementJob", () => {
         result: {
           candidates: [{ kind: "question", questionId: 1 }], answerCursors: [], nextCursor: null,
           inspectedCount: 1, pageKind: "questions",
+          progress: inventoryProgress(),
         },
         throttleNotices: [],
       }))
@@ -405,7 +425,10 @@ describe("useContentReplacementJob", () => {
   it("persists a returned throttle deadline before awaiting an abortable delay", async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       ok: true,
-      result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+        progress: inventoryProgress(),
+      },
       throttleNotices: [{ kind: "backoff", seconds: 3 }],
     }));
     const deps = dependencies(fetcher);
@@ -468,7 +491,10 @@ describe("useContentReplacementJob", () => {
 
     parsedBody.resolve({
       ok: true,
-      result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+        progress: inventoryProgress(),
+      },
       throttleNotices: [],
     });
     await act(async () => scan);
@@ -487,7 +513,10 @@ describe("useContentReplacementJob", () => {
       .mockReturnValueOnce(firstResponse.promise)
       .mockResolvedValueOnce(jsonResponse({
         ok: true,
-        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        result: {
+          candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+          progress: inventoryProgress(),
+        },
         throttleNotices: [],
       }));
     const deps = dependencies(fetcher);
@@ -522,7 +551,10 @@ describe("useContentReplacementJob", () => {
   it("stops immediately on persistence failure and retains the last persisted state", async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       ok: true,
-      result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+        progress: inventoryProgress(),
+      },
       throttleNotices: [],
     }));
     const deps = dependencies(fetcher);
@@ -541,7 +573,10 @@ describe("useContentReplacementJob", () => {
   it("retries a failed initial save and starts the scan only after persistence succeeds", async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       ok: true,
-      result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+        progress: inventoryProgress(),
+      },
       throttleNotices: [],
     }));
     const deps = dependencies(fetcher);
@@ -782,7 +817,10 @@ describe("useContentReplacementJob", () => {
   it("uses newly supplied credentials on resume without persisting them", async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       ok: true,
-      result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+        progress: inventoryProgress(),
+      },
       throttleNotices: [],
     }));
     const deps = dependencies(fetcher);
@@ -981,6 +1019,117 @@ describe("useContentReplacementJob", () => {
     second.unmount();
   });
 
+  it("accepts a valid Full-audit inventory result with the required progress delta", async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [],
+        answerCursors: [],
+        nextCursor: null,
+        inspectedCount: 1,
+        pageKind: "questions",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 0,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => result.current.createJob(configuration));
+
+    await act(async () => result.current.startScan());
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.job).toMatchObject({ stage: "review", status: "completed" });
+  });
+
+  it("accepts a Full-audit questions page when valid-zero answers were skipped", async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [],
+        answerCursors: [],
+        nextCursor: null,
+        inspectedCount: 1,
+        pageKind: "questions",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 0,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 1,
+        },
+      },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher);
+    const answersEnabled = {
+      ...configuration,
+      contentTypes: { questions: true, answers: true, articles: false },
+    };
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => result.current.createJob(answersEnabled));
+
+    await act(async () => result.current.startScan());
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.job).toMatchObject({ stage: "review", status: "completed" });
+  });
+
+  it.each([
+    ["missing progress", undefined],
+    ["an unknown progress field", {
+      apiRequestsCompleted: 1,
+      searchPages: 0,
+      searchTermsCompleted: 0,
+      answerBearingQuestionsQueued: 0,
+      zeroAnswerQuestionsSkipped: 0,
+      extra: 0,
+    }],
+    ["a negative progress counter", {
+      apiRequestsCompleted: -1,
+      searchPages: 0,
+      searchTermsCompleted: 0,
+      answerBearingQuestionsQueued: 0,
+      zeroAnswerQuestionsSkipped: 0,
+    }],
+    ["a fractional progress counter", {
+      apiRequestsCompleted: 1.5,
+      searchPages: 0,
+      searchTermsCompleted: 0,
+      answerBearingQuestionsQueued: 0,
+      zeroAnswerQuestionsSkipped: 0,
+    }],
+    ["an unsafe progress counter", {
+      apiRequestsCompleted: Number.MAX_SAFE_INTEGER + 1,
+      searchPages: 0,
+      searchTermsCompleted: 0,
+      answerBearingQuestionsQueued: 0,
+      zeroAnswerQuestionsSkipped: 0,
+    }],
+  ])("rejects an inventory result with %s", async (_label, progress) => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+        ...(progress === undefined ? {} : { progress }),
+      },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => result.current.createJob(configuration));
+
+    await act(async () => result.current.startScan());
+
+    expect(result.current.job).toMatchObject({ status: "failed", failure: { category: "server" } });
+  });
+
   it("pauses apply before item activation when compatible credentials are unavailable", async () => {
     const proposal = await questionProposal();
     const prepared = prepareJob(await scannedReviewJob(proposal), AT);
@@ -1003,6 +1152,7 @@ describe("useContentReplacementJob", () => {
       result: {
         candidates: [{ kind: "question", questionId: 1 }], answerCursors: [],
         nextCursor: { kind: "questions", page: 3 }, inspectedCount: 1, pageKind: "questions",
+        progress: inventoryProgress(),
       },
       throttleNotices: [],
     }));
@@ -1017,18 +1167,33 @@ describe("useContentReplacementJob", () => {
   });
 
   it.each([
-    ["disabled answers", configuration, 1, [{ kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }]],
+    ["disabled answers", configuration, 1, [{ kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }], 0],
     ["omitted answer cursor", { ...configuration, contentTypes: { questions: true, answers: true, articles: false } }, 2,
-      [{ kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }]],
-    ["substituted answer cursor", { ...configuration, contentTypes: { questions: true, answers: true, articles: false } }, 2,
-      [{ kind: "answers", questionId: 2, page: 1 }, { kind: "answers", questionId: 3, page: 1 }], [{ kind: "question", questionId: 1 }]],
+      [{ kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }], 2],
     ["duplicate answer cursor", { ...configuration, contentTypes: { questions: true, answers: true, articles: false } }, 2,
-      [{ kind: "answers", questionId: 1, page: 1 }, { kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }]],
-  ] as const)("blocks %s inventory before queue mutation", async (_label, config, inspectedCount, answerCursors, candidates) => {
+      [{ kind: "answers", questionId: 1, page: 1 }, { kind: "answers", questionId: 1, page: 1 }], [{ kind: "question", questionId: 1 }], 2],
+  ] as const)("blocks %s inventory before queue mutation", async (
+    _label,
+    config,
+    inspectedCount,
+    answerCursors,
+    candidates,
+    answerBearingQuestionsQueued,
+  ) => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(jsonResponse({
         ok: true,
-        result: { candidates, answerCursors, nextCursor: null, inspectedCount, pageKind: "questions" },
+        result: {
+          candidates,
+          answerCursors,
+          nextCursor: null,
+          inspectedCount,
+          pageKind: "questions",
+          progress: {
+            ...inventoryProgress(),
+            answerBearingQuestionsQueued,
+          },
+        },
         throttleNotices: [],
       }))
       .mockResolvedValue(jsonResponse({ ok: false, error: "should not continue" }, 500));
@@ -1238,6 +1403,7 @@ describe("useContentReplacementJob", () => {
         result: {
           candidates: [{ kind: "question", questionId: 1 }], answerCursors: [], nextCursor: null,
           inspectedCount: 1, pageKind: "questions",
+          progress: inventoryProgress(),
         }, throttleNotices: [],
       }))
       .mockResolvedValueOnce(jsonResponse({
@@ -1265,7 +1431,10 @@ describe("useContentReplacementJob", () => {
       }, 429))
       .mockResolvedValueOnce(jsonResponse({
         ok: true,
-        result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+        result: {
+          candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+          progress: inventoryProgress(),
+        },
         throttleNotices: [],
       }));
     const deps = dependencies(fetcher);
