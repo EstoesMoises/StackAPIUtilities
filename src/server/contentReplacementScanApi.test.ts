@@ -569,6 +569,106 @@ describe("handleContentReplacementScanRequest", () => {
     expect(serialized).not.toContain("upstream");
   });
 
+  it("allows the production per-wait boundary of five seconds", async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(
+        new Response("limited", { status: 429, headers: { "Retry-After": "5" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], totalPages: 1 }), { status: 200 }),
+      );
+    const scheduledWait = vi.fn((callback: () => void, _delay?: number) => {
+      callback();
+      return 1;
+    });
+    vi.stubGlobal("fetch", fetchFn);
+    vi.stubGlobal("setTimeout", scheduledWait);
+
+    const response = await handleContentReplacementScanRequest(await validScanPayload());
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      throttleNotices: [{ kind: "backoff", seconds: 5 }],
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(scheduledWait.mock.calls.map(([, delay]) => delay)).toEqual([5_000]);
+  });
+
+  it("returns immediately when a production retry delay exceeds five seconds", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("hostile upstream secret-token response", {
+        status: 429,
+        headers: { "Retry-After": "6" },
+      }),
+    );
+    const scheduledWait = vi.fn((callback: () => void, _delay?: number) => {
+      callback();
+      return 1;
+    });
+    vi.stubGlobal("fetch", fetchFn);
+    vi.stubGlobal("setTimeout", scheduledWait);
+
+    const response = await handleContentReplacementScanRequest(await validScanPayload());
+    const serialized = await response.text();
+
+    expect(response.status).toBe(429);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: false,
+      error: {
+        code: "rate_limited",
+        message: "Content scan is temporarily rate limited.",
+        retryAfterSeconds: 6,
+      },
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(scheduledWait).not.toHaveBeenCalled();
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("upstream");
+  });
+
+  it("stops production retries before cumulative waits exceed ten seconds", async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(
+        new Response("limited", { status: 429, headers: { "Retry-After": "5" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response("limited", { status: 429, headers: { "Retry-After": "5" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response("hostile upstream secret-token response", {
+          status: 429,
+          headers: { "Retry-After": "1" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], totalPages: 1 }), { status: 200 }),
+      );
+    const scheduledWait = vi.fn((callback: () => void, _delay?: number) => {
+      callback();
+      return 1;
+    });
+    vi.stubGlobal("fetch", fetchFn);
+    vi.stubGlobal("setTimeout", scheduledWait);
+
+    const response = await handleContentReplacementScanRequest(await validScanPayload());
+    const serialized = await response.text();
+
+    expect(response.status).toBe(429);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: false,
+      error: {
+        code: "rate_limited",
+        message: "Content scan is temporarily rate limited.",
+        retryAfterSeconds: 1,
+      },
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(scheduledWait.mock.calls.map(([, delay]) => delay)).toEqual([5_000, 5_000]);
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("upstream");
+  });
+
   it("redacts credentials from nested hostile details while preserving protocol keys and enums", async () => {
     const client = fakeContentClient({
       getItem: vi.fn().mockResolvedValue({
