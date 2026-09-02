@@ -286,19 +286,29 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
     if (item.failure && !isWithinJobTime(item.failure.occurredAt, job)) throw corruptJob();
   }
   if (job.activeOperation) {
+    const consumedCount = job.activeOperation.requestedItemKeys.length - job.activeOperation.remainingItemKeys.length;
+    const consumed = job.activeOperation.requestedItemKeys.slice(0, consumedCount);
     if (!isWithinJobTime(job.activeOperation.generation, job) ||
-      !isNonemptyExactSuffix(job.activeOperation.requestedItemKeys, job.activeOperation.remainingItemKeys)) {
+      !isNonemptyExactSuffix(job.activeOperation.requestedItemKeys, job.activeOperation.remainingItemKeys) ||
+      job.activeOperation.completedItemKeys.length !== consumed.length ||
+      job.activeOperation.completedItemKeys.some((key, index) => key !== consumed[index])) {
       throw corruptJob();
     }
     if (job.activeOperation.kind === "recovery-preview" &&
-      (job.stage !== "recovery" || job.activeOperation.remainingItemKeys.some((key) => !hasSuccessfulApplyEvidence(job.proposals[key])))) {
+      (job.stage !== "recovery" ||
+        job.activeOperation.remainingItemKeys.some((key) => !hasSuccessfulApplyEvidence(job.proposals[key])) ||
+        consumed.some((key) => !hasCompletedRecoveryPreviewEvidence(
+          job.proposals[key], job.activeOperation!.generation,
+        )))) {
       throw corruptJob();
     }
     if (job.activeOperation.kind === "recovery-apply" &&
       (job.stage !== "recovery" || job.activeOperation.remainingItemKeys.some((key) => {
         const item = job.proposals[key];
         return item.status !== "ready-to-recover" && item.status !== "recovering";
-      }))) throw corruptJob();
+      }) || consumed.some((key) => !hasCompletedRecoveryApplyEvidence(
+        job.proposals[key], job.activeOperation!.generation,
+      )))) throw corruptJob();
   }
   assertStageInvariants(job, items);
   if (
@@ -356,8 +366,6 @@ function assertStageInvariants(
     const consumedSet = new Set(consumed);
     if (requested.size !== job.activeOperation.requestedItemKeys.length ||
       job.activeOperation.remainingItemKeys.some((key) => !requested.has(key) || job.proposals[key]?.status !== "stale") ||
-      job.activeOperation.completedItemKeys.length !== consumed.length ||
-      job.activeOperation.completedItemKeys.some((key, index) => key !== consumed[index]) ||
       job.activeOperation.inspectedCount !== consumed.length ||
       Object.keys(job.activeOperation.proposals).some((key) => !consumedSet.has(key))) throw corruptJob();
   }
@@ -948,18 +956,19 @@ function parseActiveOperation(
   configuredRuleIds: ReadonlySet<string>,
 ): PersistedContentReplacementActiveOperation {
   const raw = plainRecord(value);
-  const common = ["kind", "requestedItemKeys", "remainingItemKeys", "generation"] as const;
+  const common = ["kind", "requestedItemKeys", "remainingItemKeys", "completedItemKeys", "generation"] as const;
   const requestedItemKeys = stringList(raw.requestedItemKeys, MAX_QUEUE_ITEMS, 200);
   const remainingItemKeys = stringList(raw.remainingItemKeys, MAX_QUEUE_ITEMS, 200);
+  const completedItemKeys = stringList(raw.completedItemKeys, MAX_QUEUE_ITEMS, 200);
   if (requestedItemKeys.some((key) => !isCanonicalItemKey(key) || !proposals[key]) ||
     remainingItemKeys.some((key) => !isCanonicalItemKey(key) || !proposals[key])) throw corruptJob();
   const generation = timestamp(raw.generation);
   if (raw.kind === "recovery-preview" || raw.kind === "recovery-apply") {
     exactObject(raw, common);
-    return { kind: raw.kind, requestedItemKeys, remainingItemKeys, generation };
+    return { kind: raw.kind, requestedItemKeys, remainingItemKeys, completedItemKeys, generation };
   }
   if (raw.kind !== "stale-rescan") throw corruptJob();
-  exactObject(raw, [...common, "completedItemKeys", "proposals", "inspectedCount", "protectedOccurrenceCount"]);
+  exactObject(raw, [...common, "proposals", "inspectedCount", "protectedOccurrenceCount"]);
   const candidateMap = exactDynamicMap(raw.proposals);
   const parsed: Record<string, ReplacementProposal> = {};
   for (const [key, candidate] of Object.entries(candidateMap)) {
@@ -968,7 +977,7 @@ function parseActiveOperation(
   }
   return {
     kind: "stale-rescan", requestedItemKeys, remainingItemKeys, generation,
-    completedItemKeys: stringList(raw.completedItemKeys, MAX_QUEUE_ITEMS, 200),
+    completedItemKeys,
     proposals: parsed,
     inspectedCount: count(raw.inspectedCount),
     protectedOccurrenceCount: count(raw.protectedOccurrenceCount),
@@ -980,6 +989,30 @@ function isNonemptyExactSuffix(requested: readonly string[], remaining: readonly
     new Set(requested).size !== requested.length || new Set(remaining).size !== remaining.length) return false;
   const offset = requested.length - remaining.length;
   return remaining.every((key, index) => key === requested[offset + index]);
+}
+
+function hasCompletedRecoveryPreviewEvidence(
+  item: PersistedContentReplacementItem,
+  generation: string,
+): boolean {
+  if (!hasSuccessfulApplyEvidence(item)) return false;
+  if (item.status === "ready-to-recover" && item.recovery?.preview) {
+    return Date.parse(item.recovery.preview.previewedAt) >= Date.parse(generation);
+  }
+  return item.status === "recovery-failed" && !!item.failure &&
+    item.recovery?.status === "failed" && Date.parse(item.failure.occurredAt) >= Date.parse(generation);
+}
+
+function hasCompletedRecoveryApplyEvidence(
+  item: PersistedContentReplacementItem,
+  generation: string,
+): boolean {
+  if (!hasSuccessfulApplyEvidence(item)) return false;
+  if (item.status === "recovered" || item.status === "recovery-conflict") {
+    return !!item.recovery?.result && Date.parse(item.recovery.result.completedAt) >= Date.parse(generation);
+  }
+  return item.status === "recovery-failed" && !!item.failure &&
+    item.recovery?.status === "failed" && Date.parse(item.failure.occurredAt) >= Date.parse(generation);
 }
 
 function parseFailure(value: unknown): PersistedContentReplacementFailure {

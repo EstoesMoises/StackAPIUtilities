@@ -218,6 +218,42 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job?.failure).toBeUndefined();
   });
 
+  it("does not let a deferred stale parser save after pause and delete", async () => {
+    const parsedBody = deferred<unknown>();
+    const response = {
+      ok: true,
+      status: 200,
+      json: vi.fn(() => parsedBody.promise),
+    } as unknown as Response;
+    const fetcher = vi.fn().mockResolvedValue(response);
+    const deps = dependencies(fetcher);
+    const first = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => first.result.current.createJob(configuration));
+    let scan!: Promise<void>;
+    act(() => { scan = first.result.current.startScan(); });
+    await waitFor(() => expect(response.json).toHaveBeenCalledTimes(1));
+
+    act(() => first.result.current.pause());
+    await waitFor(() => expect(first.result.current.job?.status).toBe("paused"));
+    await act(async () => first.result.current.deleteJob());
+    const savesAfterDelete = deps.store.save.mock.calls.length;
+    expect(deps.store.current()).toBeNull();
+    expect(first.result.current.job).toBeNull();
+
+    parsedBody.resolve({
+      ok: true,
+      result: { candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions" },
+      throttleNotices: [],
+    });
+    await act(async () => scan);
+
+    expect(deps.store.save).toHaveBeenCalledTimes(savesAfterDelete);
+    expect(deps.store.current()).toBeNull();
+    expect(first.result.current.job).toBeNull();
+    const remounted = renderHook(() => useContentReplacementJob(credentials, deps.store.current(), deps.value));
+    expect(remounted.result.current.job).toBeNull();
+  });
+
   it("waits for the paused checkpoint to persist before an immediate resume", async () => {
     const firstResponse = deferred<Response>();
     const pausedSave = deferred<void>();

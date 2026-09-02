@@ -606,6 +606,41 @@ describe("replacement job state", () => {
     });
   });
 
+  it("advances exact recovery completed prefixes only with typed item evidence", () => {
+    const first = proposal({ kind: "question", questionId: 1 });
+    const second = proposal({ kind: "question", questionId: 2 });
+    let job = preparedJob(first, second);
+    job = reduceReplacementJob(job, { type: "apply/start", at: AT });
+    for (const key of ["question:1", "question:2"]) {
+      job = reduceReplacementJob(job, { type: "apply/item-started", itemKey: key, at: AT });
+      job = reduceReplacementJob(job, {
+        type: "apply/item-finished", itemKey: key,
+        result: { status: "updated", observedRequestChecksum: DIGEST_B }, at: AT,
+      });
+    }
+    job = reduceReplacementJob(job, {
+      type: "recovery/preview-run-started", itemKeys: ["question:1", "question:2"], at: LATER,
+    });
+    job = reduceReplacementJob(job, { type: "recovery/preview-started", itemKey: "question:1", at: LATER });
+    job = reduceReplacementJob(job, {
+      type: "recovery/preview-finished", itemKey: "question:1",
+      result: {
+        status: "recoverable",
+        currentRequestModel: { kind: "question", ref: { kind: "question", questionId: 1 }, request: { title: "New title", body: "body", tags: ["tag"] } },
+        observedRequestChecksum: DIGEST_B,
+      }, at: LATER,
+    });
+
+    expect(job.activeOperation).toMatchObject({
+      kind: "recovery-preview",
+      requestedItemKeys: ["question:1", "question:2"],
+      completedItemKeys: ["question:1"],
+      remainingItemKeys: ["question:2"],
+    });
+    expect(job.proposals["question:1"].status).toBe("ready-to-recover");
+    expect(job.proposals["question:2"].status).toBe("applied");
+  });
+
   it("persists divergent post-write checksums as verification evidence, never success", () => {
     const key = "question:1";
     let job = preparedJob(proposal({ kind: "question", questionId: 1 }));

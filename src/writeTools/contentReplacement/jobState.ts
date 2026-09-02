@@ -368,7 +368,13 @@ function pauseActiveWork(
   }));
   const interruptedRecovery = Object.values(job.proposals).some((item) => item.status === "recovering");
   const activeOperation = interruptedRecovery && job.activeOperation?.kind === "recovery-apply"
-    ? { ...job.activeOperation, kind: "recovery-preview" as const }
+    ? {
+        kind: "recovery-preview" as const,
+        requestedItemKeys: job.activeOperation.remainingItemKeys,
+        remainingItemKeys: job.activeOperation.remainingItemKeys,
+        completedItemKeys: [],
+        generation: at,
+      }
     : job.activeOperation;
   return touch({
     ...job,
@@ -781,7 +787,8 @@ function startRecoveryPreviewRun(
   return touch({
     ...job, stage: "recovery", status: "running", operationError: undefined,
     activeOperation: {
-      kind: "recovery-preview", requestedItemKeys: keys, remainingItemKeys: keys, generation: at,
+      kind: "recovery-preview", requestedItemKeys: keys, remainingItemKeys: keys,
+      completedItemKeys: [], generation: at,
     },
   }, at);
 }
@@ -852,7 +859,8 @@ function startRecovery(
   return touch({
     ...job, stage: "recovery", status: "running", failure: undefined, operationError: undefined,
     activeOperation: {
-      kind: "recovery-apply", requestedItemKeys: keys, remainingItemKeys: keys, generation: at,
+      kind: "recovery-apply", requestedItemKeys: keys, remainingItemKeys: keys,
+      completedItemKeys: [], generation: at,
     },
   }, at);
 }
@@ -980,8 +988,9 @@ function consumeActiveOperation(
   const operation = job.activeOperation;
   if (operation?.kind !== kind || operation.remainingItemKeys[0] !== itemKey) return job;
   const remainingItemKeys = operation.remainingItemKeys.slice(1);
+  const completedItemKeys = [...operation.completedItemKeys, itemKey];
   return remainingItemKeys.length > 0
-    ? { ...job, status: "running", activeOperation: { ...operation, remainingItemKeys } }
+    ? { ...job, status: "running", activeOperation: { ...operation, remainingItemKeys, completedItemKeys } }
     : { ...job, status: kind === "recovery-preview" ? "paused" : "completed", activeOperation: undefined };
 }
 

@@ -181,6 +181,7 @@ export function useContentReplacementJob(
     candidate: PersistedContentReplacementJob,
     token?: number,
   ): Promise<boolean> => enqueueStorage(async () => {
+    if (token !== undefined && token !== operationRef.current) return false;
     try {
       await dependenciesRef.current.storage.save(candidate);
     } catch {
@@ -425,28 +426,34 @@ export function useContentReplacementJob(
     if (current.stage === "scan") await startScan();
   }, [startScan]);
 
-  const cancel = useCallback((): Promise<void> => enqueueLocalMutation(async () => {
-    const current = jobRef.current;
-    if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
-    stopOperation();
-    await persist(reduceReplacementJob(current, {
-      type: "run/cancel",
-      at: dependenciesRef.current.now(),
-    }));
-  }), [enqueueLocalMutation, persist, stopOperation]);
+  const cancel = useCallback((): Promise<void> => {
+    if (runningRef.current) return Promise.resolve();
+    return enqueueLocalMutation(async () => {
+      const current = jobRef.current;
+      if (!current || current.status === "running" || current.activeOperation) return;
+      stopOperation();
+      await persist(reduceReplacementJob(current, {
+        type: "run/cancel",
+        at: dependenciesRef.current.now(),
+      }));
+    });
+  }, [enqueueLocalMutation, persist, stopOperation]);
 
-  const deleteJob = useCallback((): Promise<void> => enqueueLocalMutation(async () => {
-    const current = jobRef.current;
-    if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
-    stopOperation();
-    try {
-      await enqueueStorage(() => dependenciesRef.current.storage.delete(current.id));
-      setStorageError(null);
-      setJob(null);
-    } catch {
-      if (mountedRef.current) setStorageError(STORAGE_ERROR);
-    }
-  }), [enqueueLocalMutation, enqueueStorage, setJob, stopOperation]);
+  const deleteJob = useCallback((): Promise<void> => {
+    if (runningRef.current) return Promise.resolve();
+    return enqueueLocalMutation(async () => {
+      const current = jobRef.current;
+      if (!current || current.status === "running" || current.activeOperation) return;
+      stopOperation();
+      try {
+        await enqueueStorage(() => dependenciesRef.current.storage.delete(current.id));
+        setStorageError(null);
+        setJob(null);
+      } catch {
+        if (mountedRef.current) setStorageError(STORAGE_ERROR);
+      }
+    });
+  }, [enqueueLocalMutation, enqueueStorage, setJob, stopOperation]);
 
   const setItemIncluded = useCallback((itemKey: string, included: boolean): Promise<void> => enqueueLocalMutation(async () => {
     const current = jobRef.current;
@@ -790,15 +797,19 @@ export function useContentReplacementJob(
     });
   }, [persist, persistResponse, request, runExclusive, setBusy]);
 
-  const deleteRecoverySnapshots = useCallback((): Promise<void> => enqueueLocalMutation(async () => {
-    const current = jobRef.current;
-    if (!current || runningRef.current || current.status === "running" || current.activeOperation) return;
-    const next = reduceReplacementJob(current, {
-      type: "recovery/delete-snapshots",
-      at: dependenciesRef.current.now(),
+  const deleteRecoverySnapshots = useCallback((): Promise<void> => {
+    if (runningRef.current) return Promise.resolve();
+    return enqueueLocalMutation(async () => {
+      const current = jobRef.current;
+      if (!current || current.status === "running" || current.activeOperation) return;
+      stopOperation();
+      const next = reduceReplacementJob(current, {
+        type: "recovery/delete-snapshots",
+        at: dependenciesRef.current.now(),
+      });
+      if (next !== current) await persist(next);
     });
-    if (next !== current) await persist(next);
-  }), [enqueueLocalMutation, persist]);
+  }, [enqueueLocalMutation, persist, stopOperation]);
 
   return {
     job,

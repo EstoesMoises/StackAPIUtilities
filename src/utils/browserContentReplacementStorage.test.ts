@@ -485,6 +485,71 @@ describe("browserContentReplacementStorage", () => {
     await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
   });
 
+  it("persists exact completed-prefix preview evidence for an active recovery run", async () => {
+    installFakeIndexedDB();
+    const job = await createActiveRecoveryOperationJob();
+    const completed = job.proposals["question:42"];
+    completed.status = "ready-to-recover";
+    completed.recovery!.preview = createRecoveryPreview(job) as any;
+    job.activeOperation = {
+      kind: "recovery-preview",
+      requestedItemKeys: ["question:42", "question:43", "question:44"],
+      remainingItemKeys: ["question:43", "question:44"],
+      completedItemKeys: ["question:42"],
+      generation: "2026-09-01T12:03:00.000Z",
+    } as any;
+
+    await saveContentReplacementJob(job);
+
+    await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
+  });
+
+  it.each([
+    ["skips the completed preview prefix", []],
+    ["reorders the completed preview prefix", ["question:43"]],
+    ["duplicates the completed preview prefix", ["question:42", "question:42"]],
+  ] as const)("rejects an active recovery preview that %s", async (_label, completedItemKeys) => {
+    installFakeIndexedDB();
+    const job = await createActiveRecoveryOperationJob();
+    const completed = job.proposals["question:42"];
+    completed.status = "ready-to-recover";
+    completed.recovery!.preview = createRecoveryPreview(job) as any;
+    job.activeOperation = {
+      kind: "recovery-preview",
+      requestedItemKeys: ["question:42", "question:43", "question:44"],
+      remainingItemKeys: ["question:43", "question:44"],
+      completedItemKeys: [...completedItemKeys],
+      generation: "2026-09-01T12:03:00.000Z",
+    } as any;
+
+    await expect(saveContentReplacementJob(job)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
+  it("rejects a merely-applied item falsely consumed by recovery preview or apply", async () => {
+    for (const kind of ["recovery-preview", "recovery-apply"] as const) {
+      installFakeIndexedDB();
+      const job = await createActiveRecoveryOperationJob();
+      for (const key of ["question:43", "question:44"]) {
+        const item = job.proposals[key];
+        item.status = "ready-to-recover";
+        item.recovery!.preview = recoveryPreviewForItem(item, job.updatedAt);
+      }
+      job.activeOperation = {
+        kind,
+        requestedItemKeys: ["question:42", "question:43", "question:44"],
+        remainingItemKeys: ["question:43", "question:44"],
+        completedItemKeys: ["question:42"],
+        generation: "2026-09-01T12:03:00.000Z",
+      } as any;
+
+      await expect(saveContentReplacementJob(job)).rejects.toThrow(
+        "Stored content replacement job is invalid.",
+      );
+    }
+  });
+
   it("persists divergent apply readback as explicit nonretryable verification evidence", async () => {
     installFakeIndexedDB();
     const job = createApplyReadyJob();
@@ -1519,6 +1584,7 @@ async function createActiveRecoveryOperationJob(): Promise<PersistedContentRepla
     kind: "recovery-preview",
     requestedItemKeys: ["question:42", "question:43", "question:44"],
     remainingItemKeys: ["question:42", "question:43", "question:44"],
+    completedItemKeys: [],
     generation: job.updatedAt,
   };
   return job;
@@ -1681,6 +1747,24 @@ function createRecoveryPreview(job: PersistedContentReplacementJob): Record<stri
     sourceAttemptCount: item.attemptCount,
     sourceApplyCompletedAt: item.result.completedAt,
     previewedAt: "2026-09-01T12:03:00.000Z",
+  };
+}
+
+function recoveryPreviewForItem(
+  item: PersistedContentReplacementJob["proposals"][string],
+  previewedAt: string,
+) {
+  if (item.result?.kind !== "applied" && item.result?.kind !== "unchanged") {
+    throw new Error("Expected successful apply result fixture.");
+  }
+  return {
+    status: "recoverable" as const,
+    currentRequestModel: toReplacementWireRequestModel(item.proposal.after),
+    observedCurrentChecksum: item.proposal.proposedRequestChecksum,
+    expectedPostApplyChecksum: item.proposal.proposedRequestChecksum,
+    sourceAttemptCount: item.attemptCount,
+    sourceApplyCompletedAt: item.result.completedAt,
+    previewedAt,
   };
 }
 

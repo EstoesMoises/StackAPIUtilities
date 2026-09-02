@@ -298,6 +298,7 @@ export type PersistedContentReplacementActiveOperation =
       kind: "recovery-preview" | "recovery-apply";
       requestedItemKeys: string[];
       remainingItemKeys: string[];
+      completedItemKeys: string[];
       generation: string;
     };
 
