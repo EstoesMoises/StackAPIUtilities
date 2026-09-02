@@ -1032,14 +1032,16 @@ describe("browserContentReplacementStorage", () => {
     await deleteContentReplacementJob("job-a");
     await expect(loadContentReplacementJob("job-a")).resolves.toBeNull();
     expect(fake.openCalls.every((call) => call.name === "stack-api-content-replacement")).toBe(true);
-    expect(fake.openCalls.every((call) => call.version === 5)).toBe(true);
+    expect(fake.openCalls.every((call) => call.version === 6)).toBe(true);
     expect(fake.createdStores).toEqual([
       { name: "jobs", keyPath: "id" },
       { name: "job-items", keyPath: ["jobId", "itemKey"] },
+      { name: "job-operation-items", keyPath: ["jobId", "generation", "itemIndex"] },
     ]);
     expect(fake.createdIndexes).toEqual([
       { store: "jobs", name: "by-summary", unique: true },
       { store: "job-items", name: "by-job", unique: false },
+      { store: "job-operation-items", name: "by-job", unique: false },
     ]);
   });
 
@@ -1127,7 +1129,7 @@ describe("browserContentReplacementStorage", () => {
     await expect(loadContentReplacementJob("legacy-job")).resolves.toBeNull();
     await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toEqual({ jobs: [], totalCount: 0 });
     expect(fake.createdIndexes).toContainEqual({ store: "jobs", name: "by-summary", unique: true });
-    expect(fake.openCalls.some((call) => call.version === 5)).toBe(true);
+    expect(fake.openCalls.some((call) => call.version === 6)).toBe(true);
   });
 
   it("rebuilds the v3 summary index with current compatibility and operation kind", async () => {
@@ -1999,6 +2001,318 @@ describe("browserContentReplacementStorage", () => {
     }
   }, 60_000);
 
+  it("projects bounded root writes across 5,000-item Recovery preview and apply checkpoints", async () => {
+    const fake = installFakeIndexedDB();
+    const originalDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+    const digestResults = new Map<string, ArrayBuffer>();
+    const digestSpy = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async (algorithm, data) => {
+      const bytes = new Uint8Array(data as ArrayBuffer);
+      const key = `${typeof algorithm === "string" ? algorithm : algorithm.name}:` +
+        Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const cached = digestResults.get(key);
+      if (cached) return cached.slice(0);
+      const digest = await originalDigest(algorithm, data);
+      const copy = digest.slice(0) as ArrayBuffer;
+      digestResults.set(key, copy);
+      return copy.slice(0);
+    });
+
+    const saveTransition = async (
+      current: PersistedContentReplacementJob,
+      next: PersistedContentReplacementJob,
+    ): Promise<PersistedContentReplacementJob> => {
+      const saved = await compareAndSaveContentReplacementJob(next, current.revision);
+      expect(saved.status).toBe("saved");
+      return (saved as { job?: PersistedContentReplacementJob }).job ?? next;
+    };
+
+    try {
+      const previewInitial = await createCanonicalArticleRecoveryJob(5_000);
+      previewInitial.id = "recovery-preview-sidecar-boundary-job";
+      for (const item of Object.values(previewInitial.proposals)) {
+        item.status = "applied";
+        delete item.recovery!.preview;
+      }
+      await compareAndSaveContentReplacementJob(previewInitial, null);
+      let preview = await loadContentReplacementJob(previewInitial.id);
+      if (!preview) throw new Error("Expected the Recovery preview boundary fixture to reload.");
+      const previewKeys = Object.keys(preview.proposals);
+      preview = await saveTransition(preview, reduceReplacementJob(preview, {
+        type: "recovery/preview-run-started",
+        itemKeys: previewKeys,
+        at: "2026-09-01T12:05:00.000Z",
+      }));
+      expect(fake.operationRecordsFor(preview.id)).toHaveLength(5_000);
+      expect(fake.operationStorePuts).toBe(5_000);
+      expect(fake.operationStorePutBytes).toBeLessThan(4 * 1_048_576);
+      expect((fake.records.get(preview.id) as any).job.activeOperation).not.toHaveProperty(
+        "requestedItemKeys",
+      );
+
+      digestSpy.mockClear();
+      fake.resetWriteMetrics();
+      for (let index = 0; index < 2; index += 1) {
+        const itemKey = previewKeys[index];
+        preview = await saveTransition(preview, reduceReplacementJob(preview, {
+          type: "recovery/preview-started",
+          itemKey,
+          at: `2026-09-01T12:0${index * 2 + 6}:00.000Z`,
+        }));
+        const item = preview.proposals[itemKey];
+        preview = await saveTransition(preview, reduceReplacementJob(preview, {
+          type: "recovery/preview-finished",
+          itemKey,
+          result: {
+            status: "recoverable",
+            currentRequestModel: toReplacementWireRequestModel(item.proposal.after),
+            observedRequestChecksum: item.proposal.proposedRequestChecksum,
+          },
+          at: `2026-09-01T12:0${index * 2 + 7}:00.000Z`,
+        }));
+      }
+      const previewMaxRootBytes = fake.jobStoreMaxPutBytes;
+      const previewDigests = digestSpy.mock.calls.length;
+      expect(fake.operationStorePuts).toBe(0);
+      expect(fake.sidecarStorePuts).toBeLessThanOrEqual(4);
+      expect(fake.operationRecordsFor(preview.id)).toHaveLength(5_000);
+
+      const applyInitial = await createCanonicalArticleRecoveryJob(5_000);
+      applyInitial.id = "recovery-apply-sidecar-boundary-job";
+      await compareAndSaveContentReplacementJob(applyInitial, null);
+      let apply = await loadContentReplacementJob(applyInitial.id);
+      if (!apply) throw new Error("Expected the Recovery apply boundary fixture to reload.");
+      const applyKeys = Object.keys(apply.proposals);
+      apply = await saveTransition(apply, reduceReplacementJob(apply, {
+        type: "recovery/start",
+        itemKeys: applyKeys,
+        at: "2026-09-01T12:05:00.000Z",
+      }));
+      expect(fake.operationRecordsFor(apply.id)).toHaveLength(5_000);
+      expect(fake.operationStorePuts).toBe(5_000);
+      expect(fake.operationStorePutBytes).toBeLessThan(4 * 1_048_576);
+      expect((fake.records.get(apply.id) as any).job.activeOperation).not.toHaveProperty(
+        "requestedItemKeys",
+      );
+
+      digestSpy.mockClear();
+      fake.resetWriteMetrics();
+      for (let index = 0; index < 2; index += 1) {
+        const itemKey = applyKeys[index];
+        apply = await saveTransition(apply, reduceReplacementJob(apply, {
+          type: "recovery/item-started",
+          itemKey,
+          at: `2026-09-01T12:0${index * 2 + 6}:00.000Z`,
+        }));
+        const item = apply.proposals[itemKey];
+        apply = await saveTransition(apply, reduceReplacementJob(apply, {
+          type: "recovery/item-finished",
+          itemKey,
+          result: {
+            status: "recovered",
+            observedRequestChecksum: item.recovery!.scannedRequestChecksum,
+          },
+          at: `2026-09-01T12:0${index * 2 + 7}:00.000Z`,
+        }));
+      }
+      const applyMaxRootBytes = fake.jobStoreMaxPutBytes;
+      const applyDigests = digestSpy.mock.calls.length;
+      // Covers the extra digits in completed counters at the end of both 5,000-item runs.
+      const projectedRootBytes = (previewMaxRootBytes + applyMaxRootBytes + 256) * 10_000;
+
+      expect(previewDigests + applyDigests).toBeLessThanOrEqual(160);
+      expect(projectedRootBytes).toBeLessThan(64 * 1_048_576);
+      expect(fake.operationStorePuts).toBe(0);
+      expect(fake.sidecarStorePuts).toBeLessThanOrEqual(4);
+      expect(fake.operationRecordsFor(apply.id)).toHaveLength(5_000);
+      expect(apply.progress.recoveryCompleted).toBe(2);
+
+      digestSpy.mockClear();
+      await expect(loadContentReplacementJob(preview.id)).resolves.toEqual(preview);
+      await expect(loadContentReplacementJob(apply.id)).resolves.toEqual(apply);
+      expect(digestSpy.mock.calls.length).toBeGreaterThan(20_000);
+    } finally {
+      digestSpy.mockRestore();
+      fake.records.clear();
+      fake.sidecarRecords.clear();
+      fake.operationRecords.clear();
+    }
+  }, 60_000);
+
+  it("authenticates and reloads an arbitrary ordered Recovery subset without root arrays", async () => {
+    const fake = installFakeIndexedDB();
+    const job = await createActiveRecoveryOperationJob();
+    const completedKey = "question:44";
+    job.proposals[completedKey].status = "ready-to-recover";
+    job.proposals[completedKey].recovery!.preview = recoveryPreviewForItem(
+      job.proposals[completedKey],
+      job.updatedAt,
+    );
+    job.activeOperation = {
+      kind: "recovery-preview",
+      requestedItemKeys: [completedKey, "question:42"],
+      remainingItemKeys: ["question:42"],
+      completedItemKeys: [completedKey],
+      generation: job.updatedAt,
+    };
+
+    await compareAndSaveContentReplacementJob(job, null);
+
+    const root = fake.records.get(job.id) as any;
+    expect(root.job.activeOperation).toEqual({
+      kind: "recovery-preview",
+      generation: job.updatedAt,
+      requestedCount: 2,
+      completedCount: 1,
+      selectionRoot: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(root.job.activeOperation).not.toHaveProperty("requestedItemKeys");
+    expect(fake.operationRecordsFor(job.id).map((value: any) => [value.itemIndex, value.itemKey]))
+      .toEqual([[0, completedKey], [1, "question:42"]]);
+    await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
+  });
+
+  it.each([
+    ["tampered selected key", (fake: FakeIndexedDB, jobId: string, key: string) => {
+      const record = structuredClone(fake.operationRecords.get(key)) as any;
+      record.itemKey = "question:999";
+      fake.operationRecords.set(key, record);
+    }],
+    ["tampered leaf digest", (fake: FakeIndexedDB, _jobId: string, key: string) => {
+      const record = structuredClone(fake.operationRecords.get(key)) as any;
+      record.itemDigest = "0".repeat(64);
+      fake.operationRecords.set(key, record);
+    }],
+    ["wrong fingerprint binding", (fake: FakeIndexedDB, _jobId: string, key: string) => {
+      const record = structuredClone(fake.operationRecords.get(key)) as any;
+      record.jobFingerprint = "0".repeat(64);
+      fake.operationRecords.set(key, record);
+    }],
+    ["forked item index", (fake: FakeIndexedDB, _jobId: string, key: string) => {
+      const record = structuredClone(fake.operationRecords.get(key)) as any;
+      record.itemIndex = 1;
+      fake.operationRecords.set(key, record);
+    }],
+    ["missing membership", (fake: FakeIndexedDB, _jobId: string, key: string) => {
+      fake.operationRecords.delete(key);
+    }],
+    ["extra stale generation", (fake: FakeIndexedDB, _jobId: string, key: string) => {
+      const record = structuredClone(fake.operationRecords.get(key)) as any;
+      record.generation = "2026-09-01T12:03:59.000Z";
+      record.itemIndex = 99;
+      fake.operationRecords.set(`${record.jobId}\u0000${record.generation}\u0000${record.itemIndex}`, record);
+    }],
+    ["tampered selection root", (fake: FakeIndexedDB, jobId: string) => {
+      const root = structuredClone(fake.records.get(jobId)) as any;
+      root.job.activeOperation.selectionRoot = "0".repeat(64);
+      fake.records.set(jobId, root);
+    }],
+    ["cursor gap", (fake: FakeIndexedDB, jobId: string) => {
+      const root = structuredClone(fake.records.get(jobId)) as any;
+      root.job.activeOperation.completedCount = 1;
+      fake.records.set(jobId, root);
+    }],
+  ] as const)("rejects a Recovery operation checkpoint with %s", async (_label, mutate) => {
+    const fake = installFakeIndexedDB();
+    const job = await createActiveRecoveryOperationJob();
+    await compareAndSaveContentReplacementJob(job, null);
+    const firstKey = [...fake.operationRecords.keys()][0];
+
+    mutate(fake, job.id, firstKey);
+
+    await expect(loadContentReplacementJob(job.id)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
+  it("replaces operation generations atomically without stale membership growth", async () => {
+    const fake = installFakeIndexedDB();
+    const initial = await createActiveRecoveryOperationJob();
+    await compareAndSaveContentReplacementJob(initial, null);
+    const loaded = await loadContentReplacementJob(initial.id);
+    if (!loaded) throw new Error("Expected active Recovery operation fixture.");
+    expect(fake.operationRecordsFor(initial.id)).toHaveLength(3);
+
+    const replacement = structuredClone(loaded);
+    replacement.revision += 1;
+    replacement.updatedAt = "2026-09-01T12:05:00.000Z";
+    replacement.activeOperation = {
+      kind: "recovery-preview",
+      requestedItemKeys: ["question:44", "question:42"],
+      remainingItemKeys: ["question:44", "question:42"],
+      completedItemKeys: [],
+      generation: replacement.updatedAt,
+    };
+    const durableRoot = structuredClone(fake.records.get(initial.id));
+    const durableOperation = structuredClone([...fake.operationRecords.entries()]);
+    fake.nextTransactionAbort = true;
+    await expect(compareAndSaveContentReplacementJob(replacement, loaded.revision)).rejects.toThrow(
+      "Content replacement storage transaction aborted.",
+    );
+    expect(fake.records.get(initial.id)).toEqual(durableRoot);
+    expect([...fake.operationRecords.entries()]).toEqual(durableOperation);
+
+    await expect(compareAndSaveContentReplacementJob(replacement, loaded.revision)).resolves.toMatchObject({
+      status: "saved",
+    });
+    expect(fake.operationRecordsFor(initial.id)).toHaveLength(2);
+    expect(fake.operationRecordsFor(initial.id).every((value: any) =>
+      value.generation === replacement.updatedAt)).toBe(true);
+
+    const cleared = structuredClone(replacement);
+    cleared.revision += 1;
+    cleared.updatedAt = "2026-09-01T12:06:00.000Z";
+    delete cleared.activeOperation;
+    await expect(compareAndSaveContentReplacementJob(cleared, replacement.revision)).resolves.toMatchObject({
+      status: "saved",
+    });
+    expect(fake.operationRecordsFor(initial.id)).toHaveLength(0);
+    await expect(loadContentReplacementJob(initial.id)).resolves.toEqual(cleared);
+  });
+
+  it("migrates a validated v5 active Recovery root and deletes all v6 sidecars atomically", async () => {
+    const fake = installFakeIndexedDB();
+    const active = await createActiveRecoveryOperationJob();
+    await compareAndSaveContentReplacementJob(active, null);
+    const loaded = await loadContentReplacementJob(active.id);
+    if (!loaded) throw new Error("Expected active Recovery migration fixture.");
+    const legacyRoot = structuredClone(fake.records.get(active.id)) as any;
+    legacyRoot.storageFormat = "proposal-sidecars-sha256-merkle-v1";
+    legacyRoot.job = { ...structuredClone(loaded), proposals: {} };
+    fake.records.set(active.id, legacyRoot);
+    fake.operationRecords.clear();
+    fake.databaseVersion = 5;
+    fake.hasOperationStore = false;
+    fake.hasOperationJobIndex = false;
+
+    const migrated = await loadContentReplacementJob(active.id);
+    expect(migrated).toEqual(loaded);
+    const previewing = reduceReplacementJob(migrated!, {
+      type: "recovery/preview-started",
+      itemKey: migrated!.activeOperation!.remainingItemKeys[0],
+      at: "2026-09-01T12:05:00.000Z",
+    });
+    await compareAndSaveContentReplacementJob(previewing, migrated!.revision);
+    expect(fake.databaseVersion).toBe(6);
+    expect(fake.records.get(active.id)).toMatchObject({
+      storageFormat: "proposal-operation-sidecars-sha256-merkle-v2",
+      job: { activeOperation: { requestedCount: 3, completedCount: 0 } },
+    });
+    expect(fake.operationRecordsFor(active.id)).toHaveLength(3);
+
+    fake.nextTransactionAbort = true;
+    await expect(deleteContentReplacementJob(active.id)).rejects.toThrow(
+      "Content replacement storage transaction aborted.",
+    );
+    expect(fake.records.has(active.id)).toBe(true);
+    expect(fake.sidecarRecordsFor(active.id)).toHaveLength(3);
+    expect(fake.operationRecordsFor(active.id)).toHaveLength(3);
+
+    await deleteContentReplacementJob(active.id);
+    expect(fake.records.has(active.id)).toBe(false);
+    expect(fake.sidecarRecordsFor(active.id)).toHaveLength(0);
+    expect(fake.operationRecordsFor(active.id)).toHaveLength(0);
+  });
+
   it.each([
     ["tampered item", (fake: FakeIndexedDB, key: string) => {
       const record = structuredClone(fake.sidecarRecords.get(key)) as any;
@@ -2100,7 +2414,7 @@ describe("browserContentReplacementStorage", () => {
     expect(fake.sidecarStorePuts).toBe(0);
   });
 
-  it("lazily migrates a fully validated v4 job to a v5 Merkle sidecar checkpoint", async () => {
+  it("lazily migrates a fully validated v4 job to a v6 Merkle sidecar checkpoint", async () => {
     const fake = installFakeIndexedDB();
     fake.databaseVersion = 4;
     fake.hasStore = true;
@@ -2116,10 +2430,10 @@ describe("browserContentReplacementStorage", () => {
       status: "saved",
     });
 
-    expect(fake.databaseVersion).toBe(5);
+    expect(fake.databaseVersion).toBe(6);
     expect(fake.sidecarRecords.size).toBe(1);
     expect(fake.records.get(legacyRecord.id)).toMatchObject({
-      storageFormat: "proposal-sidecars-sha256-merkle-v1",
+      storageFormat: "proposal-operation-sidecars-sha256-merkle-v2",
       proposalCount: 1,
       job: { revision: started.revision, proposals: {} },
     });
@@ -3458,6 +3772,7 @@ function storedRecordForTest(job: PersistedContentReplacementJob): Record<string
 class FakeIndexedDB {
   readonly records = new Map<string, unknown>();
   readonly sidecarRecords = new Map<string, unknown>();
+  readonly operationRecords = new Map<string, unknown>();
   readonly openCalls: Array<{ name: string; version?: number }> = [];
   readonly createdStores: Array<{ name: string; keyPath: string | string[] | null }> = [];
   readonly createdIndexes: Array<{ store: string; name: string; unique: boolean }> = [];
@@ -3469,6 +3784,8 @@ class FakeIndexedDB {
   hasSummaryIndex = false;
   hasItemStore = false;
   hasItemJobIndex = false;
+  hasOperationStore = false;
+  hasOperationJobIndex = false;
   nextOpenError = false;
   nextBlocked = false;
   nextBlockedThenSuccess = false;
@@ -3478,15 +3795,21 @@ class FakeIndexedDB {
   nextTransactionAbort = false;
   nextTransactionError = false;
   jobStorePutBytes = 0;
+  jobStoreMaxPutBytes = 0;
   sidecarStorePutBytes = 0;
+  operationStorePutBytes = 0;
   jobStorePuts = 0;
   sidecarStorePuts = 0;
+  operationStorePuts = 0;
 
   resetWriteMetrics(): void {
     this.jobStorePutBytes = 0;
+    this.jobStoreMaxPutBytes = 0;
     this.sidecarStorePutBytes = 0;
+    this.operationStorePutBytes = 0;
     this.jobStorePuts = 0;
     this.sidecarStorePuts = 0;
+    this.operationStorePuts = 0;
   }
 
   sidecarRecordsFor(jobId: string): unknown[] {
@@ -3495,14 +3818,23 @@ class FakeIndexedDB {
       .map(([, value]) => value);
   }
 
+  operationRecordsFor(jobId: string): unknown[] {
+    return [...this.operationRecords.values()].filter((value) =>
+      value && typeof value === "object" && (value as { jobId?: unknown }).jobId === jobId);
+  }
+
   recordPut(store: string, value: unknown): void {
     const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
     if (store === "jobs") {
       this.jobStorePuts += 1;
       this.jobStorePutBytes += bytes;
-    } else {
+      this.jobStoreMaxPutBytes = Math.max(this.jobStoreMaxPutBytes, bytes);
+    } else if (store === "job-items") {
       this.sidecarStorePuts += 1;
       this.sidecarStorePutBytes += bytes;
+    } else {
+      this.operationStorePuts += 1;
+      this.operationStorePutBytes += bytes;
     }
   }
 
@@ -3557,7 +3889,9 @@ class FakeIndexedDB {
 
 class FakeDatabase {
   readonly objectStoreNames = { contains: (name: string) =>
-    name === "jobs" ? this.owner.hasStore : name === "job-items" && this.owner.hasItemStore };
+    name === "jobs" ? this.owner.hasStore :
+      name === "job-items" ? this.owner.hasItemStore :
+        name === "job-operation-items" && this.owner.hasOperationStore };
   upgradeTransaction: FakeTransaction | null = null;
 
   constructor(private readonly owner: FakeIndexedDB) {}
@@ -3569,6 +3903,7 @@ class FakeDatabase {
     }
     if (name === "jobs") this.owner.hasStore = true;
     if (name === "job-items") this.owner.hasItemStore = true;
+    if (name === "job-operation-items") this.owner.hasOperationStore = true;
     this.owner.createdStores.push({ name, keyPath: options?.keyPath ?? null });
     return new FakeObjectStore(this.owner, this.upgradeTransaction!, name) as unknown as IDBObjectStore;
   }
@@ -3617,11 +3952,11 @@ class FakeTransaction {
         this.onerror?.();
       } else {
         for (const [store, keys] of this.stagedDeletes) {
-          const records = store === "jobs" ? this.owner.records : this.owner.sidecarRecords;
+          const records = this.records(store);
           for (const key of keys) records.delete(key);
         }
         for (const [store, writes] of this.stagedWrites) {
-          const records = store === "jobs" ? this.owner.records : this.owner.sidecarRecords;
+          const records = this.records(store);
           for (const [key, value] of writes) records.set(key, value);
         }
         this.oncomplete?.();
@@ -3629,8 +3964,16 @@ class FakeTransaction {
     }, 0);
   }
 
-  stagePut(store: string, value: { id?: string; jobId?: string; itemKey?: string }): void {
-    const key = store === "jobs" ? String(value.id) : `${value.jobId}\u0000${value.itemKey}`;
+  stagePut(store: string, value: {
+    id?: string;
+    jobId?: string;
+    itemKey?: string;
+    generation?: string;
+    itemIndex?: number;
+  }): void {
+    const key = store === "jobs" ? String(value.id) : store === "job-items"
+      ? `${value.jobId}\u0000${value.itemKey}`
+      : `${value.jobId}\u0000${value.generation}\u0000${value.itemIndex}`;
     let deletes = this.stagedDeletes.get(store);
     if (!deletes) {
       deletes = new Set();
@@ -3660,11 +4003,19 @@ class FakeTransaction {
     this.finished = true;
     queueMicrotask(() => this.onabort?.());
   }
+
+  private records(store: string): Map<string, unknown> {
+    return store === "jobs" ? this.owner.records :
+      store === "job-items" ? this.owner.sidecarRecords : this.owner.operationRecords;
+  }
 }
 
 class FakeObjectStore {
   readonly indexNames = { contains: (name: string) =>
-    name === "by-summary" ? this.owner.hasSummaryIndex : name === "by-job" && this.owner.hasItemJobIndex };
+    name === "by-summary" ? this.owner.hasSummaryIndex :
+      name === "by-job" && (this.name === "job-items"
+        ? this.owner.hasItemJobIndex
+        : this.owner.hasOperationJobIndex) };
 
   constructor(
     private readonly owner: FakeIndexedDB,
@@ -3681,11 +4032,19 @@ class FakeObjectStore {
     return this.request(() => [...this.records().values()]);
   }
 
-  put(value: { id?: string; jobId?: string; itemKey?: string }): IDBRequest<IDBValidKey> {
+  put(value: {
+    id?: string;
+    jobId?: string;
+    itemKey?: string;
+    generation?: string;
+    itemIndex?: number;
+  }): IDBRequest<IDBValidKey> {
     return this.request<IDBValidKey>(() => {
       this.owner.recordPut(this.name, value);
       this.transaction.stagePut(this.name, value);
-      return this.name === "jobs" ? value.id! : [value.jobId!, value.itemKey!];
+      return this.name === "jobs" ? value.id! : this.name === "job-items"
+        ? [value.jobId!, value.itemKey!]
+        : [value.jobId!, value.generation!, value.itemIndex!];
     }, true);
   }
 
@@ -3702,7 +4061,8 @@ class FakeObjectStore {
       throw new Error("upgrade failed");
     }
     if (name === "by-summary") this.owner.hasSummaryIndex = true;
-    if (name === "by-job") this.owner.hasItemJobIndex = true;
+    if (name === "by-job" && this.name === "job-items") this.owner.hasItemJobIndex = true;
+    if (name === "by-job" && this.name === "job-operation-items") this.owner.hasOperationJobIndex = true;
     this.owner.createdIndexes.push({ store: this.name, name, unique: options?.unique === true });
     return new FakeIndex(this.owner, this.transaction, this.name, name) as unknown as IDBIndex;
   }
@@ -3714,7 +4074,9 @@ class FakeObjectStore {
 
   index(name: string): IDBIndex {
     const exists = name === "by-summary" ? this.owner.hasSummaryIndex :
-      name === "by-job" && this.owner.hasItemJobIndex;
+      name === "by-job" && (this.name === "job-items"
+        ? this.owner.hasItemJobIndex
+        : this.owner.hasOperationJobIndex);
     if (!exists) throw new Error("missing index");
     return new FakeIndex(this.owner, this.transaction, this.name, name) as unknown as IDBIndex;
   }
@@ -3746,11 +4108,12 @@ class FakeObjectStore {
   }
 
   private records(): Map<string, unknown> {
-    return this.name === "jobs" ? this.owner.records : this.owner.sidecarRecords;
+    return this.name === "jobs" ? this.owner.records :
+      this.name === "job-items" ? this.owner.sidecarRecords : this.owner.operationRecords;
   }
 
   private serializedKey(key: IDBValidKey): string {
-    return Array.isArray(key) ? `${String(key[0])}\u0000${String(key[1])}` : String(key);
+    return Array.isArray(key) ? key.map(String).join("\u0000") : String(key);
   }
 }
 
@@ -3778,18 +4141,29 @@ class FakeIndex {
 
   getAll(query?: IDBValidKey): IDBRequest<unknown[]> {
     const store = new FakeObjectStore(this.owner, this.transaction, this.storeName);
-    return store.request(() => [...this.owner.sidecarRecords.values()].filter((value) =>
+    const records = this.storeName === "job-items" ? this.owner.sidecarRecords : this.owner.operationRecords;
+    return store.request(() => [...records.values()].filter((value) =>
       this.indexName === "by-job" && value && typeof value === "object" &&
       (value as { jobId?: unknown }).jobId === query));
   }
 
   getAllKeys(query?: IDBValidKey): IDBRequest<IDBValidKey[]> {
     const store = new FakeObjectStore(this.owner, this.transaction, this.storeName);
-    return store.request(() => [...this.owner.sidecarRecords.values()].flatMap((value) => {
+    const records = this.storeName === "job-items" ? this.owner.sidecarRecords : this.owner.operationRecords;
+    return store.request(() => [...records.values()].flatMap((value) => {
       if (this.indexName !== "by-job" || !value || typeof value !== "object") return [];
-      const record = value as { jobId?: unknown; itemKey?: unknown };
-      return record.jobId === query && typeof record.itemKey === "string"
-        ? [[record.jobId as string, record.itemKey] as IDBValidKey]
+      const record = value as {
+        jobId?: unknown;
+        itemKey?: unknown;
+        generation?: unknown;
+        itemIndex?: unknown;
+      };
+      if (record.jobId !== query) return [];
+      if (this.storeName === "job-items" && typeof record.itemKey === "string") {
+        return [[record.jobId as string, record.itemKey] as IDBValidKey];
+      }
+      return typeof record.generation === "string" && Number.isSafeInteger(record.itemIndex)
+        ? [[record.jobId as string, record.generation, record.itemIndex as number] as IDBValidKey]
         : [];
     }));
   }

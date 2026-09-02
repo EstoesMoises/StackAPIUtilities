@@ -138,7 +138,7 @@ test("reviews and safely applies a complete mocked content replacement job", asy
   const indexedDbBoundary = await inspectIndexedDbStructuredClone(page);
   expect(indexedDbBoundary).toEqual({
     wrapperKeys: ["id", "job", "proposalCount", "proposalRoot", "storageFormat", "summary"],
-    storageFormat: "proposal-sidecars-sha256-merkle-v1",
+    storageFormat: "proposal-operation-sidecars-sha256-merkle-v2",
     sameReference: false,
     mutationLeaked: false,
     durableStage: "review",
@@ -957,7 +957,7 @@ async function seedLegacyJobs(page: Page): Promise<void> {
   await expect(page.getByText("No replacement jobs are stored in this browser.")).toBeVisible();
   await page.evaluate(async (records) => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("stack-api-content-replacement", 5);
+      const request = indexedDB.open("stack-api-content-replacement", 6);
       request.onerror = () => reject(request.error);
       request.onsuccess = () => resolve(request.result);
     });
@@ -1143,7 +1143,7 @@ async function openContentReplacement(page: Page) {
 async function inspectIndexedDbStructuredClone(page: Page) {
   return page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("stack-api-content-replacement", 5);
+      const request = indexedDB.open("stack-api-content-replacement", 6);
       request.onerror = () => reject(request.error);
       request.onsuccess = () => resolve(request.result);
     });

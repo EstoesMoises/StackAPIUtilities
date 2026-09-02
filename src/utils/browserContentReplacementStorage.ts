@@ -44,15 +44,21 @@ import type {
 } from "../writeTools/contentReplacement/types";
 
 const DATABASE_NAME = "stack-api-content-replacement";
-const DATABASE_VERSION = 5;
+const DATABASE_VERSION = 6;
 const STORE_NAME = "jobs";
 const ITEM_STORE_NAME = "job-items";
+const OPERATION_ITEM_STORE_NAME = "job-operation-items";
 const SUMMARY_INDEX_NAME = "by-summary";
 const ITEM_JOB_INDEX_NAME = "by-job";
-const SIDECAR_STORAGE_FORMAT = "proposal-sidecars-sha256-merkle-v1";
+const LEGACY_SIDECAR_STORAGE_FORMAT = "proposal-sidecars-sha256-merkle-v1";
+const SIDECAR_STORAGE_FORMAT = "proposal-operation-sidecars-sha256-merkle-v2";
 const SIDECAR_LEAF_DOMAIN = "content-replacement-storage-item\u0000sha256-merkle\u00001\u0000";
 const SIDECAR_NODE_DOMAIN = "content-replacement-storage-node\u0000sha256-merkle\u00001\u0000";
 const SIDECAR_EMPTY_DOMAIN = "content-replacement-storage-empty\u0000sha256-merkle\u00001\u0000";
+const OPERATION_LEAF_DOMAIN = "content-replacement-storage-operation-item\u0000sha256-merkle\u00001\u0000";
+const OPERATION_NODE_DOMAIN = "content-replacement-storage-operation-node\u0000sha256-merkle\u00001\u0000";
+const OPERATION_EMPTY_DOMAIN = "content-replacement-storage-operation-empty\u0000sha256-merkle\u00001\u0000";
+const MAX_OPERATION_ITEM_BYTES = 1_024;
 const MAX_INCREMENTAL_ITEM_CHANGES = 16;
 const SUMMARY_INDEX_PATH = [
   "summary.sortKey",
@@ -148,10 +154,10 @@ interface StoredContentReplacementJobRecord {
 
 interface StoredNormalizedContentReplacementJobRecord {
   id: string;
-  storageFormat: typeof SIDECAR_STORAGE_FORMAT;
+  storageFormat: typeof SIDECAR_STORAGE_FORMAT | typeof LEGACY_SIDECAR_STORAGE_FORMAT;
   proposalCount: number;
   proposalRoot: string;
-  job: PersistedContentReplacementJob;
+  job: unknown;
   summary: StoredContentReplacementJobSummary;
 }
 
@@ -164,6 +170,36 @@ interface StoredContentReplacementItemRecord {
   item: PersistedContentReplacementItem;
 }
 
+type RecoveryOperationKind = "recovery-preview" | "recovery-apply";
+
+interface StoredRecoveryOperationCheckpoint {
+  kind: RecoveryOperationKind;
+  generation: string;
+  requestedCount: number;
+  completedCount: number;
+  selectionRoot: string;
+}
+
+interface StoredContentReplacementOperationItemRecord {
+  jobId: string;
+  jobFingerprint: string;
+  kind: RecoveryOperationKind;
+  generation: string;
+  itemIndex: number;
+  itemKey: string;
+  itemDigest: string;
+}
+
+interface ValidatedRecoveryOperationSnapshot {
+  kind: RecoveryOperationKind;
+  generation: string;
+  keys: string[];
+  itemDigests: string[];
+  merkleLevels: string[][];
+  serializedKeyBytes: number;
+  completedCount: number;
+}
+
 interface ValidatedStorageSnapshot {
   job: PersistedContentReplacementJob;
   keys: string[];
@@ -173,14 +209,19 @@ interface ValidatedStorageSnapshot {
   merkleLevels: string[][];
   itemEntryBytes: number[];
   totalJobBytes: number;
+  operation: ValidatedRecoveryOperationSnapshot | null;
   rootRecord: StoredNormalizedContentReplacementJobRecord;
+  durableStorageFormat: StoredNormalizedContentReplacementJobRecord["storageFormat"] | null;
+  durableRootJob: unknown | null;
 }
 
 interface PreparedStorageSnapshot {
   snapshot: ValidatedStorageSnapshot;
   changedItemKeys: string[] | null;
+  replaceOperationSidecars: boolean;
   expectedProposalRoot?: string;
   expectedProposalCount?: number;
+  expectedStoredRoot?: string;
 }
 
 let validatedStorageSnapshot: ValidatedStorageSnapshot | null = null;
@@ -218,21 +259,34 @@ export async function loadContentReplacementJob(
   assertJobId(id);
   const database = await openDatabase();
   try {
-    const transaction = database.transaction([STORE_NAME, ITEM_STORE_NAME], "readonly");
+    const transaction = database.transaction(
+      [STORE_NAME, ITEM_STORE_NAME, OPERATION_ITEM_STORE_NAME],
+      "readonly",
+    );
     const itemStore = transaction.objectStore(ITEM_STORE_NAME);
-    const [stored, storedItems] = await Promise.all([
+    const operationItemStore = transaction.objectStore(OPERATION_ITEM_STORE_NAME);
+    const [stored, storedItems, storedOperationItems] = await Promise.all([
       requestValueToPromise<unknown>(transaction.objectStore(STORE_NAME).get(id)),
       requestToPromise<unknown[]>(itemStore.index(ITEM_JOB_INDEX_NAME).getAll(id)),
+      requestToPromise<unknown[]>(operationItemStore.index(ITEM_JOB_INDEX_NAME).getAll(id)),
       transactionToPromise(transaction),
     ]);
     const value = stored.value;
-    if (value === undefined) return null;
+    if (value === undefined) {
+      if (storedItems.length !== 0 || storedOperationItems.length !== 0) throw corruptJob();
+      return null;
+    }
     const normalizedRecord = storedNormalizedRecordEnvelope(value);
     let snapshot: ValidatedStorageSnapshot;
     if (normalizedRecord) {
-      snapshot = await loadNormalizedStorageSnapshot(normalizedRecord, storedItems, id);
+      snapshot = await loadNormalizedStorageSnapshot(
+        normalizedRecord,
+        storedItems,
+        storedOperationItems,
+        id,
+      );
     } else {
-      if (storedItems.length !== 0) throw corruptJob();
+      if (storedItems.length !== 0 || storedOperationItems.length !== 0) throw corruptJob();
       const job = await parseContentReplacementJob(storedJobValue(value));
       assertStoredRecordCoherence(value, id, job);
       snapshot = await createValidatedStorageSnapshot(job);
@@ -256,6 +310,7 @@ export async function saveContentReplacementJob(
   const prepared = incrementallyPrepared ?? {
     snapshot: await createValidatedStorageSnapshot(await parseContentReplacementJob(job)),
     changedItemKeys: null,
+    replaceOperationSidecars: true,
   };
   const normalized = prepared.snapshot.job;
   if (
@@ -266,10 +321,14 @@ export async function saveContentReplacementJob(
   ) throw corruptJob();
   const database = await openDatabase();
   try {
-    const transaction = database.transaction([STORE_NAME, ITEM_STORE_NAME], "readwrite");
+    const transaction = database.transaction(
+      [STORE_NAME, ITEM_STORE_NAME, OPERATION_ITEM_STORE_NAME],
+      "readwrite",
+    );
     const transactionPromise = transactionToPromise(transaction);
     const store = transaction.objectStore(STORE_NAME);
     const itemStore = transaction.objectStore(ITEM_STORE_NAME);
+    const operationItemStore = transaction.objectStore(OPERATION_ITEM_STORE_NAME);
     const stored = await requestValueToPromise<unknown>(store.get(normalized.id));
     const actualRevision = storedJobRevision(stored.value, normalized.id);
     if (actualRevision !== expectedRevision) {
@@ -284,21 +343,35 @@ export async function saveContentReplacementJob(
       (actualNormalizedRecord.proposalRoot !== prepared.expectedProposalRoot ||
         actualNormalizedRecord.proposalCount !== prepared.expectedProposalCount)
     ) throw corruptJob();
+    if (prepared.expectedStoredRoot !== undefined) {
+      try {
+        if (!actualNormalizedRecord || stableSerialize(actualNormalizedRecord.job) !== prepared.expectedStoredRoot) {
+          throw corruptJob();
+        }
+      } catch {
+        throw corruptJob();
+      }
+    }
     try {
       const rootWrite = requestToPromise(store.put(prepared.snapshot.rootRecord));
+      const writes: Array<Promise<unknown>> = [rootWrite];
       if (prepared.changedItemKeys !== null && actualNormalizedRecord) {
-        const itemWrites = prepared.changedItemKeys.map((itemKey) => requestToPromise(
+        writes.push(...prepared.changedItemKeys.map((itemKey) => requestToPromise(
           itemStore.put(storedItemRecord(prepared.snapshot, itemKey)),
-        ));
-        await Promise.all([rootWrite, ...itemWrites, transactionPromise]);
+        )));
       } else {
-        await replaceStoredSidecars(itemStore, normalized.id, prepared.snapshot);
-        await Promise.all([rootWrite, transactionPromise]);
+        writes.push(replaceStoredSidecars(itemStore, normalized.id, prepared.snapshot));
       }
+      if (prepared.replaceOperationSidecars) {
+        writes.push(replaceStoredOperationSidecars(operationItemStore, normalized.id, prepared.snapshot));
+      }
+      await Promise.all([...writes, transactionPromise]);
     } catch (error) {
       try { transaction.abort(); } catch { /* preserve the originating storage error */ }
       throw error;
     }
+    prepared.snapshot.durableStorageFormat = SIDECAR_STORAGE_FORMAT;
+    prepared.snapshot.durableRootJob = prepared.snapshot.rootRecord.job;
     validatedStorageSnapshot = prepared.snapshot;
     return savedResult(prepared.snapshot.job);
   } finally {
@@ -345,7 +418,9 @@ function storedNormalizedRecordEnvelope(value: unknown): StoredNormalizedContent
       record[key] = descriptor.value;
     }
     if (
-      record.storageFormat !== SIDECAR_STORAGE_FORMAT || !isJobId(record.id) ||
+      (record.storageFormat !== SIDECAR_STORAGE_FORMAT &&
+        record.storageFormat !== LEGACY_SIDECAR_STORAGE_FORMAT) ||
+      !isJobId(record.id) ||
       !Number.isSafeInteger(record.proposalCount) || (record.proposalCount as number) < 0 ||
       (record.proposalCount as number) > MAX_CONTENT_REPLACEMENT_PROPOSALS ||
       !isSha256Digest(record.proposalRoot)
@@ -398,11 +473,16 @@ export async function deleteContentReplacementJob(id: string): Promise<void> {
   assertJobId(id);
   const database = await openDatabase();
   try {
-    const transaction = database.transaction([STORE_NAME, ITEM_STORE_NAME], "readwrite");
+    const transaction = database.transaction(
+      [STORE_NAME, ITEM_STORE_NAME, OPERATION_ITEM_STORE_NAME],
+      "readwrite",
+    );
     const itemStore = transaction.objectStore(ITEM_STORE_NAME);
+    const operationItemStore = transaction.objectStore(OPERATION_ITEM_STORE_NAME);
     const requests = [
       requestToPromise(transaction.objectStore(STORE_NAME).delete(id)),
       deleteStoredSidecars(itemStore, id),
+      deleteStoredSidecars(operationItemStore, id),
       transactionToPromise(transaction),
     ];
     await Promise.all(requests);
@@ -435,6 +515,31 @@ async function replaceStoredSidecars(
   await Promise.all(requests);
 }
 
+async function replaceStoredOperationSidecars(
+  store: IDBObjectStore,
+  jobId: string,
+  snapshot: ValidatedStorageSnapshot,
+): Promise<void> {
+  const existingKeys = await requestToPromise<IDBValidKey[]>(
+    store.index(ITEM_JOB_INDEX_NAME).getAllKeys(jobId),
+  );
+  const operation = snapshot.operation;
+  const expectedKeys = new Set(operation?.keys.map((_itemKey, itemIndex) =>
+    serializedOperationPrimaryKey(jobId, operation.generation, itemIndex)) ?? []);
+  const requests: Array<Promise<unknown>> = [];
+  for (const key of existingKeys) {
+    if (!expectedKeys.has(serializedOperationPrimaryKeyValue(key))) {
+      requests.push(requestToPromise(store.delete(key)));
+    }
+  }
+  if (operation) {
+    for (let itemIndex = 0; itemIndex < operation.keys.length; itemIndex += 1) {
+      requests.push(requestToPromise(store.put(storedOperationItemRecord(snapshot, itemIndex))));
+    }
+  }
+  await Promise.all(requests);
+}
+
 async function deleteStoredSidecars(store: IDBObjectStore, jobId: string): Promise<void> {
   const keys = await requestToPromise<IDBValidKey[]>(store.index(ITEM_JOB_INDEX_NAME).getAllKeys(jobId));
   await Promise.all(keys.map((key) => requestToPromise(store.delete(key))));
@@ -447,6 +552,20 @@ function sidecarPrimaryKey(jobId: string, itemKey: string): string {
 function serializedPrimaryKey(key: IDBValidKey): string {
   if (Array.isArray(key) && key.length === 2 && key.every((part) => typeof part === "string")) {
     return `${key[0]}\u0000${key[1]}`;
+  }
+  return "invalid";
+}
+
+function serializedOperationPrimaryKey(jobId: string, generation: string, itemIndex: number): string {
+  return `${jobId}\u0000${generation}\u0000${itemIndex}`;
+}
+
+function serializedOperationPrimaryKeyValue(key: IDBValidKey): string {
+  if (
+    Array.isArray(key) && key.length === 3 && typeof key[0] === "string" &&
+    typeof key[1] === "string" && Number.isSafeInteger(key[2])
+  ) {
+    return serializedOperationPrimaryKey(key[0], key[1], key[2] as number);
   }
   return "invalid";
 }
@@ -467,6 +586,23 @@ function storedItemRecord(
   };
 }
 
+function storedOperationItemRecord(
+  snapshot: ValidatedStorageSnapshot,
+  itemIndex: number,
+): StoredContentReplacementOperationItemRecord {
+  const operation = snapshot.operation;
+  if (!operation || itemIndex < 0 || itemIndex >= operation.keys.length) throw corruptJob();
+  return {
+    jobId: snapshot.job.id,
+    jobFingerprint: snapshot.job.fingerprint,
+    kind: operation.kind,
+    generation: operation.generation,
+    itemIndex,
+    itemKey: operation.keys[itemIndex],
+    itemDigest: operation.itemDigests[itemIndex],
+  };
+}
+
 async function createValidatedStorageSnapshot(
   job: PersistedContentReplacementJob,
 ): Promise<ValidatedStorageSnapshot> {
@@ -483,17 +619,48 @@ async function createValidatedStorageSnapshot(
       job.proposals[itemKey],
     ));
   const merkleLevels = await buildStorageMerkleLevels(itemDigests);
-  return finalizeValidatedStorageSnapshot(job, keys, itemIndexes, itemDigests, merkleLevels, false);
+  const operation = await createValidatedRecoveryOperationSnapshot(job);
+  return finalizeValidatedStorageSnapshot(
+    job,
+    keys,
+    itemIndexes,
+    itemDigests,
+    merkleLevels,
+    operation,
+    false,
+  );
 }
 
 async function loadNormalizedStorageSnapshot(
   record: StoredNormalizedContentReplacementJobRecord,
   storedItems: unknown[],
+  storedOperationItems: unknown[],
   expectedId: string,
 ): Promise<ValidatedStorageSnapshot> {
   if (record.id !== expectedId || record.proposalCount !== storedItems.length) throw corruptJob();
   const rootPreflight = preflightContentReplacementJobRoot(record.job);
   if (rootPreflight.cardinalities.proposals !== 0) throw corruptJob();
+  let operation: ValidatedRecoveryOperationSnapshot | null;
+  if (record.storageFormat === SIDECAR_STORAGE_FORMAT) {
+    const checkpoint = parseStoredRecoveryOperationCheckpoint(rootPreflight.snapshot.activeOperation);
+    operation = await loadValidatedRecoveryOperationSnapshot(
+      checkpoint,
+      storedOperationItems,
+      expectedId,
+      ownDataProperty(rootPreflight.snapshot, "fingerprint") as string,
+    );
+    if (operation) {
+      Object.defineProperty(rootPreflight.snapshot, "activeOperation", {
+        value: recoveryOperationFromSnapshot(operation),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  } else {
+    if (storedOperationItems.length !== 0) throw corruptJob();
+    operation = null;
+  }
   const safeRoot = cloneSafeDataGraph(
     rootPreflight.snapshot,
     contentReplacementGraphBudget({ ...rootPreflight.cardinalities, proposals: record.proposalCount }),
@@ -521,12 +688,26 @@ async function loadNormalizedStorageSnapshot(
   );
   safeRoot.proposals = proposals;
   const job = await parseContentReplacementJob(safeRoot);
+  if (record.storageFormat === LEGACY_SIDECAR_STORAGE_FORMAT) {
+    operation = await createValidatedRecoveryOperationSnapshot(job);
+  }
   if (
     stableSerialize({ ...safeRoot, proposals: {} }) !== stableSerialize({ ...job, proposals: {} }) ||
     keys.some((key, index) => stableSerialize(items[index].item) !== stableSerialize(job.proposals[key]))
   ) throw corruptJob();
   assertStoredRecordCoherence(record, expectedId, job);
-  const snapshot = finalizeValidatedStorageSnapshot(job, keys, itemIndexes, itemDigests, merkleLevels, false);
+  const snapshot = finalizeValidatedStorageSnapshot(
+    job,
+    keys,
+    itemIndexes,
+    itemDigests,
+    merkleLevels,
+    operation,
+    false,
+    undefined,
+    record.storageFormat,
+    record.job,
+  );
   if (snapshot.rootRecord.proposalRoot !== record.proposalRoot) throw corruptJob();
   return snapshot;
 }
@@ -565,6 +746,157 @@ async function parseStoredItemRecord(
   } catch {
     throw corruptJob();
   }
+}
+
+function parseStoredRecoveryOperationCheckpoint(
+  value: unknown,
+): StoredRecoveryOperationCheckpoint | null {
+  if (value === undefined) return null;
+  try {
+    const raw = plainRecord(value);
+    if (raw.kind === "stale-rescan") return null;
+    const record = exactObject(raw, [
+      "kind", "generation", "requestedCount", "completedCount", "selectionRoot",
+    ]);
+    if (
+      (record.kind !== "recovery-preview" && record.kind !== "recovery-apply") ||
+      !Number.isSafeInteger(record.requestedCount) || (record.requestedCount as number) < 1 ||
+      (record.requestedCount as number) > MAX_CONTENT_REPLACEMENT_PROPOSALS ||
+      !Number.isSafeInteger(record.completedCount) || (record.completedCount as number) < 0 ||
+      (record.completedCount as number) >= (record.requestedCount as number) ||
+      !isSha256Digest(record.selectionRoot)
+    ) throw corruptJob();
+    return {
+      kind: record.kind,
+      generation: timestamp(record.generation),
+      requestedCount: record.requestedCount as number,
+      completedCount: record.completedCount as number,
+      selectionRoot: record.selectionRoot,
+    };
+  } catch {
+    throw corruptJob();
+  }
+}
+
+async function createValidatedRecoveryOperationSnapshot(
+  job: PersistedContentReplacementJob,
+): Promise<ValidatedRecoveryOperationSnapshot | null> {
+  const operation = job.activeOperation;
+  if (operation?.kind !== "recovery-preview" && operation?.kind !== "recovery-apply") return null;
+  const keys = [...operation.requestedItemKeys];
+  const completedCount = operation.completedItemKeys.length;
+  const indexedKeys = keys.map((itemKey, itemIndex) => ({ itemKey, itemIndex }));
+  const itemDigests = await mapCanonicalEntries(indexedKeys, ({ itemKey, itemIndex }) =>
+    hashStoredOperationItem(
+      job.id,
+      job.fingerprint,
+      operation.kind,
+      operation.generation,
+      itemIndex,
+      itemKey,
+    ));
+  return {
+    kind: operation.kind,
+    generation: operation.generation,
+    keys,
+    itemDigests,
+    merkleLevels: await buildOperationMerkleLevels(itemDigests),
+    serializedKeyBytes: keys.reduce(
+      (total, itemKey) => total + utf8ByteLength(JSON.stringify(itemKey)),
+      0,
+    ),
+    completedCount,
+  };
+}
+
+async function loadValidatedRecoveryOperationSnapshot(
+  checkpoint: StoredRecoveryOperationCheckpoint | null,
+  storedItems: unknown[],
+  jobId: string,
+  jobFingerprint: string,
+): Promise<ValidatedRecoveryOperationSnapshot | null> {
+  if (!checkpoint) {
+    if (storedItems.length !== 0) throw corruptJob();
+    return null;
+  }
+  if (!isSha256Digest(jobFingerprint) || storedItems.length !== checkpoint.requestedCount) throw corruptJob();
+  const parsed = await mapCanonicalEntries(storedItems, (value) =>
+    parseStoredOperationItemRecord(value, jobId, jobFingerprint, checkpoint));
+  const seenKeys = new Set<string>();
+  const seenIndexes = new Set<number>();
+  for (const item of parsed) {
+    if (seenKeys.has(item.itemKey) || seenIndexes.has(item.itemIndex)) throw corruptJob();
+    seenKeys.add(item.itemKey);
+    seenIndexes.add(item.itemIndex);
+  }
+  if (parsed.some((_item, itemIndex) => !seenIndexes.has(itemIndex))) throw corruptJob();
+  parsed.sort((left, right) => left.itemIndex - right.itemIndex);
+  const keys = parsed.map((item) => item.itemKey);
+  const itemDigests = parsed.map((item) => item.itemDigest);
+  const merkleLevels = await buildOperationMerkleLevels(itemDigests);
+  if (operationMerkleRoot(merkleLevels) !== checkpoint.selectionRoot) throw corruptJob();
+  return {
+    kind: checkpoint.kind,
+    generation: checkpoint.generation,
+    keys,
+    itemDigests,
+    merkleLevels,
+    serializedKeyBytes: keys.reduce(
+      (total, itemKey) => total + utf8ByteLength(JSON.stringify(itemKey)),
+      0,
+    ),
+    completedCount: checkpoint.completedCount,
+  };
+}
+
+async function parseStoredOperationItemRecord(
+  value: unknown,
+  jobId: string,
+  jobFingerprint: string,
+  checkpoint: StoredRecoveryOperationCheckpoint,
+): Promise<StoredContentReplacementOperationItemRecord> {
+  try {
+    const cloned = cloneSafeDataGraph(
+      value,
+      contentReplacementGraphBudget({ inventoryQueue: 0, detailQueue: 0, exactProofQueue: 0, proposals: 0 }),
+    );
+    const record = exactObject(cloned, [
+      "jobId", "jobFingerprint", "kind", "generation", "itemIndex", "itemKey", "itemDigest",
+    ]);
+    if (
+      !isJsonWithinUtf8ByteLimit(cloned, MAX_OPERATION_ITEM_BYTES) ||
+      record.jobId !== jobId || record.jobFingerprint !== jobFingerprint ||
+      record.kind !== checkpoint.kind || record.generation !== checkpoint.generation ||
+      !Number.isSafeInteger(record.itemIndex) || (record.itemIndex as number) < 0 ||
+      (record.itemIndex as number) >= checkpoint.requestedCount ||
+      typeof record.itemKey !== "string" || !isCanonicalItemKey(record.itemKey) ||
+      !isSha256Digest(record.itemDigest)
+    ) throw corruptJob();
+    const expectedDigest = await hashStoredOperationItem(
+      jobId,
+      jobFingerprint,
+      checkpoint.kind,
+      checkpoint.generation,
+      record.itemIndex as number,
+      record.itemKey,
+    );
+    if (expectedDigest !== record.itemDigest) throw corruptJob();
+    return record as unknown as StoredContentReplacementOperationItemRecord;
+  } catch {
+    throw corruptJob();
+  }
+}
+
+function recoveryOperationFromSnapshot(
+  operation: ValidatedRecoveryOperationSnapshot,
+): PersistedContentReplacementActiveOperation {
+  return {
+    kind: operation.kind,
+    requestedItemKeys: [...operation.keys],
+    remainingItemKeys: operation.keys.slice(operation.completedCount),
+    completedItemKeys: operation.keys.slice(0, operation.completedCount),
+    generation: operation.generation,
+  };
 }
 
 async function prepareIncrementalStorageSnapshot(
@@ -649,24 +981,53 @@ async function prepareIncrementalStorageSnapshot(
       itemDigests,
       changedItemKeys.map((itemKey) => previous.keyIndexes.get(itemKey)!),
     );
+    const operationTransition = await prepareRecoveryOperationTransition(normalized, previous);
     const snapshot = finalizeValidatedStorageSnapshot(
       normalized,
       previous.keys,
       previous.itemIndexes,
       itemDigests,
       merkleLevels,
+      operationTransition.operation,
       true,
       itemEntryBytes,
     );
     return {
       snapshot,
       changedItemKeys,
+      replaceOperationSidecars: operationTransition.replaceSidecars ||
+        previous.durableStorageFormat !== SIDECAR_STORAGE_FORMAT,
       expectedProposalRoot: previous.rootRecord.proposalRoot,
       expectedProposalCount: previous.keys.length,
+      ...(previous.durableRootJob === null
+        ? {}
+        : { expectedStoredRoot: stableSerialize(previous.durableRootJob) }),
     };
   } catch {
     return null;
   }
+}
+
+async function prepareRecoveryOperationTransition(
+  job: PersistedContentReplacementJob,
+  previous: ValidatedStorageSnapshot,
+): Promise<{ operation: ValidatedRecoveryOperationSnapshot | null; replaceSidecars: boolean }> {
+  const candidate = job.activeOperation;
+  if (candidate?.kind !== "recovery-preview" && candidate?.kind !== "recovery-apply") {
+    return { operation: null, replaceSidecars: previous.operation !== null };
+  }
+  const prior = previous.operation;
+  if (
+    prior && prior.kind === candidate.kind && prior.generation === candidate.generation &&
+    prior.keys.length === candidate.requestedItemKeys.length &&
+    candidate.requestedItemKeys.every((itemKey, itemIndex) => itemKey === prior.keys[itemIndex])
+  ) {
+    return {
+      operation: { ...prior, completedCount: candidate.completedItemKeys.length },
+      replaceSidecars: false,
+    };
+  }
+  return { operation: await createValidatedRecoveryOperationSnapshot(job), replaceSidecars: true };
 }
 
 function finalizeValidatedStorageSnapshot(
@@ -675,13 +1036,20 @@ function finalizeValidatedStorageSnapshot(
   itemIndexes: number[],
   itemDigests: string[],
   merkleLevels: string[][],
+  operation: ValidatedRecoveryOperationSnapshot | null,
   incrementally: boolean,
   knownItemEntryBytes?: number[],
+  durableStorageFormat: StoredNormalizedContentReplacementJobRecord["storageFormat"] | null = null,
+  durableRootJob: unknown | null = null,
 ): ValidatedStorageSnapshot {
   const itemEntryBytes = knownItemEntryBytes ?? keys.map((itemKey) =>
     storedProposalEntryBytes(itemKey, job.proposals[itemKey]));
-  const rootJob = { ...job, proposals: {} };
-  const rootBytes = utf8ByteLength(JSON.stringify(rootJob));
+  const rootJob = normalizedStorageRootJob(job, operation);
+  let rootBytes = utf8ByteLength(JSON.stringify(rootJob));
+  if (operation) {
+    rootBytes += serializedRecoveryOperationBytes(operation) -
+      utf8ByteLength(JSON.stringify(storedRecoveryOperationCheckpoint(operation)));
+  }
   const totalJobBytes = rootBytes + itemEntryBytes.reduce((total, bytes) => total + bytes, 0) +
     Math.max(0, keys.length - 1);
   if (totalJobBytes > MAX_CONTENT_REPLACEMENT_JOB_BYTES) {
@@ -698,7 +1066,7 @@ function finalizeValidatedStorageSnapshot(
     storageFormat: SIDECAR_STORAGE_FORMAT,
     proposalCount: keys.length,
     proposalRoot,
-    job: { ...frozenJob, proposals: {} },
+    job: normalizedStorageRootJob(frozenJob, operation),
     summary: summaryFromJob(frozenJob),
   };
   return {
@@ -710,8 +1078,60 @@ function finalizeValidatedStorageSnapshot(
     merkleLevels: merkleLevels.map((level) => [...level]),
     itemEntryBytes,
     totalJobBytes,
+    operation: operation ? {
+      ...operation,
+      keys: [...operation.keys],
+      itemDigests: [...operation.itemDigests],
+      merkleLevels: operation.merkleLevels.map((level) => [...level]),
+    } : null,
     rootRecord,
+    durableStorageFormat,
+    durableRootJob,
   };
+}
+
+function normalizedStorageRootJob(
+  job: PersistedContentReplacementJob,
+  operation: ValidatedRecoveryOperationSnapshot | null,
+): unknown {
+  if (job.activeOperation?.kind === "recovery-preview" || job.activeOperation?.kind === "recovery-apply") {
+    if (!operation || operation.kind !== job.activeOperation.kind ||
+      operation.generation !== job.activeOperation.generation) throw corruptJob();
+    return { ...job, proposals: {}, activeOperation: storedRecoveryOperationCheckpoint(operation) };
+  }
+  if (operation) throw corruptJob();
+  return { ...job, proposals: {} };
+}
+
+function storedRecoveryOperationCheckpoint(
+  operation: ValidatedRecoveryOperationSnapshot,
+): StoredRecoveryOperationCheckpoint {
+  return {
+    kind: operation.kind,
+    generation: operation.generation,
+    requestedCount: operation.keys.length,
+    completedCount: operation.completedCount,
+    selectionRoot: operationMerkleRoot(operation.merkleLevels),
+  };
+}
+
+function serializedRecoveryOperationBytes(operation: ValidatedRecoveryOperationSnapshot): number {
+  const emptyOperation = {
+    kind: operation.kind,
+    requestedItemKeys: [],
+    remainingItemKeys: [],
+    completedItemKeys: [],
+    generation: operation.generation,
+  };
+  const requestedCount = operation.keys.length;
+  const remainingCount = requestedCount - operation.completedCount;
+  return utf8ByteLength(JSON.stringify(emptyOperation)) + operation.serializedKeyBytes * 2 +
+    arrayCommaBytes(requestedCount) + arrayCommaBytes(remainingCount) +
+    arrayCommaBytes(operation.completedCount);
+}
+
+function arrayCommaBytes(itemCount: number): number {
+  return Math.max(0, itemCount - 1);
 }
 
 function storedProposalEntryBytes(itemKey: string, item: PersistedContentReplacementItem): number {
@@ -730,6 +1150,26 @@ async function hashStoredItem(
   );
 }
 
+async function hashStoredOperationItem(
+  jobId: string,
+  jobFingerprint: string,
+  kind: RecoveryOperationKind,
+  generation: string,
+  itemIndex: number,
+  itemKey: string,
+): Promise<string> {
+  return sha256Storage(
+    `${OPERATION_LEAF_DOMAIN}${stableSerialize([
+      jobId,
+      jobFingerprint,
+      kind,
+      generation,
+      itemIndex,
+      itemKey,
+    ])}`,
+  );
+}
+
 async function buildStorageMerkleLevels(itemDigests: string[]): Promise<string[][]> {
   if (itemDigests.length === 0) return [[await sha256Storage(SIDECAR_EMPTY_DOMAIN)]];
   const levels = [[...itemDigests]];
@@ -738,6 +1178,18 @@ async function buildStorageMerkleLevels(itemDigests: string[]): Promise<string[]
     const pairs = Array.from({ length: Math.ceil(current.length / 2) }, (_, index) => index * 2);
     levels.push(await mapCanonicalEntries(pairs, (index) =>
       hashStorageNode(current[index], current[index + 1] ?? current[index])));
+  }
+  return levels;
+}
+
+async function buildOperationMerkleLevels(itemDigests: string[]): Promise<string[][]> {
+  if (itemDigests.length === 0) return [[await sha256Storage(OPERATION_EMPTY_DOMAIN)]];
+  const levels = [[...itemDigests]];
+  while (levels[levels.length - 1].length > 1) {
+    const current = levels[levels.length - 1];
+    const pairs = Array.from({ length: Math.ceil(current.length / 2) }, (_, index) => index * 2);
+    levels.push(await mapCanonicalEntries(pairs, (index) =>
+      hashOperationNode(current[index], current[index + 1] ?? current[index])));
   }
   return levels;
 }
@@ -774,8 +1226,19 @@ function storageMerkleRoot(levels: string[][]): string {
   return root;
 }
 
+function operationMerkleRoot(levels: string[][]): string {
+  if (levels.length === 0) throw corruptJob();
+  const root = levels[levels.length - 1][0];
+  if (!isSha256Digest(root)) throw corruptJob();
+  return root;
+}
+
 async function hashStorageNode(left: string, right: string): Promise<string> {
   return sha256Storage(`${SIDECAR_NODE_DOMAIN}${left}${right}`);
+}
+
+async function hashOperationNode(left: string, right: string): Promise<string> {
+  return sha256Storage(`${OPERATION_NODE_DOMAIN}${left}${right}`);
 }
 
 async function sha256Storage(value: string): Promise<string> {
@@ -2879,6 +3342,14 @@ async function openDatabase(): Promise<IDBDatabase> {
         : request.result.createObjectStore(ITEM_STORE_NAME, { keyPath: ["jobId", "itemKey"] });
       if (!itemStore.indexNames.contains(ITEM_JOB_INDEX_NAME)) {
         itemStore.createIndex(ITEM_JOB_INDEX_NAME, "jobId", { unique: false });
+      }
+      const operationItemStore = request.result.objectStoreNames.contains(OPERATION_ITEM_STORE_NAME)
+        ? request.transaction!.objectStore(OPERATION_ITEM_STORE_NAME)
+        : request.result.createObjectStore(OPERATION_ITEM_STORE_NAME, {
+            keyPath: ["jobId", "generation", "itemIndex"],
+          });
+      if (!operationItemStore.indexNames.contains(ITEM_JOB_INDEX_NAME)) {
+        operationItemStore.createIndex(ITEM_JOB_INDEX_NAME, "jobId", { unique: false });
       }
       if (event.oldVersion < 4) {
         const cursorRequest = store.openCursor();
