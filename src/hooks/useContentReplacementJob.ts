@@ -14,6 +14,7 @@ import {
   deleteContentReplacementJob,
   loadContentReplacementJob,
   saveContentReplacementJob,
+  type ContentReplacementJobSaveResult,
 } from "../utils/browserContentReplacementStorage";
 import {
   createJobFingerprint,
@@ -48,6 +49,7 @@ const SCAN_URL = "/api/write-tools/content-replacement/scan";
 const APPLY_URL = "/api/write-tools/content-replacement/apply";
 const RECOVERY_URL = "/api/write-tools/content-replacement/recover";
 const STORAGE_ERROR = "Content replacement progress could not be saved.";
+const STORAGE_CONFLICT_ERROR = "Content replacement changed in another session. Review the latest saved selection and retry.";
 const STALE_SNAPSHOT_ERROR = "Stored recovery preparation is missing or stale.";
 const INVALID_RESPONSE_MESSAGE = "The content replacement service returned an invalid response.";
 const NETWORK_FAILURE_MESSAGE = "The content replacement request could not be completed.";
@@ -55,7 +57,7 @@ const BEFORE_UNLOAD_MESSAGE =
   "A content replacement request is active. Leaving now will pause the browser-coordinated job.";
 
 export interface ContentReplacementJobStorageOperations {
-  save(job: PersistedContentReplacementJob): Promise<void>;
+  save(job: PersistedContentReplacementJob, expectedRevision: number | null): Promise<ContentReplacementJobSaveResult>;
   load(id: string): Promise<PersistedContentReplacementJob | null>;
   delete(id: string): Promise<void>;
 }
@@ -252,8 +254,17 @@ export function useContentReplacementJob(
     token?: number,
   ): Promise<boolean> => enqueueStorage(candidate.id, async (storage) => {
     if (token !== undefined && token !== operationRef.current) return false;
+    const visible = jobRef.current;
+    const expectedRevision = visible?.id === candidate.id ? visible.revision : null;
     try {
-      await storage.save(candidate);
+      const result = await storage.save(candidate, expectedRevision);
+      if (result.status === "conflict") {
+        const latest = await storage.load(candidate.id);
+        setJob(latest);
+        if (mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
+        stopOperation();
+        return false;
+      }
     } catch {
       if (mountedRef.current) setStorageError(STORAGE_ERROR);
       stopOperation();
@@ -262,6 +273,56 @@ export function useContentReplacementJob(
     if (token !== undefined && token !== operationRef.current) return false;
     setStorageError(null);
     setJob(candidate);
+    return true;
+  }), [enqueueStorage, setJob, stopOperation]);
+
+  const mutatePersisted = useCallback((
+    jobId: string,
+    mutation: (current: PersistedContentReplacementJob) => {
+      candidate: PersistedContentReplacementJob;
+      unchanged: "success" | "conflict" | "reject";
+    },
+  ): Promise<boolean> => enqueueStorage(jobId, async (storage) => {
+    let current: PersistedContentReplacementJob | null;
+    try {
+      current = await storage.load(jobId);
+    } catch {
+      if (mountedRef.current) setStorageError(STORAGE_ERROR);
+      stopOperation();
+      return false;
+    }
+    if (!current) {
+      setJob(null);
+      if (mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
+      stopOperation();
+      return false;
+    }
+    const plan = mutation(current);
+    if (plan.candidate === current) {
+      setJob(current);
+      if (plan.unchanged === "success") {
+        setStorageError(null);
+        return true;
+      }
+      if (plan.unchanged === "conflict" && mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
+      return false;
+    }
+    try {
+      const result = await storage.save(plan.candidate, current.revision);
+      if (result.status === "conflict") {
+        const latest = await storage.load(jobId);
+        setJob(latest);
+        if (mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
+        stopOperation();
+        return false;
+      }
+    } catch {
+      if (mountedRef.current) setStorageError(STORAGE_ERROR);
+      stopOperation();
+      return false;
+    }
+    setStorageError(null);
+    setJob(plan.candidate);
     return true;
   }), [enqueueStorage, setJob, stopOperation]);
 
@@ -274,12 +335,14 @@ export function useContentReplacementJob(
   useEffect(() => {
     if (!initialJob || !needsInterruptionCheckpoint(initialJob) || rehydratedIdRef.current === initialJob.id) return;
     rehydratedIdRef.current = initialJob.id;
-    const interrupted = reduceReplacementJob(initialJob, {
-      type: "run/interrupted",
-      at: dependenciesRef.current.now(),
-    });
-    void persist(interrupted);
-  }, [initialJob, persist]);
+    void mutatePersisted(initialJob.id, (current) => ({
+      candidate: reduceReplacementJob(current, {
+        type: "run/interrupted",
+        at: dependenciesRef.current.now(),
+      }),
+      unchanged: "success",
+    }));
+  }, [initialJob, mutatePersisted]);
 
   const runExclusive = useCallback(async (
     operation: (token: number) => Promise<void>,
@@ -533,48 +596,66 @@ export function useContentReplacementJob(
   }, [enqueueLocalMutation, enqueueStorage, setJob, stopOperation]);
 
   const setItemIncluded = useCallback((itemKey: string, included: boolean): Promise<boolean> => enqueueLocalMutation(async () => {
-    const current = jobRef.current;
-    if (!current || current.stage !== "review" || !current.proposals[itemKey]) return false;
-    if (current.proposals[itemKey].included === included) return true;
-    const next = reduceReplacementJob(current, {
-      type: "review/set-included",
-      itemKey,
-      included,
-      reason: "user",
-      at: dependenciesRef.current.now(),
+    const visible = jobRef.current;
+    if (!visible) return false;
+    return mutatePersisted(visible.id, (current) => {
+      if (current.stage !== "review" || !current.proposals[itemKey]) {
+        return { candidate: current, unchanged: "reject" };
+      }
+      if (current.proposals[itemKey].included === included) {
+        return { candidate: current, unchanged: "success" };
+      }
+      return {
+        candidate: reduceReplacementJob(current, {
+          type: "review/set-included",
+          itemKey,
+          included,
+          reason: "user",
+          at: dependenciesRef.current.now(),
+        }),
+        unchanged: "reject",
+      };
     });
-    return next !== current && await persist(next);
-  }), [enqueueLocalMutation, persist]);
+  }), [enqueueLocalMutation, mutatePersisted]);
 
   const setItemsIncluded = useCallback((itemKeys: string[], included: boolean): Promise<boolean> =>
     enqueueLocalMutation(async () => {
-      const current = jobRef.current;
-      const uniqueKeys = new Set(itemKeys);
-      if (
-        !current || current.stage !== "review" || itemKeys.length === 0 ||
-        uniqueKeys.size !== itemKeys.length || itemKeys.some((key) => !current.proposals[key])
-      ) return false;
-      if (itemKeys.every((key) => current.proposals[key].included === included)) return true;
-      const next = reduceReplacementJob(current, {
-        type: "review/set-included-bulk",
-        itemKeys,
-        included,
-        reason: "bulk",
-        at: dependenciesRef.current.now(),
+      const visible = jobRef.current;
+      if (!visible) return false;
+      return mutatePersisted(visible.id, (current) => {
+        const uniqueKeys = new Set(itemKeys);
+        if (
+          current.stage !== "review" || itemKeys.length === 0 ||
+          uniqueKeys.size !== itemKeys.length || itemKeys.some((key) => !current.proposals[key])
+        ) return { candidate: current, unchanged: "reject" };
+        if (itemKeys.every((key) => current.proposals[key].included === included)) {
+          return { candidate: current, unchanged: "success" };
+        }
+        return {
+          candidate: reduceReplacementJob(current, {
+            type: "review/set-included-bulk",
+            itemKeys,
+            included,
+            reason: "bulk",
+            at: dependenciesRef.current.now(),
+          }),
+          unchanged: "reject",
+        };
       });
-      return next !== current && await persist(next);
-    }), [enqueueLocalMutation, persist]);
+    }), [enqueueLocalMutation, mutatePersisted]);
 
   const prepareApply = useCallback((expectedSelection: ReplacementSelectionSnapshot): Promise<boolean> => enqueueLocalMutation(async () => {
-    const current = jobRef.current;
-    if (!current) return false;
-    const next = reduceReplacementJob(current, {
-      type: "apply/prepare",
-      expectedSelection,
-      at: dependenciesRef.current.now(),
-    });
-    return next !== current && await persist(next);
-  }), [enqueueLocalMutation, persist]);
+    const visible = jobRef.current;
+    if (!visible) return false;
+    return mutatePersisted(visible.id, (current) => ({
+      candidate: reduceReplacementJob(current, {
+        type: "apply/prepare",
+        expectedSelection,
+        at: dependenciesRef.current.now(),
+      }),
+      unchanged: "conflict",
+    }));
+  }), [enqueueLocalMutation, mutatePersisted]);
 
   const applyLoop = useCallback(async (token: number): Promise<void> => {
     const visible = jobRef.current;

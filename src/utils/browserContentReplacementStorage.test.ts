@@ -4,7 +4,7 @@ import {
   deleteContentReplacementJob,
   listContentReplacementJobs,
   loadContentReplacementJob,
-  saveContentReplacementJob,
+  saveContentReplacementJob as compareAndSaveContentReplacementJob,
 } from "./browserContentReplacementStorage";
 import {
   buildReplacementProposal,
@@ -46,6 +46,7 @@ const REJECTED_ROOT_STAGE_STATUS_CASES = ROOT_STAGE_STATUS_ENTRIES.flatMap(
     .map((status) => [`${stage}/${status}`, stage, status] as const),
 );
 let canonicalQuestionProposal: ReplacementProposal;
+const fixtureRevisions = new Map<string, number>();
 
 beforeAll(async () => {
   const proposal = await buildReplacementProposal(
@@ -57,11 +58,62 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+  fixtureRevisions.clear();
   vi.unstubAllGlobals();
   if (originalIndexedDB) vi.stubGlobal("indexedDB", originalIndexedDB);
 });
 
 describe("browserContentReplacementStorage", () => {
+  it("compare-and-saves only the expected durable revision without overwriting conflicts", async () => {
+    installFakeIndexedDB();
+    const initial = createJob();
+    const next = { ...initial, revision: 1, updatedAt: "2026-09-01T12:01:00.000Z" };
+    const stale = { ...initial, revision: 1, status: "cancelled" as const, updatedAt: "2026-09-01T12:02:00.000Z" };
+
+    await expect(compareAndSave(initial, null)).resolves.toEqual({ status: "saved" });
+    await expect(compareAndSave(initial, null)).resolves.toEqual({ status: "conflict" });
+    await expect(compareAndSave(next, 0)).resolves.toEqual({ status: "saved" });
+    await expect(compareAndSave(stale, 0)).resolves.toEqual({ status: "conflict" });
+    await expect(loadContentReplacementJob(initial.id)).resolves.toEqual(next);
+  });
+
+  it("does not publish a staged CAS write when its readwrite transaction aborts", async () => {
+    const fake = installFakeIndexedDB();
+    const initial = createJob();
+    const next = { ...initial, revision: 1, updatedAt: "2026-09-01T12:01:00.000Z" };
+    await compareAndSave(initial, null);
+    fake.nextTransactionAbort = true;
+
+    await expect(compareAndSave(next, 0)).rejects.toThrow("Content replacement storage transaction aborted.");
+    await expect(loadContentReplacementJob(initial.id)).resolves.toEqual(initial);
+  });
+
+  it("rejects an invalid stored revision during CAS without overwriting it", async () => {
+    const fake = installFakeIndexedDB();
+    const initial = createJob();
+    const next = { ...initial, revision: 1, updatedAt: "2026-09-01T12:01:00.000Z" };
+    fake.records.set(initial.id, { ...initial, revision: "zero" });
+
+    await expect(compareAndSave(next, 0)).rejects.toThrow("Stored content replacement job is invalid.");
+    expect(fake.records.get(initial.id)).toMatchObject({ revision: "zero" });
+  });
+
+  it.each([
+    ["missing", (job: any) => { delete job.revision; }],
+    ["negative", (job: any) => { job.revision = -1; }],
+    ["unsafe", (job: any) => { job.revision = Number.MAX_SAFE_INTEGER + 1; }],
+  ])("rejects a %s candidate revision before opening a transaction", async (_label, mutate) => {
+    const open = vi.fn();
+    vi.stubGlobal("indexedDB", { open });
+    const job = createJob();
+    mutate(job);
+
+    await expect(compareAndSaveContentReplacementJob(job, null)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it("persists a resumable job in a dedicated browser database", async () => {
     installFakeIndexedDB();
     const job = createJob();
@@ -1425,9 +1477,35 @@ describe("browserContentReplacementStorage", () => {
   });
 });
 
+function compareAndSave(
+  job: PersistedContentReplacementJob,
+  expectedRevision: number | null,
+): Promise<{ status: "saved" } | { status: "conflict" }> {
+  return compareAndSaveContentReplacementJob(job, expectedRevision);
+}
+
+async function saveContentReplacementJob(job: PersistedContentReplacementJob): Promise<void> {
+  const idDescriptor = Object.getOwnPropertyDescriptor(job, "id");
+  if (!idDescriptor || !("value" in idDescriptor) || typeof idDescriptor.value !== "string") {
+    return compareAndSaveContentReplacementJob(job, null).then(() => undefined);
+  }
+  const expectedRevision = fixtureRevisions.get(idDescriptor.value) ?? null;
+  const nextRevision = expectedRevision === null ? 0 : expectedRevision + 1;
+  Object.defineProperty(job, "revision", {
+    value: nextRevision,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  const result = await compareAndSaveContentReplacementJob(job, expectedRevision);
+  if (result.status !== "saved") throw new Error("Unexpected content replacement fixture save conflict.");
+  fixtureRevisions.set(idDescriptor.value, nextRevision);
+}
+
 function createJob(): PersistedContentReplacementJob {
   return {
     schemaVersion: 1 as const,
+    revision: 0,
     id: "replacement-job-1",
     fingerprint: JOB_FINGERPRINT,
     baseUrl: "https://example.stackenterprise.co",
@@ -1898,6 +1976,10 @@ class FakeTransaction {
   oncomplete: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onabort: (() => void) | null = null;
+  private pendingRequests = 0;
+  private finished = false;
+  private readonly stagedWrites = new Map<string, unknown>();
+  private readonly stagedDeletes = new Set<string>();
 
   constructor(private readonly owner: FakeIndexedDB) {}
 
@@ -1905,8 +1987,15 @@ class FakeTransaction {
     return new FakeObjectStore(this.owner, this) as unknown as IDBObjectStore;
   }
 
-  finish(): void {
+  startRequest(): void {
+    this.pendingRequests += 1;
+  }
+
+  finishRequest(): void {
+    this.pendingRequests -= 1;
     queueMicrotask(() => {
+      if (this.finished || this.pendingRequests !== 0) return;
+      this.finished = true;
       if (this.owner.nextTransactionAbort) {
         this.owner.nextTransactionAbort = false;
         this.onabort?.();
@@ -1914,9 +2003,27 @@ class FakeTransaction {
         this.owner.nextTransactionError = false;
         this.onerror?.();
       } else {
+        for (const key of this.stagedDeletes) this.owner.records.delete(key);
+        for (const [key, value] of this.stagedWrites) this.owner.records.set(key, value);
         this.oncomplete?.();
       }
     });
+  }
+
+  stagePut(value: PersistedContentReplacementJob): void {
+    this.stagedDeletes.delete(value.id);
+    this.stagedWrites.set(value.id, value);
+  }
+
+  stageDelete(key: string): void {
+    this.stagedWrites.delete(key);
+    this.stagedDeletes.add(key);
+  }
+
+  abort(): void {
+    if (this.finished) return;
+    this.finished = true;
+    queueMicrotask(() => this.onabort?.());
   }
 }
 
@@ -1933,28 +2040,30 @@ class FakeObjectStore {
 
   put(value: PersistedContentReplacementJob): IDBRequest<IDBValidKey> {
     return this.request<IDBValidKey>(() => {
-      this.owner.records.set(value.id, value);
+      this.transaction.stagePut(value);
       return value.id;
     }, true);
   }
 
   delete(key: IDBValidKey): IDBRequest<undefined> {
     return this.request(() => {
-      this.owner.records.delete(String(key));
+      this.transaction.stageDelete(String(key));
       return undefined;
     }, true);
   }
 
   private request<T>(operation: () => T, _write = false): IDBRequest<T> {
     const request = new FakeRequest<T>();
+    this.transaction.startRequest();
     queueMicrotask(() => {
       if (this.owner.nextRequestError) {
         this.owner.nextRequestError = false;
         request.fail();
+        this.transaction.finishRequest();
         return;
       }
       request.succeed(operation());
-      this.transaction.finish();
+      this.transaction.finishRequest();
     });
     return request as unknown as IDBRequest<T>;
   }

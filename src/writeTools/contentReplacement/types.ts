@@ -304,6 +304,7 @@ export type PersistedContentReplacementActiveOperation =
 
 export interface PersistedContentReplacementJob {
   schemaVersion: 1;
+  revision: number;
   id: string;
   fingerprint: string;
   baseUrl: string;

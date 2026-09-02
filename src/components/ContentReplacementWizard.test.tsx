@@ -179,6 +179,7 @@ function controller(currentJob: PersistedContentReplacementJob | null): ContentR
 function job(overrides: Partial<PersistedContentReplacementJob>): PersistedContentReplacementJob {
   return {
     schemaVersion: 1,
+    revision: 0,
     id: "job-1",
     fingerprint: "f".repeat(64),
     baseUrl: credentials.baseUrl,

@@ -122,6 +122,22 @@ function failure(
 }
 
 describe("replacement job state", () => {
+  it("starts at revision zero and advances once for each accepted reducer transition", () => {
+    const created = createJob();
+    expect(created.revision).toBe(0);
+
+    const resumed = reduceReplacementJob(created, { type: "run/resume", at: LATER });
+    expect(resumed.revision).toBe(1);
+
+    const delayed = reduceReplacementJob(resumed, {
+      type: "run/set-retry-at",
+      nextRetryAt: "2026-09-01T12:02:00.000Z",
+      at: LATER,
+    });
+    expect(delayed.revision).toBe(2);
+    expect(reduceReplacementJob(delayed, { type: "run/resume", at: LATER })).toBe(delayed);
+  });
+
   it.each([
     [{ questions: true, answers: false, articles: false }, [{ kind: "questions", page: 1 }]],
     [{ questions: false, answers: true, articles: false }, [{ kind: "questions", page: 1 }]],

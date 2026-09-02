@@ -65,7 +65,11 @@ async function questionProposal(id = 1): Promise<ReplacementProposal> {
 function storage(initial: PersistedContentReplacementJob | null = null) {
   let persisted = initial;
   return {
-    save: vi.fn(async (job: PersistedContentReplacementJob) => { persisted = job; }),
+    save: vi.fn(async (job: PersistedContentReplacementJob, expectedRevision: number | null) => {
+      if ((persisted?.revision ?? null) !== expectedRevision) return { status: "conflict" as const };
+      persisted = job;
+      return { status: "saved" as const };
+    }),
     load: vi.fn(async () => persisted),
     delete: vi.fn(async () => { persisted = null; }),
     current: () => persisted,
@@ -350,9 +354,13 @@ describe("useContentReplacementJob", () => {
         ok: true,
         result: { proposals: [proposal], inspectedCount: 1, protectedOccurrenceCount: 0 },
         throttleNotices: [],
-      }));
+    }));
     const deps = dependencies(fetcher);
-    deps.store.save.mockImplementationOnce(async (job) => { await firstSave.promise; void job; });
+    const baseSave = deps.store.save.getMockImplementation()!;
+    deps.store.save.mockImplementationOnce(async (job, expectedRevision) => {
+      await firstSave.promise;
+      return baseSave(job, expectedRevision);
+    });
     const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
     let creation!: Promise<boolean>;
     act(() => { creation = result.current.createJob(configuration); });
@@ -469,7 +477,11 @@ describe("useContentReplacementJob", () => {
     let firstRun!: Promise<void>;
     act(() => { firstRun = result.current.startScan(); });
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
-    deps.store.save.mockImplementationOnce(async () => pausedSave.promise);
+    const baseSave = deps.store.save.getMockImplementation()!;
+    deps.store.save.mockImplementationOnce(async (job, expectedRevision) => {
+      await pausedSave.promise;
+      return baseSave(job, expectedRevision);
+    });
 
     let resumed!: Promise<void>;
     act(() => {
@@ -542,7 +554,11 @@ describe("useContentReplacementJob", () => {
       throttleNotices: [],
     }));
     const deps = dependencies(fetcher, initial);
-    deps.store.save.mockImplementationOnce(async (job) => { await snapshotSave.promise; void job; });
+    const baseSave = deps.store.save.getMockImplementation()!;
+    deps.store.save.mockImplementationOnce(async (job, expectedRevision) => {
+      await snapshotSave.promise;
+      return baseSave(job, expectedRevision);
+    });
     const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
     let preparation!: Promise<boolean>;
     act(() => { preparation = result.current.prepareApply(createReplacementSelectionSnapshot(initial.proposals)); });
@@ -650,9 +666,9 @@ describe("useContentReplacementJob", () => {
     const gate = deferred<void>();
     const deps = dependencies(vi.fn(), initial);
     const baseSave = deps.store.save.getMockImplementation()!;
-    deps.store.save.mockImplementationOnce(async (saved) => {
+    deps.store.save.mockImplementationOnce(async (saved, expectedRevision) => {
       await gate.promise;
-      await baseSave(saved);
+      return baseSave(saved, expectedRevision);
     });
     const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
 
@@ -956,9 +972,10 @@ describe("useContentReplacementJob", () => {
     const initial = await scannedReviewJob(proposal);
     const gate = deferred<void>();
     const deps = dependencies(vi.fn(), initial);
-    deps.store.save.mockImplementationOnce(async (saved) => {
+    const baseSave = deps.store.save.getMockImplementation()!;
+    deps.store.save.mockImplementationOnce(async (saved, expectedRevision) => {
       await gate.promise;
-      await storage().save(saved);
+      return baseSave(saved, expectedRevision);
     });
     const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
     let prepare!: Promise<boolean>;
@@ -984,11 +1001,12 @@ describe("useContentReplacementJob", () => {
     const baseSave = deps.store.save.getMockImplementation()!;
     const baseDelete = deps.store.delete.getMockImplementation()!;
     const events: string[] = [];
-    deps.store.save.mockImplementationOnce(async (saved) => {
+    deps.store.save.mockImplementationOnce(async (saved, expectedRevision) => {
       events.push("save-start");
       await gate.promise;
-      await baseSave(saved);
+      await baseSave(saved, expectedRevision);
       events.push("save-complete");
+      return { status: "saved" as const };
     });
     deps.store.delete.mockImplementationOnce(async () => {
       events.push("delete");
@@ -1023,15 +1041,17 @@ describe("useContentReplacementJob", () => {
     const deps = dependencies(vi.fn(), initial);
     const baseSave = deps.store.save.getMockImplementation()!;
     const events: string[] = [];
-    deps.store.save.mockImplementationOnce(async (saved) => {
+    deps.store.save.mockImplementationOnce(async (saved, expectedRevision) => {
       events.push("save-start");
       await gate.promise;
-      await baseSave(saved);
+      await baseSave(saved, expectedRevision);
       events.push("save-complete");
+      return { status: "saved" as const };
     });
-    deps.store.save.mockImplementationOnce(async (saved) => {
-      await baseSave(saved);
+    deps.store.save.mockImplementationOnce(async (saved, expectedRevision) => {
+      await baseSave(saved, expectedRevision);
       events.push("cancel-save");
+      return { status: "saved" as const };
     });
     const first = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
     let firstCancellation!: Promise<void>;
@@ -1053,6 +1073,87 @@ describe("useContentReplacementJob", () => {
     expect(second.result.current.job).toMatchObject({ status: "cancelled" });
     const third = renderHook(() => useContentReplacementJob(credentials, deps.store.current(), deps.value));
     expect(third.result.current.job).toMatchObject({ status: "cancelled" });
+  });
+
+  it("refuses stale Apply preparation after a remounted controller loses a selection CAS race", async () => {
+    const initial = await scannedReviewJob(await questionProposal(1), await questionProposal(2));
+    const staleSelection = createReplacementSelectionSnapshot(initial.proposals);
+    const gate = deferred<void>();
+    const deps = dependencies(vi.fn(), initial);
+    const baseSave = deps.store.save.getMockImplementation()!;
+    deps.store.save.mockImplementationOnce(async (saved, expectedRevision) => {
+      await gate.promise;
+      return baseSave(saved, expectedRevision);
+    });
+    const first = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    let selection!: Promise<boolean>;
+    act(() => { selection = first.result.current.setItemIncluded("question:1", false); });
+    await waitFor(() => expect(deps.store.save).toHaveBeenCalledOnce());
+    first.unmount();
+
+    const second = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+    let stalePrepare!: Promise<boolean>;
+    act(() => { stalePrepare = second.result.current.prepareApply(staleSelection); });
+    gate.resolve();
+
+    let selected = false;
+    let prepared = true;
+    await act(async () => {
+      selected = await selection;
+      prepared = await stalePrepare;
+    });
+
+    expect(selected).toBe(true);
+    expect(prepared).toBe(false);
+    expect(deps.store.current()).toMatchObject({
+      stage: "review",
+      proposals: { "question:1": { included: false }, "question:2": { included: true } },
+    });
+    expect(second.result.current.job).toEqual(deps.store.current());
+    expect(second.result.current.storageError).toBe(
+      "Content replacement changed in another session. Review the latest saved selection and retry.",
+    );
+
+    let retried = false;
+    await act(async () => {
+      retried = await second.result.current.prepareApply(
+        createReplacementSelectionSnapshot(second.result.current.job!.proposals),
+      );
+    });
+    expect(retried).toBe(true);
+    expect(deps.store.current()).toMatchObject({ stage: "apply" });
+    expect(second.result.current.storageError).toBeNull();
+  });
+
+  it("composes concurrent single and bulk selection controllers from the latest durable revision", async () => {
+    const initial = await scannedReviewJob(await questionProposal(1), await questionProposal(2));
+    const gate = deferred<void>();
+    const deps = dependencies(vi.fn(), initial);
+    const baseSave = deps.store.save.getMockImplementation()!;
+    deps.store.save.mockImplementationOnce(async (saved, expectedRevision) => {
+      await gate.promise;
+      return baseSave(saved, expectedRevision);
+    });
+    const first = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+    const second = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    let single!: Promise<boolean>;
+    let bulk!: Promise<boolean>;
+    act(() => {
+      single = first.result.current.setItemIncluded("question:1", false);
+      bulk = second.result.current.setItemsIncluded(["question:2"], false);
+    });
+    await waitFor(() => expect(deps.store.save).toHaveBeenCalledOnce());
+    gate.resolve();
+    await act(async () => { await single; await bulk; });
+
+    expect(deps.store.save).toHaveBeenCalledTimes(2);
+    expect(deps.store.current()?.proposals).toMatchObject({
+      "question:1": { included: false },
+      "question:2": { included: false },
+    });
+    expect(second.result.current.job).toEqual(deps.store.current());
   });
 
   it("rejects malformed detail proposal evidence before reducer mutation", async () => {

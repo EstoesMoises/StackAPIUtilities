@@ -48,7 +48,7 @@ const MAX_OCCURRENCES = 100_000;
 const MAX_CONTENT_LENGTH = 1_048_576;
 const MAX_LIST_ITEMS = 10_000;
 const JOB_KEYS = [
-  "schemaVersion", "id", "fingerprint", "baseUrl", "target", "configuration",
+  "schemaVersion", "revision", "id", "fingerprint", "baseUrl", "target", "configuration",
   "stage", "status", "inventoryQueue", "detailQueue", "progress", "proposals",
   "recoverySnapshotStatus", "activeOperation", "operationError", "nextRetryAt", "failure", "createdAt", "updatedAt",
 ] as const;
@@ -90,16 +90,46 @@ export async function loadContentReplacementJob(
   }
 }
 
-export async function saveContentReplacementJob(job: PersistedContentReplacementJob): Promise<void> {
+export type ContentReplacementJobSaveResult = { status: "saved" } | { status: "conflict" };
+
+export async function saveContentReplacementJob(
+  job: PersistedContentReplacementJob,
+  expectedRevision: number | null,
+): Promise<ContentReplacementJobSaveResult> {
   const normalized = await parseContentReplacementJob(job);
+  if (
+    (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) ||
+    (expectedRevision === null ? normalized.revision !== 0 : normalized.revision <= expectedRevision)
+  ) throw corruptJob();
   const database = await openDatabase();
   try {
     const transaction = database.transaction(STORE_NAME, "readwrite");
-    const request = transaction.objectStore(STORE_NAME).put(normalized);
-    await Promise.all([requestToPromise(request), transactionToPromise(transaction)]);
+    const transactionPromise = transactionToPromise(transaction);
+    const store = transaction.objectStore(STORE_NAME);
+    const stored = await requestToPromise<unknown>(store.get(normalized.id));
+    const actualRevision = storedJobRevision(stored, normalized.id);
+    if (actualRevision !== expectedRevision) {
+      await transactionPromise;
+      return { status: "conflict" };
+    }
+    await Promise.all([requestToPromise(store.put(normalized)), transactionPromise]);
+    return { status: "saved" };
   } finally {
     database.close();
   }
+}
+
+function storedJobRevision(value: unknown, expectedId: string): number | null {
+  if (value === undefined) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw corruptJob();
+  const id = Object.getOwnPropertyDescriptor(value, "id");
+  const revision = Object.getOwnPropertyDescriptor(value, "revision");
+  if (
+    !id || !("value" in id) || id.value !== expectedId ||
+    !revision || !("value" in revision) ||
+    !Number.isSafeInteger(revision.value) || revision.value < 0
+  ) throw corruptJob();
+  return revision.value as number;
 }
 
 export async function deleteContentReplacementJob(id: string): Promise<void> {
@@ -189,6 +219,8 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   const updatedAt = timestamp(record.updatedAt);
   if (
     record.schemaVersion !== 1 ||
+    !Number.isSafeInteger(record.revision) ||
+    (record.revision as number) < 0 ||
     !isJobId(record.id) ||
     !isSha256Digest(record.fingerprint) ||
     target.kind !== "enterprise-main" ||
@@ -221,6 +253,7 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     : parseActiveOperation(record.activeOperation, normalizedProposals, configuredRuleIds);
   const normalized: PersistedContentReplacementJob = {
     schemaVersion: 1,
+    revision: record.revision as number,
     id: record.id,
     fingerprint: record.fingerprint,
     baseUrl,

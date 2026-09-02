@@ -268,6 +268,7 @@ function createJob(
 ): PersistedContentReplacementJob {
   return {
     schemaVersion: 1,
+    revision: 0,
     id: "job-1",
     fingerprint: "f".repeat(64),
     baseUrl: "https://example.stackenterprise.co",

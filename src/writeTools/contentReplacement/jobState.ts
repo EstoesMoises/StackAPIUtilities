@@ -150,6 +150,7 @@ export function createReplacementJob(input: CreateReplacementJobInput): Persiste
   }
   return {
     schemaVersion: 1,
+    revision: 0,
     id: input.id,
     fingerprint: input.fingerprint,
     baseUrl: normalizeOrigin(input.baseUrl),
@@ -178,6 +179,15 @@ export function createReplacementJob(input: CreateReplacementJobInput): Persiste
 }
 
 export function reduceReplacementJob(
+  job: PersistedContentReplacementJob,
+  event: ReplacementJobEvent,
+): PersistedContentReplacementJob {
+  const next = reduceReplacementJobState(job, event);
+  if (next === job || job.revision === Number.MAX_SAFE_INTEGER) return job;
+  return { ...next, revision: job.revision + 1 };
+}
+
+function reduceReplacementJobState(
   job: PersistedContentReplacementJob,
   event: ReplacementJobEvent,
 ): PersistedContentReplacementJob {
@@ -243,7 +253,7 @@ export function reduceReplacementJob(
     case "review/set-included":
       return reduceSelection(job, event, event.at);
     case "review/set-included-bulk":
-      return reduceReplacementSelectionBulk(job, event.itemKeys, event.included, event.reason, event.at);
+      return reduceReplacementSelectionBulkState(job, event.itemKeys, event.included, event.reason, event.at);
     case "apply/prepare":
       return prepareApply(job, event.expectedSelection, event.at);
     case "apply/start":
@@ -493,6 +503,22 @@ function reduceSelection(
 }
 
 export function reduceReplacementSelectionBulk(
+  job: PersistedContentReplacementJob,
+  itemKeys: readonly string[],
+  included: boolean,
+  reason: "bulk",
+  at: string,
+): PersistedContentReplacementJob {
+  return reduceReplacementJob(job, {
+    type: "review/set-included-bulk",
+    itemKeys: [...itemKeys],
+    included,
+    reason,
+    at,
+  });
+}
+
+function reduceReplacementSelectionBulkState(
   job: PersistedContentReplacementJob,
   itemKeys: readonly string[],
   included: boolean,
