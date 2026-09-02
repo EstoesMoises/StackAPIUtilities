@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
 import {
   downloadReplacementExceptions,
@@ -8,6 +8,7 @@ import {
   replacementItemKey,
   summarizeReplacementJob,
 } from "../writeTools/contentReplacement/jobState";
+import { stableSerialize } from "../writeTools/contentReplacement/proposals";
 import type {
   PersistedContentReplacementItem,
   PersistedContentReplacementJob,
@@ -29,6 +30,18 @@ type ResultFilter =
   | "recovery-conflict"
   | "recovery-failed";
 
+type ResultOutcome = Exclude<ResultFilter, "all">;
+
+interface ScopedConfirmation {
+  key: string;
+  value: string;
+}
+
+interface PendingDeletion {
+  jobId: string;
+  kind: "snapshots" | "job";
+}
+
 export interface ContentReplacementApplyStepProps {
   controller: ContentReplacementJobController;
 }
@@ -46,34 +59,17 @@ function ContentReplacementApplyStepView({
   controller: ContentReplacementJobController;
   job: PersistedContentReplacementJob;
 }) {
-  const [applyAcknowledged, setApplyAcknowledged] = useState(false);
-  const [applyConfirmation, setApplyConfirmation] = useState("");
-  const [recoveryAcknowledged, setRecoveryAcknowledged] = useState(false);
-  const [recoveryConfirmation, setRecoveryConfirmation] = useState("");
+  const [applyAcknowledgedKey, setApplyAcknowledgedKey] = useState<string | null>(null);
+  const [applyConfirmation, setApplyConfirmation] = useState<ScopedConfirmation | null>(null);
+  const [recoveryAcknowledgedKey, setRecoveryAcknowledgedKey] = useState<string | null>(null);
+  const [recoveryConfirmation, setRecoveryConfirmation] = useState<ScopedConfirmation | null>(null);
   const [recoverySelection, setRecoverySelection] = useState<Record<string, boolean>>({});
   const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
   const [resultSearch, setResultSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [deleteConfirmation, setDeleteConfirmation] = useState<"snapshots" | "job" | null>(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState<PendingDeletion | null>(null);
   const [actionPending, setActionPending] = useState(false);
-  const confirmationKey = applyScopeKey(job);
-  const previousConfirmationKey = useRef(confirmationKey);
-  const previewKey = recoveryPreviewKey(job);
-  const previousPreviewKey = useRef(previewKey);
-
-  useEffect(() => {
-    if (previousConfirmationKey.current === confirmationKey) return;
-    previousConfirmationKey.current = confirmationKey;
-    setApplyAcknowledged(false);
-    setApplyConfirmation("");
-  }, [confirmationKey]);
-
-  useEffect(() => {
-    if (previousPreviewKey.current === previewKey) return;
-    previousPreviewKey.current = previewKey;
-    setRecoveryAcknowledged(false);
-    setRecoveryConfirmation("");
-  }, [previewKey]);
+  const confirmationKey = useMemo(() => applyScopeKey(job), [job]);
 
   const entries = useMemo(
     () => Object.entries(job.proposals).sort(compareEntries),
@@ -88,9 +84,13 @@ function ContentReplacementApplyStepView({
   const showConfirmation = job.stage === "apply" && !runningApply && !applyStarted;
   const recoveryReady = job.recoverySnapshotStatus === "ready" &&
     entries.filter(([, item]) => item.included).every(([, item]) => completeRecoverySnapshot(item));
+  const applyAcknowledged = applyAcknowledgedKey === confirmationKey;
+  const applyConfirmationValue = applyConfirmation?.key === confirmationKey ? applyConfirmation.value : "";
+  const applyOperationLocked = job.status === "running" || !!job.activeOperation;
   const canApply = showConfirmation && recoveryReady && applyAcknowledged &&
-    applyConfirmation === "APPLY" && summary.selectedItems > 0 && !controller.busy &&
-    !controller.storageError && !controller.operationError;
+    applyConfirmation?.key === confirmationKey && applyConfirmation.value === "APPLY" &&
+    summary.selectedItems > 0 && controller.credentialReadiness.valid && !applyOperationLocked &&
+    !controller.busy && !actionPending && !controller.storageError && !controller.operationError;
   const applyRemaining = entries.filter(([, item]) =>
     item.included && (item.status === "ready-to-apply" || item.status === "applying")
   ).length;
@@ -105,14 +105,25 @@ function ContentReplacementApplyStepView({
 
   const successfulEntries = entries.filter(([, item]) => hasObservedApplySuccess(item));
   const selectedRecoveryEntries = successfulEntries.filter(([key]) => recoverySelection[key] !== false);
+  const selectedRecoveryKeys = selectedRecoveryEntries.map(([key]) => key);
+  const selectedRecoveryKeySet = selectedRecoveryKeys.join("\u0000");
+  const previewKey = useMemo(
+    () => recoveryPreviewKey(job, selectedRecoveryKeys),
+    [job, selectedRecoveryKeySet],
+  );
+  const recoveryAcknowledged = recoveryAcknowledgedKey === previewKey;
+  const recoveryConfirmationValue = recoveryConfirmation?.key === previewKey ? recoveryConfirmation.value : "";
   const previewedEntries = selectedRecoveryEntries.filter(([, item]) => item.recovery?.preview);
   const recoverableEntries = previewedEntries.filter(([, item]) =>
     item.status === "ready-to-recover" && item.recovery?.preview?.status === "recoverable"
   );
+  const recoveryOperationLocked = job.status === "running" || !!job.activeOperation;
   const previewComplete = selectedRecoveryEntries.length > 0 &&
-    previewedEntries.length === selectedRecoveryEntries.length && !job.activeOperation;
+    previewedEntries.length === selectedRecoveryEntries.length && !recoveryOperationLocked;
   const canRecover = previewComplete && recoverableEntries.length > 0 && recoveryAcknowledged &&
-    recoveryConfirmation === "RECOVER" && !controller.busy && !controller.storageError;
+    recoveryConfirmation?.key === previewKey && recoveryConfirmation.value === "RECOVER" &&
+    controller.credentialReadiness.valid && !recoveryOperationLocked && !controller.busy &&
+    !actionPending && !controller.storageError;
 
   const filteredEntries = entries.filter(([key, item]) =>
     matchesResultFilter(item, resultFilter) && matchesSearch(key, item, resultSearch)
@@ -133,10 +144,53 @@ function ContentReplacementApplyStepView({
     }
   }
 
-  async function confirmDeletion(kind: "snapshots" | "job") {
-    await runAction(kind === "snapshots" ? controller.deleteRecoverySnapshots : controller.deleteJob);
+  async function confirmDeletion(pending: PendingDeletion) {
+    const currentJob = controller.job;
+    if (!currentJob || !deleteConfirmation ||
+      deleteConfirmation.jobId !== pending.jobId || deleteConfirmation.kind !== pending.kind ||
+      pending.jobId !== job.id || currentJob.id !== pending.jobId ||
+      currentJob.status === "running" || !!currentJob.activeOperation || controller.busy || actionPending) return;
+    await runAction(pending.kind === "snapshots" ? controller.deleteRecoverySnapshots : controller.deleteJob);
     setDeleteConfirmation(null);
   }
+
+  function startApplyIfAuthorized() {
+    const currentJob = controller.job;
+    if (!canApply || !currentJob || currentJob.id !== job.id ||
+      applyScopeKey(currentJob) !== confirmationKey || !controller.credentialReadiness.valid ||
+      currentJob.status === "running" || !!currentJob.activeOperation) return;
+    void runAction(controller.startApply);
+  }
+
+  function startRecoveryIfAuthorized() {
+    const currentJob = controller.job;
+    if (!canRecover || !currentJob || currentJob.id !== job.id ||
+      recoveryPreviewKey(currentJob, selectedRecoveryKeys) !== previewKey ||
+      !controller.credentialReadiness.valid || currentJob.status === "running" || !!currentJob.activeOperation) return;
+    const currentRecoverableKeys = selectedRecoveryKeys.filter((key) => {
+      const item = currentJob.proposals[key];
+      return item?.status === "ready-to-recover" && item.recovery?.preview?.status === "recoverable";
+    });
+    if (currentRecoverableKeys.length !== recoverableEntries.length) return;
+    void runAction(() => controller.startRecovery(currentRecoverableKeys));
+  }
+
+  const deletionLocked = job.status === "running" || !!job.activeOperation || controller.busy || actionPending;
+
+  useEffect(() => {
+    if (!deleteConfirmation) return;
+    if (deleteConfirmation.jobId !== job.id || deletionLocked) setDeleteConfirmation(null);
+  }, [deleteConfirmation, deletionLocked, job.id]);
+
+  useEffect(() => {
+    setApplyAcknowledgedKey((current) => current === confirmationKey ? current : null);
+    setApplyConfirmation((current) => current?.key === confirmationKey ? current : null);
+  }, [confirmationKey]);
+
+  useEffect(() => {
+    setRecoveryAcknowledgedKey((current) => current === previewKey ? current : null);
+    setRecoveryConfirmation((current) => current?.key === previewKey ? current : null);
+  }, [previewKey]);
 
   return (
     <section className="content-replacement-apply" aria-labelledby="content-replacement-apply-heading">
@@ -152,13 +206,18 @@ function ContentReplacementApplyStepView({
               <strong>Apply is blocked.</strong> {controller.storageError ?? controller.operationError}
             </div>
           )}
+          {!controller.credentialReadiness.valid && (
+            <div className="s-notice s-notice__warning" role="status">
+              <strong>API credential required.</strong> {controller.credentialReadiness.message}
+            </div>
+          )}
           <fieldset className="content-replacement-confirmation">
             <legend>Live write confirmation</legend>
             <label>
               <input
                 type="checkbox"
                 checked={applyAcknowledged}
-                onChange={(event) => setApplyAcknowledged(event.currentTarget.checked)}
+                onChange={(event) => setApplyAcknowledgedKey(event.currentTarget.checked ? confirmationKey : null)}
               />{" "}
               I understand these edits use the live Enterprise API, are not one transaction, and may partially complete.
             </label>
@@ -166,17 +225,17 @@ function ContentReplacementApplyStepView({
               <span>Type APPLY to confirm</span>
               <input
                 className="s-input"
-                value={applyConfirmation}
+                value={applyConfirmationValue}
                 autoComplete="off"
                 spellCheck={false}
-                onChange={(event) => setApplyConfirmation(event.currentTarget.value)}
+                onChange={(event) => setApplyConfirmation({ key: confirmationKey, value: event.currentTarget.value })}
               />
             </label>
             <button
               type="button"
               className="s-btn s-btn__primary"
               disabled={!canApply}
-              onClick={() => void runAction(controller.startApply)}
+              onClick={startApplyIfAuthorized}
             >
               Apply changes to {summary.selectedItems.toLocaleString()} {plural(summary.selectedItems, "post")}
             </button>
@@ -293,27 +352,26 @@ function ContentReplacementApplyStepView({
             selection={recoverySelection}
             onSelection={(key, selected) => {
               setRecoverySelection((current) => ({ ...current, [key]: selected }));
-              setRecoveryAcknowledged(false);
-              setRecoveryConfirmation("");
             }}
             selectedEntries={selectedRecoveryEntries}
             previewedEntries={previewedEntries}
             recoverableEntries={recoverableEntries}
             previewComplete={previewComplete}
             acknowledged={recoveryAcknowledged}
-            confirmation={recoveryConfirmation}
+            confirmation={recoveryConfirmationValue}
             canRecover={canRecover}
             actionPending={actionPending}
-            onAcknowledged={setRecoveryAcknowledged}
-            onConfirmation={setRecoveryConfirmation}
+            onAcknowledged={(value) => setRecoveryAcknowledgedKey(value ? previewKey : null)}
+            onConfirmation={(value) => setRecoveryConfirmation({ key: previewKey, value })}
+            onRecover={startRecoveryIfAuthorized}
             onRunAction={runAction}
           />
 
           <LocalDataControls
             hasRecoverySnapshots={entries.some(([, item]) => !!item.recovery)}
             confirmation={deleteConfirmation}
-            disabled={job.status === "running" || !!job.activeOperation || controller.busy || actionPending}
-            onRequest={setDeleteConfirmation}
+            disabled={deletionLocked}
+            onRequest={(kind) => setDeleteConfirmation({ jobId: job.id, kind })}
             onCancel={() => setDeleteConfirmation(null)}
             onConfirm={confirmDeletion}
           />
@@ -360,7 +418,7 @@ function ApplyScopeSummary({
 }
 
 function ResultSummary({ job }: { job: PersistedContentReplacementJob }) {
-  const results = summarizeReplacementJob(job).results;
+  const results = projectResultSummary(job);
   return (
     <section role="region" aria-label="Apply result summary">
       <dl className="content-replacement-result-counts">
@@ -478,6 +536,7 @@ function RecoverySection({
   actionPending,
   onAcknowledged,
   onConfirmation,
+  onRecover,
   onRunAction,
 }: {
   controller: ContentReplacementJobController;
@@ -495,12 +554,15 @@ function RecoverySection({
   actionPending: boolean;
   onAcknowledged(value: boolean): void;
   onConfirmation(value: string): void;
+  onRecover(): void;
   onRunAction(action: () => Promise<void>): Promise<void>;
 }) {
   const [selectionPage, setSelectionPage] = useState(1);
   const [previewPage, setPreviewPage] = useState(1);
   const previewRunning = job.activeOperation?.kind === "recovery-preview";
   const recoveryRunning = job.activeOperation?.kind === "recovery-apply";
+  const operationLocked = job.status === "running" || !!job.activeOperation;
+  const recoveryLocked = operationLocked || !controller.credentialReadiness.valid || controller.busy || actionPending;
   const selectionPageCount = Math.max(1, Math.ceil(successfulEntries.length / RECOVERY_PAGE_SIZE));
   const boundedSelectionPage = Math.min(selectionPage, selectionPageCount);
   const visibleSuccessfulEntries = successfulEntries.slice(
@@ -517,10 +579,15 @@ function RecoverySection({
     <section className="content-replacement-recovery" aria-labelledby="content-replacement-recovery-heading">
       <h3 id="content-replacement-recovery-heading">Guarded recovery</h3>
       <p>Only posts with an observed successful post-apply checksum are eligible. Recovery rechecks current content and never overwrites a conflict.</p>
+      {!controller.credentialReadiness.valid && (
+        <div className="s-notice s-notice__warning" role="status">
+          <strong>API credential required.</strong> {controller.credentialReadiness.message}
+        </div>
+      )}
       {successfulEntries.length === 0 ? (
         <p>No successfully verified applied posts are available for recovery.</p>
       ) : (
-        <fieldset disabled={previewRunning || recoveryRunning || controller.busy || actionPending}>
+        <fieldset disabled={recoveryLocked}>
           <legend>Select successfully verified posts</legend>
           {visibleSuccessfulEntries.map(([key, item]) => (
             <label key={key}>
@@ -535,8 +602,13 @@ function RecoverySection({
           <button
             type="button"
             className="s-btn s-btn__outlined"
-            disabled={selectedEntries.length === 0 || previewRunning || recoveryRunning || controller.busy || actionPending}
-            onClick={() => void onRunAction(() => controller.prepareRecovery(selectedEntries.map(([key]) => key)))}
+            disabled={selectedEntries.length === 0 || recoveryLocked}
+            onClick={() => {
+              const currentJob = controller.job;
+              if (!currentJob || currentJob.id !== job.id || !controller.credentialReadiness.valid ||
+                currentJob.status === "running" || !!currentJob.activeOperation || controller.busy || actionPending) return;
+              void onRunAction(() => controller.prepareRecovery(selectedEntries.map(([key]) => key)));
+            }}
           >
             Preview recovery for {selectedEntries.length.toLocaleString()} {plural(selectedEntries.length, "post")}
           </button>
@@ -620,7 +692,7 @@ function RecoverySection({
       )}
 
       {previewComplete && recoverableEntries.length > 0 && (
-        <fieldset className="content-replacement-confirmation">
+        <fieldset className="content-replacement-confirmation" disabled={recoveryLocked}>
           <legend>Recovery write confirmation</legend>
           <label>
             <input type="checkbox" checked={acknowledged} onChange={(event) => onAcknowledged(event.currentTarget.checked)} />{" "}
@@ -634,7 +706,7 @@ function RecoverySection({
             type="button"
             className="s-btn s-btn__primary"
             disabled={!canRecover}
-            onClick={() => void onRunAction(() => controller.startRecovery(recoverableEntries.map(([key]) => key)))}
+            onClick={onRecover}
           >
             Recover {recoverableEntries.length.toLocaleString()} {plural(recoverableEntries.length, "post")}
           </button>
@@ -653,11 +725,11 @@ function LocalDataControls({
   onConfirm,
 }: {
   hasRecoverySnapshots: boolean;
-  confirmation: "snapshots" | "job" | null;
+  confirmation: PendingDeletion | null;
   disabled: boolean;
   onRequest(kind: "snapshots" | "job"): void;
   onCancel(): void;
-  onConfirm(kind: "snapshots" | "job"): Promise<void>;
+  onConfirm(pending: PendingDeletion): Promise<void>;
 }) {
   return (
     <section className="content-replacement-local-data" aria-labelledby="content-replacement-local-data-heading">
@@ -667,18 +739,18 @@ function LocalDataControls({
         <button type="button" className="s-btn s-btn__outlined" disabled={disabled || !hasRecoverySnapshots} onClick={() => onRequest("snapshots")}>Delete recovery snapshots</button>
         <button type="button" className="s-btn s-btn__outlined" disabled={disabled} onClick={() => onRequest("job")}>Delete entire local job</button>
       </div>
-      {confirmation === "snapshots" && (
+      {confirmation?.kind === "snapshots" && (
         <div role="group" aria-label="Confirm recovery snapshot deletion" className="s-notice s-notice__warning">
           <p>Delete only the prior request models used for recovery? Apply results remain local, but recovery becomes unavailable.</p>
-          <button type="button" className="s-btn s-btn__outlined" onClick={onCancel}>Keep recovery snapshots</button>
-          <button type="button" className="s-btn s-btn__outlined" onClick={() => void onConfirm("snapshots")}>Confirm delete recovery snapshots</button>
+          <button type="button" className="s-btn s-btn__outlined" disabled={disabled} onClick={onCancel}>Keep recovery snapshots</button>
+          <button type="button" className="s-btn s-btn__outlined" disabled={disabled} onClick={() => void onConfirm(confirmation)}>Confirm delete recovery snapshots</button>
         </div>
       )}
-      {confirmation === "job" && (
+      {confirmation?.kind === "job" && (
         <div role="group" aria-label="Confirm local job deletion" className="s-notice s-notice__warning">
           <p>Delete this entire browser-local job, including proposals, results, and recovery snapshots?</p>
-          <button type="button" className="s-btn s-btn__outlined" onClick={onCancel}>Keep local job</button>
-          <button type="button" className="s-btn s-btn__outlined" onClick={() => void onConfirm("job")}>Confirm delete entire local job</button>
+          <button type="button" className="s-btn s-btn__outlined" disabled={disabled} onClick={onCancel}>Keep local job</button>
+          <button type="button" className="s-btn s-btn__outlined" disabled={disabled} onClick={() => void onConfirm(confirmation)}>Confirm delete entire local job</button>
         </div>
       )}
     </section>
@@ -715,18 +787,24 @@ function isApplyTerminal(item: PersistedContentReplacementItem): boolean {
 }
 
 function applyScopeKey(job: PersistedContentReplacementJob): string {
-  const selected = Object.entries(job.proposals)
-    .filter(([, item]) => item.included)
-    .map(([key, item]) => `${key}:${item.proposal.proposalFingerprint}`)
-    .sort();
-  return `${job.fingerprint}|${selected.join("|")}`;
+  return stableSerialize({
+    jobId: job.id,
+    fingerprint: job.fingerprint,
+    baseUrl: job.baseUrl,
+    target: job.target,
+    configuration: job.configuration,
+    proposals: Object.entries(job.proposals).sort(compareEntries),
+  });
 }
 
-function recoveryPreviewKey(job: PersistedContentReplacementJob): string {
-  return Object.entries(job.proposals)
-    .map(([key, item]) => `${key}:${item.recovery?.preview?.observedCurrentChecksum ?? ""}:${item.recovery?.preview?.status ?? ""}`)
-    .sort()
-    .join("|");
+function recoveryPreviewKey(job: PersistedContentReplacementJob, selectedKeys: readonly string[]): string {
+  const sortedKeys = [...selectedKeys].sort();
+  return stableSerialize({
+    jobId: job.id,
+    fingerprint: job.fingerprint,
+    selectedKeys: sortedKeys,
+    evidence: sortedKeys.map((key) => [key, job.proposals[key] ?? null]),
+  });
 }
 
 function contentTypeList(job: PersistedContentReplacementJob): string {
@@ -761,21 +839,68 @@ function itemLabel(item: PersistedContentReplacementItem): string {
   return `${kind} ${id}`;
 }
 
-function resultLabel(item: PersistedContentReplacementItem): string {
-  if (item.status === "recovered") return "Recovered";
-  if (item.status === "recovery-conflict") return "Recovery conflict";
-  if (item.status === "recovery-failed") return "Recovery failed";
-  if (!item.included || item.status === "excluded") return "Excluded";
-  if (item.result?.kind === "applied") return "Updated";
-  if (item.result?.kind === "unchanged") return "Already applied";
-  if (item.status === "stale") return "Stale — skipped before writing";
-  if (item.status === "failed") {
-    if (item.failure?.category === "authorization") return "Permission failure";
-    if (item.failure?.category === "validation") return "Validation failure";
-    if (item.failure?.category === "network" || item.failure?.category === "rate-limit") return "Network/API failure";
-    return "API failure";
+function projectResultOutcome(item: PersistedContentReplacementItem): ResultOutcome {
+  const recoveryResult = item.recovery?.result;
+  if (recoveryResult?.kind === "recovered") return "recovered";
+  if (recoveryResult?.kind === "conflict") return "recovery-conflict";
+  if (recoveryResult?.kind === "verification-failed") return "recovery-failed";
+  if (item.status === "recovered") return "recovered";
+  if (item.status === "recovery-conflict") return "recovery-conflict";
+  if (item.status === "recovery-failed") return "recovery-failed";
+  if (!item.included || item.result?.kind === "excluded" || item.status === "excluded") return "excluded";
+  if (item.result?.kind === "applied") return "updated";
+  if (item.result?.kind === "unchanged") return "already-applied";
+  if (item.result?.kind === "stale" || item.status === "stale") return "stale";
+  if (item.failure?.category === "authorization") return "permission";
+  if (item.failure?.category === "validation" || item.result?.kind === "verification-failed") return "validation";
+  return "network-api";
+}
+
+function projectResultSummary(job: PersistedContentReplacementJob) {
+  const counts = {
+    updated: 0,
+    alreadyApplied: 0,
+    excluded: 0,
+    stale: 0,
+    permission: 0,
+    validation: 0,
+    network: 0,
+    failed: 0,
+    protectedOnly: job.progress.protectedOccurrences,
+    recovered: 0,
+    recoveryConflict: 0,
+    recoveryFailed: 0,
+  };
+  for (const item of Object.values(job.proposals)) {
+    const outcome = projectResultOutcome(item);
+    if (outcome === "updated") counts.updated += 1;
+    else if (outcome === "already-applied") counts.alreadyApplied += 1;
+    else if (outcome === "excluded") counts.excluded += 1;
+    else if (outcome === "stale") counts.stale += 1;
+    else if (outcome === "permission") counts.permission += 1;
+    else if (outcome === "validation") counts.validation += 1;
+    else if (outcome === "network-api") {
+      if (item.failure?.category === "network" || item.failure?.category === "rate-limit") counts.network += 1;
+      else counts.failed += 1;
+    } else if (outcome === "recovered") counts.recovered += 1;
+    else if (outcome === "recovery-conflict") counts.recoveryConflict += 1;
+    else counts.recoveryFailed += 1;
   }
-  return item.status;
+  return counts;
+}
+
+function resultLabel(item: PersistedContentReplacementItem): string {
+  const outcome = projectResultOutcome(item);
+  if (outcome === "recovered") return "Recovered";
+  if (outcome === "recovery-conflict") return "Recovery conflict";
+  if (outcome === "recovery-failed") return "Recovery failed";
+  if (outcome === "excluded") return "Excluded";
+  if (outcome === "updated") return "Updated";
+  if (outcome === "already-applied") return "Already applied";
+  if (outcome === "stale") return "Stale — skipped before writing";
+  if (outcome === "permission") return "Permission failure";
+  if (outcome === "validation") return "Validation failure";
+  return item.failure?.category === "server" ? "API failure" : "Network/API failure";
 }
 
 function resultDetail(item: PersistedContentReplacementItem): string {
@@ -787,23 +912,15 @@ function resultDetail(item: PersistedContentReplacementItem): string {
 
 function matchesResultFilter(item: PersistedContentReplacementItem, filter: ResultFilter): boolean {
   if (filter === "all") return true;
-  if (filter === "updated") return item.result?.kind === "applied";
-  if (filter === "already-applied") return item.result?.kind === "unchanged";
-  if (filter === "excluded") return !item.included || item.status === "excluded";
-  if (filter === "stale") return item.status === "stale";
-  if (filter === "permission") return item.status === "failed" && item.failure?.category === "authorization";
-  if (filter === "validation") return item.status === "failed" && item.failure?.category === "validation";
-  if (filter === "network-api") return item.status === "failed" &&
-    (item.failure?.category === "network" || item.failure?.category === "rate-limit" ||
-      item.failure?.category === "server" || item.failure?.category === "unknown");
-  return item.status === filter;
+  return projectResultOutcome(item) === filter;
 }
 
 function matchesSearch(key: string, item: PersistedContentReplacementItem, value: string): boolean {
   const query = value.trim().toLocaleLowerCase("en-US");
   if (!query) return true;
   const metadata = item.proposal.metadata ?? item.proposal.before.metadata;
-  return `${key} ${itemLabel(item)} ${metadata?.titleContext ?? ""}`.toLocaleLowerCase("en-US").includes(query);
+  const canonicalTitle = item.proposal.before.kind === "answer" ? "" : item.proposal.before.request.title;
+  return `${key} ${itemLabel(item)} ${metadata?.titleContext ?? canonicalTitle}`.toLocaleLowerCase("en-US").includes(query);
 }
 
 function recoveryPreviewLabel(status: "recoverable" | "already-recovered" | "conflict"): string {

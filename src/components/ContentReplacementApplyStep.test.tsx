@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
@@ -66,6 +66,64 @@ describe("ContentReplacementApplyStep", () => {
     expect(screen.getByRole("button", { name: "Apply changes to 2 posts" })).toBeDisabled();
   });
 
+  it("binds APPLY authorization to the exact job even when fingerprints and proposals match", async () => {
+    const user = userEvent.setup();
+    const first = applyJob();
+    const { rerender } = render(<ContentReplacementApplyStep controller={controller(first)} />);
+    await user.click(screen.getByLabelText(/I understand these edits use the live Enterprise API/i));
+    await user.type(screen.getByLabelText("Type APPLY to confirm"), "APPLY");
+    expect(screen.getByRole("button", { name: "Apply changes to 3 posts" })).toBeEnabled();
+
+    rerender(<ContentReplacementApplyStep controller={controller({ ...first, id: "job-2" })} />);
+
+    expect(screen.getByLabelText("Type APPLY to confirm")).toHaveValue("");
+    expect(screen.getByLabelText(/I understand these edits use the live Enterprise API/i)).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Apply changes to 3 posts" })).toBeDisabled();
+  });
+
+  it("binds APPLY authorization to complete proposal evidence, not a persisted fingerprint alone", async () => {
+    const user = userEvent.setup();
+    const first = applyJob();
+    const { rerender } = render(<ContentReplacementApplyStep controller={controller(first)} />);
+    await user.click(screen.getByLabelText(/I understand these edits use the live Enterprise API/i));
+    await user.type(screen.getByLabelText("Type APPLY to confirm"), "APPLY");
+
+    const question = first.proposals["question:42"];
+    const changed = {
+      ...first,
+      proposals: {
+        ...first.proposals,
+        "question:42": {
+          ...question,
+          proposal: {
+            ...question.proposal,
+            before: questionWireWithTitle(question.proposal.before, "Unexpected persisted title") as ReplacementRequestModel,
+          },
+        },
+      },
+    };
+    rerender(<ContentReplacementApplyStep controller={controller(changed)} />);
+
+    expect(screen.getByRole("button", { name: "Apply changes to 3 posts" })).toBeDisabled();
+  });
+
+  it.each([
+    ["missing", "Enter an API key to continue."],
+    ["expired", "The API key expired. Refresh it to continue."],
+    ["wrong", "This API key belongs to a different site."],
+    ["rejected", "The Enterprise API rejected this credential."],
+  ])("blocks apply for %s credential readiness", async (_state, message) => {
+    const user = userEvent.setup();
+    render(<ContentReplacementApplyStep controller={controller(applyJob(), {
+      credentialReadiness: { valid: false, refreshRequired: true, message },
+    })} />);
+    await user.click(screen.getByLabelText(/I understand these edits use the live Enterprise API/i));
+    await user.type(screen.getByLabelText("Type APPLY to confirm"), "APPLY");
+
+    expect(screen.getByText(message)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Apply changes to 3 posts" })).toBeDisabled();
+  });
+
   it("shows live bounded progress and offers a safe pause without claiming rollback", async () => {
     const user = userEvent.setup();
     const running = applyJob({
@@ -119,6 +177,49 @@ describe("ContentReplacementApplyStep", () => {
     expect(resultsController.rescanStaleItems).toHaveBeenCalledWith(["question:4"]);
     await user.click(screen.getByRole("button", { name: "Retry eligible failures (1)" }));
     expect(resultsController.retryEligibleFailures).toHaveBeenCalledOnce();
+  });
+
+  it("projects terminal recovery outcomes instead of also counting their original apply results", async () => {
+    const user = userEvent.setup();
+    const recovered = withRecoveryResult(item("question", 1, "applied", { resultKind: "applied" }), "recovered");
+    const conflict = withRecoveryResult(item("question", 2, "applied", { resultKind: "applied" }), "conflict");
+    const failed = withRecoveryResult(item("question", 3, "applied", { resultKind: "applied" }), "verification-failed");
+    render(<ContentReplacementApplyStep controller={controller(job({
+      stage: "results",
+      status: "completed",
+      proposals: { "question:1": recovered, "question:2": conflict, "question:3": failed },
+    }))} />);
+
+    const summary = screen.getByRole("region", { name: "Apply result summary" });
+    expect(within(summary).getByText("Updated").parentElement).toHaveTextContent("0");
+    expect(within(summary).getByText("Recovered").parentElement).toHaveTextContent("1");
+    expect(within(summary).getByText("Recovery conflicts").parentElement).toHaveTextContent("1");
+    expect(within(summary).getByText("Recovery failures").parentElement).toHaveTextContent("1");
+
+    await user.selectOptions(screen.getByLabelText("Result status"), "updated");
+    expect(screen.getByText("No item results match the current filters.")).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Result status"), "recovered");
+    const table = screen.getByRole("table", { name: "Content replacement results" });
+    expect(within(table).getByText("Question 1")).toBeVisible();
+    expect(within(table).getByText("Recovered")).toBeVisible();
+  });
+
+  it("searches persisted question and article request titles when metadata is absent", async () => {
+    const user = userEvent.setup();
+    const question = item("question", 1, "applied", { resultKind: "applied" });
+    const article = item("article", 2, "applied", { resultKind: "applied" });
+    question.proposal.before = questionWireWithTitle(question.proposal.before, "Canonical launch question") as ReplacementRequestModel;
+    article.proposal.before = articleWireWithTitle(article.proposal.before, "Canonical launch article") as ReplacementRequestModel;
+    render(<ContentReplacementApplyStep controller={controller(job({
+      stage: "results",
+      status: "completed",
+      proposals: { "question:1": question, "article:2": article },
+    }))} />);
+
+    await user.type(screen.getByLabelText("Search result title or ID"), "Canonical launch");
+    const table = screen.getByRole("table", { name: "Content replacement results" });
+    expect(within(table).getByText("Question 1")).toBeVisible();
+    expect(within(table).getByText("Article 2")).toBeVisible();
   });
 
   it("downloads one-shot result and exception exports", async () => {
@@ -175,6 +276,92 @@ describe("ContentReplacementApplyStep", () => {
     expect(recoveryController.startRecovery).toHaveBeenCalledWith(["question:1"]);
   });
 
+  it("binds RECOVER authorization to exact preview request-model and source completion evidence", async () => {
+    const user = userEvent.setup();
+    const initial = recoveryJob();
+    const { rerender } = render(<ContentReplacementApplyStep controller={controller(initial)} />);
+    await user.click(screen.getByLabelText(/I understand recovery writes the prior full request model/i));
+    await user.type(screen.getByLabelText("Type RECOVER to confirm"), "RECOVER");
+    expect(screen.getByRole("button", { name: "Recover 1 post" })).toBeEnabled();
+
+    const first = initial.proposals["question:1"];
+    const changedPreview = {
+      ...initial,
+      proposals: {
+        ...initial.proposals,
+        "question:1": {
+          ...first,
+          recovery: {
+            ...first.recovery!,
+            preview: {
+              ...first.recovery!.preview!,
+              currentRequestModel: questionWireWithTitle(first.proposal.after, "Changed after authorization"),
+              sourceAttemptCount: 2,
+              sourceApplyCompletedAt: "2026-09-02T12:04:00.000Z",
+            },
+          },
+        },
+      },
+    };
+    rerender(<ContentReplacementApplyStep controller={controller(changedPreview)} />);
+
+    expect(screen.getByRole("button", { name: "Recover 1 post" })).toBeDisabled();
+  });
+
+  it("binds RECOVER authorization to the exact job even when recovery evidence matches", async () => {
+    const user = userEvent.setup();
+    const initial = recoveryJob();
+    const { rerender } = render(<ContentReplacementApplyStep controller={controller(initial)} />);
+    await user.click(screen.getByLabelText(/I understand recovery writes the prior full request model/i));
+    await user.type(screen.getByLabelText("Type RECOVER to confirm"), "RECOVER");
+    expect(screen.getByRole("button", { name: "Recover 1 post" })).toBeEnabled();
+
+    rerender(<ContentReplacementApplyStep controller={controller({ ...initial, id: "job-2" })} />);
+
+    expect(screen.getByLabelText(/I understand recovery writes the prior full request model/i)).not.toBeChecked();
+    expect(screen.getByLabelText("Type RECOVER to confirm")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Recover 1 post" })).toBeDisabled();
+  });
+
+  it("blocks recovery preview and confirmation when credentials are not ready", async () => {
+    const user = userEvent.setup();
+    const message = "Refresh the Enterprise API credential before recovery.";
+    const invalidResults = controller(resultJob(), {
+      credentialReadiness: { valid: false, refreshRequired: true, message },
+    });
+    const { rerender } = render(<ContentReplacementApplyStep controller={invalidResults} />);
+
+    expect(screen.getByText(message)).toBeVisible();
+    expect(screen.getByLabelText("Select Question 1 for recovery")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Preview recovery for 2 posts" })).toBeDisabled();
+
+    rerender(<ContentReplacementApplyStep controller={controller(recoveryJob(), {
+      credentialReadiness: { valid: false, refreshRequired: true, message },
+    })} />);
+    await user.click(screen.getByLabelText(/I understand recovery writes the prior full request model/i));
+    await user.type(screen.getByLabelText("Type RECOVER to confirm"), "RECOVER");
+    expect(screen.getByRole("button", { name: "Recover 1 post" })).toBeDisabled();
+  });
+
+  it("locks all recovery controls during a paused stale-rescan operation", () => {
+    const staleRescan = resultJob();
+    staleRescan.status = "paused";
+    staleRescan.activeOperation = {
+      kind: "stale-rescan",
+      requestedItemKeys: ["question:4"],
+      remainingItemKeys: ["question:4"],
+      completedItemKeys: [],
+      generation: "2026-09-02T12:05:00.000Z",
+      proposals: {},
+      inspectedCount: 0,
+      protectedOccurrenceCount: 0,
+    };
+    render(<ContentReplacementApplyStep controller={controller(staleRescan)} />);
+
+    expect(screen.getByLabelText("Select Question 1 for recovery")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Preview recovery for 2 posts" })).toBeDisabled();
+  });
+
   it("uses separate inline confirmations for deleting recovery snapshots and the whole local job", async () => {
     const user = userEvent.setup();
     const currentController = controller(resultJob());
@@ -193,6 +380,48 @@ describe("ContentReplacementApplyStep", () => {
     await user.click(within(jobConfirmation).getByRole("button", { name: "Confirm delete entire local job" }));
     expect(currentController.deleteJob).toHaveBeenCalledOnce();
     expect(screen.getByRole("heading", { name: "Apply results" })).toBeVisible();
+  });
+
+  it.each([
+    ["recovery snapshots", "Delete recovery snapshots", "Confirm recovery snapshot deletion"],
+    ["whole job", "Delete entire local job", "Confirm local job deletion"],
+  ])("does not carry a pending %s deletion to another job", async (_kind, requestName, groupName) => {
+    const user = userEvent.setup();
+    const first = resultJob();
+    const { rerender } = render(<ContentReplacementApplyStep controller={controller(first)} />);
+    await user.click(screen.getByRole("button", { name: requestName }));
+    expect(screen.getByRole("group", { name: groupName })).toBeVisible();
+
+    const secondController = controller({ ...first, id: "job-2" });
+    rerender(<ContentReplacementApplyStep controller={secondController} />);
+
+    expect(screen.queryByRole("group", { name: groupName })).not.toBeInTheDocument();
+    expect(secondController.deleteRecoverySnapshots).not.toHaveBeenCalled();
+    expect(secondController.deleteJob).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the operation lock when a delete confirmation races with an operation start", async () => {
+    const user = userEvent.setup();
+    const currentJob = resultJob();
+    const currentController = controller(currentJob);
+    render(<ContentReplacementApplyStep controller={currentController} />);
+    await user.click(screen.getByRole("button", { name: "Delete recovery snapshots" }));
+    const confirm = screen.getByRole("button", { name: "Confirm delete recovery snapshots" });
+
+    currentJob.status = "running";
+    currentJob.activeOperation = {
+      kind: "stale-rescan",
+      requestedItemKeys: ["question:4"],
+      remainingItemKeys: ["question:4"],
+      completedItemKeys: [],
+      generation: "2026-09-02T12:05:00.000Z",
+      proposals: {},
+      inspectedCount: 0,
+      protectedOccurrenceCount: 0,
+    };
+    fireEvent.click(confirm);
+
+    expect(currentController.deleteRecoverySnapshots).not.toHaveBeenCalled();
   });
 
   it("paginates large recovery selections instead of rendering every sensitive request model", async () => {
@@ -229,9 +458,12 @@ describe("ContentReplacementApplyStep", () => {
   });
 });
 
-function controller(job: PersistedContentReplacementJob): ContentReplacementJobController {
+function controller(
+  currentJob: PersistedContentReplacementJob,
+  overrides: Partial<ContentReplacementJobController> = {},
+): ContentReplacementJobController {
   return {
-    job,
+    job: currentJob,
     busy: false,
     storageError: null,
     operationError: null,
@@ -251,6 +483,7 @@ function controller(job: PersistedContentReplacementJob): ContentReplacementJobC
     rescanStaleItems: vi.fn(),
     prepareRecovery: vi.fn(),
     startRecovery: vi.fn(),
+    ...overrides,
   };
 }
 
@@ -462,6 +695,33 @@ function toWireModel(model: ReplacementRequestModel): ReplacementWireRequestMode
 function questionWireWithTitle(model: ReplacementRequestModel, title: string): ReplacementWireRequestModel {
   if (model.kind !== "question") throw new Error("Expected a question fixture");
   return { kind: model.kind, ref: model.ref, request: { ...model.request, title } };
+}
+
+function articleWireWithTitle(model: ReplacementRequestModel, title: string): ReplacementWireRequestModel {
+  if (model.kind !== "article") throw new Error("Expected an article fixture");
+  return { kind: model.kind, ref: model.ref, request: { ...model.request, title } };
+}
+
+function withRecoveryResult(
+  currentItem: PersistedContentReplacementItem,
+  kind: "recovered" | "conflict" | "verification-failed",
+): PersistedContentReplacementItem {
+  return {
+    ...currentItem,
+    status: kind === "recovered" ? "recovered" : kind === "conflict" ? "recovery-conflict" : "recovery-failed",
+    recovery: {
+      ...currentItem.recovery!,
+      status: kind === "recovered" ? "applied" : kind === "conflict" ? "conflict" : "failed",
+      result: {
+        kind,
+        observedRequestChecksum: kind === "recovered" ? "a".repeat(64) : "e".repeat(64),
+        ...(kind === "verification-failed" ? { expectedRequestChecksum: "a".repeat(64) } : {}),
+        sourceAttemptCount: 1,
+        sourceApplyCompletedAt: "2026-09-02T12:01:00.000Z",
+        completedAt: "2026-09-02T12:06:00.000Z",
+      },
+    },
+  };
 }
 
 function failure(
