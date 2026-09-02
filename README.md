@@ -101,6 +101,11 @@ no-op, conflicting duplicate, chained, and overlapping rules block scanning.
 Rules run simultaneously against the original field value, so replacement text
 introduced by one rule is not processed by another rule.
 
+Replacement and exact-target CSV files are limited to 1 MiB and checked by file
+size before the browser reads them. Exact-target paste input has the same 1 MiB
+UTF-8 limit. Exact lists stop at 5,000 canonical deduplicated targets; split a
+larger run into narrower jobs rather than relying on truncation.
+
 One job accepts at most 500 mappings. Each `find` value is limited to 200
 characters and each `replace` value to 500 characters. The Define step reports
 the offending row and blocks Review and scanning until these limits and the
@@ -118,18 +123,20 @@ guardrails: it paginates all accessible questions, each question's answer
 collection, and all articles, then fetches canonical detail records for
 conservative candidates. Inventory cursors have a 10,000-page ceiling, detail
 inspection sends at most 10 item references per request, and a persisted job is
-subject to a hard 100,000-proposal item ceiling. Detail requests are shortened
+subject to a hard 5,000-proposal item ceiling. Detail requests are shortened
 to the remaining proposal capacity; once the ceiling is full, queued references
 are not fetched or silently discarded. The scan fails closed, keeps those
 references, and asks the operator to start a narrower job instead of claiming an
-exhaustive Review. Persisted input with 100,001 proposal keys is rejected before
-any proposal body is inspected or storage transaction opens. Exactly 100,000
+exhaustive Review. Persisted input with 5,001 proposal keys is rejected before
+any proposal body is inspected or storage transaction opens. Exactly 5,000
 minimal canonical proposals pass parsing and the storage transaction logic, but
 this is an item ceiling, not a promise that every arbitrarily complex
-100,000-proposal graph will fit. Independent finite 1 MiB field-content,
+5,000-proposal graph will fit. Independent finite 1 MiB field-content,
 100,000-entry per-collection, 256-level graph-depth, and aggregate
-graph-traversal safeguards can reject unusually complex jobs earlier. Actual
-browser quota can also be lower and is surfaced as a storage failure.
+graph-traversal safeguards can reject unusually complex jobs earlier. A
+serialized job may not exceed 64 MiB; the browser checks this before IndexedDB
+write and after load. Actual browser quota can be lower and is surfaced as a
+storage failure, leaving Scan incomplete and Review/Apply locked.
 Search-index results are not
 treated as a complete inventory. An incomplete inventory, a response that would
 continue past page 10,000, or a job that cannot be validated within the
@@ -156,14 +163,27 @@ Results distinguish updated, already-applied, excluded, stale, permission,
 validation, exhausted network/API, and intentionally protected outcomes. A
 failure or stale result for one item does not describe successful items as
 rolled back. Result and exception CSVs are one-shot browser downloads generated
-on demand and are not retained by the app.
+on demand and are not retained by the app. Each CSV is limited to 32 MiB. To
+prevent spreadsheet formula execution, a string whose first non-space/control
+character is `=`, `+`, `-`, or `@` is prefixed with an apostrophe before RFC 4180
+quoting; the remaining cell text is the original visible evidence.
 
 Recovery is a separate guarded job, not an unconditional undo. Apply stays
 disabled until complete prior request-model snapshots are durably available for
 every selected post. Recovery first previews the exact prior request model,
 re-fetches current content, and restores only a post whose full checksum still
 matches the observed successful post-apply checksum. Later edits become recovery
-conflicts and are never overwritten.
+conflicts and are never overwritten. Before preview or write, the server rebuilds
+the reviewed forward replacement from the prior model and immutable configuration
+and requires its ref, checksums, and fingerprint to match Apply evidence. Exact
+jobs additionally carry versioned SHA-256 Merkle membership proofs from scan
+through Apply and Recovery; old proofless Exact jobs remain exportable read-only
+checkpoints and require a new scan.
+
+Canonical request models are limited to 2 MiB of aggregate UTF-8 JSON,
+configuration to 1 MiB, and credentials to 512 KiB. The same constants keep the
+client preflight and 4 MiB same-origin route envelope aligned; oversized content
+fails the scan instead of becoming Apply-ready.
 
 Keep the browser open while a scan, apply batch, recovery preview, or recovery
 batch is actively making calls; work does not continue after the browser closes.

@@ -16,17 +16,25 @@
 - Default new jobs to `Targeted scan`; label it exactly `Search-assisted · may miss matches` in Define, Scan, Review, Apply, Results, and preview/result exports.
 - Targeted scan must query `GET /search` once per distinct source term with `pageSize=100`, paginate every returned page, validate result discriminators and identifiers, deduplicate references, and fetch canonical details before proposing a write.
 - Targeted zero-results copy must never claim site-wide absence.
-- Exact-target mode accepts at most 100,000 deduplicated question, answer, and article references. Answer IDs require a parent question ID. Persist the normalized refs once in the job queue; same-origin scan/apply/recovery requests carry only the exact target count and SHA-256 digest, never the full target list.
+- Exact-target mode accepts at most 5,000 deduplicated question, answer, and article references. Answer IDs require a parent question ID. Canonicalize and sort refs, persist the normalized refs once in the job queue, and carry a versioned SHA-256 Merkle membership proof with each ref through detail scan, proposal persistence, stale rescan, Apply, and Recovery.
 - Exact-target URLs must use the connected Enterprise origin and supported `/questions/...` or `/articles/...` paths.
 - Full audit inventories every accessible selected item. Skip an answer collection only when `answerCount` is the valid integer `0`; fetch conservatively when it is absent or invalid.
 - Discovery mode and normalized exact targets form part of the job fingerprint. Changing either requires a new scan.
 - Existing pre-mode jobs must remain browser-locally visible. An unfinished legacy scan cannot resume or apply; prior completed write evidence must remain available for guarded recovery.
 - Every mode remains read-only until Review and uses the existing canonical Markdown transformer, stale checksum, proposal fingerprint, recovery snapshot, sequential write, credential-redaction, throttle, and retry safeguards.
 - Continue to limit one inventory/search page or ten candidate details per same-origin scan request and one post per apply/recovery request.
-- Keep the existing 100,000-proposal ceiling, 50-row review pages, and three expanded detail rows.
+- Keep the 5,000-proposal ceiling, 50-row review pages, and three expanded detail rows.
 - Never persist or export tokens, API keys, authorization headers, PKCE values, or credential-bearing errors.
 - Do not use the protected customer term in any demo-instance action. The approved disposable canary uses only `DEMOZXQ7` → `DEMOZXR7`.
 - Preserve the incumbent Stack-native Operate surface: restrained light canvas, border-led hierarchy, compact Inter type, orange only for action/selection/focus, visible text for every status, WCAG AA contrast, keyboard operation, and reduced-motion-safe feedback.
+
+### Final hardening constraints
+
+- Bind Exact algorithm/version, manifest root, target count, leaf index, canonical ref, and sibling path. A proof mismatch fails before Enterprise I/O. Proofless current Exact checkpoints are read-only/restart-required; schema-v1 guarded Recovery and current Targeted/Full remain safe.
+- Recovery is authorized only after rebuilding the forward proposal from the prior model and matching its immutable ref, scan/proposed checksums, fingerprint, successful post-Apply checksum, and Exact proof where applicable. Readback mismatch is a verification failure, never a reported success.
+- A 401 pauses for reconnect. A per-item 403 is terminal for that item and processing continues for later eligible Apply or Recovery items.
+- Shared UTF-8 budgets are 1 MiB per target/replacement CSV and exact paste, 2 MiB per canonical request model, 1 MiB configuration, 512 KiB credentials, 4 MiB route body, 64 MiB persisted job, and 32 MiB content-replacement export. Reject instead of truncating; storage failures keep Review/Apply locked.
+- CSV evidence prefixes a leading apostrophe when the first non-space/control character is `=`, `+`, `-`, or `@`, then applies RFC 4180 quoting.
 
 ---
 
@@ -66,7 +74,7 @@
 **Interfaces:**
 - Produces: `ReplacementDiscovery`, `ReplacementDiscoveryMode`, `ExactTargetSelection`, `DiscoveryPresentation`, `parseExactTargetLines`, `parseExactTargetCsv`, `createExactTargetCsvTemplate`, `normalizeExactTargets`, `createExactTargetSelection`, and `getDiscoveryPresentation`.
 - Changes: `ReplacementConfiguration` gains required `discovery`; `PersistedContentReplacementJob.schemaVersion` becomes `2`; jobs gain `scanCompatibility: "current" | "legacy-restart-required"`.
-- Consumes: existing `ReplacementItemRef`, RFC 4180 parsing conventions, 100,000 item ceiling, and stable serialization.
+- Consumes: existing `ReplacementItemRef`, RFC 4180 parsing conventions, 5,000 item ceiling, and stable serialization.
 
 - [ ] **Step 1: Write failing discovery and fingerprint tests**
 
@@ -108,7 +116,7 @@ it("fingerprints discovery mode and normalized exact targets", async () => {
 });
 ```
 
-Also pin: typed positive-safe-integer rows, supported URL path variants, URL credentials/query rejection, malformed fragments, exact CSV headers, extra columns, stable first-seen order, 100,001-target rejection, and exact coverage strings.
+Also pin: typed positive-safe-integer rows, supported URL path variants, URL credentials/query rejection, malformed fragments, exact CSV headers, extra columns, stable canonical order, 5,001-target rejection, and exact coverage strings.
 
 - [ ] **Step 2: Run the focused tests and confirm failure**
 
@@ -140,7 +148,7 @@ export interface ReplacementConfiguration {
 }
 ```
 
-Normalize exact targets by `replacementItemKey`, retain first-seen order, reject more than `100_000`, and require exact CSV headers `type,id,parent_question_id`. `createExactTargetSelection()` computes SHA-256 over stable normalized refs and returns a compact discovery descriptor plus the refs that seed the new job once. `getDiscoveryPresentation()` must return immutable product copy:
+Normalize exact targets by canonical ref identity, deduplicate and sort them, reject more than `5_000`, and require exact CSV headers `type,id,parent_question_id`. `createExactTargetSelection()` builds a versioned domain-separated SHA-256 Merkle commitment and aligned membership proofs, returning the compact root descriptor plus refs/proofs that seed the new job once. `getDiscoveryPresentation()` must return immutable product copy:
 
 ```ts
 targeted: { label: "Search-assisted · may miss matches", exhaustive: false }
@@ -432,7 +440,7 @@ await user.click(screen.getByRole("radio", { name: /Full audit/i }));
 expect(screen.getByRole("note")).toHaveTextContent("may require thousands of API requests");
 ```
 
-Also cover keyboard radio navigation, visible focus, wrong-origin and missing-parent focus routing, target CSV template/import, 100,000 limit messaging, content-type mismatch, configuration checkpoint invalidation after any mode/target change, narrow layout, and no modal.
+Also cover keyboard radio navigation, visible focus, wrong-origin and missing-parent focus routing, target CSV template/import, 5,000 limit messaging, content-type mismatch, configuration checkpoint invalidation after any mode/target change, narrow layout, and no modal.
 
 - [ ] **Step 3: Run tests and confirm failure**
 

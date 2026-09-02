@@ -89,16 +89,16 @@ describe("content replacement rules", () => {
   it("deduplicates identical rows and blocks ambiguous simultaneous rules", () => {
     const result = validateReplacementRules(
       [
-        { id: "1", find: "MyPVM", replace: "MyPBM" },
-        { id: "2", find: "MyPVM", replace: "MyPBM" },
-        { id: "3", find: "MyPBM", replace: "myBenefits" },
+        { id: "1", find: "TermA", replace: "TermB" },
+        { id: "2", find: "TermA", replace: "TermB" },
+        { id: "3", find: "TermB", replace: "myBenefits" },
         { id: "4", find: "PVM", replace: "PBM" },
       ],
       { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     );
 
     expect(result.rules).toHaveLength(3);
-    expect(result.notices).toContain('Removed duplicate rule "MyPVM" → "MyPBM".');
+    expect(result.notices).toContain('Removed duplicate rule "TermA" → "TermB".');
     expect(result.errors.map((error) => error.code)).toEqual([
       "replacement-is-source",
       "overlapping-sources",
@@ -106,9 +106,9 @@ describe("content replacement rules", () => {
   });
 
   it("parses the canonical CSV and retains invalid rows for correction", () => {
-    expect(parseReplacementCsv("find,replace\nMyPVM,MyPBM\nCPR,")).toEqual({
+    expect(parseReplacementCsv("find,replace\nTermA,TermB\nCPR,")).toEqual({
       rows: [
-        { id: "csv-2", sourceRow: 2, find: "MyPVM", replace: "MyPBM" },
+        { id: "csv-2", sourceRow: 2, find: "TermA", replace: "TermB" },
         { id: "csv-3", sourceRow: 3, find: "CPR", replace: "" },
       ],
       fileErrors: [],
@@ -194,30 +194,30 @@ Cover headings, emphasis, list items, blockquotes, GFM tables, explicit link lab
 import { describe, expect, it } from "vitest";
 import { replaceMarkdown } from "./markdown";
 
-const rules = [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }];
+const rules = [{ id: "rule-1", find: "TermA", replace: "TermB" }];
 const safe = { caseSensitive: true, wholeTerm: true, replaceInCode: false };
 
 describe("replaceMarkdown", () => {
   it("changes visible Markdown text while preserving protected destinations and code", () => {
     const source = [
-      "# MyPVM guide",
+      "# TermA guide",
       "",
-      "Use **MyPVM** and [MyPVM](https://docs/MyPVM).",
+      "Use **TermA** and [TermA](https://docs/TermA).",
       "",
-      "`MyPVM` ![MyPVM](https://img/MyPVM.png) <https://docs/MyPVM>",
+      "`TermA` ![TermA](https://img/TermA.png) <https://docs/TermA>",
       "",
       "| Product |",
       "| --- |",
-      "| MyPVM |",
+      "| TermA |",
     ].join("\n");
 
     const result = replaceMarkdown(source, rules, safe);
 
-    expect(result.markdown).toContain("# MyPBM guide");
-    expect(result.markdown).toContain("**MyPBM** and [MyPBM](https://docs/MyPVM)");
-    expect(result.markdown).toContain("`MyPVM` ![MyPVM](https://img/MyPVM.png)");
-    expect(result.markdown).toContain("<https://docs/MyPVM>");
-    expect(result.markdown).toContain("| MyPBM |");
+    expect(result.markdown).toContain("# TermB guide");
+    expect(result.markdown).toContain("**TermB** and [TermB](https://docs/TermA)");
+    expect(result.markdown).toContain("`TermA` ![TermA](https://img/TermA.png)");
+    expect(result.markdown).toContain("<https://docs/TermA>");
+    expect(result.markdown).toContain("| TermB |");
     expect(result.changedOccurrences).toHaveLength(4);
     expect(result.protectedOccurrences.map((item) => item.reason)).toContain("code");
     expect(result.protectedOccurrences.map((item) => item.reason)).toContain("destination");
@@ -225,9 +225,9 @@ describe("replaceMarkdown", () => {
 
   it("applies rules to the original source without cascading", () => {
     const result = replaceMarkdown(
-      "MyPVM and PBM",
+      "TermA and PBM",
       [
-        { id: "1", find: "MyPVM", replace: "PBM" },
+        { id: "1", find: "TermA", replace: "PBM" },
         { id: "2", find: "PBM", replace: "Benefits" },
       ],
       safe,
@@ -236,15 +236,15 @@ describe("replaceMarkdown", () => {
   });
 
   it("uses Unicode letters, numbers, and underscore as whole-term boundaries", () => {
-    expect(replaceMarkdown("MyPVM MyPVM2 _MyPVM caféMyPVM", rules, safe).markdown).toBe(
-      "MyPBM MyPVM2 _MyPVM caféMyPVM",
+    expect(replaceMarkdown("TermA TermA2 _TermA caféTermA", rules, safe).markdown).toBe(
+      "TermB TermA2 _TermA caféTermA",
     );
   });
 
   it("changes raw HTML text but never an HTML attribute", () => {
     expect(
-      replaceMarkdown('<span data-product="MyPVM">MyPVM</span>', rules, safe).markdown,
-    ).toBe('<span data-product="MyPVM">MyPBM</span>');
+      replaceMarkdown('<span data-product="TermA">TermA</span>', rules, safe).markdown,
+    ).toBe('<span data-product="TermA">TermB</span>');
   });
 });
 ```
@@ -329,20 +329,20 @@ describe("replacement proposals", () => {
       {
         kind: "question",
         ref: { kind: "question", questionId: 42 },
-        request: { title: "MyPVM setup", body: "Use MyPVM.", tags: ["support", "product"] },
+        request: { title: "TermA setup", body: "Use TermA.", tags: ["support", "product"] },
         metadata: { webUrl: "https://demo.stackenterprise.co/questions/42" },
       },
       {
         target: { kind: "enterprise-main" },
         contentTypes: { questions: true, answers: true, articles: true },
-        rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+        rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
         options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
       },
     );
 
     expect(proposal?.after.request).toEqual({
-      title: "MyPBM setup",
-      body: "Use MyPBM.",
+      title: "TermB setup",
+      body: "Use TermB.",
       tags: ["support", "product"],
     });
     expect(proposal?.changedOccurrences).toHaveLength(2);
@@ -353,8 +353,8 @@ describe("replacement proposals", () => {
       kind: "article",
       ref: { kind: "article", articleId: 7 },
       request: {
-        title: "MyPVM",
-        body: "MyPVM",
+        title: "TermA",
+        body: "TermA",
         tags: ["product"],
         type: "policy",
         expirationDate: null,
@@ -365,8 +365,8 @@ describe("replacement proposals", () => {
       kind: "article",
       ref: { kind: "article", articleId: 7 },
       request: {
-        title: "MyPVM",
-        body: "MyPVM",
+        title: "TermA",
+        body: "TermA",
         tags: ["product"],
         type: "policy",
         expirationDate: null,
@@ -382,7 +382,7 @@ describe("replacement proposals", () => {
       configuration: {
         target: { kind: "enterprise-main" as const },
         contentTypes: { questions: true, answers: true, articles: true },
-        rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+        rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
         options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
       },
     };
@@ -503,7 +503,7 @@ it("retries an idempotent PUT after Retry-After", async () => {
     .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 }), { status: 200 }));
   const client = createClient({ fetchFn, waitFn });
 
-  await client.putJson("/questions/42", { title: "MyPBM", body: "Body", tags: [] });
+  await client.putJson("/questions/42", { title: "TermB", body: "Body", tags: [] });
   expect(waitFn).toHaveBeenCalledWith(2);
   expect(fetchFn).toHaveBeenCalledTimes(2);
 });
@@ -557,8 +557,8 @@ Test page paths/query parameters, detail paths, PUT paths, response validation, 
 it("converts an article detail response into the exact allowed PUT model", async () => {
   const client = fakeClient({
     id: 7,
-    title: "MyPVM policy",
-    bodyMarkdown: "Use MyPVM.",
+    title: "TermA policy",
+    bodyMarkdown: "Use TermA.",
     tags: [{ name: "product" }],
     type: "policy",
     expirationDate: null,
@@ -574,8 +574,8 @@ it("converts an article detail response into the exact allowed PUT model", async
   await expect(createContentReplacementClient(client).getItem({ kind: "article", articleId: 7 })).resolves.toMatchObject({
     kind: "article",
     request: {
-      title: "MyPVM policy",
-      body: "Use MyPVM.",
+      title: "TermA policy",
+      body: "Use TermA.",
       tags: ["product"],
       type: "policy",
       expirationDate: null,
@@ -654,8 +654,8 @@ it("builds proposals only from canonical detail Markdown", async () => {
     refs: [{ kind: "question", questionId: 10 }],
     configuration,
   });
-  expect(result.proposals[0].before.request.body).toBe("Canonical MyPVM Markdown");
-  expect(result.proposals[0].after.request.body).toBe("Canonical MyPBM Markdown");
+  expect(result.proposals[0].before.request.body).toBe("Canonical TermA Markdown");
+  expect(result.proposals[0].after.request.body).toBe("Canonical TermB Markdown");
 });
 ```
 
@@ -1082,11 +1082,11 @@ Test accessible Find/Replace labels, add/remove/reorder, default scope/options, 
 ```tsx
 it("requires a rule-summary checkpoint before scan", async () => {
   render(<ContentReplacementDefineStep {...props} />);
-  await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
-  await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+  await user.type(screen.getByLabelText("Find term 1"), "TermA");
+  await user.type(screen.getByLabelText("Replace term 1 with"), "TermB");
   expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
   await user.click(screen.getByRole("button", { name: "Review rules" }));
-  expect(screen.getByText("MyPVM → MyPBM")).toBeVisible();
+  expect(screen.getByText("TermA → TermB")).toBeVisible();
   expect(screen.getByRole("button", { name: "Start scan" })).toBeEnabled();
 });
 ```
@@ -1146,7 +1146,7 @@ it("exports complete preview Markdown without credential fields", () => {
   expect(csv.split("\n")[0]).toBe(
     "contentType,itemId,questionId,title,webUrl,ruleIds,fields,changedOccurrences,protectedOccurrences,beforeTitle,afterTitle,beforeBodyMarkdown,afterBodyMarkdown,caseSensitive,wholeTerm,replaceInCode,selected",
   );
-  expect(csv).toContain('"First line\nMyPVM"');
+  expect(csv).toContain('"First line\nTermA"');
   expect(csv).not.toMatch(/accessToken|apiKey|authorization/i);
 });
 ```
@@ -1170,7 +1170,7 @@ it("optionally expands a full proposal and keeps the reviewed payload visible", 
   render(<ContentReplacementReviewStep {...propsWithQuestionProposal} />);
   await user.click(screen.getByRole("button", { name: "View details for question 42" }));
   expect(screen.getByRole("region", { name: "Question 42 proposed changes" })).toHaveTextContent(
-    "Use MyPVM. Use MyPBM.",
+    "Use TermA. Use TermB.",
   );
   expect(screen.getByText('"tags": [')).toBeVisible();
   expect(screen.getByText("Link destination — unchanged")).toBeVisible();
@@ -1330,7 +1330,7 @@ Intercept scan/apply/recovery routes with deterministic fixtures. The test must:
 
 1. connect mocked Enterprise credentials through the existing credential screen;
 2. select Content Replacement;
-3. enter `MyPVM → MyPBM` plus a CSV rule;
+3. enter `TermA → TermB` plus a CSV rule;
 4. verify safe defaults and review the rules;
 5. scan question, answer, and article slices;
 6. inspect a complete before/after detail and normalized request payload;
@@ -1388,11 +1388,11 @@ This task requires user-provided demo-instance access and must not be replaced b
 
 - [ ] **Step 1: Prepare disposable content in the demo instance**
 
-Create one disposable question, one answer to it, and one article. Put `MyPVM` in every supported field. Also include `MyPVM` in inline code, a fenced code block, a link label, a link destination, an image destination, and an article permission set that includes both an editor user and editor group.
+Create one disposable question, one answer to it, and one article. Put `TermA` in every supported field. Also include `TermA` in inline code, a fenced code block, a link label, a link destination, an image destination, and an article permission set that includes both an editor user and editor group.
 
 - [ ] **Step 2: Scan and review without writing**
 
-Connect OAuth with `write_access`, run the wizard with `MyPVM → MyPBM`, filter to the three disposable IDs, exclude every other proposal, inspect all before/after Markdown and normalized payloads, and export the preview. Verify code and destinations are protected by default and tags/permissions are unchanged.
+Connect OAuth with `write_access`, run the wizard with `TermA → TermB`, filter to the three disposable IDs, exclude every other proposal, inspect all before/after Markdown and normalized payloads, and export the preview. Verify code and destinations are protected by default and tags/permissions are unchanged.
 
 - [ ] **Step 3: Apply only the three disposable posts**
 

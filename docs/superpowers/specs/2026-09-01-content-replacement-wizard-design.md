@@ -126,7 +126,7 @@ Failure to paginate every result page for any source term makes the targeted sca
 
 #### Exact IDs or URLs
 
-Exact-target scan accepts up to 100,000 deduplicated known questions, answers, and articles. Operators may add typed ID or URL rows in the browser, paste canonical Enterprise URLs one per line, or import a target CSV with the exact headers:
+Exact-target scan accepts up to 5,000 deduplicated known questions, answers, and articles. Operators may add typed ID or URL rows in the browser, paste canonical Enterprise URLs one per line, or import a target CSV with the exact headers:
 
 ```csv
 type,id,parent_question_id
@@ -137,7 +137,9 @@ article,20120,
 
 `type` is one of `question`, `answer`, or `article`. `id` must be a positive safe integer. `parent_question_id` is required only for answers because the answer detail endpoint is nested under its question. A numeric browser row requires its adjacent Type selection; a pasted canonical URL may infer the type, and an answer URL supplies both IDs. URLs must have the connected Enterprise origin and a supported question, answer, or article path. Invalid and duplicate rows remain visible with source-line errors; duplicates may be removed with a notice.
 
-The scan fetches every valid supplied target directly, applies the canonical matcher, and reports `Exact target list · complete for N supplied posts`. A zero-result run means no eligible occurrence was found in the supplied posts only. Exact-target mode is the required mode for disposable canaries and for narrowly scoped corrections where the post list is already known.
+The scan canonicalizes, sorts, and deduplicates every valid supplied target, commits the manifest with a versioned domain-separated SHA-256 Merkle root, and carries each ref's membership proof through detail scan, proposal persistence, stale rescan, Apply, and Recovery. A swapped or misrouted ref must fail before a canonical read or write. The matcher then reports `Exact target list · complete for N supplied posts`. A zero-result run means no eligible occurrence was found in the supplied posts only. Exact-target mode is the required mode for disposable canaries and for narrowly scoped corrections where the post list is already known.
+
+Target and replacement CSV files are checked against a 1 MiB file-size limit before `text()` and parsing stops when its relevant row ceiling is crossed. Exact-target paste has a 1 MiB UTF-8 limit. Inputs are rejected rather than truncated.
 
 #### Full audit
 
@@ -198,6 +200,8 @@ IndexedDB stores:
 - selection state;
 - per-item apply status, attempt count, and sanitized error;
 - completion and recovery metadata.
+
+A job has a 5,000-proposal ceiling and a 64 MiB aggregate serialized UTF-8 budget enforced before write and after load. Canonical request models are limited to 2 MiB, configuration to 1 MiB, credentials to 512 KiB, and the same constants keep client preflight inside the 4 MiB Recovery route envelope. A budget or quota failure keeps Scan incomplete and Review/Apply locked. Existing Targeted/Full jobs and guarded schema-v1 Recovery remain readable; a current Exact checkpoint without Merkle proof evidence becomes read-only and requires a new scan.
 
 It never stores access tokens, API keys, OAuth authorization data, or credential-bearing request headers. Exported previews and result files likewise exclude credentials.
 
@@ -297,7 +301,7 @@ Users can filter by content type, rule, affected field, review status, and free-
 - the complete normalized API request payload; and
 - an `Exclude this post` action.
 
-Only a small number of details should remain expanded at once so thousands of results do not create an unbounded DOM. The user may export the complete preview as CSV before continuing.
+Only a small number of details should remain expanded at once so thousands of results do not create an unbounded DOM. The user may export the complete preview as CSV before continuing. Preview, result, and exception CSVs have a 32 MiB UTF-8 ceiling. Before RFC 4180 quoting, any string cell whose first non-space/control character is `=`, `+`, `-`, or `@` receives a leading apostrophe; the rest of the cell preserves the original evidence.
 
 ### Step 4: Confirm, apply, and results
 
@@ -335,9 +339,10 @@ Before apply begins, the browser verifies that a complete local recovery snapsho
 
 Recovery is a new guarded job, not an unconditional undo button. For each previously updated post, the server:
 
-1. fetches the current canonical content;
-2. verifies that it still matches the exact successful post-apply checksum;
-3. reconstructs the original request model from the recovery snapshot; and
+1. rebuilds the reviewed forward proposal from the prior canonical model and immutable configuration, requiring ref/checksum/fingerprint and any Exact Merkle proof to match Apply evidence;
+2. fetches the current canonical content;
+3. verifies that it still matches the exact successful post-apply checksum;
+4. reconstructs the original request model from the recovery snapshot; and
 4. restores the original editable fields only when the checksum still matches.
 
 Posts changed since the replacement run are skipped as recovery conflicts and never overwritten. Recovery has its own preview, confirmation, progress, and exception report. Because the API does not expose a multi-post transaction, neither apply nor recovery is globally atomic.
