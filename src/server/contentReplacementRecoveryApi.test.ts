@@ -286,7 +286,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
     expect(serialized).not.toContain("hostile");
   });
 
-  it("maps a raw fetch transport rejection to network without reflecting its message", async () => {
+  it("does not trust a fake-client TypeError as transport provenance", async () => {
     const client = fakeContentClient();
     client.getItem = vi.fn().mockRejectedValue(new TypeError("secret-token network URL"));
 
@@ -295,7 +295,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
     });
     const serialized = await response.text();
 
-    expect(JSON.parse(serialized)).toMatchObject({ result: { status: "network" } });
+    expect(JSON.parse(serialized)).toMatchObject({ result: { status: "failed" } });
     expect(serialized).not.toContain("secret-token");
     expect(serialized).not.toContain("URL");
   });

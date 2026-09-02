@@ -327,7 +327,7 @@ describe("handleContentReplacementApplyRequest", () => {
     expect(serialized).not.toContain("hostile");
   });
 
-  it("maps a sanitized adapter schema failure to failed and transport failure to network", async () => {
+  it("maps only sanitized adapter transport provenance to network", async () => {
     const schemaClient = fakeContentClient();
     schemaClient.getItem = vi.fn().mockRejectedValue(
       new ContentReplacementApiError("safe", "schema"),
@@ -356,7 +356,7 @@ describe("handleContentReplacementApplyRequest", () => {
 
     await expect(schema.json()).resolves.toMatchObject({ result: { status: "failed" } });
     await expect(transport.json()).resolves.toMatchObject({ result: { status: "network" } });
-    await expect(fetchTransport.json()).resolves.toMatchObject({ result: { status: "network" } });
+    await expect(fetchTransport.json()).resolves.toMatchObject({ result: { status: "failed" } });
     const serialized = await unexpected.text();
     expect(JSON.parse(serialized)).toMatchObject({ result: { status: "failed" } });
     expect(serialized).not.toContain("secret-token");

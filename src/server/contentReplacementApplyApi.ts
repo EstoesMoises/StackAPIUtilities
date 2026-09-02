@@ -255,7 +255,7 @@ function categorizeItemFailure(error: unknown): "permission" | "validation" | "n
     if (status === 429 || status === 502 || status === 503 || status === 504) return "network";
     return "failed";
   }
-  return error instanceof TypeError ? "network" : "failed";
+  return "failed";
 }
 
 function safeErrorStatus(error: unknown): number | undefined {
