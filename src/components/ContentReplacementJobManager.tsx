@@ -1,19 +1,20 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   deleteContentReplacementJob,
   listContentReplacementJobs,
+  type ContentReplacementJobSummary,
+  type ContentReplacementJobSummaryPage,
 } from "../utils/browserContentReplacementStorage";
-import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
 
 const JOBS_PER_PAGE = 25;
 
 export interface ContentReplacementJobManagerStorage {
-  list(): Promise<PersistedContentReplacementJob[]>;
+  list(options: { offset: number; limit: number }): Promise<ContentReplacementJobSummaryPage>;
   delete(id: string): Promise<void>;
 }
 
 export interface ContentReplacementJobManagerProps {
-  onOpenJob(job: PersistedContentReplacementJob): void;
+  onOpenJob(jobId: string): void;
   onDeleteJob?(jobId: string): void;
   storage?: ContentReplacementJobManagerStorage;
 }
@@ -30,7 +31,8 @@ export function ContentReplacementJobManager({
 }: ContentReplacementJobManagerProps) {
   const headingId = useId();
   const requestId = useRef(0);
-  const [jobs, setJobs] = useState<PersistedContentReplacementJob[]>([]);
+  const [jobs, setJobs] = useState<ContentReplacementJobSummary[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [operationError, setOperationError] = useState(false);
@@ -44,9 +46,15 @@ export function ContentReplacementJobManager({
     requestId.current = currentRequest;
     setLoading(true);
     setLoadError(false);
-    void storage.list().then((storedJobs) => {
+    void storage.list({ offset: (page - 1) * JOBS_PER_PAGE, limit: JOBS_PER_PAGE }).then((result) => {
       if (requestId.current !== currentRequest) return;
-      setJobs([...storedJobs].sort(compareJobs));
+      const nextPageCount = Math.max(1, Math.ceil(result.totalCount / JOBS_PER_PAGE));
+      if (page > nextPageCount) {
+        setPage(nextPageCount);
+        return;
+      }
+      setJobs(result.jobs);
+      setTotalCount(result.totalCount);
     }).catch(() => {
       if (requestId.current !== currentRequest) return;
       setJobs([]);
@@ -57,14 +65,10 @@ export function ContentReplacementJobManager({
     return () => {
       if (requestId.current === currentRequest) requestId.current += 1;
     };
-  }, [storage]);
+  }, [page, storage]);
 
-  const pageCount = Math.max(1, Math.ceil(jobs.length / JOBS_PER_PAGE));
+  const pageCount = Math.max(1, Math.ceil(totalCount / JOBS_PER_PAGE));
   const boundedPage = Math.min(page, pageCount);
-  const visibleJobs = useMemo(
-    () => jobs.slice((boundedPage - 1) * JOBS_PER_PAGE, boundedPage * JOBS_PER_PAGE),
-    [boundedPage, jobs],
-  );
 
   async function confirmDelete(jobId: string) {
     if (deletingId !== null || pendingDeleteId !== jobId || !jobs.some((job) => job.id === jobId)) return;
@@ -74,6 +78,10 @@ export function ContentReplacementJobManager({
     try {
       await storage.delete(jobId);
       setJobs((current) => current.filter((job) => job.id !== jobId));
+      const nextTotalCount = Math.max(0, totalCount - 1);
+      const nextPageCount = Math.max(1, Math.ceil(nextTotalCount / JOBS_PER_PAGE));
+      setTotalCount(nextTotalCount);
+      if (page > nextPageCount) setPage(nextPageCount);
       setPendingDeleteId(null);
       onDeleteJob?.(jobId);
       setAnnouncement(`Content replacement job ${jobId}, its post content, and recovery snapshots were deleted from this browser.`);
@@ -96,7 +104,7 @@ export function ContentReplacementJobManager({
         </div>
         {!loading && !loadError && (
           <span className="content-replacement-job-count">
-            {jobs.length.toLocaleString()} browser-local {jobs.length === 1 ? "job" : "jobs"}
+            {totalCount.toLocaleString()} browser-local {totalCount === 1 ? "job" : "jobs"}
           </span>
         )}
       </div>
@@ -112,12 +120,12 @@ export function ContentReplacementJobManager({
           The browser-local replacement job could not be deleted. Try again.
         </div>
       )}
-      {!loading && !loadError && jobs.length === 0 && (
+      {!loading && !loadError && totalCount === 0 && (
         <p className="content-replacement-job-empty">No replacement jobs are stored in this browser.</p>
       )}
-      {visibleJobs.length > 0 && (
+      {jobs.length > 0 && (
         <ul className="content-replacement-job-list">
-          {visibleJobs.map((job) => {
+          {jobs.map((job) => {
             const confirming = pendingDeleteId === job.id;
             const deleting = deletingId === job.id;
             return (
@@ -125,7 +133,7 @@ export function ContentReplacementJobManager({
                 <div className="content-replacement-job-summary">
                   <div>
                     <strong>{stageLabel(job)}</strong>
-                    <span>{job.configuration.rules.length.toLocaleString()} {job.configuration.rules.length === 1 ? "mapping" : "mappings"} · {job.progress.proposalsFound.toLocaleString()} proposed {job.progress.proposalsFound === 1 ? "post" : "posts"}</span>
+                    <span>{job.mappingCount.toLocaleString()} {job.mappingCount === 1 ? "mapping" : "mappings"} · {job.proposedPostCount.toLocaleString()} proposed {job.proposedPostCount === 1 ? "post" : "posts"}</span>
                   </div>
                   <dl>
                     <div><dt>Job</dt><dd>{job.id}</dd></div>
@@ -139,7 +147,7 @@ export function ContentReplacementJobManager({
                     type="button"
                     disabled={deletingId !== null}
                     aria-label={`Resume content replacement job ${job.id}`}
-                    onClick={() => onOpenJob(job)}
+                    onClick={() => onOpenJob(job.id)}
                   >
                     Open job
                   </button>
@@ -182,11 +190,7 @@ export function ContentReplacementJobManager({
   );
 }
 
-function compareJobs(left: PersistedContentReplacementJob, right: PersistedContentReplacementJob): number {
-  return right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id);
-}
-
-function stageLabel(job: PersistedContentReplacementJob): string {
+function stageLabel(job: ContentReplacementJobSummary): string {
   if (job.stage === "define") return "Definition saved";
   if (job.stage === "scan") {
     if (job.status === "completed") return "Scan complete";

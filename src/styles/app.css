@@ -3234,16 +3234,8 @@ select:disabled {
   width: 100%;
   max-width: 1440px;
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
   animation: none;
-}
-
-.content-replacement-wizard .s-btn {
-  transition: none;
-}
-
-.content-replacement-wizard .s-btn:hover {
-  transform: none;
 }
 
 .content-replacement-wizard > .workspace-header {
@@ -3589,10 +3581,6 @@ select:disabled {
   border: 1px solid var(--so-border-strong);
   border-radius: 8px;
   background: var(--so-surface-raised);
-}
-
-.app-shell .content-replacement-wizard .s-btn__primary {
-  min-height: 44px;
 }
 
 .content-replacement-actions {
@@ -4194,6 +4182,25 @@ select:disabled {
 .app-shell .s-select:focus {
   outline: 3px solid var(--so-focus);
   outline-offset: 2px;
+}
+
+/* This operational workflow is intentionally static; keep this after shared button states. */
+.app-shell .content-replacement-wizard .s-btn,
+.app-shell .content-replacement-wizard .s-btn:hover,
+.app-shell .content-replacement-wizard .s-btn:focus-visible,
+.app-shell .content-replacement-wizard .s-btn:active {
+  transition: none;
+  animation: none;
+}
+
+.app-shell .content-replacement-wizard .s-btn__primary {
+  min-height: 44px;
+}
+
+.app-shell .content-replacement-wizard .s-btn:hover,
+.app-shell .content-replacement-wizard .s-btn:focus-visible,
+.app-shell .content-replacement-wizard .s-btn:active {
+  transform: none;
 }
 
 @keyframes surface-settle {

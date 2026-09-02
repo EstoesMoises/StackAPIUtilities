@@ -14,6 +14,14 @@ import {
   loadPersistedDatasetSession,
   savePersistedDatasetSession,
 } from "../utils/browserDatasetStorage";
+import {
+  deleteContentReplacementJob,
+  listContentReplacementJobs,
+  loadContentReplacementJob,
+  saveContentReplacementJob,
+  type ContentReplacementJobSummary,
+} from "../utils/browserContentReplacementStorage";
+import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
 
 vi.mock("../utils/browserDatasetStorage", () => ({
   clearPersistedDatasetSession: vi.fn(),
@@ -21,9 +29,26 @@ vi.mock("../utils/browserDatasetStorage", () => ({
   savePersistedDatasetSession: vi.fn(),
 }));
 
+vi.mock("../utils/browserContentReplacementStorage", async () => {
+  const actual = await vi.importActual<typeof import("../utils/browserContentReplacementStorage")>(
+    "../utils/browserContentReplacementStorage",
+  );
+  return {
+    ...actual,
+    deleteContentReplacementJob: vi.fn(),
+    listContentReplacementJobs: vi.fn(),
+    loadContentReplacementJob: vi.fn(),
+    saveContentReplacementJob: vi.fn(),
+  };
+});
+
 const loadPersistedDatasetSessionMock = vi.mocked(loadPersistedDatasetSession);
 const savePersistedDatasetSessionMock = vi.mocked(savePersistedDatasetSession);
 const clearPersistedDatasetSessionMock = vi.mocked(clearPersistedDatasetSession);
+const deleteContentReplacementJobMock = vi.mocked(deleteContentReplacementJob);
+const listContentReplacementJobsMock = vi.mocked(listContentReplacementJobs);
+const loadContentReplacementJobMock = vi.mocked(loadContentReplacementJob);
+const saveContentReplacementJobMock = vi.mocked(saveContentReplacementJob);
 
 const basicBusinessPatCredentials = {
   instanceType: "basic-business",
@@ -36,6 +61,10 @@ beforeEach(() => {
   loadPersistedDatasetSessionMock.mockResolvedValue(null);
   savePersistedDatasetSessionMock.mockResolvedValue(undefined);
   clearPersistedDatasetSessionMock.mockResolvedValue(undefined);
+  deleteContentReplacementJobMock.mockResolvedValue(undefined);
+  listContentReplacementJobsMock.mockResolvedValue({ jobs: [], totalCount: 0 });
+  loadContentReplacementJobMock.mockResolvedValue(null);
+  saveContentReplacementJobMock.mockResolvedValue({ status: "saved" });
 });
 
 afterEach(() => {
@@ -1434,6 +1463,86 @@ describe("AppShell", () => {
     expect(progress).toHaveTextContent("Apply");
   });
 
+  it("keeps a job opened from Define selected across write-tool remounts", async () => {
+    const user = userEvent.setup();
+    const job = contentReplacementJob({ id: "job-from-define", stage: "scan", status: "paused" });
+    listContentReplacementJobsMock.mockResolvedValue({ jobs: [contentReplacementSummary(job)], totalCount: 1 });
+    loadContentReplacementJobMock.mockImplementation(async (id) => id === job.id ? job : null);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+    await user.click(await screen.findByRole("button", { name: `Resume content replacement job ${job.id}` }));
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "User Group Sync" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+    expect(loadContentReplacementJobMock).toHaveBeenCalledWith(job.id);
+  });
+
+  it("keeps a job opened from Datasets selected across panel remounts", async () => {
+    const user = userEvent.setup();
+    const job = contentReplacementJob({ id: "job-from-datasets", stage: "scan", status: "paused" });
+    listContentReplacementJobsMock.mockResolvedValue({ jobs: [contentReplacementSummary(job)], totalCount: 1 });
+    loadContentReplacementJobMock.mockImplementation(async (id) => id === job.id ? job : null);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(await screen.findByRole("button", { name: `Resume content replacement job ${job.id}` }));
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Scripts" }));
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+  });
+
+  it("clears App selection when the Define job manager deletes the selected job", async () => {
+    const user = userEvent.setup();
+    const job = contentReplacementJob({ id: "delete-from-define", stage: "review", status: "completed" });
+    listContentReplacementJobsMock.mockResolvedValue({ jobs: [contentReplacementSummary(job)], totalCount: 1 });
+    loadContentReplacementJobMock.mockImplementation(async (id) => id === job.id ? job : null);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(await screen.findByRole("button", { name: `Resume content replacement job ${job.id}` }));
+    expect(await screen.findByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Edit configuration" }));
+    await user.click(screen.getByRole("button", { name: "Create a new job" }));
+    await user.click(await screen.findByRole("button", { name: `Delete content replacement job ${job.id}` }));
+    await user.click(screen.getByRole("button", { name: `Confirm delete ${job.id}` }));
+    await waitFor(() => expect(deleteContentReplacementJobMock).toHaveBeenCalledWith(job.id));
+
+    await user.click(screen.getByRole("button", { name: "User Group Sync" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+
+    expect(await screen.findByRole("heading", { name: "Define replacements" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Review proposed changes" })).not.toBeInTheDocument();
+  });
+
+  it("does not resurrect a job deleted from Apply after the wizard remounts", async () => {
+    const user = userEvent.setup();
+    const job = contentReplacementJob({ id: "delete-from-apply", stage: "results", status: "completed" });
+    listContentReplacementJobsMock.mockResolvedValue({ jobs: [contentReplacementSummary(job)], totalCount: 1 });
+    loadContentReplacementJobMock.mockImplementation(async (id) => id === job.id ? job : null);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Datasets" }));
+    await user.click(await screen.findByRole("button", { name: `Resume content replacement job ${job.id}` }));
+    expect(await screen.findByRole("heading", { name: "Apply results" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete entire local job" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete entire local job" }));
+    await waitFor(() => expect(deleteContentReplacementJobMock).toHaveBeenCalledWith(job.id));
+
+    await user.click(screen.getByRole("button", { name: "User Group Sync" }));
+    await user.click(screen.getByRole("button", { name: "Content Replacement" }));
+
+    expect(await screen.findByRole("heading", { name: "Define replacements" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Apply results" })).not.toBeInTheDocument();
+  });
+
   it("loads an uploaded report output into the selected dashboard", async () => {
     const user = userEvent.setup();
 
@@ -2439,6 +2548,58 @@ function createDeferred<T>() {
   });
 
   return { promise, resolve, reject };
+}
+
+function contentReplacementJob(
+  overrides: Partial<PersistedContentReplacementJob> = {},
+): PersistedContentReplacementJob {
+  return {
+    schemaVersion: 1,
+    revision: 0,
+    id: "content-replacement-job",
+    fingerprint: "f".repeat(64),
+    baseUrl: "https://example.stackenterprise.co",
+    target: { kind: "enterprise-main" },
+    configuration: {
+      target: { kind: "enterprise-main" },
+      contentTypes: { questions: true, answers: true, articles: true },
+      rules: [{ id: "rule-1", find: "Old term", replace: "New term" }],
+      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+    },
+    stage: "scan",
+    status: "paused",
+    inventoryQueue: [],
+    detailQueue: [],
+    progress: {
+      questionPages: 0,
+      answerPages: 0,
+      articlePages: 0,
+      inventoryItems: 0,
+      detailsInspected: 0,
+      proposalsFound: 0,
+      protectedOccurrences: 0,
+      applyCompleted: 0,
+      recoveryCompleted: 0,
+    },
+    proposals: {},
+    recoverySnapshotStatus: "none",
+    createdAt: "2026-09-01T12:00:00.000Z",
+    updatedAt: "2026-09-02T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function contentReplacementSummary(job: PersistedContentReplacementJob): ContentReplacementJobSummary {
+  return {
+    id: job.id,
+    updatedAt: job.updatedAt,
+    baseUrl: job.baseUrl,
+    stage: job.stage,
+    status: job.status,
+    mappingCount: job.configuration.rules.length,
+    proposedPostCount: Object.keys(job.proposals).length,
+    recoverySnapshotStatus: job.recoverySnapshotStatus,
+  };
 }
 
 function mockOAuthEndpoints(

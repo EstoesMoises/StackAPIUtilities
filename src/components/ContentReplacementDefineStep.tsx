@@ -11,7 +11,6 @@ import {
   type ReplacementRuleError,
 } from "../writeTools/contentReplacement/rules";
 import type {
-  PersistedContentReplacementJob,
   ReplacementConfiguration,
   ReplacementOptions,
   ReplacementRule,
@@ -28,7 +27,8 @@ export interface ContentReplacementDefineStepProps {
   setupError?: string | null;
   storageError?: string | null;
   onReconnect?: () => void;
-  onOpenLocalJob?: (job: PersistedContentReplacementJob) => void;
+  onOpenLocalJob?: (jobId: string) => void;
+  onDeleteLocalJob?: (jobId: string) => void;
   contentReplacementStorage?: ContentReplacementJobManagerStorage;
 }
 
@@ -60,6 +60,7 @@ export function ContentReplacementDefineStep({
   storageError = null,
   onReconnect,
   onOpenLocalJob,
+  onDeleteLocalJob,
   contentReplacementStorage,
 }: ContentReplacementDefineStepProps) {
   const defaults = useMemo(createDefaultReplacementConfiguration, []);
@@ -234,6 +235,7 @@ export function ContentReplacementDefineStep({
       {onOpenLocalJob && (
         <ContentReplacementJobManager
           onOpenJob={onOpenLocalJob}
+          onDeleteJob={onDeleteLocalJob}
           storage={contentReplacementStorage}
         />
       )}

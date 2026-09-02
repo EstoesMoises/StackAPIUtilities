@@ -223,6 +223,7 @@ function controller(currentJob: PersistedContentReplacementJob): ContentReplacem
   return {
     job: currentJob,
     busy: false,
+    rehydrating: false,
     storageError: null,
     operationError: null,
     credentialReadiness: { valid: true, refreshRequired: false, message: "" },

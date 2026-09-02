@@ -151,6 +151,24 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job).toEqual(deps.store.current());
   });
 
+  it("publishes newly created and explicitly deleted job identities to the App owner", async () => {
+    const deps = dependencies();
+    const onJobSelected = vi.fn();
+    const onJobDeleted = vi.fn();
+    const { result } = renderHook(() => useContentReplacementJob(
+      credentials,
+      null,
+      deps.value,
+      { onJobSelected, onJobDeleted },
+    ));
+
+    await act(async () => result.current.createJob(configuration));
+    expect(onJobSelected).toHaveBeenCalledWith("job-1");
+
+    await act(async () => result.current.deleteJob());
+    expect(onJobDeleted).toHaveBeenCalledWith("job-1");
+  });
+
   it.each([
     "http://example.stackenterprise.co",
     "https://example.stackenterprise.co/path",
@@ -881,6 +899,62 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job?.proposals["question:1"].status).toBe("ready-to-apply");
     expect(deps.value.fetch).not.toHaveBeenCalled();
     expect(deps.store.save).toHaveBeenCalled();
+  });
+
+  it("keeps a newly selected job visible when the prior interrupted checkpoint settles", async () => {
+    const interruptedA = runningScanJob("job-a");
+    const selectedB = createScanJob("job-b");
+    const checkpointGate = deferred<void>();
+    const jobs = new Map([[interruptedA.id, interruptedA], [selectedB.id, selectedB]]);
+    const storage = multiJobStorage(jobs, { delayedSaveId: interruptedA.id, saveGate: checkpointGate.promise });
+    const deps = { ...dependencies().value, storage };
+    const hook = renderHook(
+      ({ initial }) => useContentReplacementJob(credentials, initial, deps),
+      { initialProps: { initial: interruptedA as PersistedContentReplacementJob | null } },
+    );
+
+    expect(hook.result.current.rehydrating).toBe(true);
+    await waitFor(() => expect(storage.save).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "job-a", status: "paused" }),
+      interruptedA.revision,
+    ));
+
+    hook.rerender({ initial: selectedB });
+    expect(hook.result.current.rehydrating).toBe(false);
+    expect(hook.result.current.job?.id).toBe("job-b");
+
+    checkpointGate.resolve();
+    await waitFor(() => expect(jobs.get("job-a")?.status).toBe("paused"));
+    expect(hook.result.current.job?.id).toBe("job-b");
+  });
+
+  it("keeps a newly created job visible when an earlier interrupted checkpoint settles", async () => {
+    const interruptedA = runningScanJob("job-a");
+    const checkpointGate = deferred<void>();
+    const jobs = new Map([[interruptedA.id, interruptedA]]);
+    const storage = multiJobStorage(jobs, { delayedSaveId: interruptedA.id, saveGate: checkpointGate.promise });
+    const base = dependencies();
+    const deps = { ...base.value, storage, createId: () => "job-new" };
+    const hook = renderHook(
+      ({ initial }) => useContentReplacementJob(credentials, initial, deps),
+      { initialProps: { initial: interruptedA as PersistedContentReplacementJob | null } },
+    );
+
+    await waitFor(() => expect(storage.save).toHaveBeenCalledTimes(1));
+    let blockedCreation = true;
+    await act(async () => { blockedCreation = await hook.result.current.createJob(configuration); });
+    expect(blockedCreation).toBe(false);
+    expect(jobs.has("job-new")).toBe(false);
+
+    hook.rerender({ initial: null });
+    let created = false;
+    await act(async () => { created = await hook.result.current.createJob(configuration); });
+    expect(created).toBe(true);
+    expect(hook.result.current.job?.id).toBe("job-new");
+
+    checkpointGate.resolve();
+    await waitFor(() => expect(jobs.get("job-a")?.status).toBe("paused"));
+    expect(hook.result.current.job?.id).toBe("job-new");
   });
 
   it("rehydrates an unmounted active scan through a persisted paused checkpoint", async () => {
@@ -1645,3 +1719,34 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job?.inventoryQueue).toEqual([{ kind: "articles", page: 1 }]);
   });
 });
+
+function createScanJob(id: string): PersistedContentReplacementJob {
+  return createReplacementJob({
+    id,
+    fingerprint: "f".repeat(64),
+    baseUrl: "https://example.stackenterprise.co",
+    configuration,
+    createdAt: AT,
+  });
+}
+
+function runningScanJob(id: string): PersistedContentReplacementJob {
+  return reduceReplacementJob(createScanJob(id), { type: "run/resume", at: AT });
+}
+
+function multiJobStorage(
+  jobs: Map<string, PersistedContentReplacementJob>,
+  options: { delayedSaveId?: string; saveGate?: Promise<void> } = {},
+) {
+  return {
+    save: vi.fn(async (job: PersistedContentReplacementJob, expectedRevision: number | null) => {
+      if (job.id === options.delayedSaveId) await options.saveGate;
+      const persisted = jobs.get(job.id) ?? null;
+      if ((persisted?.revision ?? null) !== expectedRevision) return { status: "conflict" as const };
+      jobs.set(job.id, job);
+      return { status: "saved" as const };
+    }),
+    load: vi.fn(async (id: string) => jobs.get(id) ?? null),
+    delete: vi.fn(async (id: string) => { jobs.delete(id); }),
+  };
+}

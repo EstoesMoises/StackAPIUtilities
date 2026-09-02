@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
+import type { ContentReplacementJobSummary } from "../utils/browserContentReplacementStorage";
 import {
   ContentReplacementJobManager,
   type ContentReplacementJobManagerStorage,
@@ -20,7 +20,7 @@ describe("ContentReplacementJobManager", () => {
     expect(screen.getByText(/sensitive local data.*post bodies.*request models/i)).toBeVisible();
     expect(screen.getByText("Scan paused")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Resume content replacement job job-1" }));
-    expect(onOpenJob).toHaveBeenCalledWith(jobs[0]);
+    expect(onOpenJob).toHaveBeenCalledWith("job-1");
   });
 
   it("requires inline confirmation before deleting the job and all recovery data", async () => {
@@ -48,7 +48,8 @@ describe("ContentReplacementJobManager", () => {
     const jobs = Array.from({ length: 61 }, (_, index) =>
       replacementJob(`job-${String(index + 1).padStart(2, "0")}`, "scan", "paused"),
     );
-    render(<ContentReplacementJobManager storage={managerStorage(jobs)} onOpenJob={vi.fn()} />);
+    const storage = managerStorage(jobs);
+    render(<ContentReplacementJobManager storage={storage} onOpenJob={vi.fn()} />);
 
     await screen.findByText("61 browser-local jobs");
     expect(screen.getAllByRole("button", { name: /Resume content replacement job/ })).toHaveLength(25);
@@ -56,6 +57,29 @@ describe("ContentReplacementJobManager", () => {
     expect(within(pagination).getByText("Page 1 of 3")).toBeVisible();
     await user.click(within(pagination).getByRole("button", { name: "Next jobs page" }));
     expect(screen.getByRole("button", { name: "Resume content replacement job job-26" })).toBeVisible();
+    expect(storage.list).toHaveBeenLastCalledWith({ offset: 25, limit: 25 });
+  });
+
+  it("reloads the preceding bounded page when deleting the last item on a page", async () => {
+    const user = userEvent.setup();
+    const jobs = Array.from({ length: 26 }, (_, index) =>
+      replacementJob(`job-${String(index + 1).padStart(2, "0")}`, "scan", "paused"),
+    );
+    const storage = managerStorage(jobs);
+    storage.delete.mockImplementation(async (id: string) => {
+      const index = jobs.findIndex((job) => job.id === id);
+      if (index >= 0) jobs.splice(index, 1);
+    });
+    render(<ContentReplacementJobManager storage={storage} onOpenJob={vi.fn()} />);
+
+    await screen.findByText("26 browser-local jobs");
+    await user.click(screen.getByRole("button", { name: "Next jobs page" }));
+    await user.click(screen.getByRole("button", { name: "Delete content replacement job job-26" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete job-26" }));
+
+    expect(await screen.findByRole("button", { name: "Resume content replacement job job-01" })).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "Replacement job pagination" })).not.toBeInTheDocument();
+    expect(storage.list).toHaveBeenLastCalledWith({ offset: 0, limit: 25 });
   });
 
   it("announces a storage failure without exposing stale controls", async () => {
@@ -69,53 +93,33 @@ describe("ContentReplacementJobManager", () => {
   });
 });
 
-function managerStorage(jobs: PersistedContentReplacementJob[]): ContentReplacementJobManagerStorage & {
+function managerStorage(jobs: ContentReplacementJobSummary[]): ContentReplacementJobManagerStorage & {
   list: ReturnType<typeof vi.fn>;
   delete: ReturnType<typeof vi.fn>;
 } {
   return {
-    list: vi.fn().mockResolvedValue(jobs),
+    list: vi.fn(async ({ offset, limit }: { offset: number; limit: number }) => ({
+      jobs: jobs.slice(offset, offset + limit),
+      totalCount: jobs.length,
+    })),
     delete: vi.fn().mockResolvedValue(undefined),
   };
 }
 
 function replacementJob(
   id: string,
-  stage: PersistedContentReplacementJob["stage"],
-  status: PersistedContentReplacementJob["status"],
+  stage: ContentReplacementJobSummary["stage"],
+  status: ContentReplacementJobSummary["status"],
   withRecovery = false,
-): PersistedContentReplacementJob {
+): ContentReplacementJobSummary {
   return {
-    schemaVersion: 1,
-    revision: 0,
     id,
-    fingerprint: "f".repeat(64),
     baseUrl: "https://example.stackenterprise.co",
-    target: { kind: "enterprise-main" },
-    configuration: {
-      target: { kind: "enterprise-main" },
-      contentTypes: { questions: true, answers: true, articles: true },
-      rules: [{ id: "rule-1", find: "Old", replace: "New" }],
-      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
-    },
     stage,
     status,
-    inventoryQueue: [],
-    detailQueue: [],
-    progress: {
-      questionPages: 1,
-      answerPages: 2,
-      articlePages: 1,
-      inventoryItems: 3,
-      detailsInspected: 2,
-      proposalsFound: 1,
-      protectedOccurrences: 0,
-      applyCompleted: 0,
-      recoveryCompleted: 0,
-    },
-    proposals: withRecovery ? { "question:1": {} as never } : {},
+    mappingCount: 1,
+    proposedPostCount: 1,
     recoverySnapshotStatus: withRecovery ? "ready" : "none",
-    createdAt: "2026-09-01T12:00:00.000Z",
     updatedAt: "2026-09-02T12:00:00.000Z",
   };
 }

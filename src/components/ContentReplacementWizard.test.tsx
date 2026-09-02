@@ -20,18 +20,30 @@ const credentials: SessionCredentials = {
 };
 
 describe("ContentReplacementWizard", () => {
-  it("keeps every Content Replacement primary action at the 44px target size after shared button rules", () => {
+  it("keeps the wizard out of the sticky containing chain and wins the final button cascade", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles/app.css`, "utf8");
+    const style = document.createElement("style");
+    style.textContent = styles;
+    const shell = document.createElement("div");
+    shell.className = "app-shell";
+    shell.innerHTML = `
+      <section class="content-replacement-wizard">
+        <button class="s-btn s-btn__primary">Continue</button>
+        <div class="content-replacement-review-summary">Review actions</div>
+      </section>`;
+    document.head.append(style);
+    document.body.append(shell);
 
-    expect(styles).toMatch(
-      /\.content-replacement-wizard\s*\{[^}]*animation:\s*none;/s,
-    );
-    expect(styles).toMatch(
-      /\.content-replacement-wizard \.s-btn\s*\{[^}]*transition:\s*none;/s,
-    );
-    expect(styles).toMatch(
-      /\.app-shell \.content-replacement-wizard \.s-btn__primary\s*\{[^}]*min-height:\s*44px;/s,
-    );
+    const wizard = shell.querySelector<HTMLElement>(".content-replacement-wizard")!;
+    const button = shell.querySelector<HTMLElement>(".s-btn")!;
+    const stickyActions = shell.querySelector<HTMLElement>(".content-replacement-review-summary")!;
+    expect(getComputedStyle(wizard).overflow).toBe("visible");
+    expect(getComputedStyle(button).transition).toBe("none");
+    expect(getComputedStyle(button).minHeight).toBe("44px");
+    expect(getComputedStyle(stickyActions).position).toBe("sticky");
+
+    shell.remove();
+    style.remove();
   });
 
   it("renders a persistent ordered, non-bypassable step indicator", () => {
@@ -207,6 +219,7 @@ function controller(currentJob: PersistedContentReplacementJob | null): ContentR
   return {
     job: currentJob,
     busy: false,
+    rehydrating: false,
     storageError: null,
     operationError: null,
     credentialReadiness: { valid: true, refreshRequired: false, message: "" },

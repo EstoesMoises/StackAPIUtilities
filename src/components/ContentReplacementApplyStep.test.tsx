@@ -623,6 +623,7 @@ function controller(
     prepareRecovery: vi.fn(),
     startRecovery: vi.fn(),
     ...overrides,
+    rehydrating: overrides.rehydrating ?? false,
   };
 }
 

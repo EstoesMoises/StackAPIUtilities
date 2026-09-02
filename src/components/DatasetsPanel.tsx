@@ -3,7 +3,6 @@ import { reportRegistry } from "../domain/reportRegistry";
 import { utilityRegistry } from "../domain/utilityRegistry";
 import type { ReportId, RunPeriodRole, SessionDataset, UtilityId } from "../domain/types";
 import { downloadSessionDataset } from "../utils/datasetDownloads";
-import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
 import {
   ContentReplacementJobManager,
   type ContentReplacementJobManagerStorage,
@@ -13,7 +12,7 @@ interface DatasetsPanelProps {
   datasets: SessionDataset[];
   onRemoveDataset: (datasetId: string) => void;
   onFlushDatasets?: () => void;
-  onOpenContentReplacementJob?: (job: PersistedContentReplacementJob) => void;
+  onOpenContentReplacementJob?: (jobId: string) => void;
   onContentReplacementJobDeleted?: (jobId: string) => void;
   contentReplacementStorage?: ContentReplacementJobManagerStorage;
 }

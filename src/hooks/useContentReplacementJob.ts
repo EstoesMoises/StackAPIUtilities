@@ -70,9 +70,15 @@ export interface ContentReplacementJobDependencies {
   waitUntil: (timestamp: string, signal: AbortSignal) => Promise<void>;
 }
 
+export interface ContentReplacementJobLifecycle {
+  onJobSelected?(jobId: string): void;
+  onJobDeleted?(jobId: string): void;
+}
+
 export interface ContentReplacementJobController {
   job: PersistedContentReplacementJob | null;
   busy: boolean;
+  rehydrating: boolean;
   storageError: string | null;
   operationError: string | null;
   credentialReadiness: Pick<EnterpriseWriteCredentialReadiness, "valid" | "message"> & { refreshRequired: boolean };
@@ -156,14 +162,17 @@ export function useContentReplacementJob(
   credentials: SessionCredentials | null,
   initialJob: PersistedContentReplacementJob | null = null,
   dependencies: ContentReplacementJobDependencies = defaultDependencies,
+  lifecycle: ContentReplacementJobLifecycle = {},
 ): ContentReplacementJobController {
   const interruptedInitial = needsInterruptionCheckpoint(initialJob);
   const [job, setJobState] = useState<PersistedContentReplacementJob | null>(interruptedInitial ? null : initialJob);
   const [busy, setBusyState] = useState(false);
+  const [rehydrating, setRehydratingState] = useState(interruptedInitial);
   const [storageError, setStorageError] = useState<string | null>(null);
   const jobRef = useRef<PersistedContentReplacementJob | null>(interruptedInitial ? null : initialJob);
   const credentialsRef = useRef(credentials);
   const dependenciesRef = useRef(dependencies);
+  const lifecycleRef = useRef(lifecycle);
   const mountedRef = useRef(true);
   const operationRef = useRef(0);
   const runningRef = useRef(false);
@@ -171,10 +180,13 @@ export function useContentReplacementJob(
   const pauseBarrierRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const initialJobIdRef = useRef(initialJob?.id);
   const rehydratedIdRef = useRef<string | null>(null);
+  const selectionEpochRef = useRef(0);
+  const rehydratingRef = useRef(interruptedInitial);
   const localMutationTailRef = useRef<Promise<void>>(Promise.resolve());
 
   credentialsRef.current = credentials;
   dependenciesRef.current = dependencies;
+  lifecycleRef.current = lifecycle;
 
   const setJob = useCallback((next: PersistedContentReplacementJob | null) => {
     jobRef.current = next;
@@ -183,6 +195,11 @@ export function useContentReplacementJob(
 
   const setBusy = useCallback((next: boolean) => {
     if (mountedRef.current) setBusyState(next);
+  }, []);
+
+  const setRehydrating = useCallback((next: boolean) => {
+    rehydratingRef.current = next;
+    if (mountedRef.current) setRehydratingState(next);
   }, []);
 
   const stopOperation = useCallback(() => {
@@ -198,16 +215,19 @@ export function useContentReplacementJob(
     const nextId = initialJob?.id;
     if (initialJobIdRef.current !== nextId) {
       stopOperation();
+      selectionEpochRef.current += 1;
       initialJobIdRef.current = nextId;
       rehydratedIdRef.current = null;
-      setJob(needsInterruptionCheckpoint(initialJob) ? null : initialJob);
+      const needsCheckpoint = needsInterruptionCheckpoint(initialJob);
+      setRehydrating(needsCheckpoint);
+      setJob(needsCheckpoint ? null : initialJob);
       setStorageError(null);
     }
     return () => {
       mountedRef.current = false;
       stopOperation();
     };
-  }, [initialJob, setJob, stopOperation]);
+  }, [initialJob, setJob, setRehydrating, stopOperation]);
 
   const currentCredentials = useCallback((
     target: Pick<PersistedContentReplacementJob, "id" | "baseUrl"> | null,
@@ -282,47 +302,60 @@ export function useContentReplacementJob(
       candidate: PersistedContentReplacementJob;
       unchanged: "success" | "conflict" | "reject";
     },
+    canPublish: () => boolean = () => true,
   ): Promise<boolean> => enqueueStorage(jobId, async (storage) => {
     let current: PersistedContentReplacementJob | null;
     try {
       current = await storage.load(jobId);
     } catch {
-      if (mountedRef.current) setStorageError(STORAGE_ERROR);
-      stopOperation();
+      if (canPublish()) {
+        if (mountedRef.current) setStorageError(STORAGE_ERROR);
+        stopOperation();
+      }
       return false;
     }
     if (!current) {
-      setJob(null);
-      if (mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
-      stopOperation();
+      if (canPublish()) {
+        setJob(null);
+        if (mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
+        stopOperation();
+      }
       return false;
     }
     const plan = mutation(current);
     if (plan.candidate === current) {
-      setJob(current);
+      if (canPublish()) setJob(current);
       if (plan.unchanged === "success") {
-        setStorageError(null);
+        if (canPublish()) setStorageError(null);
         return true;
       }
-      if (plan.unchanged === "conflict" && mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
+      if (plan.unchanged === "conflict" && canPublish() && mountedRef.current) {
+        setStorageError(STORAGE_CONFLICT_ERROR);
+      }
       return false;
     }
     try {
       const result = await storage.save(plan.candidate, current.revision);
       if (result.status === "conflict") {
         const latest = await storage.load(jobId);
-        setJob(latest);
-        if (mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
-        stopOperation();
+        if (canPublish()) {
+          setJob(latest);
+          if (mountedRef.current) setStorageError(STORAGE_CONFLICT_ERROR);
+          stopOperation();
+        }
         return false;
       }
     } catch {
-      if (mountedRef.current) setStorageError(STORAGE_ERROR);
-      stopOperation();
+      if (canPublish()) {
+        if (mountedRef.current) setStorageError(STORAGE_ERROR);
+        stopOperation();
+      }
       return false;
     }
-    setStorageError(null);
-    setJob(plan.candidate);
+    if (canPublish()) {
+      setStorageError(null);
+      setJob(plan.candidate);
+    }
     return true;
   }), [enqueueStorage, setJob, stopOperation]);
 
@@ -334,15 +367,23 @@ export function useContentReplacementJob(
 
   useEffect(() => {
     if (!initialJob || !needsInterruptionCheckpoint(initialJob) || rehydratedIdRef.current === initialJob.id) return;
+    const epoch = selectionEpochRef.current;
+    const jobId = initialJob.id;
     rehydratedIdRef.current = initialJob.id;
+    setRehydrating(true);
     void mutatePersisted(initialJob.id, (current) => ({
       candidate: reduceReplacementJob(current, {
         type: "run/interrupted",
         at: dependenciesRef.current.now(),
       }),
       unchanged: "success",
-    }));
-  }, [initialJob, mutatePersisted]);
+    }), () => mountedRef.current && selectionEpochRef.current === epoch && initialJobIdRef.current === jobId)
+      .finally(() => {
+        if (mountedRef.current && selectionEpochRef.current === epoch && initialJobIdRef.current === jobId) {
+          setRehydrating(false);
+        }
+      });
+  }, [initialJob, mutatePersisted, setRehydrating]);
 
   const runExclusive = useCallback(async (
     operation: (token: number) => Promise<void>,
@@ -430,7 +471,10 @@ export function useContentReplacementJob(
     return persist(reduceReplacementJob(withThrottle, { type: "run/clear-retry-at", at }), token);
   }, [persist, setBusy]);
 
-  const createJob = useCallback((configuration: ReplacementConfiguration): Promise<boolean> => enqueueLocalMutation(async () => {
+  const createJob = useCallback((configuration: ReplacementConfiguration): Promise<boolean> => {
+    if (rehydratingRef.current) return Promise.resolve(false);
+    return enqueueLocalMutation(async () => {
+    if (rehydratingRef.current) return false;
     const credentialCheck = currentCredentials(null, dependenciesRef.current.now());
     if (!credentialCheck.credentials) return false;
     const baseUrl = credentialCheck.credentials.baseUrl;
@@ -445,9 +489,13 @@ export function useContentReplacementJob(
     });
     stopOperation();
     const saved = await persist(candidate);
-    if (saved) clearRejectedCredentials(candidate.id);
+    if (saved) {
+      clearRejectedCredentials(candidate.id);
+      lifecycleRef.current.onJobSelected?.(candidate.id);
+    }
     return saved;
-  }), [currentCredentials, enqueueLocalMutation, persist, stopOperation]);
+    });
+  }, [currentCredentials, enqueueLocalMutation, persist, stopOperation]);
 
   const scanLoop = useCallback(async (token: number): Promise<void> => {
     let current = jobRef.current;
@@ -588,6 +636,7 @@ export function useContentReplacementJob(
         await enqueueStorage(current.id, (storage) => storage.delete(current.id));
         clearRejectedCredentials(current.id);
         setStorageError(null);
+        lifecycleRef.current.onJobDeleted?.(current.id);
         setJob(null);
       } catch {
         if (mountedRef.current) setStorageError(STORAGE_ERROR);
@@ -1045,6 +1094,7 @@ export function useContentReplacementJob(
   return {
     job,
     busy,
+    rehydrating,
     storageError,
     operationError: job?.operationError?.message ?? null,
     credentialReadiness,

@@ -11,7 +11,7 @@ afterEach(() => {
 describe("ContentReplacementDefineStep", () => {
   it("includes the sensitive browser-local job manager in Define", async () => {
     const storage: ContentReplacementJobManagerStorage = {
-      list: vi.fn().mockResolvedValue([]),
+      list: vi.fn().mockResolvedValue({ jobs: [], totalCount: 0 }),
       delete: vi.fn().mockResolvedValue(undefined),
     };
     render(

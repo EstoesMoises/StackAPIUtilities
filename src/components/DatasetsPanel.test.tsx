@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionDataset } from "../domain/types";
 import { downloadSessionDataset } from "../utils/datasetDownloads";
 import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
+import type { ContentReplacementJobSummary } from "../utils/browserContentReplacementStorage";
 import type { ContentReplacementJobManagerStorage } from "./ContentReplacementJobManager";
 import { DatasetsPanel } from "./DatasetsPanel";
 
@@ -147,7 +148,7 @@ describe("DatasetsPanel", () => {
     expect(screen.getByText(/sensitive local data/i)).toBeVisible();
     expect(screen.getByText("No datasets loaded or stored in this browser.")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Resume content replacement job resume-me" }));
-    expect(onOpenContentReplacementJob).toHaveBeenCalledWith(job);
+    expect(onOpenContentReplacementJob).toHaveBeenCalledWith(job.id);
     expect(screen.queryByText(job.configuration.rules[0].find, { selector: "td" })).not.toBeInTheDocument();
   });
 
@@ -180,7 +181,23 @@ function replacementStorage(jobs: PersistedContentReplacementJob[]): ContentRepl
   list: ReturnType<typeof vi.fn>;
   delete: ReturnType<typeof vi.fn>;
 } {
-  return { list: vi.fn().mockResolvedValue(jobs), delete: vi.fn().mockResolvedValue(undefined) };
+  const summaries: ContentReplacementJobSummary[] = jobs.map((job) => ({
+    id: job.id,
+    baseUrl: job.baseUrl,
+    stage: job.stage,
+    status: job.status,
+    mappingCount: job.configuration.rules.length,
+    proposedPostCount: job.progress.proposalsFound,
+    recoverySnapshotStatus: job.recoverySnapshotStatus,
+    updatedAt: job.updatedAt,
+  }));
+  return {
+    list: vi.fn(async ({ offset, limit }: { offset: number; limit: number }) => ({
+      jobs: summaries.slice(offset, offset + limit),
+      totalCount: summaries.length,
+    })),
+    delete: vi.fn().mockResolvedValue(undefined),
+  };
 }
 
 function replacementJob(): PersistedContentReplacementJob {

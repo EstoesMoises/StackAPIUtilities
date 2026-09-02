@@ -31,7 +31,6 @@ import type {
   SessionCredentials,
   UtilityId,
 } from "./domain/types";
-import type { PersistedContentReplacementJob } from "./writeTools/contentReplacement/types";
 import type { LiveReportRunResult } from "./collectors/liveReportRunner";
 import { parseTerminalSmeCoverageResult } from "./utilities/smeCoverage/runtimeValidation";
 import {
@@ -51,7 +50,7 @@ export function App() {
   const [state, dispatch] = useReducer(sessionReducer, undefined, createInitialSessionState);
   const [activePanel, setActivePanel] = useState<AppPanel>("report");
   const [selectedWriteToolId, setSelectedWriteToolId] = useState<WriteToolId>("user-group-sync");
-  const [selectedContentReplacementJob, setSelectedContentReplacementJob] = useState<PersistedContentReplacementJob | null>(null);
+  const [selectedContentReplacementJobId, setSelectedContentReplacementJobId] = useState<string | null>(null);
   const [runQueue, setRunQueue] = useState<RunQueueItem[]>([]);
   const [runProgress, setRunProgress] = useState<ReportRunProgress | undefined>();
   const [reportScope, setReportScope] = useState(DEFAULT_REPORT_RUN_SCOPE);
@@ -275,9 +274,9 @@ export function App() {
     setActivePanel("write-tools");
   }
 
-  function openContentReplacementJob(job: PersistedContentReplacementJob) {
+  function openContentReplacementJob(jobId: string) {
     clearActiveRunProgress();
-    setSelectedContentReplacementJob(job);
+    setSelectedContentReplacementJobId(jobId);
     setSelectedWriteToolId("content-replacement");
     setCredentialContext({ kind: "write-tool", writeToolId: "content-replacement" });
     setActivePanel("write-tools");
@@ -290,7 +289,7 @@ export function App() {
   }
 
   function forgetDeletedContentReplacementJob(jobId: string) {
-    setSelectedContentReplacementJob((current) => current?.id === jobId ? null : current);
+    setSelectedContentReplacementJobId((current) => current === jobId ? null : current);
   }
 
   function prepareSelectedReportRun() {
@@ -639,8 +638,10 @@ export function App() {
       {activePanel === "write-tools" && renderWriteToolPanel(
         selectedWriteToolId,
         state.credentials,
-        selectedContentReplacementJob,
+        selectedContentReplacementJobId,
         reconnectContentReplacementCredentials,
+        openContentReplacementJob,
+        forgetDeletedContentReplacementJob,
       )}
       {activePanel === "utilities" && (
         <SmeCoverageWorkspace
@@ -753,8 +754,10 @@ function findLatestSelectedReportRunSnapshot(snapshot: PersistedDatasetSessionSn
 function renderWriteToolPanel(
   toolId: WriteToolId,
   credentials: SessionCredentials | null,
-  contentReplacementJob: PersistedContentReplacementJob | null,
+  contentReplacementJobId: string | null,
   onReconnectContentReplacement: () => void,
+  onSelectContentReplacementJob: (jobId: string) => void,
+  onDeleteContentReplacementJob: (jobId: string) => void,
 ) {
   switch (toolId) {
     case "user-group-sync":
@@ -763,7 +766,9 @@ function renderWriteToolPanel(
       return (
         <ContentReplacementWizard
           credentials={credentials}
-          initialJob={contentReplacementJob}
+          selectedJobId={contentReplacementJobId}
+          onSelectedJobIdChange={onSelectContentReplacementJob}
+          onJobDeleted={onDeleteContentReplacementJob}
           onReconnect={onReconnectContentReplacement}
         />
       );

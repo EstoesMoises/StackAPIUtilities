@@ -33,8 +33,22 @@ import type {
 } from "../writeTools/contentReplacement/types";
 
 const DATABASE_NAME = "stack-api-content-replacement";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const STORE_NAME = "jobs";
+const SUMMARY_INDEX_NAME = "by-summary";
+const SUMMARY_INDEX_PATH = [
+  "summary.sortKey",
+  "summary.updatedAt",
+  "summary.baseUrl",
+  "summary.stage",
+  "summary.status",
+  "summary.mappingCount",
+  "summary.proposedPostCount",
+  "summary.recoverySnapshotStatus",
+] as const;
+const MAX_SUMMARY_PAGE_SIZE = 100;
+const MAX_SUMMARY_OFFSET = 1_000_000;
+const MAX_DATE_MILLISECONDS = 8_640_000_000_000_000;
 const JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_QUEUE_ITEMS = 100_000;
 const MAX_SCHEMA_ARRAY_LENGTH = 100_000;
@@ -57,17 +71,54 @@ const PROGRESS_KEYS = [
   "proposalsFound", "protectedOccurrences", "applyCompleted", "recoveryCompleted",
 ] as const;
 
-export async function listContentReplacementJobs(): Promise<PersistedContentReplacementJob[]> {
+export interface ContentReplacementJobSummary {
+  id: string;
+  baseUrl: string;
+  stage: PersistedContentReplacementJob["stage"];
+  status: PersistedContentReplacementJob["status"];
+  mappingCount: number;
+  proposedPostCount: number;
+  recoverySnapshotStatus: PersistedContentReplacementJob["recoverySnapshotStatus"];
+  updatedAt: string;
+}
+
+export interface ContentReplacementJobSummaryPage {
+  jobs: ContentReplacementJobSummary[];
+  totalCount: number;
+}
+
+interface StoredContentReplacementJobSummary extends ContentReplacementJobSummary {
+  sortKey: string;
+}
+
+interface StoredContentReplacementJobRecord {
+  id: string;
+  job: PersistedContentReplacementJob;
+  summary: StoredContentReplacementJobSummary;
+}
+
+export async function listContentReplacementJobs({
+  offset,
+  limit,
+}: {
+  offset: number;
+  limit: number;
+}): Promise<ContentReplacementJobSummaryPage> {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAX_SUMMARY_OFFSET ||
+    !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SUMMARY_PAGE_SIZE) {
+    throw new TypeError("Content replacement summary page is invalid.");
+  }
   const database = await openDatabase();
   try {
     const transaction = database.transaction(STORE_NAME, "readonly");
-    const [values] = await Promise.all([
-      requestToPromise<unknown[]>(transaction.objectStore(STORE_NAME).getAll()),
+    const store = transaction.objectStore(STORE_NAME);
+    const index = store.index(SUMMARY_INDEX_NAME);
+    const [jobs, totalCount] = await Promise.all([
+      readSummaryPage(index, offset, limit),
+      requestToPromise<number>(index.count()),
       transactionToPromise(transaction),
     ]);
-    const jobs: PersistedContentReplacementJob[] = [];
-    for (const value of values) jobs.push(await parseContentReplacementJob(value));
-    return jobs.sort(compareJobs);
+    return { jobs, totalCount };
   } finally {
     database.close();
   }
@@ -84,7 +135,10 @@ export async function loadContentReplacementJob(
       requestToPromise<unknown>(transaction.objectStore(STORE_NAME).get(id)),
       transactionToPromise(transaction),
     ]);
-    return value === undefined ? null : await parseContentReplacementJob(value);
+    if (value === undefined) return null;
+    const job = await parseContentReplacementJob(storedJobValue(value));
+    assertStoredRecordCoherence(value, id, job);
+    return job;
   } finally {
     database.close();
   }
@@ -112,7 +166,7 @@ export async function saveContentReplacementJob(
       await transactionPromise;
       return { status: "conflict" };
     }
-    await Promise.all([requestToPromise(store.put(normalized)), transactionPromise]);
+    await Promise.all([requestToPromise(store.put(storedJobRecord(normalized))), transactionPromise]);
     return { status: "saved" };
   } finally {
     database.close();
@@ -121,15 +175,42 @@ export async function saveContentReplacementJob(
 
 function storedJobRevision(value: unknown, expectedId: string): number | null {
   if (value === undefined) return null;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw corruptJob();
-  const id = Object.getOwnPropertyDescriptor(value, "id");
-  const revision = Object.getOwnPropertyDescriptor(value, "revision");
+  const job = storedJobValue(value);
+  if (typeof job !== "object" || job === null || Array.isArray(job)) throw corruptJob();
+  const id = Object.getOwnPropertyDescriptor(job, "id");
+  const revision = Object.getOwnPropertyDescriptor(job, "revision");
   if (
     !id || !("value" in id) || id.value !== expectedId ||
     !revision || !("value" in revision) ||
     !Number.isSafeInteger(revision.value) || revision.value < 0
   ) throw corruptJob();
   return revision.value as number;
+}
+
+function storedJobValue(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const job = Object.getOwnPropertyDescriptor(value, "job");
+  const summary = Object.getOwnPropertyDescriptor(value, "summary");
+  const id = Object.getOwnPropertyDescriptor(value, "id");
+  if (job && summary && id && "value" in job && "value" in summary && "value" in id) return job.value;
+  return value;
+}
+
+function assertStoredRecordCoherence(
+  value: unknown,
+  expectedId: string,
+  job: PersistedContentReplacementJob,
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const storedJob = Object.getOwnPropertyDescriptor(value, "job");
+  const storedSummary = Object.getOwnPropertyDescriptor(value, "summary");
+  const storedId = Object.getOwnPropertyDescriptor(value, "id");
+  const wrapper = storedJob && storedSummary && storedId &&
+    "value" in storedJob && "value" in storedSummary && "value" in storedId;
+  if (!wrapper) return;
+  if (storedId.value !== expectedId || job.id !== expectedId) throw corruptJob();
+  const summary = cloneSafeDataGraph(storedSummary.value);
+  if (stableSerialize(summary) !== stableSerialize(summaryFromJob(job))) throw corruptJob();
 }
 
 export async function deleteContentReplacementJob(id: string): Promise<void> {
@@ -142,6 +223,119 @@ export async function deleteContentReplacementJob(id: string): Promise<void> {
   } finally {
     database.close();
   }
+}
+
+function storedJobRecord(job: PersistedContentReplacementJob): StoredContentReplacementJobRecord {
+  return { id: job.id, job, summary: summaryFromJob(job) };
+}
+
+function summaryFromJob(job: PersistedContentReplacementJob): StoredContentReplacementJobSummary {
+  return {
+    id: job.id,
+    sortKey: summarySortKey(job.updatedAt, job.id),
+    baseUrl: job.baseUrl,
+    stage: job.stage,
+    status: job.status,
+    mappingCount: job.configuration.rules.length,
+    proposedPostCount: job.progress.proposalsFound,
+    recoverySnapshotStatus: job.recoverySnapshotStatus,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function summaryFromLegacyJob(value: unknown): StoredContentReplacementJobSummary {
+  const id = ownDataProperty(value, "id");
+  const baseUrl = ownDataProperty(value, "baseUrl");
+  const stage = ownDataProperty(value, "stage");
+  const status = ownDataProperty(value, "status");
+  const recoverySnapshotStatus = ownDataProperty(value, "recoverySnapshotStatus");
+  const updatedAt = timestamp(ownDataProperty(value, "updatedAt"));
+  const configuration = ownDataProperty(value, "configuration");
+  const rules = ownDataProperty(configuration, "rules");
+  const progress = ownDataProperty(value, "progress");
+  const proposedPostCount = ownDataProperty(progress, "proposalsFound");
+  if (!isJobId(id) || typeof baseUrl !== "string" || normalizeEnterpriseBaseUrl(baseUrl) !== baseUrl ||
+    !isStage(stage) || !isStatus(status) || !isRecoverySnapshotStatus(recoverySnapshotStatus) ||
+    !Array.isArray(rules) || rules.length > MAX_SCHEMA_ARRAY_LENGTH ||
+    !Number.isSafeInteger(proposedPostCount) || (proposedPostCount as number) < 0) {
+    throw corruptJob();
+  }
+  return {
+    id,
+    sortKey: summarySortKey(updatedAt, id),
+    baseUrl,
+    stage,
+    status,
+    mappingCount: rules.length,
+    proposedPostCount: proposedPostCount as number,
+    recoverySnapshotStatus,
+    updatedAt,
+  };
+}
+
+function ownDataProperty(value: unknown, key: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw corruptJob();
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor || !("value" in descriptor)) throw corruptJob();
+  return descriptor.value;
+}
+
+function summarySortKey(updatedAt: string, id: string): string {
+  const inverse = MAX_DATE_MILLISECONDS - Date.parse(updatedAt);
+  if (!Number.isSafeInteger(inverse) || inverse < 0) throw corruptJob();
+  return `${String(inverse).padStart(16, "0")}:${id}`;
+}
+
+function readSummaryPage(
+  index: IDBIndex,
+  offset: number,
+  limit: number,
+): Promise<ContentReplacementJobSummary[]> {
+  return new Promise((resolve, reject) => {
+    const jobs: ContentReplacementJobSummary[] = [];
+    let advanced = offset === 0;
+    const request = index.openKeyCursor();
+    request.onerror = () => reject(new Error("Content replacement storage request failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve(jobs);
+        return;
+      }
+      if (!advanced) {
+        advanced = true;
+        cursor.advance(offset);
+        return;
+      }
+      jobs.push(summaryFromIndexEntry(cursor.key, cursor.primaryKey));
+      if (jobs.length >= limit) {
+        resolve(jobs);
+        return;
+      }
+      cursor.continue();
+    };
+  });
+}
+
+function summaryFromIndexEntry(key: IDBValidKey, primaryKey: IDBValidKey): ContentReplacementJobSummary {
+  if (!Array.isArray(key) || key.length !== SUMMARY_INDEX_PATH.length || !isJobId(primaryKey)) throw corruptJob();
+  const [sortKey, updatedAtValue, baseUrl, stage, status, mappingCount, proposedPostCount, recoverySnapshotStatus] = key;
+  const updatedAt = timestamp(updatedAtValue);
+  if (sortKey !== summarySortKey(updatedAt, primaryKey) ||
+    typeof baseUrl !== "string" || normalizeEnterpriseBaseUrl(baseUrl) !== baseUrl ||
+    !isStage(stage) || !isStatus(status) || !isRecoverySnapshotStatus(recoverySnapshotStatus) ||
+    !Number.isSafeInteger(mappingCount) || (mappingCount as number) < 0 ||
+    !Number.isSafeInteger(proposedPostCount) || (proposedPostCount as number) < 0) throw corruptJob();
+  return {
+    id: primaryKey,
+    baseUrl,
+    stage,
+    status,
+    mappingCount: mappingCount as number,
+    proposedPostCount: proposedPostCount as number,
+    recoverySnapshotStatus,
+    updatedAt,
+  };
 }
 
 async function parseContentReplacementJob(value: unknown): Promise<PersistedContentReplacementJob> {
@@ -1408,10 +1602,28 @@ async function openDatabase(): Promise<IDBDatabase> {
   } catch {
     throw new Error("Content replacement storage could not be opened.");
   }
-  request.onupgradeneeded = () => {
+  request.onupgradeneeded = (event) => {
     try {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) {
-        request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
+      const store = request.result.objectStoreNames.contains(STORE_NAME)
+        ? request.transaction!.objectStore(STORE_NAME)
+        : request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
+      if (!store.indexNames.contains(SUMMARY_INDEX_NAME)) {
+        store.createIndex(SUMMARY_INDEX_NAME, [...SUMMARY_INDEX_PATH], { unique: true });
+      }
+      if (event.oldVersion < 2) {
+        const cursorRequest = store.openCursor();
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const value = cursor.value;
+          try {
+            const summary = summaryFromLegacyJob(value);
+            cursor.update({ id: summary.id, job: value as PersistedContentReplacementJob, summary });
+          } catch {
+            // Root-corrupt legacy records remain unindexed and are rejected if explicitly opened.
+          }
+          cursor.continue();
+        };
       }
     } catch {
       try { request.transaction?.abort(); } catch { /* preserve stable open failure */ }

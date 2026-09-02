@@ -95,7 +95,7 @@ describe("browserContentReplacementStorage", () => {
     fake.records.set(initial.id, { ...initial, revision: "zero" });
 
     await expect(compareAndSave(next, 0)).rejects.toThrow("Stored content replacement job is invalid.");
-    expect(fake.records.get(initial.id)).toMatchObject({ revision: "zero" });
+    expect(fake.records.get(initial.id)).toMatchObject({ job: { revision: "zero" } });
   });
 
   it.each([
@@ -737,13 +737,21 @@ describe("browserContentReplacementStorage", () => {
     await saveContentReplacementJob(newerB);
     await saveContentReplacementJob(newerA);
 
-    await expect(listContentReplacementJobs()).resolves.toEqual([newerA, newerB, older]);
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
+      totalCount: 3,
+      jobs: [
+        expect.objectContaining({ id: newerA.id }),
+        expect.objectContaining({ id: newerB.id }),
+        expect.objectContaining({ id: older.id }),
+      ],
+    });
     await deleteContentReplacementJob("job-a");
     await deleteContentReplacementJob("job-a");
     await expect(loadContentReplacementJob("job-a")).resolves.toBeNull();
     expect(fake.openCalls.every((call) => call.name === "stack-api-content-replacement")).toBe(true);
-    expect(fake.openCalls.every((call) => call.version === 1)).toBe(true);
+    expect(fake.openCalls.every((call) => call.version === 2)).toBe(true);
     expect(fake.createdStores).toEqual([{ name: "jobs", keyPath: "id" }]);
+    expect(fake.createdIndexes).toEqual([{ store: "jobs", name: "by-summary", unique: true }]);
   });
 
   it("uses a locale-independent lexical ID tie-break for equal update timestamps", async () => {
@@ -753,9 +761,80 @@ describe("browserContentReplacementStorage", () => {
     await saveContentReplacementJob(lower);
     await saveContentReplacementJob(upper);
 
-    const jobs = await listContentReplacementJobs();
+    const jobs = await listContentReplacementJobs({ offset: 0, limit: 25 });
 
-    expect(jobs.map((job) => job.id)).toEqual(["job-A", "job-a"]);
+    expect(jobs.jobs.map((job) => job.id)).toEqual(["job-A", "job-a"]);
+  });
+
+  it("pages thousands of lightweight summaries without getAll or touching proposal bodies", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    let proposalReads = 0;
+    for (let index = 0; index < 2_048; index += 1) {
+      const id = `job-${String(index).padStart(4, "0")}`;
+      const raw = { ...createJob(), id };
+      Object.defineProperty(raw, "proposals", {
+        enumerable: true,
+        configurable: true,
+        get() {
+          proposalReads += 1;
+          throw new Error("full proposal bodies must not be read while listing summaries");
+        },
+      });
+      fake.records.set(id, storedRecordForTest(raw));
+    }
+
+    const page = await listContentReplacementJobs({ offset: 1_000, limit: 25 });
+
+    expect(page.totalCount).toBe(2_048);
+    expect(page.jobs).toHaveLength(25);
+    expect(page.jobs[0]).toMatchObject({ id: "job-1000", mappingCount: 1, proposedPostCount: 0 });
+    expect(page.jobs[24]?.id).toBe("job-1024");
+    expect(proposalReads).toBe(0);
+    expect(fake.getAllCalls).toBe(0);
+    expect(fake.summaryCursorVisits).toBeLessThanOrEqual(26);
+  });
+
+  it("lists a root-valid summary but defers corrupt proposal rejection until explicit open", async () => {
+    const fake = installFakeIndexedDB();
+    const corruptBody = { ...createJob(), id: "corrupt-body", proposals: { bad: "private malformed body" } };
+    fake.records.set(corruptBody.id, corruptBody);
+
+    const page = await listContentReplacementJobs({ offset: 0, limit: 25 });
+
+    expect(page.jobs.map((job) => job.id)).toEqual(["corrupt-body"]);
+    await expect(loadContentReplacementJob("corrupt-body")).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
+  it("backfills legacy summaries and keeps save/delete/list/open coherent", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 1;
+    fake.hasStore = true;
+    const legacy = { ...createJob(), id: "legacy-job" };
+    fake.records.set(legacy.id, legacy);
+
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
+      totalCount: 1,
+      jobs: [expect.objectContaining({ id: "legacy-job" })],
+    });
+    await expect(loadContentReplacementJob("legacy-job")).resolves.toEqual(legacy);
+
+    const current = { ...legacy, revision: 1, updatedAt: "2026-09-02T13:00:00.000Z" };
+    await expect(compareAndSave(current, 0)).resolves.toEqual({ status: "saved" });
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
+      totalCount: 1,
+      jobs: [expect.objectContaining({ id: "legacy-job", updatedAt: current.updatedAt })],
+    });
+
+    await deleteContentReplacementJob("legacy-job");
+    await expect(loadContentReplacementJob("legacy-job")).resolves.toBeNull();
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toEqual({ jobs: [], totalCount: 0 });
+    expect(fake.createdIndexes).toContainEqual({ store: "jobs", name: "by-summary", unique: true });
+    expect(fake.openCalls.some((call) => call.version === 2)).toBe(true);
   });
 
   it("validates a job completely before opening a write transaction", async () => {
@@ -864,20 +943,35 @@ describe("browserContentReplacementStorage", () => {
     await expect(saveContentReplacementJob(badRequestChecksum)).rejects.toThrow();
   });
 
-  it("rejects corrupt records after load and rejects an entire corrupt list", async () => {
+  it("rejects a corrupt full record on open without blocking valid lightweight summaries", async () => {
     const fake = installFakeIndexedDB();
     fake.records.set("replacement-job-1", { ...createJob(), status: "mystery" });
+    fake.records.set("valid-job", { ...createJob(), id: "valid-job" });
     await expect(loadContentReplacementJob("replacement-job-1")).rejects.toThrow(
       "Stored content replacement job is invalid.",
     );
-    fake.records.set("valid-job", { ...createJob(), id: "valid-job" });
-    await expect(listContentReplacementJobs()).rejects.toThrow("Stored content replacement job is invalid.");
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
+      totalCount: 1,
+      jobs: [expect.objectContaining({ id: "valid-job" })],
+    });
+  });
+
+  it("rejects a stored summary that no longer matches the full job when opened", async () => {
+    const fake = installFakeIndexedDB();
+    const job = { ...createJob(), id: "summary-mismatch" };
+    const stored = storedRecordForTest(job);
+    (stored.summary as Record<string, unknown>).stage = "results";
+    fake.records.set(job.id, stored);
+
+    await expect(loadContentReplacementJob(job.id)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
   });
 
   it("fails predictably when IndexedDB is unavailable", async () => {
     vi.stubGlobal("indexedDB", undefined);
     await expect(loadContentReplacementJob("valid-id")).rejects.toThrow("Content replacement storage is unavailable.");
-    await expect(listContentReplacementJobs()).rejects.toThrow("Content replacement storage is unavailable.");
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).rejects.toThrow("Content replacement storage is unavailable.");
     await expect(saveContentReplacementJob(createJob())).rejects.toThrow("Content replacement storage is unavailable.");
     await expect(deleteContentReplacementJob("valid-id")).rejects.toThrow("Content replacement storage is unavailable.");
   });
@@ -893,9 +987,9 @@ describe("browserContentReplacementStorage", () => {
   it("rejects open, blocked upgrade, request, and transaction failures with stable messages", async () => {
     const fake = installFakeIndexedDB();
     fake.nextOpenError = true;
-    await expect(listContentReplacementJobs()).rejects.toThrow("Content replacement storage could not be opened.");
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).rejects.toThrow("Content replacement storage could not be opened.");
     fake.nextBlocked = true;
-    await expect(listContentReplacementJobs()).rejects.toThrow("Content replacement storage upgrade was blocked.");
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).rejects.toThrow("Content replacement storage upgrade was blocked.");
     fake.nextRequestError = true;
     await expect(loadContentReplacementJob("valid-id")).rejects.toThrow("Content replacement storage request failed.");
     fake.nextTransactionAbort = true;
@@ -908,7 +1002,7 @@ describe("browserContentReplacementStorage", () => {
     const fake = installFakeIndexedDB();
     fake.nextUpgradeError = true;
 
-    await expect(listContentReplacementJobs()).rejects.toThrow(
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).rejects.toThrow(
       "Content replacement storage could not be opened.",
     );
   });
@@ -1446,7 +1540,7 @@ describe("browserContentReplacementStorage", () => {
       if (mode === "blocked") fake.nextBlockedThenSuccess = true;
       else fake.nextErrorThenSuccess = true;
 
-      await expect(listContentReplacementJobs()).rejects.toThrow(message);
+      await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).rejects.toThrow(message);
       await new Promise<void>((resolve) => queueMicrotask(() => resolve()));
 
       expect(fake.closedDatabases).toBe(1);
@@ -1896,12 +1990,35 @@ function installFakeIndexedDB(): FakeIndexedDB {
   return fake;
 }
 
+function storedRecordForTest(job: PersistedContentReplacementJob): Record<string, unknown> {
+  return {
+    id: job.id,
+    job,
+    summary: {
+      id: job.id,
+      sortKey: `${String(8_640_000_000_000_000 - Date.parse(job.updatedAt)).padStart(16, "0")}:${job.id}`,
+      baseUrl: job.baseUrl,
+      stage: job.stage,
+      status: job.status,
+      mappingCount: job.configuration.rules.length,
+      proposedPostCount: job.progress.proposalsFound,
+      recoverySnapshotStatus: job.recoverySnapshotStatus,
+      updatedAt: job.updatedAt,
+    },
+  };
+}
+
 class FakeIndexedDB {
   readonly records = new Map<string, unknown>();
   readonly openCalls: Array<{ name: string; version?: number }> = [];
   readonly createdStores: Array<{ name: string; keyPath: string | string[] | null }> = [];
+  readonly createdIndexes: Array<{ store: string; name: string; unique: boolean }> = [];
+  databaseVersion = 0;
+  getAllCalls = 0;
+  summaryCursorVisits = 0;
   closedDatabases = 0;
   hasStore = false;
+  hasSummaryIndex = false;
   nextOpenError = false;
   nextBlocked = false;
   nextBlockedThenSuccess = false;
@@ -1915,9 +2032,9 @@ class FakeIndexedDB {
     this.openCalls.push({ name, version });
     const database = new FakeDatabase(this);
     const request = new FakeOpenRequest(database);
-    request.transaction = {
-      abort: () => request.fail(),
-    } as IDBTransaction;
+    const upgradeTransaction = new FakeTransaction(this, false);
+    database.upgradeTransaction = upgradeTransaction;
+    request.transaction = upgradeTransaction as unknown as IDBTransaction;
     queueMicrotask(() => {
       if (this.nextOpenError) {
         this.nextOpenError = false;
@@ -1941,8 +2058,19 @@ class FakeIndexedDB {
         queueMicrotask(() => request.succeed(database));
         return;
       }
-      if (!this.hasStore) request.upgrade();
-      if (request.failed) return;
+      const requestedVersion = version ?? (this.databaseVersion || 1);
+      if (requestedVersion > this.databaseVersion) {
+        upgradeTransaction.onabort = () => request.fail();
+        upgradeTransaction.onerror = () => request.fail();
+        upgradeTransaction.oncomplete = () => {
+          this.databaseVersion = requestedVersion;
+          request.succeed(database);
+        };
+        request.upgrade(this.databaseVersion, requestedVersion);
+        if (request.failed) return;
+        upgradeTransaction.completeIfIdle();
+        return;
+      }
       request.succeed(database);
     });
     return request as unknown as IDBOpenDBRequest;
@@ -1951,6 +2079,7 @@ class FakeIndexedDB {
 
 class FakeDatabase {
   readonly objectStoreNames = { contains: (name: string) => name === "jobs" && this.owner.hasStore };
+  upgradeTransaction: FakeTransaction | null = null;
 
   constructor(private readonly owner: FakeIndexedDB) {}
 
@@ -1961,11 +2090,11 @@ class FakeDatabase {
     }
     this.owner.hasStore = true;
     this.owner.createdStores.push({ name, keyPath: options?.keyPath ?? null });
-    return {} as IDBObjectStore;
+    return new FakeObjectStore(this.owner, this.upgradeTransaction!, name) as unknown as IDBObjectStore;
   }
 
   transaction(): IDBTransaction {
-    return new FakeTransaction(this.owner) as unknown as IDBTransaction;
+    return new FakeTransaction(this.owner, true) as unknown as IDBTransaction;
   }
 
   close(): void { this.owner.closedDatabases += 1; }
@@ -1981,10 +2110,10 @@ class FakeTransaction {
   private readonly stagedWrites = new Map<string, unknown>();
   private readonly stagedDeletes = new Set<string>();
 
-  constructor(private readonly owner: FakeIndexedDB) {}
+  constructor(private readonly owner: FakeIndexedDB, private readonly consumeFailures: boolean) {}
 
-  objectStore(): IDBObjectStore {
-    return new FakeObjectStore(this.owner, this) as unknown as IDBObjectStore;
+  objectStore(name = "jobs"): IDBObjectStore {
+    return new FakeObjectStore(this.owner, this, name) as unknown as IDBObjectStore;
   }
 
   startRequest(): void {
@@ -1993,13 +2122,17 @@ class FakeTransaction {
 
   finishRequest(): void {
     this.pendingRequests -= 1;
+    this.completeIfIdle();
+  }
+
+  completeIfIdle(): void {
     queueMicrotask(() => {
       if (this.finished || this.pendingRequests !== 0) return;
       this.finished = true;
-      if (this.owner.nextTransactionAbort) {
+      if (this.consumeFailures && this.owner.nextTransactionAbort) {
         this.owner.nextTransactionAbort = false;
         this.onabort?.();
-      } else if (this.owner.nextTransactionError) {
+      } else if (this.consumeFailures && this.owner.nextTransactionError) {
         this.owner.nextTransactionError = false;
         this.onerror?.();
       } else {
@@ -2010,7 +2143,7 @@ class FakeTransaction {
     });
   }
 
-  stagePut(value: PersistedContentReplacementJob): void {
+  stagePut(value: { id: string }): void {
     this.stagedDeletes.delete(value.id);
     this.stagedWrites.set(value.id, value);
   }
@@ -2028,17 +2161,24 @@ class FakeTransaction {
 }
 
 class FakeObjectStore {
-  constructor(private readonly owner: FakeIndexedDB, private readonly transaction: FakeTransaction) {}
+  readonly indexNames = { contains: (name: string) => name === "by-summary" && this.owner.hasSummaryIndex };
+
+  constructor(
+    private readonly owner: FakeIndexedDB,
+    private readonly transaction: FakeTransaction,
+    private readonly name: string,
+  ) {}
 
   get(key: IDBValidKey): IDBRequest<unknown> {
     return this.request(() => this.owner.records.get(String(key)));
   }
 
   getAll(): IDBRequest<unknown[]> {
+    this.owner.getAllCalls += 1;
     return this.request(() => [...this.owner.records.values()]);
   }
 
-  put(value: PersistedContentReplacementJob): IDBRequest<IDBValidKey> {
+  put(value: { id: string }): IDBRequest<IDBValidKey> {
     return this.request<IDBValidKey>(() => {
       this.transaction.stagePut(value);
       return value.id;
@@ -2052,7 +2192,31 @@ class FakeObjectStore {
     }, true);
   }
 
-  private request<T>(operation: () => T, _write = false): IDBRequest<T> {
+  createIndex(name: string, _keyPath: string | string[], options?: IDBIndexParameters): IDBIndex {
+    if (this.owner.nextUpgradeError) {
+      this.owner.nextUpgradeError = false;
+      throw new Error("upgrade failed");
+    }
+    this.owner.hasSummaryIndex = true;
+    this.owner.createdIndexes.push({ store: this.name, name, unique: options?.unique === true });
+    return new FakeIndex(this.owner, this.transaction) as unknown as IDBIndex;
+  }
+
+  index(name: string): IDBIndex {
+    if (name !== "by-summary" || !this.owner.hasSummaryIndex) throw new Error("missing index");
+    return new FakeIndex(this.owner, this.transaction) as unknown as IDBIndex;
+  }
+
+  openCursor(): IDBRequest<IDBCursorWithValue | null> {
+    const entries = [...this.owner.records.entries()].map(([primaryKey, value]) => ({
+      key: primaryKey,
+      primaryKey,
+      value,
+    }));
+    return new FakeCursorRequest(this.owner, this.transaction, entries, false) as unknown as IDBRequest<IDBCursorWithValue | null>;
+  }
+
+  request<T>(operation: () => T, _write = false): IDBRequest<T> {
     const request = new FakeRequest<T>();
     this.transaction.startRequest();
     queueMicrotask(() => {
@@ -2067,6 +2231,51 @@ class FakeObjectStore {
     });
     return request as unknown as IDBRequest<T>;
   }
+}
+
+class FakeIndex {
+  constructor(private readonly owner: FakeIndexedDB, private readonly transaction: FakeTransaction) {}
+
+  count(): IDBRequest<number> {
+    const store = new FakeObjectStore(this.owner, this.transaction, "jobs");
+    return store.request(() => indexedSummaryEntries(this.owner).length) as IDBRequest<number>;
+  }
+
+  openKeyCursor(): IDBRequest<IDBCursor | null> {
+    return new FakeCursorRequest(
+      this.owner,
+      this.transaction,
+      indexedSummaryEntries(this.owner),
+      true,
+    ) as unknown as IDBRequest<IDBCursor | null>;
+  }
+}
+
+function indexedSummaryEntries(owner: FakeIndexedDB): Array<{ key: IDBValidKey; primaryKey: IDBValidKey; value: unknown }> {
+  return [...owner.records.entries()].flatMap(([primaryKey, value]) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const summary = Object.getOwnPropertyDescriptor(value, "summary");
+    if (!summary || !("value" in summary) || !summary.value || typeof summary.value !== "object") return [];
+    const record = summary.value as Record<string, unknown>;
+    return [{
+      primaryKey,
+      key: [
+        record.sortKey,
+        record.updatedAt,
+        record.baseUrl,
+        record.stage,
+        record.status,
+        record.mappingCount,
+        record.proposedPostCount,
+        record.recoverySnapshotStatus,
+      ] as IDBValidKey,
+      value,
+    }];
+  }).sort((left, right) => {
+    const leftKey = String((left.key as IDBValidKey[])[0]);
+    const rightKey = String((right.key as IDBValidKey[])[0]);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
 }
 
 class FakeRequest<T> {
@@ -2085,9 +2294,58 @@ class FakeRequest<T> {
   }
 }
 
+class FakeCursorRequest extends FakeRequest<IDBCursorWithValue | null> {
+  private index = 0;
+
+  constructor(
+    private readonly owner: FakeIndexedDB,
+    private readonly transaction: FakeTransaction,
+    private readonly entries: Array<{ key: IDBValidKey; primaryKey: IDBValidKey; value: unknown }>,
+    private readonly keyOnly: boolean,
+  ) {
+    super();
+    transaction.startRequest();
+    queueMicrotask(() => this.publish());
+  }
+
+  private publish(): void {
+    const entry = this.entries[this.index];
+    if (!entry) {
+      this.succeed(null);
+      this.transaction.finishRequest();
+      return;
+    }
+    if (this.keyOnly) this.owner.summaryCursorVisits += 1;
+    let moved = false;
+    const cursor = {
+      key: entry.key,
+      primaryKey: entry.primaryKey,
+      ...(this.keyOnly ? {} : { value: entry.value }),
+      continue: () => {
+        moved = true;
+        this.index += 1;
+        queueMicrotask(() => this.publish());
+      },
+      advance: (count: number) => {
+        moved = true;
+        this.index += count;
+        queueMicrotask(() => this.publish());
+      },
+      update: (value: { id: string }) => {
+        this.transaction.stagePut(value);
+        return {} as IDBRequest<IDBValidKey>;
+      },
+    } as unknown as IDBCursorWithValue;
+    this.succeed(cursor);
+    queueMicrotask(() => {
+      if (!moved) this.transaction.finishRequest();
+    });
+  }
+}
+
 class FakeOpenRequest<T> extends FakeRequest<T> {
   onblocked: (() => void) | null = null;
-  onupgradeneeded: (() => void) | null = null;
+  onupgradeneeded: ((event: IDBVersionChangeEvent) => void) | null = null;
   transaction: IDBTransaction | null = null;
   failed = false;
 
@@ -2096,7 +2354,9 @@ class FakeOpenRequest<T> extends FakeRequest<T> {
     this.result = result;
   }
 
-  upgrade(): void { this.onupgradeneeded?.(); }
+  upgrade(oldVersion: number, newVersion: number): void {
+    this.onupgradeneeded?.({ oldVersion, newVersion } as IDBVersionChangeEvent);
+  }
   block(): void { this.onblocked?.(); }
   override fail(): void {
     this.failed = true;
