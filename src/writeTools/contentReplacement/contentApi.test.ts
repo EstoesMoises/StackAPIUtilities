@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ContentReplacementApiError,
   type ContentReplacementClient,
   createContentReplacementClient,
   type ContentInventoryPage,
@@ -302,12 +303,44 @@ describe("content replacement API adapter", () => {
       kind: "answer",
       ref: { kind: "answer", questionId: 42, answerId: 8 },
       request: { body: "safe" },
-    })).rejects.toMatchObject({ name: "ContentReplacementApiError", status: undefined });
+    })).rejects.toMatchObject({ name: "ContentReplacementApiError" });
     await expect(client.updateItem({
       kind: "answer",
       ref: { kind: "answer", questionId: 42, answerId: 8 },
       request: { body: "safe" },
     })).rejects.toThrow("Unable to update answer 8.");
+  });
+
+  it("replaces inventory transport failures even when they impersonate adapter errors", async () => {
+    const transport = new FakeTransport(
+      undefined,
+      undefined,
+      { getPage: new ContentReplacementApiError("authorization=secret", { status: 429 }) },
+    );
+
+    await expect(createContentReplacementClient(transport).getArticlesPage(1)).rejects.toEqual(
+      expect.objectContaining({
+        name: "ContentReplacementApiError",
+        message: "Unable to read article inventory.",
+        status: 429,
+      }),
+    );
+  });
+
+  it.each([
+    [Object.assign(new Error("secret"), { status: Number.POSITIVE_INFINITY })],
+    [new Proxy({}, { get: () => { throw new Error("secret getter"); } })],
+    [new ContentReplacementApiError("secret adapter error")],
+  ])("sanitizes hostile detail transport errors without retaining a status", async (failure) => {
+    const transport = new FakeTransport({}, undefined, { getJson: failure });
+
+    await expect(createContentReplacementClient(transport).getItem({ kind: "question", questionId: 42 }))
+      .rejects.toEqual(expect.objectContaining({
+        name: "ContentReplacementApiError",
+        message: "Unable to read question 42.",
+      }));
+    await expect(createContentReplacementClient(transport).getItem({ kind: "question", questionId: 42 }))
+      .rejects.not.toHaveProperty("status");
   });
 
   it("writes only the reconstructed request to the matching PUT path", async () => {
@@ -324,9 +357,10 @@ describe("content replacement API adapter", () => {
         type: "policy",
         expirationDate: null,
         permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [8] },
+        responseOnly: "do not send",
       },
       metadata: { owner: { id: 3, name: "Ada" } },
-    });
+    } as unknown as Parameters<typeof client.updateItem>[0]);
 
     expect(transport.putCalls).toEqual([{
       path: "/articles/7",

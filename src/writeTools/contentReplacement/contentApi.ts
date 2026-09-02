@@ -48,13 +48,13 @@ export interface ContentReplacementClient {
 }
 
 export class ContentReplacementApiError extends Error {
-  readonly status?: number;
+  declare readonly status?: number;
 
   constructor(message: string, error?: unknown) {
     super(message);
     this.name = "ContentReplacementApiError";
-    const status = asRecord(error)?.status;
-    if (typeof status === "number" && Number.isFinite(status)) this.status = status;
+    const status = numericStatus(error);
+    if (status !== undefined) this.status = status;
   }
 }
 
@@ -85,24 +85,22 @@ export function createContentReplacementClient(transport: ContentApiTransport): 
       );
     },
     async getItem(ref) {
+      assertValidRef(ref, "reconstruct");
+      let response: unknown;
       try {
-        assertValidRef(ref, "reconstruct");
-        const response = await transport.getJson<unknown>(detailPath(ref));
-        return reconstructRequestModel(ref, response);
+        response = await transport.getJson<unknown>(detailPath(ref));
       } catch (error) {
-        if (error instanceof ContentReplacementApiError) throw error;
         throw readError(ref.kind, requestedId(ref), error);
       }
+      return reconstructRequestModel(ref, response);
     },
     async updateItem(model) {
-      let ref: ReplacementItemRef;
+      const ref = validModelRef(model);
+      const request = exactUpdateRequest(model, ref);
       try {
-        ref = validModelRef(model);
-        const request = exactUpdateRequest(model, ref);
         await transport.putJson(detailPath(ref), request);
       } catch (error) {
-        if (error instanceof ContentReplacementApiError) throw error;
-        throw updateFailure(model, error);
+        throw updateError(ref.kind, requestedId(ref), error);
       }
     },
   };
@@ -112,16 +110,16 @@ async function readInventoryPage<T>(
   kind: "question" | "answer" | "article",
   read: () => Promise<ContentInventoryPage<T>>,
 ): Promise<ContentInventoryPage<T>> {
+  let result: ContentInventoryPage<T>;
   try {
-    const result = await read();
-    if (!Array.isArray(result.items) || result.items.some((item) => !isContentId(asRecord(item)?.id))) {
-      throw inventoryError(kind);
-    }
-    return result;
+    result = await read();
   } catch (error) {
-    if (error instanceof ContentReplacementApiError) throw error;
     throw inventoryError(kind, error);
   }
+  if (!Array.isArray(result.items) || result.items.some((item) => !isContentId(asRecord(item)?.id))) {
+    throw inventoryError(kind);
+  }
+  return result;
 }
 
 function reconstructRequestModel(ref: ReplacementItemRef, response: unknown): ReplacementRequestModel {
@@ -243,26 +241,19 @@ function inventoryError(
   return new ContentReplacementApiError(`Unable to read ${kind} inventory.`, error);
 }
 
-function updateFailure(model: unknown, error: unknown): ContentReplacementApiError {
-  const record = asRecord(model);
-  const ref = asRecord(record?.ref);
-  if (!isContentKind(record?.kind) || !ref || ref.kind !== record.kind) {
-    return new ContentReplacementApiError("Unable to update content item.", error);
-  }
-  const id = record.kind === "question"
-    ? ref.questionId
-    : record.kind === "answer"
-      ? ref.answerId
-      : ref.articleId;
-  return isContentId(id)
-    ? updateError(record.kind, id, error)
-    : new ContentReplacementApiError("Unable to update content item.", error);
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function numericStatus(error: unknown): number | undefined {
+  try {
+    const status = asRecord(error)?.status;
+    return typeof status === "number" && Number.isFinite(status) ? status : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isContentId(value: unknown): value is number {
