@@ -70,13 +70,13 @@ describe("StackApiV3Client", () => {
 
   it("retrieves one JSON detail object", async () => {
     const fetchFn = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: 42, title: "MyPBM" })),
+      new Response(JSON.stringify({ id: 42, title: "TermB" })),
     );
     const client = createClient({ fetchFn });
 
     await expect(client.getJson<{ id: number; title: string }>("/questions/42")).resolves.toEqual({
       id: 42,
-      title: "MyPBM",
+      title: "TermB",
     });
     expect(String(fetchFn.mock.calls[0][0])).toBe("https://demo.stackenterprise.co/api/v3/questions/42");
   });
@@ -86,7 +86,7 @@ describe("StackApiV3Client", () => {
     const client = createClient({ fetchFn });
 
     await expect(client.putJson<{ id: number }>("/questions/42", {
-      title: "MyPBM",
+      title: "TermB",
       body: "Body",
       tags: [],
     })).resolves.toEqual({ id: 42 });
@@ -97,7 +97,7 @@ describe("StackApiV3Client", () => {
         "Content-Type": "application/json",
         "User-Agent": API_V3_USER_AGENT,
       }),
-      body: JSON.stringify({ title: "MyPBM", body: "Body", tags: [] }),
+      body: JSON.stringify({ title: "TermB", body: "Body", tags: [] }),
     }));
   });
 
@@ -114,7 +114,7 @@ describe("StackApiV3Client", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 }), { status: 200 }));
     const client = createClient({ fetchFn, waitFn, onThrottle });
 
-    await client.putJson("/questions/42", { title: "MyPBM", body: "Body", tags: [] });
+    await client.putJson("/questions/42", { title: "TermB", body: "Body", tags: [] });
 
     expect(events).toEqual(["backoff:2", "wait:2"]);
     expect(fetchFn).toHaveBeenCalledTimes(2);
@@ -328,7 +328,7 @@ describe("StackApiV3Client", () => {
     const fetchFn = vi.fn(async () => new Response("unavailable", { status: 503 }));
     const client = createClient({ fetchFn, waitFn });
 
-    await expect(client.putJson("/questions/42", { title: "MyPBM" })).rejects.toThrow(
+    await expect(client.putJson("/questions/42", { title: "TermB" })).rejects.toThrow(
       "Stack API v3 request failed with 503",
     );
     expect(fetchFn).toHaveBeenCalledTimes(4);

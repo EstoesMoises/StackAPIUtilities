@@ -1,44 +1,44 @@
 import { describe, expect, it } from "vitest";
 import { replaceMarkdown } from "./markdown";
 
-const rules = [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }];
+const rules = [{ id: "rule-1", find: "TermA", replace: "TermB" }];
 const safe = { caseSensitive: true, wholeTerm: true, replaceInCode: false };
 
 describe("replaceMarkdown", () => {
   it("changes visible Markdown text without regenerating its structure", () => {
     const source = [
-      "# MyPVM guide",
+      "# TermA guide",
       "",
-      "Use **MyPVM**.",
+      "Use **TermA**.",
       "",
-      "- MyPVM list item",
+      "- TermA list item",
       "",
-      "> MyPVM quote",
+      "> TermA quote",
       "",
-      "Read [MyPVM](https://example.test).",
+      "Read [TermA](https://example.test).",
       "",
       "| Product |",
       "| --- |",
-      "| MyPVM |",
+      "| TermA |",
     ].join("\n");
 
     const result = replaceMarkdown(source, rules, safe);
 
     expect(result.markdown).toBe(
       [
-        "# MyPBM guide",
+        "# TermB guide",
         "",
-        "Use **MyPBM**.",
+        "Use **TermB**.",
         "",
-        "- MyPBM list item",
+        "- TermB list item",
         "",
-        "> MyPBM quote",
+        "> TermB quote",
         "",
-        "Read [MyPBM](https://example.test).",
+        "Read [TermB](https://example.test).",
         "",
         "| Product |",
         "| --- |",
-        "| MyPBM |",
+        "| TermB |",
       ].join("\n"),
     );
     expect(result.changedOccurrences).toHaveLength(6);
@@ -47,13 +47,13 @@ describe("replaceMarkdown", () => {
 
   it("protects code contents and fenced info strings by default", () => {
     const source = [
-      "`MyPVM`",
+      "`TermA`",
       "",
-      "```ts MyPVM",
-      "MyPVM",
+      "```ts TermA",
+      "TermA",
       "```",
       "",
-      "    MyPVM",
+      "    TermA",
     ].join("\n");
 
     const result = replaceMarkdown(source, rules, safe);
@@ -66,54 +66,54 @@ describe("replaceMarkdown", () => {
 
   it("changes only code contents when code replacement is enabled", () => {
     const source = [
-      "`MyPVM`",
+      "`TermA`",
       "",
-      "```ts MyPVM",
-      "MyPVM",
+      "```ts TermA",
+      "TermA",
       "```",
       "",
-      "    MyPVM",
+      "    TermA",
     ].join("\n");
 
     const result = replaceMarkdown(source, rules, { ...safe, replaceInCode: true });
 
     expect(result.markdown).toBe(
       [
-        "`MyPBM`",
+        "`TermB`",
         "",
-        "```ts MyPVM",
-        "MyPBM",
+        "```ts TermA",
+        "TermB",
         "```",
         "",
-        "    MyPBM",
+        "    TermB",
       ].join("\n"),
     );
     expect(result.changedOccurrences).toHaveLength(3);
     expect(result.protectedOccurrences).toEqual([
-      expect.objectContaining({ before: "MyPVM", reason: "code" }),
+      expect.objectContaining({ before: "TermA", reason: "code" }),
     ]);
   });
 
   it("changes explicit link labels while protecting destinations, images, definitions, and autolinks", () => {
     const source = [
-      '[MyPVM](https://docs/MyPVM "MyPVM")',
-      '![MyPVM](https://img/MyPVM.png "MyPVM")',
-      "<https://docs/MyPVM> <MyPVM@example.com>",
-      "[MyPVM][docs]",
+      '[TermA](https://docs/TermA "TermA")',
+      '![TermA](https://img/TermA.png "TermA")',
+      "<https://docs/TermA> <TermA@example.com>",
+      "[TermA][docs]",
       "",
-      '[docs]: https://reference/MyPVM "MyPVM"',
+      '[docs]: https://reference/TermA "TermA"',
     ].join("\n");
 
     const result = replaceMarkdown(source, rules, safe);
 
     expect(result.markdown).toBe(
       [
-        '[MyPBM](https://docs/MyPVM "MyPVM")',
-        '![MyPVM](https://img/MyPVM.png "MyPVM")',
-        "<https://docs/MyPVM> <MyPVM@example.com>",
-        "[MyPBM][docs]",
+        '[TermB](https://docs/TermA "TermA")',
+        '![TermA](https://img/TermA.png "TermA")',
+        "<https://docs/TermA> <TermA@example.com>",
+        "[TermB][docs]",
         "",
-        '[docs]: https://reference/MyPVM "MyPVM"',
+        '[docs]: https://reference/TermA "TermA"',
       ].join("\n"),
     );
     expect(result.changedOccurrences).toHaveLength(2);
@@ -124,20 +124,20 @@ describe("replaceMarkdown", () => {
   });
 
   it("changes raw HTML text but preserves and reports matching attributes", () => {
-    const source = '<span data-product="MyPVM">MyPVM</span>';
+    const source = '<span data-product="TermA">TermA</span>';
 
     const result = replaceMarkdown(source, rules, safe);
 
-    expect(result.markdown).toBe('<span data-product="MyPVM">MyPBM</span>');
+    expect(result.markdown).toBe('<span data-product="TermA">TermB</span>');
     expect(result.changedOccurrences).toEqual([
-      { ruleId: "rule-1", start: 27, end: 32, before: "MyPVM", after: "MyPBM" },
+      { ruleId: "rule-1", start: 27, end: 32, before: "TermA", after: "TermB" },
     ]);
     expect(result.protectedOccurrences).toEqual([
       {
         ruleId: "rule-1",
         start: 20,
         end: 25,
-        before: "MyPVM",
+        before: "TermA",
         reason: "raw-html-attribute",
       },
     ]);
@@ -145,107 +145,107 @@ describe("replaceMarkdown", () => {
 
   it("changes exact literal text around entities without rewriting encoded text", () => {
     const source = [
-      "MyPVM &amp; My&#80;VM",
+      "TermA &amp; My&#80;VM",
       "",
-      '<div data-product="MyPVM">MyPVM &amp; My&#80;VM</div>',
+      '<div data-product="TermA">TermA &amp; My&#80;VM</div>',
     ].join("\n");
 
     const result = replaceMarkdown(source, rules, safe);
 
     expect(result.markdown).toBe(
       [
-        "MyPBM &amp; My&#80;VM",
+        "TermB &amp; My&#80;VM",
         "",
-        '<div data-product="MyPVM">MyPBM &amp; My&#80;VM</div>',
+        '<div data-product="TermA">TermB &amp; My&#80;VM</div>',
       ].join("\n"),
     );
     expect(result.changedOccurrences).toHaveLength(2);
     expect(result.protectedOccurrences).toEqual([
-      expect.objectContaining({ before: "MyPVM", reason: "raw-html-attribute" }),
+      expect.objectContaining({ before: "TermA", reason: "raw-html-attribute" }),
     ]);
   });
 
   it("uses decoded entity characters as whole-term neighbors on both sides", () => {
-    const source = "MyPVM&#50; &#65;MyPVM MyPVM";
+    const source = "TermA&#50; &#65;TermA TermA";
 
     const result = replaceMarkdown(source, rules, safe);
 
-    expect(result.markdown).toBe("MyPVM&#50; &#65;MyPVM MyPBM");
+    expect(result.markdown).toBe("TermA&#50; &#65;TermA TermB");
     expect(result.changedOccurrences).toEqual([
-      { ruleId: "rule-1", start: 22, end: 27, before: "MyPVM", after: "MyPBM" },
+      { ruleId: "rule-1", start: 22, end: 27, before: "TermA", after: "TermB" },
     ]);
   });
 
   it("reports raw HTML comment and tag-name matches as protected syntax", () => {
-    expect(replaceMarkdown("<!-- MyPVM -->", rules, safe).protectedOccurrences).toEqual([
+    expect(replaceMarkdown("<!-- TermA -->", rules, safe).protectedOccurrences).toEqual([
       {
         ruleId: "rule-1",
         start: 5,
         end: 10,
-        before: "MyPVM",
+        before: "TermA",
         reason: "raw-html-syntax",
       },
     ]);
-    expect(replaceMarkdown("<MyPVM>visible</MyPVM>", rules, safe).protectedOccurrences).toEqual([
+    expect(replaceMarkdown("<TermA>visible</TermA>", rules, safe).protectedOccurrences).toEqual([
       {
         ruleId: "rule-1",
         start: 1,
         end: 6,
-        before: "MyPVM",
+        before: "TermA",
         reason: "raw-html-syntax",
       },
       {
         ruleId: "rule-1",
         start: 16,
         end: 21,
-        before: "MyPVM",
+        before: "TermA",
         reason: "raw-html-syntax",
       },
     ]);
   });
 
   it("reports script and style text as protected hidden raw HTML", () => {
-    expect(replaceMarkdown("<script>MyPVM</script>", rules, safe).protectedOccurrences).toEqual([
+    expect(replaceMarkdown("<script>TermA</script>", rules, safe).protectedOccurrences).toEqual([
       {
         ruleId: "rule-1",
         start: 8,
         end: 13,
-        before: "MyPVM",
+        before: "TermA",
         reason: "raw-html-hidden",
       },
     ]);
-    expect(replaceMarkdown("<style>MyPVM</style>", rules, safe).protectedOccurrences).toEqual([
+    expect(replaceMarkdown("<style>TermA</style>", rules, safe).protectedOccurrences).toEqual([
       {
         ruleId: "rule-1",
         start: 7,
         end: 12,
-        before: "MyPVM",
+        before: "TermA",
         reason: "raw-html-hidden",
       },
     ]);
   });
 
   it("uses Unicode letters, numbers, and underscore as whole-term boundaries", () => {
-    expect(replaceMarkdown("MyPVM MyPVM2 _MyPVM caféMyPVM MyPVM界", rules, safe).markdown).toBe(
-      "MyPBM MyPVM2 _MyPVM caféMyPVM MyPVM界",
+    expect(replaceMarkdown("TermA TermA2 _TermA caféTermA TermA界", rules, safe).markdown).toBe(
+      "TermB TermA2 _TermA caféTermA TermA界",
     );
   });
 
   it("supports case-insensitive matching while retaining the original occurrence text", () => {
-    const result = replaceMarkdown("mypvm MYPVM MyPvM2", rules, {
+    const result = replaceMarkdown("terma TERMA TerMa2", rules, {
       ...safe,
       caseSensitive: false,
     });
 
-    expect(result.markdown).toBe("MyPBM MyPBM MyPvM2");
-    expect(result.changedOccurrences.map((item) => item.before)).toEqual(["mypvm", "MYPVM"]);
+    expect(result.markdown).toBe("TermB TermB TerMa2");
+    expect(result.changedOccurrences.map((item) => item.before)).toEqual(["terma", "TERMA"]);
   });
 
   it("applies every rule to the original source without cascading", () => {
     const result = replaceMarkdown(
-      "MyPVM and PBM",
+      "TermA and PBM",
       [
-        { id: "1", find: "MyPVM", replace: "PBM" },
+        { id: "1", find: "TermA", replace: "PBM" },
         { id: "2", find: "PBM", replace: "Benefits" },
       ],
       safe,

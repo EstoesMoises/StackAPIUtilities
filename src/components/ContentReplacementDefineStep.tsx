@@ -11,6 +11,7 @@ import {
   validateReplacementRules,
   type ReplacementRuleError,
 } from "../writeTools/contentReplacement/rules";
+import { MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES } from "../writeTools/contentReplacement/limits";
 import type {
   ReplacementConfiguration,
   ReplacementItemRef,
@@ -172,6 +173,9 @@ export function ContentReplacementDefineStep({
     if (!file) return;
 
     try {
+      if (file.size > MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES) {
+        throw new Error("Replacement CSV exceeds the 1 MiB UTF-8 limit.");
+      }
       const csv = await readFileText(file);
       if (fileReadRequestId.current !== requestId) return;
       const parsed = parseReplacementCsv(csv);

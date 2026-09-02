@@ -16,6 +16,23 @@ const validCredentials: SessionCredentials = {
 };
 
 describe("ContentReplacementScanStep", () => {
+  it("fences a proofless Exact checkpoint as read-only instead of offering resume", () => {
+    const baseline = createJob();
+    const fenced = createJob({
+      scanCompatibility: "exact-proof-restart-required",
+      status: "paused",
+      configuration: {
+        ...baseline.configuration,
+        discovery: { mode: "exact", targetCount: 2, targetDigest: "e".repeat(64) },
+      },
+    });
+    render(<ContentReplacementScanStep controller={createController(fenced)} credentials={validCredentials} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent(/New scan required.*proof provenance/i);
+    expect(screen.queryByRole("button", { name: /Resume scan|Retry scan|Finish scan|Cancel scan/i }))
+      .not.toBeInTheDocument();
+  });
+
   it("shows Full-audit counters and active controls in a live status region", () => {
     const controller = createController(createJob());
     render(<ContentReplacementScanStep controller={controller} credentials={validCredentials} />);
@@ -330,7 +347,7 @@ describe("ContentReplacementScanStep", () => {
         contentTypes: { questions: true, answers: false, articles: true },
         discovery: { mode: "full" },
         rules: [
-          { id: "one", find: "MyPVM", replace: "MyPBM" },
+          { id: "one", find: "TermA", replace: "TermB" },
           { id: "two", find: "CPR", replace: "Benefits" },
         ],
         options: { caseSensitive: false, wholeTerm: false, replaceInCode: true },
@@ -341,7 +358,7 @@ describe("ContentReplacementScanStep", () => {
     const summary = screen.getByRole("group", { name: "Scan configuration" });
     expect(summary).toHaveTextContent("Questions, Articles");
     expect(summary).toHaveTextContent("2 mappings");
-    expect(summary).toHaveTextContent("MyPVM → MyPBM");
+    expect(summary).toHaveTextContent("TermA → TermB");
     expect(summary).toHaveTextContent("CPR → Benefits");
     expect(summary).toHaveTextContent(/Case-insensitive matching/i);
     expect(summary).toHaveTextContent(/Partial matching/i);
@@ -392,7 +409,7 @@ function createJob(
       target: { kind: "enterprise-main" },
       contentTypes: { questions: true, answers: true, articles: true },
       discovery: { mode: "full" },
-      rules: [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }],
+      rules: [{ id: "rule-1", find: "TermA", replace: "TermB" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     },
     stage: "scan",

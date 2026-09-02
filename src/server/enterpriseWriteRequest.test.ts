@@ -7,6 +7,7 @@ import {
   readBoundedJsonRequest,
   redactedJsonResponse,
 } from "./enterpriseWriteRequest";
+import { MAX_CONTENT_REPLACEMENT_ROUTE_BODY_BYTES } from "../writeTools/contentReplacement/limits";
 
 const oauthCredentials: SessionCredentials = {
   instanceType: "enterprise",
@@ -521,6 +522,10 @@ describe("redactedJsonResponse", () => {
 });
 
 describe("readBoundedJsonRequest", () => {
+  it("uses the shared content-recovery route envelope", () => {
+    expect(MAX_WRITE_ROUTE_BYTES).toBe(MAX_CONTENT_REPLACEMENT_ROUTE_BODY_BYTES);
+  });
+
   it("parses a JSON body after reading it exactly once", async () => {
     const request = new Request("https://utilities.example/api/write", {
       method: "POST",
@@ -535,7 +540,7 @@ describe("readBoundedJsonRequest", () => {
     expect(text).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts a valid JSON body at the 1 MiB byte boundary", async () => {
+  it("accepts a valid JSON body at the shared byte boundary", async () => {
     const body = JSON.stringify("a".repeat(MAX_WRITE_ROUTE_BYTES - 2));
     const request = new Request("https://utilities.example/api/write", { method: "POST", body });
 
@@ -544,7 +549,7 @@ describe("readBoundedJsonRequest", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("rejects a multibyte body over 1 MiB even when its UTF-16 length is smaller", async () => {
+  it("rejects a multibyte body over the shared limit even when its UTF-16 length is smaller", async () => {
     const body = JSON.stringify("é".repeat(MAX_WRITE_ROUTE_BYTES / 2));
     expect(body.length).toBeLessThanOrEqual(MAX_WRITE_ROUTE_BYTES);
     const request = new Request("https://utilities.example/api/write", { method: "POST", body });
@@ -556,7 +561,7 @@ describe("readBoundedJsonRequest", () => {
     expect(result.response.status).toBe(413);
     await expect(result.response.json()).resolves.toEqual({
       ok: false,
-      error: "Request body exceeds the 1 MiB limit.",
+      error: "Request body exceeds the 4 MiB limit.",
     });
   });
 

@@ -13,12 +13,14 @@ import {
   createJobFingerprint,
   toReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/proposals";
+import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
 import { scanDetailBatch } from "../writeTools/contentReplacement/scanner";
 import {
   createReplacementJob,
   createReplacementSelectionSnapshot,
   reduceReplacementJob,
 } from "../writeTools/contentReplacement/jobState";
+import { MAX_CONTENT_REPLACEMENT_JOB_BYTES } from "../writeTools/contentReplacement/limits";
 import type { ContentReplacementClient } from "../writeTools/contentReplacement/contentApi";
 import type {
   PersistedContentReplacementJob,
@@ -154,9 +156,10 @@ describe("browserContentReplacementStorage", () => {
       migrated.configuration,
     );
 
-    expect(migrated.proposals["question:42"].recovery).toEqual(
-      legacy.proposals["question:42"].recovery,
-    );
+    expect(migrated.proposals["question:42"].recovery).toEqual({
+      ...legacy.proposals["question:42"].recovery,
+      proposalFingerprint: migrated.proposals["question:42"].proposal.proposalFingerprint,
+    });
     expect(migrated.scanCompatibility).toBe("legacy-restart-required");
     expect(migrated.fingerprint).toBe(await createJobFingerprint({
       baseUrl: migrated.baseUrl,
@@ -294,9 +297,10 @@ describe("browserContentReplacementStorage", () => {
   it("persists Exact detail progress without inventory accounting", async () => {
     installFakeIndexedDB();
     const ref = { kind: "question" as const, questionId: 42 };
+    const exactSelection = await createExactTargetSelection([ref]);
     const configuration: ReplacementConfiguration = {
       ...createJob().configuration,
-      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+      discovery: exactSelection.discovery,
     };
     let job = createReplacementJob({
       id: "exact-detail-job",
@@ -307,7 +311,8 @@ describe("browserContentReplacementStorage", () => {
       }),
       baseUrl: "https://example.stackenterprise.co",
       configuration,
-      exactTargets: [ref],
+      exactTargets: exactSelection.targets,
+      exactProofs: exactSelection.proofs,
       createdAt: "2026-09-01T12:00:00.000Z",
     });
     const detail = await scanDetailBatch({
@@ -316,7 +321,9 @@ describe("browserContentReplacementStorage", () => {
         ref,
         request: { title: "Old title", body: "No matching body.", tags: ["api"] },
       }),
-    } as unknown as ContentReplacementClient, { refs: [ref], configuration });
+    } as unknown as ContentReplacementClient, {
+      refs: [ref], configuration, exactProofs: exactSelection.proofs,
+    });
 
     job = reduceReplacementJob(job, {
       type: "scan/details-succeeded",
@@ -334,6 +341,61 @@ describe("browserContentReplacementStorage", () => {
       proposals: { "question:42": { status: "pending" } },
     });
     expect(loaded).toEqual(job);
+  });
+
+  it("migrates a proofless current Exact job to a read-only restart-required checkpoint", async () => {
+    const current = await createExactReviewJob();
+    const proofless = structuredClone(current) as any;
+    delete proofless.exactProofQueue;
+    for (const item of Object.values(proofless.proposals) as any[]) {
+      delete item.proposal.exactProof;
+      item.proposal.proposalFingerprint = await currentV2ProoflessProposalFingerprint(
+        item.proposal,
+        proofless.configuration,
+      );
+    }
+
+    const migrated = await parseContentReplacementJob(proofless);
+
+    expect(migrated).toMatchObject({
+      scanCompatibility: "exact-proof-restart-required",
+      configuration: { discovery: { mode: "exact" } },
+      stage: "review",
+      status: "completed",
+    });
+    expect(migrated.exactProofQueue).toBeUndefined();
+    expect(migrated.proposals["question:42"].proposal.exactProof).toBeUndefined();
+    expect(migrated.fingerprint).toBe(await createJobFingerprint({
+      baseUrl: migrated.baseUrl,
+      configuration: migrated.configuration,
+      scanCompatibility: "exact-proof-restart-required",
+    }));
+  });
+
+  it.each([
+    ["wrong proof index", (job: any) => { job.exactProofQueue[0].targetIndex = 1; }],
+    ["wrong proof root", (job: any) => { job.exactProofQueue[0].manifestRoot = "f".repeat(64); }],
+    ["wrong proof count", (job: any) => { job.exactProofQueue[0].targetCount = 1; job.exactProofQueue[0].siblingHashes = []; }],
+    ["proof/ref misalignment", (job: any) => { job.exactProofQueue.reverse(); }],
+    ["missing queued proof", (job: any) => { job.exactProofQueue.pop(); }],
+  ])("rejects a current Exact checkpoint with %s", async (_label, mutate) => {
+    const job = await createExactScanJob();
+    mutate(job);
+
+    await expect(parseContentReplacementJob(job)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
+  it("rejects Exact proof state on a non-Exact job", async () => {
+    const job = createJob() as any;
+    job.exactProofQueue = [(await createExactTargetSelection([
+      { kind: "question", questionId: 42 },
+    ])).proofs[0]];
+
+    await expect(parseContentReplacementJob(job)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
   });
 
   it("persists the recovery snapshot gate required before apply can resume", async () => {
@@ -698,6 +760,7 @@ describe("browserContentReplacementStorage", () => {
         priorRequestModel: structuredClone(item.proposal.before),
         scannedRequestChecksum: item.proposal.scannedRequestChecksum,
         proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+        proposalFingerprint: item.proposal.proposalFingerprint,
         status: "ready",
       };
     }
@@ -729,6 +792,7 @@ describe("browserContentReplacementStorage", () => {
         priorRequestModel: structuredClone(item.proposal.before),
         scannedRequestChecksum: item.proposal.scannedRequestChecksum,
         proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+        proposalFingerprint: item.proposal.proposalFingerprint,
         status: "ready",
       };
     }
@@ -1761,9 +1825,63 @@ describe("browserContentReplacementStorage", () => {
     });
   });
 
-  it("saves and loads exactly 100,000 minimal canonical proposals at the persisted boundary", async () => {
+  it("memoizes unchanged canonical proposal validation across persistence round trips", async () => {
+    const job = createJob();
+    job.id = "proposal-validation-cache-job";
+    job.stage = "review";
+    job.status = "completed";
+    job.inventoryQueue = [];
+    job.detailQueue = [];
+    for (let index = 0; index < 24; index += 1) {
+      const questionId = 8_000 + index;
+      const before = createQuestionBeforeModel();
+      before.ref = { kind: "question", questionId };
+      const proposal = await buildReplacementProposal(before, job.configuration);
+      if (!proposal) throw new Error("Expected a cache proposal fixture.");
+      job.proposals[`question:${questionId}`] = {
+        proposal, included: true, attemptCount: 0, status: "pending",
+      };
+    }
+    job.progress.questionPages = 1;
+    job.progress.inventoryItems = 24;
+    job.progress.detailsInspected = 24;
+    job.progress.proposalsFound = 24;
+    const originalDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+    const digestSpy = vi.spyOn(globalThis.crypto.subtle, "digest")
+      .mockImplementation((...args) => originalDigest(...args));
+
+    try {
+      await parseContentReplacementJob(job);
+      const firstPassDigests = digestSpy.mock.calls.length;
+      await parseContentReplacementJob(structuredClone(job));
+      const secondPassDigests = digestSpy.mock.calls.length - firstPassDigests;
+
+      expect(firstPassDigests).toBeGreaterThan(24);
+      expect(secondPassDigests).toBeLessThanOrEqual(2);
+    } finally {
+      digestSpy.mockRestore();
+    }
+  });
+
+  it("rejects an aggregate persisted job over the byte budget on write and load acceptance", async () => {
     const fake = installFakeIndexedDB();
-    let job: PersistedContentReplacementJob | undefined = await createCanonicalAnswerBoundaryJob(100_000);
+    const job = await createOverBudgetPersistedJob();
+
+    await expect(saveContentReplacementJob(job)).rejects.toThrow(
+      "Content replacement job exceeds the 64 MiB storage limit.",
+    );
+    expect(fake.openCalls).toHaveLength(0);
+
+    fake.records.set(job.id, storedRecordForTest(job));
+    await expect(loadContentReplacementJob(job.id)).rejects.toThrow(
+      "Content replacement job exceeds the 64 MiB storage limit.",
+    );
+    expect(MAX_CONTENT_REPLACEMENT_JOB_BYTES).toBe(64 * 1_048_576);
+  }, 60_000);
+
+  it("saves and loads exactly 5,000 minimal canonical proposals at the persisted boundary", async () => {
+    const fake = installFakeIndexedDB();
+    let job: PersistedContentReplacementJob | undefined = await createCanonicalAnswerBoundaryJob(5_000);
     const startedAt = performance.now();
 
     try {
@@ -1773,18 +1891,18 @@ describe("browserContentReplacementStorage", () => {
       const loaded = await loadContentReplacementJob(jobId);
 
       expect(loaded?.progress).toMatchObject({
-        questionPages: 1_000,
-        answerPages: 100_000,
-        inventoryItems: 200_000,
-        detailsInspected: 100_000,
-        proposalsFound: 100_000,
+        questionPages: 50,
+        answerPages: 5_000,
+        inventoryItems: 10_000,
+        detailsInspected: 5_000,
+        proposalsFound: 5_000,
       });
-      expect(Object.keys(loaded!.proposals)).toHaveLength(100_000);
-      expect(loaded!.proposals["answer:1:100001"].proposal.before.ref).toEqual({
-        kind: "answer", questionId: 1, answerId: 100_001,
+      expect(Object.keys(loaded!.proposals)).toHaveLength(5_000);
+      expect(loaded!.proposals["answer:1:5001"].proposal.before.ref).toEqual({
+        kind: "answer", questionId: 1, answerId: 5_001,
       });
-      expect(loaded!.proposals["answer:100000:200000"].proposal.before.ref).toEqual({
-        kind: "answer", questionId: 100_000, answerId: 200_000,
+      expect(loaded!.proposals["answer:5000:10000"].proposal.before.ref).toEqual({
+        kind: "answer", questionId: 5_000, answerId: 10_000,
       });
       const elapsed = performance.now() - startedAt;
       expect(elapsed).toBeLessThan(120_000);
@@ -1792,7 +1910,7 @@ describe("browserContentReplacementStorage", () => {
       fake.records.clear();
       job = undefined;
     }
-  }, 180_000);
+  }, 60_000);
 
   it("validates a meaningful-scale article job with metadata, results, recovery, and preview evidence", async () => {
     let job: PersistedContentReplacementJob | undefined = await createCanonicalArticleRecoveryJob(5_000);
@@ -1809,10 +1927,10 @@ describe("browserContentReplacementStorage", () => {
     }
   }, 60_000);
 
-  it("rejects 100,001 proposal keys before inspecting an item or opening storage", async () => {
+  it("rejects 5,001 proposal keys before inspecting an item or opening storage", async () => {
     const fake = installFakeIndexedDB();
     const job = createJob();
-    const keys = Array.from({ length: 100_001 }, (_, index) => `answer:${index + 1}:${index + 100_002}`);
+    const keys = Array.from({ length: 5_001 }, (_, index) => `answer:${index + 1}:${index + 5_002}`);
     let itemDescriptorCalls = 0;
     job.proposals = new Proxy({}, {
       ownKeys: () => keys,
@@ -1883,6 +2001,7 @@ describe("browserContentReplacementStorage", () => {
     answer.recovery!.priorRequestModel = answer.proposal.before;
     answer.recovery!.scannedRequestChecksum = answer.proposal.scannedRequestChecksum;
     answer.recovery!.proposedRequestChecksum = answer.proposal.proposedRequestChecksum;
+    answer.recovery!.proposalFingerprint = answer.proposal.proposalFingerprint;
     answer.recovery!.observedPostApplyChecksum = answer.proposal.proposedRequestChecksum;
     if (answer.result?.kind === "applied") {
       answer.result.observedRequestChecksum = answer.proposal.proposedRequestChecksum;
@@ -1912,6 +2031,7 @@ describe("browserContentReplacementStorage", () => {
     article.recovery!.priorRequestModel = article.proposal.before;
     article.recovery!.scannedRequestChecksum = article.proposal.scannedRequestChecksum;
     article.recovery!.proposedRequestChecksum = article.proposal.proposedRequestChecksum;
+    article.recovery!.proposalFingerprint = article.proposal.proposalFingerprint;
     article.recovery!.observedPostApplyChecksum = article.proposal.proposedRequestChecksum;
     if (article.result?.kind === "applied") {
       article.result.observedRequestChecksum = article.proposal.proposedRequestChecksum;
@@ -2322,6 +2442,10 @@ async function legacyV1Job(job: PersistedContentReplacementJob): Promise<any> {
   });
   for (const item of Object.values(legacy.proposals) as any[]) {
     item.proposal.proposalFingerprint = await legacyProposalFingerprint(item.proposal, legacy.configuration);
+    if (item.recovery) {
+      delete item.recovery.proposalFingerprint;
+      delete item.recovery.exactProof;
+    }
   }
   if (legacy.activeOperation?.kind === "stale-rescan") {
     for (const proposal of Object.values(legacy.activeOperation.proposals) as any[]) {
@@ -2385,6 +2509,7 @@ function createPopulatedJob(): PersistedContentReplacementJob {
       priorRequestModel: structuredClone(canonicalQuestionProposal.before),
       scannedRequestChecksum: canonicalQuestionProposal.scannedRequestChecksum,
       proposedRequestChecksum: canonicalQuestionProposal.proposedRequestChecksum,
+      proposalFingerprint: canonicalQuestionProposal.proposalFingerprint,
       observedPostApplyChecksum: canonicalQuestionProposal.proposedRequestChecksum,
       status: "ready",
     },
@@ -2418,6 +2543,115 @@ function createQuestionBeforeModel(): ReplacementRequestModel {
       lastActivityDate: null,
     },
   };
+}
+
+async function createOverBudgetPersistedJob(): Promise<PersistedContentReplacementJob> {
+  const job = createJob();
+  job.id = "aggregate-byte-budget-job";
+  job.stage = "review";
+  job.status = "completed";
+  job.inventoryQueue = [];
+  job.detailQueue = [];
+  const body = `Old ${"x".repeat(899_996)}`;
+  for (let index = 0; index < 38; index += 1) {
+    const questionId = 40_000 + index;
+    const before = createQuestionBeforeModel();
+    before.ref = { kind: "question", questionId };
+    before.request = { ...before.request, title: "Aggregate byte fixture", body };
+    const proposal = await buildReplacementProposal(before, job.configuration);
+    if (!proposal) throw new Error("Expected an over-budget proposal fixture.");
+    job.proposals[`question:${questionId}`] = {
+      proposal,
+      included: true,
+      attemptCount: 0,
+      status: "pending",
+    };
+  }
+  job.progress.questionPages = 1;
+  job.progress.inventoryItems = 38;
+  job.progress.detailsInspected = 38;
+  job.progress.proposalsFound = 38;
+  return job;
+}
+
+async function createExactScanJob(): Promise<PersistedContentReplacementJob> {
+  const targets = [
+    { kind: "question" as const, questionId: 42 },
+    { kind: "question" as const, questionId: 43 },
+  ];
+  const selection = await createExactTargetSelection(targets);
+  const configuration: ReplacementConfiguration = {
+    ...createJob().configuration,
+    discovery: selection.discovery,
+  };
+  return createReplacementJob({
+    id: "exact-proof-job",
+    fingerprint: await createJobFingerprint({
+      baseUrl: "https://example.stackenterprise.co",
+      configuration,
+      scanCompatibility: "current",
+    }),
+    baseUrl: "https://example.stackenterprise.co",
+    configuration,
+    exactTargets: selection.targets,
+    exactProofs: selection.proofs,
+    createdAt: "2026-09-01T12:00:00.000Z",
+  });
+}
+
+async function createExactReviewJob(): Promise<PersistedContentReplacementJob> {
+  const ref = { kind: "question" as const, questionId: 42 };
+  const selection = await createExactTargetSelection([ref]);
+  const configuration: ReplacementConfiguration = {
+    ...createJob().configuration,
+    discovery: selection.discovery,
+  };
+  let job = createReplacementJob({
+    id: "exact-review-job",
+    fingerprint: await createJobFingerprint({
+      baseUrl: "https://example.stackenterprise.co",
+      configuration,
+      scanCompatibility: "current",
+    }),
+    baseUrl: "https://example.stackenterprise.co",
+    configuration,
+    exactTargets: selection.targets,
+    exactProofs: selection.proofs,
+    createdAt: "2026-09-01T12:00:00.000Z",
+  });
+  const proposal = await buildReplacementProposal(createQuestionBeforeModel(), configuration, selection.proofs[0]);
+  if (!proposal) throw new Error("Expected an Exact proposal fixture.");
+  job = reduceReplacementJob(job, {
+    type: "scan/details-succeeded",
+    refs: [ref],
+    result: { proposals: [proposal], inspectedCount: 1, protectedOccurrenceCount: proposal.protectedOccurrences.length },
+    at: "2026-09-01T12:01:00.000Z",
+  });
+  return reduceReplacementJob(job, {
+    type: "scan/queues-drained",
+    at: "2026-09-01T12:02:00.000Z",
+  });
+}
+
+async function currentV2ProoflessProposalFingerprint(
+  proposal: ReplacementProposal,
+  configuration: ReplacementConfiguration,
+): Promise<string> {
+  return legacyDigest({
+    ref: proposal.before.ref,
+    configuration: {
+      target: configuration.target,
+      contentTypes: configuration.contentTypes,
+      discovery: configuration.discovery,
+      options: configuration.options,
+      rules: configuration.rules
+        .map(({ find, replace }) => ({ find, replace }))
+        .sort((left, right) => left.find < right.find ? -1 : left.find > right.find ? 1 :
+          left.replace < right.replace ? -1 : left.replace > right.replace ? 1 : 0),
+    },
+    scannedRequestChecksum: proposal.scannedRequestChecksum,
+    proposedRequestChecksum: proposal.proposedRequestChecksum,
+  });
 }
 
 async function createCanonicalAnswerBoundaryJob(
@@ -2510,6 +2744,7 @@ async function createCanonicalArticleRecoveryJob(
           priorRequestModel: structuredClone(proposal.before),
           scannedRequestChecksum: proposal.scannedRequestChecksum,
           proposedRequestChecksum: proposal.proposedRequestChecksum,
+          proposalFingerprint: proposal.proposalFingerprint,
           observedPostApplyChecksum: proposal.proposedRequestChecksum,
           status: "ready",
           preview: {
@@ -2552,6 +2787,7 @@ function createAppliedJob(): PersistedContentReplacementJob {
     priorRequestModel: structuredClone(item.proposal.before),
     scannedRequestChecksum: item.proposal.scannedRequestChecksum,
     proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+    proposalFingerprint: item.proposal.proposalFingerprint,
     observedPostApplyChecksum: item.proposal.proposedRequestChecksum,
     status: "ready",
   };
@@ -2593,6 +2829,7 @@ async function createActiveRecoveryOperationJob(): Promise<PersistedContentRepla
         priorRequestModel: structuredClone(proposal.before),
         scannedRequestChecksum: proposal.scannedRequestChecksum,
         proposedRequestChecksum: proposal.proposedRequestChecksum,
+        proposalFingerprint: proposal.proposalFingerprint,
         observedPostApplyChecksum: proposal.proposedRequestChecksum,
         status: "ready",
       },
@@ -2642,6 +2879,7 @@ function createApplyReadyJob(): PersistedContentReplacementJob {
     priorRequestModel: structuredClone(item.proposal.before),
     scannedRequestChecksum: item.proposal.scannedRequestChecksum,
     proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+    proposalFingerprint: item.proposal.proposalFingerprint,
     status: "ready",
   };
   return job;

@@ -24,9 +24,14 @@ import {
 } from "../writeTools/contentReplacement/proposals";
 import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
 import {
+  MAX_CONTENT_REPLACEMENT_ROUTE_BODY_BYTES,
+  utf8ByteLength,
+} from "../writeTools/contentReplacement/limits";
+import {
   createReplacementJob,
   getNextApplyItem,
   getNextDetailBatch,
+  getNextExactProofBatch,
   getNextInventoryCursor,
   getNextStaleRescanBatch,
   reduceReplacementJob,
@@ -35,6 +40,7 @@ import {
 import type { ReplacementSelectionSnapshot } from "../writeTools/contentReplacement/jobState";
 import type {
   DetailBatchResult,
+  ExactTargetProof,
   InventoryCursor,
   InventorySliceResult,
   PersistedContentReplacementFailure,
@@ -56,6 +62,15 @@ const INVALID_RESPONSE_MESSAGE = "The content replacement service returned an in
 const NETWORK_FAILURE_MESSAGE = "The content replacement request could not be completed.";
 const BEFORE_UNLOAD_MESSAGE =
   "A content replacement request is active. Leaving now will pause the browser-coordinated job.";
+
+export function serializeContentReplacementRequest(payload: Record<string, unknown>): string | null {
+  try {
+    const serialized = JSON.stringify(payload);
+    return utf8ByteLength(serialized) <= MAX_CONTENT_REPLACEMENT_ROUTE_BODY_BYTES ? serialized : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface ContentReplacementJobStorageOperations {
   save(job: PersistedContentReplacementJob, expectedRevision: number | null): Promise<ContentReplacementJobSaveResult>;
@@ -419,6 +434,8 @@ export function useContentReplacementJob(
     payload: Record<string, unknown>,
     token: number,
   ): Promise<{ response: Response } | { aborted: true } | { failed: true }> => {
+    const body = serializeContentReplacementRequest(payload);
+    if (body === null) return { failed: true };
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy(true);
@@ -426,7 +443,7 @@ export function useContentReplacementJob(
       const response = await dependenciesRef.current.fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body,
         signal: controller.signal,
       });
       if (token !== operationRef.current) return { aborted: true };
@@ -481,11 +498,13 @@ export function useContentReplacementJob(
     const baseUrl = credentialCheck.credentials.baseUrl;
     let canonicalConfiguration = configuration;
     let canonicalExactTargets: ReplacementItemRef[] | undefined;
+    let canonicalExactProofs: ExactTargetProof[] | undefined;
     if (configuration.discovery.mode === "exact") {
       try {
         const exactSelection = await createExactTargetSelection(exactTargets ?? []);
         canonicalConfiguration = { ...configuration, discovery: exactSelection.discovery };
         canonicalExactTargets = exactSelection.targets;
+        canonicalExactProofs = exactSelection.proofs;
       } catch {
         return false;
       }
@@ -502,6 +521,7 @@ export function useContentReplacementJob(
       baseUrl,
       configuration: canonicalConfiguration,
       exactTargets: canonicalExactTargets,
+      exactProofs: canonicalExactProofs,
       createdAt,
     });
     stopOperation();
@@ -530,6 +550,7 @@ export function useContentReplacementJob(
       current = jobRef.current!;
       const cursor = getNextInventoryCursor(current);
       const refs = cursor ? [] : getNextDetailBatch(current);
+      const exactProofs = cursor ? undefined : getNextExactProofBatch(current);
       if (!cursor && refs.length === 0) {
         const complete = reduceReplacementJob(current, {
           type: "scan/queues-drained",
@@ -559,6 +580,7 @@ export function useContentReplacementJob(
             scanCompatibility: "current",
             jobFingerprint: current.fingerprint,
             refs,
+            ...(exactProofs === undefined ? {} : { exactProofs }),
           };
       const fetched = await request(SCAN_URL, payload, token);
       if ("aborted" in fetched) return;
@@ -568,7 +590,9 @@ export function useContentReplacementJob(
       }
       const parsed = await parseScanResponse(
         fetched.response,
-        cursor ? { kind: "inventory", cursor, job: current } : { kind: "details", refs, job: current },
+        cursor
+          ? { kind: "inventory", cursor, job: current }
+          : { kind: "details", refs, exactProofs, job: current },
       );
       const at = dependenciesRef.current.now();
       if (!parsed.ok) {
@@ -636,7 +660,8 @@ export function useContentReplacementJob(
     if (runningRef.current) return Promise.resolve();
     return enqueueLocalMutation(async () => {
       const current = jobRef.current;
-      if (!current || current.status === "running" || current.activeOperation) return;
+      if (!current || current.scanCompatibility === "exact-proof-restart-required" ||
+        current.status === "running" || current.activeOperation) return;
       stopOperation();
       await persist(reduceReplacementJob(current, {
         type: "run/cancel",
@@ -665,9 +690,9 @@ export function useContentReplacementJob(
 
   const setItemIncluded = useCallback((itemKey: string, included: boolean): Promise<boolean> => enqueueLocalMutation(async () => {
     const visible = jobRef.current;
-    if (!visible) return false;
+    if (!visible || visible.scanCompatibility !== "current") return false;
     return mutatePersisted(visible.id, (current) => {
-      if (current.stage !== "review" || !current.proposals[itemKey]) {
+      if (current.scanCompatibility !== "current" || current.stage !== "review" || !current.proposals[itemKey]) {
         return { candidate: current, unchanged: "reject" };
       }
       if (current.proposals[itemKey].included === included) {
@@ -689,11 +714,11 @@ export function useContentReplacementJob(
   const setItemsIncluded = useCallback((itemKeys: string[], included: boolean): Promise<boolean> =>
     enqueueLocalMutation(async () => {
       const visible = jobRef.current;
-      if (!visible) return false;
+      if (!visible || visible.scanCompatibility !== "current") return false;
       return mutatePersisted(visible.id, (current) => {
         const uniqueKeys = new Set(itemKeys);
         if (
-          current.stage !== "review" || itemKeys.length === 0 ||
+          current.scanCompatibility !== "current" || current.stage !== "review" || itemKeys.length === 0 ||
           uniqueKeys.size !== itemKeys.length || itemKeys.some((key) => !current.proposals[key])
         ) return { candidate: current, unchanged: "reject" };
         if (itemKeys.every((key) => current.proposals[key].included === included)) {
@@ -780,15 +805,16 @@ export function useContentReplacementJob(
         expectedScannedRequestChecksum: item.proposal.scannedRequestChecksum,
         expectedProposedRequestChecksum: item.proposal.proposedRequestChecksum,
         expectedProposalFingerprint: item.proposal.proposalFingerprint,
+        ...(item.proposal.exactProof === undefined ? {} : { exactProof: item.proposal.exactProof }),
       }, token);
       if ("aborted" in fetched) return;
       const at = dependenciesRef.current.now();
       const parsed = "failed" in fetched
         ? { ok: false as const, result: { status: "network" as const, error: NETWORK_FAILURE_MESSAGE }, throttleNotices: [] }
         : await parseApplyResponse(fetched.response);
-      if (parsed.result.status === "permission") {
+      if (!("failed" in fetched) && fetched.response.status === 401) {
         rejectCredential(current.id, credentialCheck.credentialIdentity);
-        await persist(credentialInterruption(current, parsed.result.error, at), token);
+        await persist(credentialInterruption(current, safeHttpMessage(fetched.response.status), at), token);
         return;
       }
       if (!("failed" in fetched) && fetched.response.ok) clearRejectedCredentials(current.id);
@@ -835,6 +861,10 @@ export function useContentReplacementJob(
         current = jobRef.current!;
         const batchKeys = current.activeOperation!.remainingItemKeys.slice(0, 10);
         const refs = getNextStaleRescanBatch(current);
+        const proofSource = current;
+        const exactProofs = proofSource.configuration.discovery.mode === "exact"
+          ? refs.map((ref) => proofSource.proposals[replacementItemKey(ref)]?.proposal.exactProof)
+          : undefined;
         const credentialCheck = currentCredentials(current, dependenciesRef.current.now());
         if (!credentialCheck.credentials) {
           await persist(credentialInterruption(current, credentialCheck.message, dependenciesRef.current.now()), token);
@@ -847,6 +877,7 @@ export function useContentReplacementJob(
           scanCompatibility: "current",
           jobFingerprint: current.fingerprint,
           refs,
+          ...(exactProofs === undefined ? {} : { exactProofs }),
         }, token);
         if ("aborted" in fetched) return;
         if ("failed" in fetched) {
@@ -858,7 +889,9 @@ export function useContentReplacementJob(
           }), token);
           return;
         }
-        const parsed = await parseScanResponse(fetched.response, { kind: "details", refs, job: current });
+        const parsed = await parseScanResponse(fetched.response, {
+          kind: "details", refs, exactProofs, job: current,
+        });
         if (!parsed.ok) {
           if (parsed.retryAfterSeconds !== undefined) {
             const at = dependenciesRef.current.now();
@@ -957,7 +990,7 @@ export function useContentReplacementJob(
           continue;
         }
         const parsed = await parseRecoveryPreviewResponse(fetched.response, item.proposal.before.ref);
-        if (!parsed.ok && (parsed.failure?.category === "authorization" || fetched.response.status === 401 || fetched.response.status === 403)) {
+        if (!parsed.ok && fetched.response.status === 401) {
           rejectCredential(current.id, credentialCheck.credentialIdentity);
           await persist(credentialInterruption(current, parsed.message, at), token);
           return;
@@ -989,7 +1022,7 @@ export function useContentReplacementJob(
   const prepareRecovery = useCallback(async (itemKeys: string[]): Promise<void> => {
     const shouldRun = await enqueueLocalMutation(async () => {
     const initial = jobRef.current;
-    if (!initial || initial.activeOperation) return false;
+    if (!initial || initial.scanCompatibility === "exact-proof-restart-required" || initial.activeOperation) return false;
     const started = reduceReplacementJob(initial, {
       type: "recovery/preview-run-started", itemKeys, at: dependenciesRef.current.now(),
     });
@@ -1001,7 +1034,7 @@ export function useContentReplacementJob(
 
   const startRecovery = useCallback(async (itemKeys: string[]): Promise<void> => {
     const visible = jobRef.current;
-    if (!visible) return;
+    if (!visible || visible.scanCompatibility === "exact-proof-restart-required") return;
     await runExclusive(async (token) => {
       let stored: PersistedContentReplacementJob | null;
       try {
@@ -1011,7 +1044,8 @@ export function useContentReplacementJob(
         return;
       }
       if (
-        !stored || stored.updatedAt !== visible.updatedAt || stored.recoverySnapshotStatus !== "ready" ||
+        !stored || stored.scanCompatibility === "exact-proof-restart-required" ||
+        stored.updatedAt !== visible.updatedAt || stored.recoverySnapshotStatus !== "ready" ||
         stableSerialize(stored) !== stableSerialize(visible)
       ) {
         if (mountedRef.current) setStorageError(STALE_SNAPSHOT_ERROR);
@@ -1058,7 +1092,7 @@ export function useContentReplacementJob(
         const fetched = await request(RECOVERY_URL, payload, token);
         if ("aborted" in fetched) return;
         const at = dependenciesRef.current.now();
-        if (!("failed" in fetched) && (fetched.response.status === 401 || fetched.response.status === 403)) {
+        if (!("failed" in fetched) && fetched.response.status === 401) {
           rejectCredential(current.id, credentialCheck.credentialIdentity);
           await persist(credentialInterruption(current, safeHttpMessage(fetched.response.status), at), token);
           return;
@@ -1066,11 +1100,6 @@ export function useContentReplacementJob(
         const parsed = "failed" in fetched
           ? { result: { status: "network" as const, error: NETWORK_FAILURE_MESSAGE }, throttleNotices: [] }
           : await parseRecoveryApplyResponse(fetched.response);
-        if (parsed.result.status === "permission") {
-          rejectCredential(current.id, credentialCheck.credentialIdentity);
-          await persist(credentialInterruption(current, parsed.result.error, at), token);
-          return;
-        }
         if (!("failed" in fetched) && fetched.response.ok) clearRejectedCredentials(current.id);
         const next = reduceReplacementJob(current, {
           type: "recovery/item-finished", itemKey, result: parsed.result, at,
@@ -1181,6 +1210,9 @@ function recoveryPayload(
     priorRequestModel,
     expectedPriorRequestChecksum: item.recovery.scannedRequestChecksum,
     expectedPostApplyChecksum: item.recovery.observedPostApplyChecksum,
+    reviewedProposedRequestChecksum: item.recovery.proposedRequestChecksum,
+    reviewedProposalFingerprint: item.recovery.proposalFingerprint,
+    ...(item.recovery.exactProof === undefined ? {} : { exactProof: item.recovery.exactProof }),
   };
 }
 
@@ -1206,7 +1238,12 @@ type ParsedScanResponse =
 
 type ScanExpectation =
   | { kind: "inventory"; cursor: InventoryCursor; job: PersistedContentReplacementJob }
-  | { kind: "details"; refs: ReplacementItemRef[]; job: PersistedContentReplacementJob };
+  | {
+      kind: "details";
+      refs: ReplacementItemRef[];
+      exactProofs?: Array<ExactTargetProof | undefined>;
+      job: PersistedContentReplacementJob;
+    };
 
 async function parseScanResponse(response: Response, expected: ScanExpectation): Promise<ParsedScanResponse> {
   const body = await safeJson(response);
@@ -1232,7 +1269,12 @@ async function parseScanResponse(response: Response, expected: ScanExpectation):
     return result ? { ok: true, result, throttleNotices: notices } :
       { ok: false, message: INVALID_RESPONSE_MESSAGE, invalid: true };
   }
-  const result = await parseDetailResult(body.result, expected.refs, expected.job.configuration);
+  const result = await parseDetailResult(
+    body.result,
+    expected.refs,
+    expected.job.configuration,
+    expected.exactProofs,
+  );
   return result ? { ok: true, result, throttleNotices: notices } :
     { ok: false, message: INVALID_RESPONSE_MESSAGE, invalid: true };
 }
@@ -1332,6 +1374,7 @@ async function parseDetailResult(
   value: Record<string, unknown>,
   requestedRefs: readonly ReplacementItemRef[],
   configuration: ReplacementConfiguration,
+  exactProofs?: readonly (ExactTargetProof | undefined)[],
 ): Promise<DetailBatchResult | null> {
   if (!hasOnlyKeys(value, ["proposals", "inspectedCount", "protectedOccurrenceCount"]) ||
     !Array.isArray(value.proposals) || !isCount(value.inspectedCount) ||
@@ -1339,6 +1382,9 @@ async function parseDetailResult(
   if (value.inspectedCount !== requestedRefs.length || value.proposals.length > requestedRefs.length ||
     value.proposals.some((proposal) => !isRecord(proposal))) return null;
   const requested = new Set(requestedRefs.map(replacementItemKey));
+  const proofByKey = new Map(requestedRefs.map((ref, index) => [
+    replacementItemKey(ref), exactProofs?.[index],
+  ]));
   const output: ReplacementProposal[] = [];
   const seen = new Set<string>();
   try {
@@ -1346,7 +1392,11 @@ async function parseDetailResult(
       const proposal = candidate as ReplacementProposal;
       const key = replacementItemKey(proposal.before.ref);
       if (!requested.has(key) || seen.has(key)) return null;
-      const canonical = await buildReplacementProposal(proposal.before, configuration);
+      const canonical = await buildReplacementProposal(
+        proposal.before,
+        configuration,
+        proofByKey.get(key),
+      );
       if (!canonical || stableSerialize(canonical) !== stableSerialize(proposal)) return null;
       seen.add(key);
       output.push(proposal);
@@ -1378,7 +1428,8 @@ async function parseApplyResponse(response: Response): Promise<{
       response.status >= 500 || response.status === 429 ? "network" : "failed";
     return {
       ok: false,
-      stop: response.status >= 400 && response.status < 500 && response.status !== 429,
+      stop: response.status >= 400 && response.status < 500 &&
+        response.status !== 403 && response.status !== 429,
       result: { status, error: safeHttpMessage(response.status) },
       throttleNotices: [],
     };
@@ -1460,7 +1511,7 @@ async function parseRecoveryPreviewResponse(response: Response, ref: Replacement
 
 async function parseRecoveryApplyResponse(response: Response): Promise<{
   result:
-    | { status: "recovered" | "already-recovered" | "conflict"; observedRequestChecksum: string }
+    | { status: "recovered" | "already-recovered" | "conflict" | "verification-failed"; observedRequestChecksum: string }
     | { status: "permission" | "validation" | "network" | "failed"; error: string };
   throttleNotices: ThrottleNotice[];
   stop?: boolean;
@@ -1469,9 +1520,13 @@ async function parseRecoveryApplyResponse(response: Response): Promise<{
   if (!response.ok || !isRecord(body) || body.ok !== true ||
     !hasOnlyKeys(body, ["ok", "result", "throttleNotices"]) || !isRecord(body.result)) {
     return {
-      result: { status: response.status >= 500 ? "network" : "failed", error: safeHttpMessage(response.status) },
+      result: {
+        status: response.status === 403 ? "permission" : response.status >= 500 ? "network" : "failed",
+        error: safeHttpMessage(response.status),
+      },
       throttleNotices: [],
-      stop: response.status >= 400 && response.status < 500 && response.status !== 429,
+      stop: response.status >= 400 && response.status < 500 &&
+        response.status !== 403 && response.status !== 429,
     };
   }
   const notices = parseThrottleNotices(body.throttleNotices);
@@ -1479,7 +1534,8 @@ async function parseRecoveryApplyResponse(response: Response): Promise<{
     return { result: { status: "failed", error: INVALID_RESPONSE_MESSAGE }, throttleNotices: [], stop: true };
   }
   const result = body.result;
-  if ((result.status === "recovered" || result.status === "already-recovered" || result.status === "conflict") &&
+  if ((result.status === "recovered" || result.status === "already-recovered" ||
+    result.status === "conflict" || result.status === "verification-failed") &&
     hasOnlyKeys(result, ["status", "observedRequestChecksum"]) && isDigest(result.observedRequestChecksum)) {
     return { result: { status: result.status, observedRequestChecksum: result.observedRequestChecksum }, throttleNotices: notices };
   }
@@ -1548,7 +1604,8 @@ async function safeJson(response: Response): Promise<unknown> {
 }
 
 function safeHttpMessage(status: number): string {
-  if (status === 401 || status === 403) return "Stack Enterprise credentials or permissions were rejected.";
+  if (status === 401) return "Stack Enterprise credentials were rejected.";
+  if (status === 403) return "Stack Enterprise permission was denied.";
   if (status >= 400 && status < 500) return "The content replacement request was rejected.";
   if (status >= 500) return "The content replacement service is temporarily unavailable.";
   return INVALID_RESPONSE_MESSAGE;

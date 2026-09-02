@@ -6,6 +6,10 @@ import type {
   ReplacementRule,
   ReplacementRuleErrorCode,
 } from "./types";
+import {
+  MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES,
+  utf8ByteLength,
+} from "./limits";
 
 export const MAX_REPLACEMENT_RULES = 500;
 export const MAX_FIND_LENGTH = 200;
@@ -43,36 +47,49 @@ export function createDefaultReplacementConfiguration(): ReplacementConfiguratio
 }
 
 export function parseReplacementCsv(csvText: string): ReplacementCsvParseResult {
-  const parsed = Papa.parse<string[]>(csvText, {
+  if (utf8ByteLength(csvText) > MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES) {
+    return { rows: [], fileErrors: ["Replacement CSV exceeds the 1 MiB UTF-8 limit."] };
+  }
+  const rows: ReplacementRule[] = [];
+  const fileErrors: string[] = [];
+  let rowIndex = 0;
+  let validHeader = false;
+  Papa.parse<string[]>(csvText, {
     delimiter: ",",
     header: false,
     dynamicTyping: false,
     skipEmptyLines: false,
+    step(result, parser) {
+      const sourceRow = rowIndex + 1;
+      rowIndex += 1;
+      fileErrors.push(...result.errors.map((error) => error.message));
+      const record = result.data;
+      if (sourceRow === 1) {
+        validHeader = hasCanonicalHeaders(record);
+        if (!validHeader) {
+          fileErrors.unshift('CSV must have exactly these headers: find,replace.');
+          parser.abort();
+        }
+        return;
+      }
+      if (!validHeader || record.every((value) => value.trim() === "")) return;
+      if (rows.length >= MAX_REPLACEMENT_RULES) {
+        fileErrors.push(`CSV cannot contain more than ${MAX_REPLACEMENT_RULES} replacement mappings.`);
+        parser.abort();
+        return;
+      }
+      if (record.length !== 2) {
+        fileErrors.push(`CSV row ${sourceRow} must contain exactly two columns.`);
+        return;
+      }
+      rows.push({
+        id: `csv-${sourceRow}`,
+        sourceRow,
+        find: record[0] ?? "",
+        replace: record[1] ?? "",
+      });
+    },
   });
-  const fileErrors = parsed.errors.map((error) => error.message);
-  const header = parsed.data[0] ?? [];
-
-  if (!hasCanonicalHeaders(header)) {
-    fileErrors.unshift('CSV must have exactly these headers: find,replace.');
-    return { rows: [], fileErrors };
-  }
-
-  const rows = parsed.data.slice(1).flatMap((record, index) => {
-    if (record.every((value) => value.trim() === "")) {
-      return [];
-    }
-
-    if (record.length !== 2) {
-      fileErrors.push(`CSV row ${index + 2} must contain exactly two columns.`);
-      return [];
-    }
-
-    const find = record[0] ?? "";
-    const replace = record[1] ?? "";
-
-    return [{ id: `csv-${index + 2}`, sourceRow: index + 2, find, replace }];
-  });
-
   return { rows, fileErrors };
 }
 

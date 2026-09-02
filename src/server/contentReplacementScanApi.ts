@@ -10,13 +10,16 @@ import {
   type ContentReplacementClient,
 } from "../writeTools/contentReplacement/contentApi";
 import { createJobFingerprint } from "../writeTools/contentReplacement/proposals";
+import { normalizeExactTargetProof, verifyExactTargetProof } from "../writeTools/contentReplacement/exactManifest";
 import {
   assertValidDetailRefs,
+  ContentReplacementRequestModelLimitError,
   scanDetailBatch,
   scanInventorySlice,
 } from "../writeTools/contentReplacement/scanner";
 import type {
   DetailBatchResult,
+  ExactTargetProof,
   InventoryCursor,
   InventorySliceResult,
   ReplacementConfiguration,
@@ -51,7 +54,7 @@ export type ContentReplacementScanPayload = {
   jobFingerprint: string;
 } & (
   | { action: "inventory"; cursor: InventoryCursor }
-  | { action: "details"; refs: ReplacementItemRef[] }
+  | { action: "details"; refs: ReplacementItemRef[]; exactProofs?: ExactTargetProof[] }
 );
 
 export type ContentReplacementScanResponseBody =
@@ -82,7 +85,7 @@ export async function handleContentReplacementScanRequest(
   payload: unknown,
   dependencies: ContentReplacementScanApiDependencies = {},
 ): Promise<Response> {
-  const validated = validateScanPayload(payload);
+  const validated = await validateScanPayload(payload);
   if (!validated) {
     return plainJsonResponse({ ok: false, error: INVALID_REQUEST_MESSAGE }, 400);
   }
@@ -143,10 +146,14 @@ export async function handleContentReplacementScanRequest(
 
     const result = await scanDetailBatch(client, {
       refs: validated.refs,
+      ...(validated.exactProofs === undefined ? {} : { exactProofs: validated.exactProofs }),
       configuration: validated.configuration,
     });
     return browserJsonResponse({ ok: true, result, throttleNotices }, 200);
   } catch (error) {
+    if (error instanceof ContentReplacementRequestModelLimitError) {
+      return browserJsonResponse({ ok: false, error: error.message }, 422);
+    }
     const status = safeErrorStatus(error);
     if (status === 429) {
       return browserJsonResponse(
@@ -199,8 +206,8 @@ function isOriginOnlyInstanceUrl(value: string): boolean {
   }
 }
 
-function validateScanPayload(value: unknown): ContentReplacementScanPayload | null {
-  if (!isRecord(value) || !isExactObject(value, commonPayloadKeys(value.action))) return null;
+async function validateScanPayload(value: unknown): Promise<ContentReplacementScanPayload | null> {
+  if (!isRecord(value) || !isExactObject(value, commonPayloadKeys(value.action, "exactProofs" in value))) return null;
   const credentials = validateSharedSessionCredentials(value.credentials);
   const configuration = validateSharedConfiguration(value.configuration);
   if (!configuration || value.scanCompatibility !== "current" ||
@@ -227,6 +234,8 @@ function validateScanPayload(value: unknown): ContentReplacementScanPayload | nu
     value.refs.every((ref) => isDetailRefRelevant(ref, configuration))
   ) {
     assertValidDetailRefs(value.refs);
+    const exactProofs = await validatedDetailProofs(value.exactProofs, value.refs, configuration);
+    if (exactProofs === null) return null;
     return {
       action: "details",
       credentials,
@@ -234,20 +243,40 @@ function validateScanPayload(value: unknown): ContentReplacementScanPayload | nu
       scanCompatibility: "current",
       jobFingerprint: value.jobFingerprint,
       refs: value.refs,
+      ...(exactProofs === undefined ? {} : { exactProofs }),
     };
   }
 
   return null;
 }
 
-function commonPayloadKeys(action: unknown): readonly string[] {
+function commonPayloadKeys(action: unknown, hasExactProofs: boolean): readonly string[] {
   if (action === "inventory") {
     return ["action", "credentials", "configuration", "scanCompatibility", "jobFingerprint", "cursor"];
   }
   if (action === "details") {
-    return ["action", "credentials", "configuration", "scanCompatibility", "jobFingerprint", "refs"];
+    return [
+      "action", "credentials", "configuration", "scanCompatibility", "jobFingerprint", "refs",
+      ...(hasExactProofs ? ["exactProofs"] : []),
+    ];
   }
   return [];
+}
+
+async function validatedDetailProofs(
+  value: unknown,
+  refs: readonly ReplacementItemRef[],
+  configuration: ReplacementConfiguration,
+): Promise<ExactTargetProof[] | undefined | null> {
+  if (configuration.discovery.mode !== "exact") return value === undefined ? undefined : null;
+  if (!Array.isArray(value) || value.length !== refs.length) return null;
+  const proofs: ExactTargetProof[] = [];
+  for (let index = 0; index < refs.length; index += 1) {
+    const proof = normalizeExactTargetProof(value[index]);
+    if (!proof || !await verifyExactTargetProof(refs[index], proof, configuration.discovery)) return null;
+    proofs.push(proof);
+  }
+  return proofs;
 }
 
 function isDetailRefRelevant(
@@ -404,7 +433,10 @@ const PROGRESS_KEYS = new Set([
 ]);
 const PROPOSAL_KEYS = new Set([
   "before", "after", "scannedRequestChecksum", "proposedRequestChecksum", "proposalFingerprint",
-  "fields", "changedOccurrences", "protectedOccurrences", "appliedRuleIds", "metadata",
+  "exactProof", "fields", "changedOccurrences", "protectedOccurrences", "appliedRuleIds", "metadata",
+]);
+const EXACT_PROOF_KEYS = new Set([
+  "algorithm", "version", "targetCount", "targetIndex", "manifestRoot", "siblingHashes",
 ]);
 const MODEL_KEYS = new Set(["kind", "ref", "request", "metadata"]);
 const REQUEST_KEYS = new Set([
@@ -441,6 +473,7 @@ function isTrustedScanResponseKey(
   if (isCollectionItemPath(path, "result", "answerCursors")) return CURSOR_KEYS.has(key);
   if (matchesPath(path, "result", "nextCursor")) return CURSOR_KEYS.has(key);
   if (isProposalPath(path)) return PROPOSAL_KEYS.has(key);
+  if (isProposalChildPath(path, "exactProof")) return EXACT_PROOF_KEYS.has(key);
   if (isProposalChildPath(path, "before") || isProposalChildPath(path, "after")) {
     return MODEL_KEYS.has(key);
   }

@@ -528,6 +528,8 @@ async function installContentReplacementRoutes(page: Page): Promise<RouteFixture
       priorRequestModel: QUESTION_PRIOR_REQUEST_MODEL,
       expectedPriorRequestChecksum: evidence.question.scannedRequestChecksum,
       expectedPostApplyChecksum: evidence.question.proposedRequestChecksum,
+      reviewedProposedRequestChecksum: evidence.question.proposedRequestChecksum,
+      reviewedProposalFingerprint: evidence.question.proposalFingerprint,
     });
     fixture.recoveryRequests.push(request);
     if (request.action === "preview") {
@@ -775,12 +777,13 @@ interface ExactTargetRouteFixture {
 }
 
 async function installExactTargetRoutes(page: Page): Promise<ExactTargetRouteFixture> {
-  const detailRefs: ReplacementItemRef[] = [
+  const importedRefs: ReplacementItemRef[] = [
     { kind: "question", questionId: 701 },
     { kind: "answer", questionId: 701, answerId: 702 },
     { kind: "article", articleId: 703 },
   ];
-  const selection = await createExactTargetSelection(detailRefs);
+  const selection = await createExactTargetSelection(importedRefs);
+  const detailRefs = selection.targets;
   const configuration: ReplacementConfiguration = {
     target: { kind: "enterprise-main" },
     contentTypes: { questions: true, answers: true, articles: true },
@@ -790,15 +793,15 @@ async function installExactTargetRoutes(page: Page): Promise<ExactTargetRouteFix
   };
   const models: ReplacementRequestModel[] = [
     {
-      kind: "question", ref: detailRefs[0] as Extract<ReplacementItemRef, { kind: "question" }>,
+      kind: "question", ref: importedRefs[0] as Extract<ReplacementItemRef, { kind: "question" }>,
       request: { title: "LOCALEPSILON question", body: "Local question body.", tags: ["local"] },
     },
     {
-      kind: "answer", ref: detailRefs[1] as Extract<ReplacementItemRef, { kind: "answer" }>,
+      kind: "answer", ref: importedRefs[1] as Extract<ReplacementItemRef, { kind: "answer" }>,
       request: { body: "LOCALEPSILON answer" },
     },
     {
-      kind: "article", ref: detailRefs[2] as Extract<ReplacementItemRef, { kind: "article" }>,
+      kind: "article", ref: importedRefs[2] as Extract<ReplacementItemRef, { kind: "article" }>,
       request: {
         title: "Local article", body: "LOCALEPSILON article", tags: ["local"], type: "knowledgeArticle",
         expirationDate: null,
@@ -806,7 +809,12 @@ async function installExactTargetRoutes(page: Page): Promise<ExactTargetRouteFix
       },
     },
   ];
-  const proposals = await Promise.all(models.map((model) => buildReplacementProposal(model, configuration)));
+  const modelByKey = new Map(models.map((model) => [replacementItemKey(model.ref), model]));
+  const proposals = await Promise.all(detailRefs.map((ref, index) => buildReplacementProposal(
+    modelByKey.get(replacementItemKey(ref))!,
+    configuration,
+    selection.proofs[index],
+  )));
   if (proposals.some((proposal) => proposal === null)) throw new Error("Expected exact-target fixture proposals.");
   const fingerprint = await createJobFingerprint({ baseUrl: ENTERPRISE_URL, configuration, scanCompatibility: "current" });
   const fixture: ExactTargetRouteFixture = {
@@ -827,6 +835,7 @@ async function installExactTargetRoutes(page: Page): Promise<ExactTargetRouteFix
       scanCompatibility: "current",
       jobFingerprint: fingerprint,
       refs: detailRefs,
+      exactProofs: selection.proofs,
     });
     expect(request).not.toHaveProperty("exactTargets");
     fixture.detailRequests.push(request.refs as ReplacementItemRef[]);

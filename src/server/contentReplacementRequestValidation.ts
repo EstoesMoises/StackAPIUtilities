@@ -14,6 +14,13 @@ import type {
   ReplacementWireRequestModel,
   ReplacementRule,
 } from "../writeTools/contentReplacement/types";
+import {
+  MAX_CONTENT_REPLACEMENT_CONFIGURATION_BYTES,
+  MAX_CONTENT_REPLACEMENT_CREDENTIALS_BYTES,
+  MAX_CONTENT_REPLACEMENT_EXACT_TARGETS,
+  MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES,
+  isJsonWithinUtf8ByteLimit,
+} from "../writeTools/contentReplacement/limits";
 
 const MAX_BASE_URL_LENGTH = 2_048;
 const MAX_CREDENTIAL_STRING_LENGTH = 65_536;
@@ -50,7 +57,9 @@ export function validateSessionCredentials(value: unknown): SessionCredentials |
     ) {
       return null;
     }
-    return value as unknown as SessionCredentials;
+    return isJsonWithinUtf8ByteLimit(value, MAX_CONTENT_REPLACEMENT_CREDENTIALS_BYTES)
+      ? value as unknown as SessionCredentials
+      : null;
   } catch {
     return null;
   }
@@ -101,7 +110,7 @@ export function validateConfiguration(value: unknown): ReplacementConfiguration 
     };
     const validated = validateReplacementRules(value.rules as ReplacementRule[], options);
     if (validated.errors.length > 0 || validated.rules.length < 1) return null;
-    return {
+    const configuration: ReplacementConfiguration = {
       target: { kind: "enterprise-main" },
       contentTypes: {
         questions: value.contentTypes.questions,
@@ -112,6 +121,9 @@ export function validateConfiguration(value: unknown): ReplacementConfiguration 
       rules: validated.rules,
       options,
     };
+    return isJsonWithinUtf8ByteLimit(configuration, MAX_CONTENT_REPLACEMENT_CONFIGURATION_BYTES)
+      ? configuration
+      : null;
   } catch {
     return null;
   }
@@ -126,7 +138,7 @@ function validateDiscovery(value: unknown): ReplacementDiscovery | null {
     value.mode === "exact" &&
     isExactObject(value, ["mode", "targetCount", "targetDigest"]) &&
     isPositiveSafeInteger(value.targetCount) &&
-    value.targetCount <= 100_000 &&
+    value.targetCount <= MAX_CONTENT_REPLACEMENT_EXACT_TARGETS &&
     isSha256Digest(value.targetDigest)
   ) {
     return { mode: "exact", targetCount: value.targetCount, targetDigest: value.targetDigest };
@@ -267,7 +279,7 @@ function normalizeRequestModel(
 
     if (ref.kind === "answer") {
       if (!isExactObject(value.request, ["body"]) || !isContentString(value.request.body)) return null;
-      return { kind: "answer", ref, request: { body: value.request.body } };
+      return boundedRequestModel({ kind: "answer", ref, request: { body: value.request.body } });
     }
 
     if (
@@ -277,11 +289,11 @@ function normalizeRequestModel(
       isContentString(value.request.body) &&
       isStringList(value.request.tags)
     ) {
-      return {
+      return boundedRequestModel({
         kind: "question",
         ref,
         request: { title: value.request.title, body: value.request.body, tags: [...value.request.tags] },
-      };
+      });
     }
     if (ref.kind !== "article") return null;
     const requestKeys = Object.keys(value.request);
@@ -301,7 +313,7 @@ function normalizeRequestModel(
     }
     const permissions = validateArticlePermissions(value.request.permissions);
     if (!permissions) return null;
-    return {
+    return boundedRequestModel({
       kind: "article",
       ref,
       request: {
@@ -312,10 +324,16 @@ function normalizeRequestModel(
         ...(value.request.expirationDate === undefined ? {} : { expirationDate: value.request.expirationDate }),
         permissions,
       },
-    };
+    });
   } catch {
     return null;
   }
+}
+
+function boundedRequestModel(model: ReplacementWireRequestModel): ReplacementWireRequestModel | null {
+  return isJsonWithinUtf8ByteLimit(model, MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES)
+    ? model
+    : null;
 }
 
 function validateArticlePermissions(value: unknown): ArticlePermissionsRequest | null {

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
+import * as contentReplacementDownloads from "../utils/contentReplacementDownloads";
 import type {
   PersistedContentReplacementFailure,
   PersistedContentReplacementItem,
@@ -131,7 +132,7 @@ describe("ContentReplacementApplyStep", () => {
 
     expect(screen.getByText("example.stackenterprise.co")).toBeVisible();
     expect(screen.getByText("Questions, Answers, Articles")).toBeVisible();
-    expect(screen.getByText("MyPVM → MyPBM")).toBeVisible();
+    expect(screen.getByText("TermA → TermB")).toBeVisible();
     expect(screen.getByText("3 posts selected · 4 changed occurrences · 2 protected occurrences")).toBeVisible();
     expect(screen.getByText(/small race remains between the final checksum read and PUT/i)).toBeVisible();
     expect(screen.getByText(/Complete recovery snapshots are saved for all 3 selected posts/i)).toBeVisible();
@@ -308,6 +309,23 @@ describe("ContentReplacementApplyStep", () => {
     expect(screen.queryByRole("button", { name: /Apply changes|Resume apply/ })).not.toBeInTheDocument();
   });
 
+  it("keeps proofless Exact Apply evidence read-only without retry, rescan, or recovery controls", () => {
+    const fenced = resultJob();
+    fenced.scanCompatibility = "exact-proof-restart-required";
+    fenced.configuration = {
+      ...fenced.configuration,
+      discovery: { mode: "exact", targetCount: 2, targetDigest: "e".repeat(64) },
+    };
+    render(<ContentReplacementApplyStep controller={controller(fenced)} />);
+
+    expect(screen.getByRole("heading", { name: "New scan required" })).toBeVisible();
+    expect(screen.getByText(/proof provenance.*read-only/i)).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Guarded recovery" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry eligible|Rescan stale|Preview recovery|Recover \d/i }))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download results CSV" })).toBeEnabled();
+  });
+
   it("does not traverse full request bodies during incremental large apply progress", () => {
     const apply = trackedBodyJob(2_000, false);
     const applyView = render(<ContentReplacementApplyStep controller={controller(apply.current)} />);
@@ -454,6 +472,20 @@ describe("ContentReplacementApplyStep", () => {
     expect(click).toHaveBeenCalledTimes(2);
   });
 
+  it("surfaces a bounded local results-export error without starting a download", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(contentReplacementDownloads, "downloadReplacementResults").mockImplementation(() => {
+      throw new RangeError("Content replacement CSV exceeds the 32 MiB export limit.");
+    });
+    render(<ContentReplacementApplyStep controller={controller(resultJob())} />);
+
+    await user.click(screen.getByRole("button", { name: "Download results CSV" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Content replacement CSV exceeds the 32 MiB export limit.",
+    );
+  });
+
   it("offers recovery only for checksum-observed successes and requires a complete preview plus RECOVER", async () => {
     const user = userEvent.setup();
     const base = resultJob();
@@ -471,8 +503,8 @@ describe("ContentReplacementApplyStep", () => {
     rerender(<ContentReplacementApplyStep controller={recoveryController} />);
     const preview = screen.getByRole("region", { name: "Recovery preview" });
     const questionPreview = within(preview).getByRole("heading", { name: "Question 1 recovery preview" }).parentElement!;
-    expect(within(questionPreview).getByText(/Current replacement state/i).nextElementSibling).toHaveTextContent("Use MyPBM");
-    expect(within(questionPreview).getByText(/Prior full request model to restore/i).nextElementSibling).toHaveTextContent("Use MyPVM");
+    expect(within(questionPreview).getByText(/Current replacement state/i).nextElementSibling).toHaveTextContent("Use TermB");
+    expect(within(questionPreview).getByText(/Prior full request model to restore/i).nextElementSibling).toHaveTextContent("Use TermA");
     expect(within(preview).getByText(/Question 2 changed after apply and will not be overwritten/i)).toBeVisible();
 
     const recover = screen.getByRole("button", { name: "Recover 1 post" });
@@ -890,7 +922,7 @@ function job(overrides: Partial<PersistedContentReplacementJob> = {}): Persisted
       target: { kind: "enterprise-main" },
       contentTypes: { questions: true, answers: true, articles: true },
       discovery: { mode: "full" },
-      rules: [{ id: "one", find: "MyPVM", replace: "MyPBM" }],
+      rules: [{ id: "one", find: "TermA", replace: "TermB" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     },
     stage: "results",
@@ -939,15 +971,15 @@ function item(
   let before: ReplacementRequestModel;
   let after: ReplacementRequestModel;
   if (kind === "question" && ref.kind === "question") {
-    before = { kind, ref, request: { title: "Use MyPVM", body: "Use MyPVM.", tags: ["test"] } };
-    after = { kind, ref, request: { title: "Use MyPBM", body: "Use MyPBM.", tags: ["test"] } };
+    before = { kind, ref, request: { title: "Use TermA", body: "Use TermA.", tags: ["test"] } };
+    after = { kind, ref, request: { title: "Use TermB", body: "Use TermB.", tags: ["test"] } };
   } else if (kind === "answer" && ref.kind === "answer") {
-    before = { kind, ref, request: { body: "Use MyPVM." } };
-    after = { kind, ref, request: { body: "Use MyPBM." } };
+    before = { kind, ref, request: { body: "Use TermA." } };
+    after = { kind, ref, request: { body: "Use TermB." } };
   } else if (kind === "article" && ref.kind === "article") {
     const permissions = { editorUserIds: [], editorUserGroupIds: [] };
-    before = { kind, ref, request: { title: "Use MyPVM", body: "Use MyPVM.", tags: ["test"], type: "knowledgeArticle", permissions } };
-    after = { kind, ref, request: { title: "Use MyPBM", body: "Use MyPBM.", tags: ["test"], type: "knowledgeArticle", permissions } };
+    before = { kind, ref, request: { title: "Use TermA", body: "Use TermA.", tags: ["test"], type: "knowledgeArticle", permissions } };
+    after = { kind, ref, request: { title: "Use TermB", body: "Use TermB.", tags: ["test"], type: "knowledgeArticle", permissions } };
   } else {
     throw new Error("Mismatched test item kind");
   }
@@ -956,15 +988,15 @@ function item(
     ruleId: "one",
     start: index === 0 ? 4 : 0,
     end: index === 0 ? 9 : 5,
-    before: "MyPVM",
-    after: "MyPBM",
+    before: "TermA",
+    after: "TermB",
   }));
   const protectedOccurrences = Array.from({ length: options.protected ?? 0 }, () => ({
     field: "body" as const,
     ruleId: "one",
     start: 1,
     end: 6,
-    before: "MyPVM",
+    before: "TermA",
     reason: "code" as const,
   }));
   const successful = options.resultKind === "applied" || options.resultKind === "unchanged";
@@ -976,8 +1008,8 @@ function item(
       before,
       after,
       fields: {
-        ...(kind === "answer" ? {} : { title: { beforeMarkdown: "Use MyPVM", afterMarkdown: "Use MyPBM" } }),
-        body: { beforeMarkdown: "Use MyPVM.", afterMarkdown: "Use MyPBM." },
+        ...(kind === "answer" ? {} : { title: { beforeMarkdown: "Use TermA", afterMarkdown: "Use TermB" } }),
+        body: { beforeMarkdown: "Use TermA.", afterMarkdown: "Use TermB." },
       },
       changedOccurrences: changed,
       protectedOccurrences,
@@ -997,6 +1029,7 @@ function item(
       priorRequestModel: before,
       scannedRequestChecksum: "a".repeat(64),
       proposedRequestChecksum: "b".repeat(64),
+      proposalFingerprint: "c".repeat(64),
       ...(successful ? { observedPostApplyChecksum: "b".repeat(64) } : {}),
       status: "ready",
     },

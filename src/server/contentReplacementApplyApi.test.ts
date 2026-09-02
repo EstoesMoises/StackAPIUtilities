@@ -11,11 +11,13 @@ import {
   checksumRequestModel,
   createJobFingerprint,
 } from "../writeTools/contentReplacement/proposals";
+import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
 import type {
   ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementRequestModel,
 } from "../writeTools/contentReplacement/types";
+import { MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES } from "../writeTools/contentReplacement/limits";
 import {
   handleContentReplacementApplyRequest,
   type ContentReplacementApplyPayload,
@@ -33,14 +35,14 @@ const configuration: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
   contentTypes: { questions: true, answers: true, articles: true },
   discovery: { mode: "full" },
-  rules: [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }],
+  rules: [{ id: "rule-1", find: "TermA", replace: "TermB" }],
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };
 
 const beforeQuestion: ReplacementRequestModel = {
   kind: "question",
   ref: { kind: "question", questionId: 10 },
-  request: { title: "Rename MyPVM", body: "Use MyPVM.", tags: ["product"] },
+  request: { title: "Rename TermA", body: "Use TermA.", tags: ["product"] },
 };
 
 afterEach(() => {
@@ -58,7 +60,7 @@ async function validApplyPayload(
   overrides: Partial<ContentReplacementApplyPayload> = {},
 ): Promise<ContentReplacementApplyPayload> {
   const effectiveConfiguration = overrides.configuration ?? configuration;
-  const proposal = await buildReplacementProposal(beforeQuestion, effectiveConfiguration);
+  const proposal = await buildReplacementProposal(beforeQuestion, effectiveConfiguration, overrides.exactProof);
   if (!proposal) throw new Error("fixture must produce a proposal");
   return {
     credentials,
@@ -73,6 +75,7 @@ async function validApplyPayload(
     expectedScannedRequestChecksum: proposal.scannedRequestChecksum,
     expectedProposedRequestChecksum: proposal.proposedRequestChecksum,
     expectedProposalFingerprint: proposal.proposalFingerprint,
+    ...(overrides.exactProof === undefined ? {} : { exactProof: overrides.exactProof }),
     ...overrides,
   };
 }
@@ -113,6 +116,26 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementApplyRequest", () => {
+  it("never applies an aggregate-over-budget current model that could not be recovered", async () => {
+    const oversized: ReplacementRequestModel = {
+      ...beforeQuestion,
+      request: { ...beforeQuestion.request, body: "é".repeat(1_048_576) },
+    };
+    expect(new TextEncoder().encode(JSON.stringify(oversized)).byteLength)
+      .toBeGreaterThan(MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES);
+    const client = fakeContentClient([oversized]);
+
+    const response = await handleContentReplacementApplyRequest(await validApplyPayload(), {
+      createClient: () => client,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      result: { status: "failed", error: "Unable to read the current content item." },
+    });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
   it("requires current compatibility on a current-bound apply request", async () => {
     const response = await handleContentReplacementApplyRequest({
       ...(await validApplyPayload()),
@@ -138,17 +161,24 @@ describe("handleContentReplacementApplyRequest", () => {
     expect(createClient).not.toHaveBeenCalled();
   });
 
-  it("accepts compact Exact discovery without a target array", async () => {
+  it("requires the reviewed Exact proof before client construction and applies with valid evidence", async () => {
+    const selection = await createExactTargetSelection([beforeQuestion.ref]);
     const exact: ReplacementConfiguration = {
       ...configuration,
-      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+      discovery: selection.discovery,
     };
-    const payload = await validApplyPayload({ configuration: exact });
+    const payload = await validApplyPayload({ configuration: exact, exactProof: selection.proofs[0] });
     const response = await handleContentReplacementApplyRequest(payload, {
       createClient: () => fakeContentClient(),
     });
 
     expect(response.status).toBe(200);
+    const { exactProof: _proof, ...withoutProof } = payload;
+    await expectInvalidWithoutClient(withoutProof);
+    await expectInvalidWithoutClient({
+      ...payload,
+      exactProof: { ...selection.proofs[0], targetIndex: 1 },
+    });
   });
 
   it("writes one server-recomputed exact request and returns the observed post-write checksum", async () => {
@@ -181,7 +211,7 @@ describe("handleContentReplacementApplyRequest", () => {
     expect(client.updateItem).toHaveBeenCalledWith({
       kind: "question",
       ref: { kind: "question", questionId: 10 },
-      request: { title: "Rename MyPBM", body: "Use MyPBM.", tags: ["product"] },
+      request: { title: "Rename TermB", body: "Use TermB.", tags: ["product"] },
     });
   });
 
@@ -190,14 +220,14 @@ describe("handleContentReplacementApplyRequest", () => {
       {
         kind: "answer",
         ref: { kind: "answer", questionId: 10, answerId: 11 },
-        request: { body: "Use MyPVM." },
+        request: { body: "Use TermA." },
       },
       {
         kind: "article",
         ref: { kind: "article", articleId: 12 },
         request: {
-          title: "MyPVM policy",
-          body: "Use MyPVM.",
+          title: "TermA policy",
+          body: "Use TermA.",
           tags: ["product"],
           type: "policy",
           expirationDate: null,
@@ -346,8 +376,25 @@ describe("handleContentReplacementApplyRequest", () => {
     expect(client.updateItem).toHaveBeenCalledTimes(1);
   });
 
+  it("returns HTTP 401 for an invalid upstream credential instead of an item permission result", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      new ContentReplacementApiError("hostile credential detail", "http", 401),
+    );
+
+    const response = await handleContentReplacementApplyRequest(await validApplyPayload(), {
+      createClient: () => client,
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Stack Enterprise credentials were rejected.",
+    });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
   it.each([
-    [401, "permission"],
     [403, "permission"],
     [400, "validation"],
     [422, "validation"],
@@ -356,7 +403,7 @@ describe("handleContentReplacementApplyRequest", () => {
     [503, "network"],
     [504, "network"],
     [404, "failed"],
-  ] as const)("maps upstream status %i to an HTTP-200 %s item result", async (status, expected) => {
+  ] as const)("maps upstream non-credential status %i to an HTTP-200 %s item result", async (status, expected) => {
     const hostile = new ContentReplacementApiError("secret-token hostile body", "http", status);
     const client = fakeContentClient();
     client.getItem = vi.fn().mockRejectedValue(hostile);
@@ -530,8 +577,8 @@ describe("handleContentReplacementApplyRequest", () => {
       if (init?.method === "PUT") throw new TypeError("secret-token lost response");
       return new Response(JSON.stringify({
         id: 10,
-        title: "Rename MyPVM",
-        bodyMarkdown: "Use MyPVM.",
+        title: "Rename TermA",
+        bodyMarkdown: "Use TermA.",
         tags: [{ name: "product" }],
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });
@@ -559,8 +606,8 @@ describe("handleContentReplacementApplyRequest", () => {
       }
       return new Response(JSON.stringify({
         id: 10,
-        title: "Rename MyPVM",
-        bodyMarkdown: "Use MyPVM.",
+        title: "Rename TermA",
+        bodyMarkdown: "Use TermA.",
         tags: [{ name: "product" }],
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });

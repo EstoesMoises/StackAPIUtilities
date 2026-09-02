@@ -15,7 +15,9 @@ import {
   checksumRequestModel,
   createJobFingerprint,
 } from "../writeTools/contentReplacement/proposals";
+import { normalizeExactTargetProof, verifyExactTargetProof } from "../writeTools/contentReplacement/exactManifest";
 import type {
+  ExactTargetProof,
   ReplacementConfiguration,
   ReplacementItemRef,
 } from "../writeTools/contentReplacement/types";
@@ -50,6 +52,7 @@ export interface ContentReplacementApplyPayload {
   expectedScannedRequestChecksum: string;
   expectedProposedRequestChecksum: string;
   expectedProposalFingerprint: string;
+  exactProof?: ExactTargetProof;
 }
 
 type ApplyItemResult =
@@ -72,7 +75,7 @@ export async function handleContentReplacementApplyRequest(
   payload: unknown,
   dependencies: ContentReplacementApplyDependencies = {},
 ): Promise<Response> {
-  const validated = validateApplyPayload(payload);
+  const validated = await validateApplyPayload(payload);
   if (!validated) return plainJsonResponse({ ok: false, error: INVALID_REQUEST_MESSAGE }, 400);
 
   const writeContext = prepareEnterpriseWriteContext(validated.credentials);
@@ -139,7 +142,11 @@ export async function handleContentReplacementApplyRequest(
     }, 200);
   }
 
-  const proposal = await buildReplacementProposal(current, validated.configuration);
+  const proposal = await buildReplacementProposal(
+    current,
+    validated.configuration,
+    validated.exactProof,
+  );
   if (
     !proposal ||
     proposal.proposedRequestChecksum !== validated.expectedProposedRequestChecksum ||
@@ -185,7 +192,7 @@ export async function handleContentReplacementApplyRequest(
   }
 }
 
-function validateApplyPayload(value: unknown): ContentReplacementApplyPayload | null {
+async function validateApplyPayload(value: unknown): Promise<ContentReplacementApplyPayload | null> {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
@@ -193,6 +200,7 @@ function validateApplyPayload(value: unknown): ContentReplacementApplyPayload | 
       "credentials", "configuration", "scanCompatibility", "jobFingerprint", "itemRef",
       "expectedScannedRequestChecksum", "expectedProposedRequestChecksum",
       "expectedProposalFingerprint",
+      ...("exactProof" in record ? ["exactProof"] : []),
     ])) return null;
     const credentials = validateSessionCredentials(record.credentials);
     const configuration = validateConfiguration(record.configuration);
@@ -205,6 +213,14 @@ function validateApplyPayload(value: unknown): ContentReplacementApplyPayload | 
       !isSha256Digest(record.expectedProposedRequestChecksum) ||
       !isSha256Digest(record.expectedProposalFingerprint)
     ) return null;
+    let exactProof: ExactTargetProof | undefined;
+    if (configuration.discovery.mode === "exact") {
+      const candidate = normalizeExactTargetProof(record.exactProof);
+      if (!candidate || !await verifyExactTargetProof(itemRef, candidate, configuration.discovery)) return null;
+      exactProof = candidate;
+    } else if ("exactProof" in record) {
+      return null;
+    }
     return {
       credentials,
       configuration,
@@ -214,6 +230,7 @@ function validateApplyPayload(value: unknown): ContentReplacementApplyPayload | 
       expectedScannedRequestChecksum: record.expectedScannedRequestChecksum,
       expectedProposedRequestChecksum: record.expectedProposedRequestChecksum,
       expectedProposalFingerprint: record.expectedProposalFingerprint,
+      ...(exactProof === undefined ? {} : { exactProof }),
     };
   } catch {
     return null;
@@ -242,6 +259,9 @@ function itemFailureResponse(
   throttleNotices: ThrottleNotice[],
   respond: (body: ContentReplacementApplyResponseBody, status: number) => Response,
 ): Response {
+  if (error instanceof ContentReplacementApiError && error.category === "http" && safeErrorStatus(error) === 401) {
+    return respond({ ok: false, error: "Stack Enterprise credentials were rejected." }, 401);
+  }
   return respond({
     ok: true,
     result: { status: categorizeItemFailure(error), error: message },
@@ -254,7 +274,7 @@ function categorizeItemFailure(error: unknown): "permission" | "validation" | "n
     if (error.category === "transport") return "network";
     if (error.category === "schema") return "failed";
     const status = safeErrorStatus(error);
-    if (status === 401 || status === 403) return "permission";
+    if (status === 403) return "permission";
     if (status === 400 || status === 422) return "validation";
     if (status === 429 || status === 502 || status === 503 || status === 504) return "network";
     return "failed";

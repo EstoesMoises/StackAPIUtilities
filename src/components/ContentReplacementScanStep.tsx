@@ -29,13 +29,14 @@ export function ContentReplacementScanStep({
   const credentialState = controller.credentialReadiness.refreshRequired
     ? controller.credentialReadiness
     : sharedReadiness;
-  const scanCanFinish = !controller.storageError && canEnterReview(job);
+  const readOnly = job.scanCompatibility === "exact-proof-restart-required";
+  const scanCanFinish = !readOnly && !controller.storageError && canEnterReview(job);
   const status = getScanStatus(job, controller.storageError, credentialState);
   const active = job.stage === "scan" && job.status === "running";
   const paused = job.stage === "scan" && job.status === "paused";
   const failed = job.stage === "scan" && job.status === "failed";
   const needsReconnect = (paused || failed) && !credentialState.valid;
-  const canRetryFailure = failed && !!job.failure?.retryable && credentialState.valid && !controller.storageError;
+  const canRetryFailure = !readOnly && failed && !!job.failure?.retryable && credentialState.valid && !controller.storageError;
 
   async function confirmCancel() {
     if (cancelling) return;
@@ -72,14 +73,14 @@ export function ContentReplacementScanStep({
         <div className="s-notice s-notice__warning"><strong>Operation notice:</strong> {controller.operationError}</div>
       )}
 
-      {active && (
+      {active && !readOnly && (
         <div className="write-tool-actions content-replacement-actions">
           <button className="s-btn s-btn__outlined" type="button" onClick={controller.pause} disabled={controller.busy && confirmingCancel}>Pause scan</button>
           <button className="s-btn s-btn__outlined" type="button" onClick={() => setConfirmingCancel(true)} disabled={cancelling}>Cancel scan</button>
         </div>
       )}
 
-      {paused && credentialState.valid && !controller.storageError && !job.failure && (
+      {paused && !readOnly && credentialState.valid && !controller.storageError && !job.failure && (
         <div className="write-tool-actions content-replacement-actions">
           <button className="s-btn s-btn__primary" type="button" onClick={() => void controller.resume()} disabled={controller.busy}>Resume scan</button>
         </div>
@@ -93,7 +94,7 @@ export function ContentReplacementScanStep({
         </div>
       )}
 
-      {needsReconnect && (
+      {needsReconnect && !readOnly && (
         <div className="content-replacement-reconnect">
           {onReconnect && <button className="s-btn s-btn__outlined" type="button" onClick={onReconnect}>Reconnect credentials</button>}
         </div>
@@ -195,6 +196,13 @@ function getScanStatus(
       heading: "Storage failure",
       message: `${storageError} Review is blocked until progress can be saved.`,
       noticeClass: "s-notice__danger",
+    };
+  }
+  if (job.scanCompatibility === "exact-proof-restart-required") {
+    return {
+      heading: "New scan required",
+      message: "This saved Exact scan predates proof provenance and is read-only. Create a new job to scan or apply.",
+      noticeClass: "s-notice__warning",
     };
   }
   if (job.stage !== "scan") {

@@ -79,6 +79,7 @@ function ContentReplacementApplyStepView({
   const [page, setPage] = useState(1);
   const [deleteConfirmation, setDeleteConfirmation] = useState<PendingDeletion | null>(null);
   const [actionPending, setActionPending] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const entries = useMemo(
     () => Object.entries(job.proposals).sort(compareEntries),
@@ -91,6 +92,7 @@ function ContentReplacementApplyStepView({
   const applyStarted = entries.some(([, item]) => item.attemptCount > 0 || isApplyTerminal(item));
   const currentApply = job.stage === "apply" && job.scanCompatibility === "current";
   const legacyApply = job.stage === "apply" && job.scanCompatibility === "legacy-restart-required";
+  const prooflessExactReadOnly = job.scanCompatibility === "exact-proof-restart-required";
   const hasFrozenApplyItems = entries.some(([, item]) =>
     item.status === "pending" || item.status === "ready-to-apply" || item.status === "applying"
   );
@@ -150,7 +152,8 @@ function ContentReplacementApplyStepView({
   const recoveryConfirmationValue = previewKey !== null && recoveryConfirmation?.key === previewKey
     ? recoveryConfirmation.value
     : "";
-  const canRecover = previewKey !== null && previewComplete && recoverableEntries.length > 0 && recoveryAcknowledged &&
+  const canRecover = !prooflessExactReadOnly && previewKey !== null && previewComplete &&
+    recoverableEntries.length > 0 && recoveryAcknowledged &&
     recoveryConfirmation?.key === previewKey && recoveryConfirmation.value === "RECOVER" &&
     controller.credentialReadiness.valid && !recoveryOperationLocked && !controller.busy &&
     !actionPending && !controller.storageError;
@@ -209,6 +212,15 @@ function ContentReplacementApplyStepView({
     void runAction(() => controller.startRecovery(currentRecoverableKeys));
   }
 
+  function runExport(exportCsv: () => void) {
+    setExportError(null);
+    try {
+      exportCsv();
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "The CSV export could not be created.");
+    }
+  }
+
   const deletionLocked = job.status === "running" || !!job.activeOperation || controller.busy || actionPending;
   const visibleDeleteConfirmation = visibleDeletionConfirmation(deleteConfirmation, job.id, deletionLocked);
 
@@ -216,6 +228,10 @@ function ContentReplacementApplyStepView({
     if (!deleteConfirmation) return;
     if (deleteConfirmation.jobId !== job.id || deletionLocked) setDeleteConfirmation(null);
   }, [deleteConfirmation, deletionLocked, job.id]);
+
+  useEffect(() => {
+    setExportError(null);
+  }, [job.id]);
 
   useEffect(() => {
     setApplyAcknowledgedKey((current) => current === confirmationKey ? current : null);
@@ -301,6 +317,13 @@ function ContentReplacementApplyStepView({
         </header>
       )}
 
+      {prooflessExactReadOnly && job.stage === "apply" && (
+        <header className="content-replacement-step-header">
+          <h2 id="content-replacement-apply-heading">New scan required</h2>
+          <p>This saved Exact job predates proof provenance and is read-only. Start a new scan before applying.</p>
+        </header>
+      )}
+
       {(runningApply || pausedApply) && (
         <section aria-labelledby="content-replacement-apply-heading">
           <header className="content-replacement-step-header">
@@ -354,11 +377,15 @@ function ContentReplacementApplyStepView({
         <>
           <header className="content-replacement-step-header">
             <h2 id="content-replacement-apply-heading">{
-              legacyStaleRescanRestart
+              prooflessExactReadOnly
+                ? "New scan required"
+                : legacyStaleRescanRestart
                 ? "New scan required"
                 : legacyRecoveryOnly ? "Prior apply results" : "Apply results"
             }</h2>
-            <p>{legacyStaleRescanRestart
+            <p>{prooflessExactReadOnly
+              ? "This saved Exact job predates proof provenance and is read-only. Results remain available for inspection and export."
+              : legacyStaleRescanRestart
               ? "This legacy stale-item rescan cannot resume. Start a new scan with the current discovery modes."
               : legacyRecoveryOnly
                 ? "This legacy job is recovery-only. Unfinished writes remain stopped."
@@ -373,14 +400,19 @@ function ContentReplacementApplyStepView({
               <strong>Operation needs attention.</strong> {controller.storageError ?? controller.operationError}
             </div>
           )}
+          {exportError && (
+            <div className="s-notice s-notice__danger" role="alert">
+              <strong>CSV export was not created.</strong> {exportError}
+            </div>
+          )}
           <div className="write-tool-actions content-replacement-actions">
-            <button type="button" className="s-btn s-btn__outlined" onClick={() => downloadReplacementResults(items, job.configuration)}>
+            <button type="button" className="s-btn s-btn__outlined" onClick={() => runExport(() => downloadReplacementResults(items, job.configuration))}>
               Download results CSV
             </button>
-            <button type="button" className="s-btn s-btn__outlined" onClick={() => downloadReplacementExceptions(items, job.configuration)}>
+            <button type="button" className="s-btn s-btn__outlined" onClick={() => runExport(() => downloadReplacementExceptions(items, job.configuration))}>
               Download exceptions CSV
             </button>
-            {!legacyStaleRescanRestart && (
+            {!legacyStaleRescanRestart && !prooflessExactReadOnly && (
               <>
                 <button
                   type="button"
@@ -423,7 +455,7 @@ function ContentReplacementApplyStepView({
             onPage={setPage}
           />
 
-          {(!legacyStaleRescanRestart || successfulEntries.length > 0) && (
+          {!prooflessExactReadOnly && (!legacyStaleRescanRestart || successfulEntries.length > 0) && (
             <RecoverySection
               controller={controller}
               job={job}

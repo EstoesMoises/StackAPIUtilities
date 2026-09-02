@@ -8,6 +8,7 @@ import {
   createInitialContentReplacementDiscoveryFieldsValue,
   type ContentReplacementDiscoveryFieldsValue,
 } from "./ContentReplacementDiscoveryFields";
+import { MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES } from "../writeTools/contentReplacement/limits";
 
 const ORIGIN = "https://example.stackenterprise.co";
 
@@ -160,18 +161,36 @@ describe("ContentReplacementDiscoveryFields", () => {
     expect(screen.getByLabelText("Target ID or URL 2")).toHaveValue("777");
   });
 
-  it("reports the 100,000 unique-target ceiling before a scan can be reviewed", async () => {
+  it("reports the 5,000 unique-target ceiling before a scan can be reviewed", async () => {
     const user = userEvent.setup();
     render(<DiscoveryFieldsHarness />);
     await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
     const targetUrls = Array.from(
-      { length: 100_001 },
+      { length: 5_001 },
       (_, index) => `${ORIGIN}/questions/${index + 1}`,
     ).join("\n");
     fireEvent.change(screen.getByLabelText("Paste target URLs"), { target: { value: targetUrls } });
     await user.click(screen.getByRole("button", { name: "Add pasted targets" }));
 
-    expect(screen.getByText(/no more than 100,000 unique targets/i)).toBeVisible();
+    expect(screen.getByText(/no more than 5,000 unique targets/i)).toBeVisible();
+  });
+
+  it("rejects an oversized target CSV by File.size before calling text", async () => {
+    const user = userEvent.setup();
+    const file = new File(
+      ["x".repeat(MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES + 1)],
+      "oversized-targets.csv",
+      { type: "text/csv" },
+    );
+    const text = vi.fn(() => Promise.resolve("type,id,parent_question_id\nquestion,1,"));
+    Object.defineProperty(file, "text", { value: text });
+    render(<DiscoveryFieldsHarness />);
+
+    await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
+    await user.upload(screen.getByLabelText("Import target CSV"), file);
+
+    expect(await screen.findByText(/target CSV exceeds the 1 MiB UTF-8 limit/i)).toBeVisible();
+    expect(text).not.toHaveBeenCalled();
   });
 
   it("keeps Full audit inline, explanatory, and free of a modal", async () => {

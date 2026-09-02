@@ -48,7 +48,7 @@ class FakeTransport implements ContentApiTransport {
 describe("content replacement API adapter", () => {
   it("fetches inventory pages from the main-site paths and preserves summary HTML", async () => {
     const transport = new FakeTransport(undefined, {
-      items: [{ id: 42, title: "<b>MyPVM</b>", body: "<p>Use MyPVM.</p>" }],
+      items: [{ id: 42, title: "<b>TermA</b>", body: "<p>Use TermA.</p>" }],
       page: 3,
       totalPages: 4,
       hasMore: true,
@@ -56,7 +56,7 @@ describe("content replacement API adapter", () => {
     const client = createContentReplacementClient(transport);
 
     await expect(client.getQuestionsPage(3)).resolves.toEqual({
-      items: [{ id: 42, title: "<b>MyPVM</b>", body: "<p>Use MyPVM.</p>" }],
+      items: [{ id: 42, title: "<b>TermA</b>", body: "<p>Use TermA.</p>" }],
       page: 3,
       totalPages: 4,
       hasMore: true,
@@ -73,14 +73,14 @@ describe("content replacement API adapter", () => {
 
   it("adds the parent question identity to answer inventory", async () => {
     const transport = new FakeTransport(undefined, {
-      items: [{ id: 8, body: "<p>MyPVM</p>" }],
+      items: [{ id: 8, body: "<p>TermA</p>" }],
       page: 1,
       totalPages: 1,
       hasMore: false,
     });
 
     await expect(createContentReplacementClient(transport).getAnswersPage(42, 1)).resolves.toEqual({
-      items: [{ id: 8, questionId: 42, body: "<p>MyPVM</p>" }],
+      items: [{ id: 8, questionId: 42, body: "<p>TermA</p>" }],
       page: 1,
       totalPages: 1,
       hasMore: false,
@@ -142,7 +142,7 @@ describe("content replacement API adapter", () => {
     ["article", (client: ReturnType<typeof createContentReplacementClient>) => client.getArticlesPage(1)],
   ])("blocks a %s inventory slice with a malformed item ID", async (kind, getPage) => {
     const transport = new FakeTransport(undefined, {
-      items: [{ id: 0, title: "<p>MyPVM</p>" }], page: 1, totalPages: 1, hasMore: false,
+      items: [{ id: 0, title: "<p>TermA</p>" }], page: 1, totalPages: 1, hasMore: false,
     });
 
     await expect(getPage(createContentReplacementClient(transport))).rejects.toThrow(
@@ -165,8 +165,8 @@ describe("content replacement API adapter", () => {
   it("reconstructs a question request from canonical Markdown and tag names in order", async () => {
     const transport = new FakeTransport({
       id: 42,
-      title: "MyPVM setup",
-      bodyMarkdown: "Use MyPVM.",
+      title: "TermA setup",
+      bodyMarkdown: "Use TermA.",
       tags: [{ name: "support" }, { name: "product" }],
       owner: { id: 3, name: "Ada" },
       lastEditor: { id: 4, name: "Grace" },
@@ -178,7 +178,7 @@ describe("content replacement API adapter", () => {
       .resolves.toEqual({
         kind: "question",
         ref: { kind: "question", questionId: 42 },
-        request: { title: "MyPVM setup", body: "Use MyPVM.", tags: ["support", "product"] },
+        request: { title: "TermA setup", body: "Use TermA.", tags: ["support", "product"] },
         metadata: {
           owner: { id: 3, name: "Ada" },
           lastEditor: { id: 4, name: "Grace" },
@@ -191,13 +191,13 @@ describe("content replacement API adapter", () => {
 
   it.each([
     ["question", { kind: "question", questionId: 42 }, {
-      id: 42, title: "MyPVM", bodyMarkdown: "safe", tags: [{ name: 3 }],
+      id: 42, title: "TermA", bodyMarkdown: "safe", tags: [{ name: 3 }],
     }],
     ["answer", { kind: "answer", questionId: 42, answerId: 8 }, {
       id: 8, bodyMarkdown: { hostile: "secret" },
     }],
     ["article", { kind: "article", articleId: 7 }, {
-      id: 7, title: "MyPVM", bodyMarkdown: "safe", tags: [], type: "policy",
+      id: 7, title: "TermA", bodyMarkdown: "safe", tags: [], type: "policy",
       permissions: { editorUsers: [{ id: 0 }] },
     }],
   ] as const)("rejects malformed %s tag or editor IDs without exposing detail text", async (kind, ref, detail) => {
@@ -209,18 +209,18 @@ describe("content replacement API adapter", () => {
         category: "schema",
       }),
     );
-    await expect(createContentReplacementClient(transport).getItem(ref)).rejects.not.toThrow(/MyPVM/);
+    await expect(createContentReplacementClient(transport).getItem(ref)).rejects.not.toThrow(/TermA/);
   });
 
   it("reconstructs an answer request only from its canonical Markdown", async () => {
-    const transport = new FakeTransport({ id: 8, bodyMarkdown: "Use MyPVM." });
+    const transport = new FakeTransport({ id: 8, bodyMarkdown: "Use TermA." });
 
     await expect(
       createContentReplacementClient(transport).getItem({ kind: "answer", questionId: 42, answerId: 8 }),
     ).resolves.toEqual({
       kind: "answer",
       ref: { kind: "answer", questionId: 42, answerId: 8 },
-      request: { body: "Use MyPVM." },
+      request: { body: "Use TermA." },
     });
     expect(transport.jsonCalls).toEqual(["/questions/42/answers/8"]);
   });
@@ -228,8 +228,8 @@ describe("content replacement API adapter", () => {
   it("converts an article detail response into the exact allowed PUT model", async () => {
     const transport = new FakeTransport({
       id: 7,
-      title: "MyPVM policy",
-      bodyMarkdown: "Use MyPVM.",
+      title: "TermA policy",
+      bodyMarkdown: "Use TermA.",
       tags: [{ name: "product" }],
       type: "policy",
       expirationDate: null,
@@ -247,8 +247,8 @@ describe("content replacement API adapter", () => {
         kind: "article",
         ref: { kind: "article", articleId: 7 },
         request: {
-          title: "MyPVM policy",
-          body: "Use MyPVM.",
+          title: "TermA policy",
+          body: "Use TermA.",
           tags: ["product"],
           type: "policy",
           expirationDate: null,
@@ -268,8 +268,8 @@ describe("content replacement API adapter", () => {
   it("keeps optional article editor arrays empty and preserves an omitted expiration date", async () => {
     const transport = new FakeTransport({
       id: 7,
-      title: "MyPVM policy",
-      bodyMarkdown: "Use MyPVM.",
+      title: "TermA policy",
+      bodyMarkdown: "Use TermA.",
       tags: [],
       type: "knowledgeArticle",
       permissions: { editableBy: "ownerOnly" },
@@ -288,8 +288,8 @@ describe("content replacement API adapter", () => {
   it("preserves the everyone article permission scope", async () => {
     const transport = new FakeTransport({
       id: 7,
-      title: "MyPVM policy",
-      bodyMarkdown: "Use MyPVM.",
+      title: "TermA policy",
+      bodyMarkdown: "Use TermA.",
       tags: [],
       type: "policy",
       permissions: { editableBy: "everyone" },
@@ -304,8 +304,8 @@ describe("content replacement API adapter", () => {
   it("omits malformed optional metadata while retaining a safe request", async () => {
     const transport = new FakeTransport({
       id: 42,
-      title: "MyPVM setup",
-      bodyMarkdown: "Use MyPVM.",
+      title: "TermA setup",
+      bodyMarkdown: "Use TermA.",
       tags: [],
       owner: { id: "3", name: 2 },
       lastEditor: { id: 4, name: 2 },
@@ -317,7 +317,7 @@ describe("content replacement API adapter", () => {
       .resolves.toEqual({
         kind: "question",
         ref: { kind: "question", questionId: 42 },
-        request: { title: "MyPVM setup", body: "Use MyPVM.", tags: [] },
+        request: { title: "TermA setup", body: "Use TermA.", tags: [] },
         metadata: { lastEditor: { id: 4 } },
       });
   });
@@ -500,8 +500,8 @@ describe("content replacement API adapter", () => {
       kind: "article",
       ref: { kind: "article", articleId: 7 },
       request: {
-        title: "MyPBM policy",
-        body: "Use MyPBM.",
+        title: "TermB policy",
+        body: "Use TermB.",
         tags: ["product"],
         type: "policy",
         expirationDate: null,
@@ -514,8 +514,8 @@ describe("content replacement API adapter", () => {
     expect(transport.putCalls).toEqual([{
       path: "/articles/7",
       body: {
-        title: "MyPBM policy",
-        body: "Use MyPBM.",
+        title: "TermB policy",
+        body: "Use TermB.",
         tags: ["product"],
         type: "policy",
         expirationDate: null,
@@ -531,7 +531,7 @@ describe("content replacement API adapter", () => {
     await client.updateItem({
       kind: "question",
       ref: { kind: "question", questionId: 42 },
-      request: { title: "MyPBM", body: "safe", tags: ["product"], responseOnly: "do not send" },
+      request: { title: "TermB", body: "safe", tags: ["product"], responseOnly: "do not send" },
       metadata: { webUrl: "https://private.example/question/42" },
     } as unknown as Parameters<typeof client.updateItem>[0]);
     await client.updateItem({
@@ -541,7 +541,7 @@ describe("content replacement API adapter", () => {
     } as unknown as Parameters<typeof client.updateItem>[0]);
 
     expect(transport.putCalls).toEqual([
-      { path: "/questions/42", body: { title: "MyPBM", body: "safe", tags: ["product"] } },
+      { path: "/questions/42", body: { title: "TermB", body: "safe", tags: ["product"] } },
       { path: "/questions/42/answers/8", body: { body: "safe" } },
     ]);
   });

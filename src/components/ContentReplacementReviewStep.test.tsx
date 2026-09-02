@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
+import * as contentReplacementDownloads from "../utils/contentReplacementDownloads";
 import type {
   PersistedContentReplacementItem,
   PersistedContentReplacementJob,
@@ -9,6 +10,10 @@ import type {
   ReplacementProposal,
 } from "../writeTools/contentReplacement/types";
 import { ContentReplacementReviewStep } from "./ContentReplacementReviewStep";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("ContentReplacementReviewStep", () => {
   it.each([
@@ -184,9 +189,9 @@ describe("ContentReplacementReviewStep", () => {
     expect(screen.queryByRole("region", { name: "Question 2 proposed changes" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Question 3 proposed changes" })).toBeVisible();
     const detail = screen.getByRole("region", { name: "Question 4 proposed changes" });
-    expect(detail).toHaveTextContent("Use MyPVM. Keep [label](https://outside.example/MyPVM).");
-    expect(within(detail).getAllByText("MyPVM", { selector: "mark" }).length).toBeGreaterThan(0);
-    expect(within(detail).getAllByText("MyPBM", { selector: "mark" }).length).toBeGreaterThan(0);
+    expect(detail).toHaveTextContent("Use TermA. Keep [label](https://outside.example/TermA).");
+    expect(within(detail).getAllByText("TermA", { selector: "mark" }).length).toBeGreaterThan(0);
+    expect(within(detail).getAllByText("TermB", { selector: "mark" }).length).toBeGreaterThan(0);
     expect(within(detail).getByText("Code — unchanged")).toBeVisible();
     expect(within(detail).getByText("Owner 7 (#7)")).toBeVisible();
     expect(within(detail).getByText("Editor 8 (#8)")).toBeVisible();
@@ -222,7 +227,24 @@ describe("ContentReplacementReviewStep", () => {
     await user.click(screen.getByRole("button", { name: "View details for question 1" }));
     const before = screen.getByTestId("question-1-body-before");
     expect(within(before).queryByRole("mark")).not.toBeInTheDocument();
-    expect(before).toHaveTextContent("Use MyPVM. Keep [label](https://outside.example/MyPVM).");
+    expect(before).toHaveTextContent("Use TermA. Keep [label](https://outside.example/TermA).");
+  });
+
+  it("surfaces a bounded local preview-export error without disturbing review", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(contentReplacementDownloads, "downloadReplacementPreview").mockImplementation(() => {
+      throw new RangeError("Content replacement CSV exceeds the 32 MiB export limit.");
+    });
+    render(<ContentReplacementReviewStep controller={controller(job({
+      "question:1": item(proposal("question", 1), true),
+    }))} />);
+
+    await user.click(screen.getByRole("button", { name: "Download complete preview CSV" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Content replacement CSV exceeds the 32 MiB export limit.",
+    );
+    expect(screen.getAllByText("Question 1")[0]).toBeVisible();
   });
 
   it("always displays the persisted matching and protection policy", () => {
@@ -233,6 +255,25 @@ describe("ContentReplacementReviewStep", () => {
     expect(policy).toHaveTextContent("Partial matching");
     expect(policy).toHaveTextContent("Code excluded");
     expect(policy).toHaveTextContent("Always protected: link and image destinations, raw HTML attributes and hidden content");
+  });
+
+  it("renders proofless Exact review evidence read-only and requires a new scan", () => {
+    const current = job({ "question:1": item(proposal("question", 1), true) });
+    const fenced = {
+      ...current,
+      scanCompatibility: "exact-proof-restart-required" as const,
+      configuration: {
+        ...current.configuration,
+        discovery: { mode: "exact" as const, targetCount: 1, targetDigest: "e".repeat(64) },
+      },
+    };
+    render(<ContentReplacementReviewStep controller={controller(fenced)} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/new scan required.*proof provenance/i);
+    expect(screen.getByLabelText("Include question 1")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Include 1 filtered proposal/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Continue with 1 post/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Download complete preview CSV" })).toBeEnabled();
   });
 });
 
@@ -277,7 +318,7 @@ function job(proposals: Record<string, PersistedContentReplacementItem>): Persis
       discovery: { mode: "full" },
       rules: [
         { id: "rule-2", find: "old", replace: "new" },
-        { id: "rule-10", find: "MyPVM", replace: "MyPBM" },
+        { id: "rule-10", find: "TermA", replace: "TermB" },
       ],
       options: { caseSensitive: true, wholeTerm: false, replaceInCode: false },
     },
@@ -316,8 +357,8 @@ function proposal(
   overrides: { title?: string; field?: "title" | "body"; ruleId?: string } = {},
 ): ReplacementProposal {
   const title = overrides.title ?? `${capitalize(kind)} ${id}`;
-  const body = "Use MyPVM. Keep [label](https://outside.example/MyPVM).";
-  const afterBody = "Use MyPBM. Keep [label](https://outside.example/MyPVM).";
+  const body = "Use TermA. Keep [label](https://outside.example/TermA).";
+  const afterBody = "Use TermB. Keep [label](https://outside.example/TermA).";
   const ref = kind === "question"
     ? { kind, questionId: id } as const
     : kind === "answer"
@@ -346,12 +387,12 @@ function proposal(
       ruleId: overrides.ruleId ?? "rule-10",
       start: field === "body" ? 4 : 0,
       end: field === "body" ? 9 : Math.min(5, title.length),
-      before: field === "body" ? "MyPVM" : title.slice(0, 5),
-      after: field === "body" ? "MyPBM" : title.slice(0, 5),
+      before: field === "body" ? "TermA" : title.slice(0, 5),
+      after: field === "body" ? "TermB" : title.slice(0, 5),
     }],
     protectedOccurrences: [{
       field: "body", ruleId: "rule-10", start: 34, end: 56,
-      before: "https://outside.example/MyPVM", reason: "code",
+      before: "https://outside.example/TermA", reason: "code",
     }],
     appliedRuleIds: [overrides.ruleId ?? "rule-10"],
     metadata: {

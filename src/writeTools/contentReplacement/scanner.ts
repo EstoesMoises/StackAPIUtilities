@@ -8,9 +8,15 @@ import type {
   SearchSummary,
 } from "./contentApi";
 import { replaceMarkdown } from "./markdown";
-import { buildReplacementProposal } from "./proposals";
+import { buildReplacementProposal, toReplacementWireRequestModel } from "./proposals";
+import { normalizeExactTargetProof, verifyExactTargetProof } from "./exactManifest";
+import {
+  MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES,
+  isJsonWithinUtf8ByteLimit,
+} from "./limits";
 import type {
   DetailBatchResult,
+  ExactTargetProof,
   InventoryCursor,
   InventorySliceResult,
   ReplacementConfiguration,
@@ -28,7 +34,15 @@ interface InventorySliceInput {
 
 interface DetailBatchInput {
   refs: readonly ReplacementItemRef[];
+  exactProofs?: readonly ExactTargetProof[];
   configuration: ReplacementConfiguration;
+}
+
+export class ContentReplacementRequestModelLimitError extends RangeError {
+  constructor() {
+    super("Content replacement request model exceeds the 2 MiB recovery-safe limit.");
+    this.name = "ContentReplacementRequestModelLimitError";
+  }
 }
 
 export async function scanInventorySlice(
@@ -164,15 +178,26 @@ export async function scanDetailBatch(
   input: DetailBatchInput,
 ): Promise<DetailBatchResult> {
   assertValidDetailRefs(input.refs);
+  const exactProofs = await validateDetailProofs(input);
 
   const proposals: DetailBatchResult["proposals"] = [];
   let protectedOccurrenceCount = 0;
   for (let offset = 0; offset < input.refs.length; offset += MAX_CONCURRENT_DETAIL_REQUESTS) {
     const batch = input.refs.slice(offset, offset + MAX_CONCURRENT_DETAIL_REQUESTS);
     const batchResults = await Promise.all(
-      batch.map(async (ref) => {
+      batch.map(async (ref, index) => {
         const detail = await client.getItem(ref);
-        const proposal = await buildReplacementProposal(detail, input.configuration);
+        if (!isJsonWithinUtf8ByteLimit(
+          toReplacementWireRequestModel(detail),
+          MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES,
+        )) {
+          throw new ContentReplacementRequestModelLimitError();
+        }
+        const proposal = await buildReplacementProposal(
+          detail,
+          input.configuration,
+          exactProofs?.[offset + index],
+        );
         return {
           proposal,
           protectedOccurrenceCount: proposal
@@ -199,6 +224,33 @@ export async function scanDetailBatch(
     inspectedCount: input.refs.length,
     protectedOccurrenceCount,
   };
+}
+
+async function validateDetailProofs(
+  input: DetailBatchInput,
+): Promise<ExactTargetProof[] | undefined> {
+  if (input.configuration.discovery.mode !== "exact") {
+    if (input.exactProofs !== undefined) {
+      throw new TypeError("Exact manifest proofs are only valid for Exact discovery.");
+    }
+    return undefined;
+  }
+  if (!Array.isArray(input.exactProofs) || input.exactProofs.length !== input.refs.length) {
+    throw new TypeError("Exact manifest proof count must match the detail references.");
+  }
+  const proofs: ExactTargetProof[] = [];
+  for (let index = 0; index < input.refs.length; index += 1) {
+    const proof = normalizeExactTargetProof(input.exactProofs[index]);
+    if (!proof || !await verifyExactTargetProof(
+      input.refs[index],
+      proof,
+      input.configuration.discovery,
+    )) {
+      throw new TypeError("Exact manifest proof does not match its detail reference.");
+    }
+    proofs.push(proof);
+  }
+  return proofs;
 }
 
 function isQuestionCandidate(

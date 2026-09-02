@@ -8,15 +8,17 @@ import {
   createReplacementExceptionsCsv,
   createReplacementPreviewCsv,
   createReplacementResultsCsv,
+  downloadReplacementPreview,
   downloadReplacementTemplate,
 } from "./contentReplacementDownloads";
+import { MAX_CONTENT_REPLACEMENT_EXPORT_BYTES } from "../writeTools/contentReplacement/limits";
 
 const configuration: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
   contentTypes: { questions: true, answers: true, articles: true },
   discovery: { mode: "full" },
   rules: [
-    { id: "rule-10", find: "MyPVM", replace: "MyPBM" },
+    { id: "rule-10", find: "TermA", replace: "TermB" },
     { id: "rule-2", find: "old", replace: "new" },
   ],
   options: { caseSensitive: true, wholeTerm: false, replaceInCode: false },
@@ -25,10 +27,10 @@ const configuration: ReplacementConfiguration = {
 describe("content replacement downloads", () => {
   it("exports complete preview data in deterministic numeric item order with RFC 4180 line endings", () => {
     const question = proposal("question", 10, {
-      beforeTitle: "MyPVM title",
-      afterTitle: "MyPBM title",
-      beforeBody: "First line\nMyPVM, accessToken and \"authorization\"",
-      afterBody: "First line\nMyPBM, accessToken and \"authorization\"",
+      beforeTitle: "TermA title",
+      afterTitle: "TermB title",
+      beforeBody: "First line\nTermA, accessToken and \"authorization\"",
+      afterBody: "First line\nTermB, accessToken and \"authorization\"",
     });
     const answer = proposal("answer", 2);
 
@@ -41,7 +43,7 @@ describe("content replacement downloads", () => {
       "contentType,itemId,questionId,title,webUrl,discoveryMode,coverage,suppliedTargetCount,ruleIds,fields,changedOccurrences,protectedOccurrences,beforeTitle,afterTitle,beforeBodyMarkdown,afterBodyMarkdown,caseSensitive,wholeTerm,replaceInCode,selected",
     );
     expect(csv.indexOf("answer,2,1")).toBeLessThan(csv.indexOf("question,10,"));
-    expect(csv).toContain('"First line\nMyPVM, accessToken and ""authorization"""');
+    expect(csv).toContain('"First line\nTermA, accessToken and ""authorization"""');
     expect(csv).toContain(",1 [code:1],");
     expect(csv).toContain(",true,false,false,");
     expect(csv).toMatch(/,false$/);
@@ -123,6 +125,52 @@ describe("content replacement downloads", () => {
     const csv = createReplacementPreviewCsv([value], configuration);
 
     expect(csv.split("\r\n")[1]).toContain(",3 [code:2;destination:1],");
+  });
+
+  it("neutralizes spreadsheet formulas in titles, Markdown evidence, links, and exception messages", () => {
+    const question = proposal("question", 41, {
+      beforeTitle: "=TITLE",
+      afterTitle: " \t@TITLE",
+      beforeBody: "\u0001+BODY",
+      afterBody: "\n-BODY",
+    });
+    question.metadata!.titleContext = "=CONTEXT";
+    question.metadata!.webUrl = " \t@LINK";
+    const failed = item(proposal("article", 42), true, {
+      status: "failed",
+      failure: {
+        category: "validation",
+        message: "\u0007=ERROR",
+        retryable: false,
+        occurredAt: "2026-09-02T13:01:00.000Z",
+      },
+    });
+
+    const preview = createReplacementPreviewCsv([question], configuration);
+    const exceptions = createReplacementExceptionsCsv([failed], configuration);
+
+    expect(preview).toContain("'=CONTEXT");
+    expect(preview).toContain("' \t@LINK");
+    expect(preview).toContain("'=TITLE");
+    expect(preview).toContain("' \t@TITLE");
+    expect(preview).toContain("'\u0001+BODY");
+    expect(preview).toContain("'\n-BODY");
+    expect(exceptions).toContain("'\u0007=ERROR");
+  });
+
+  it("rejects an over-budget CSV before creating a Blob or download URL", () => {
+    const beforeBody = `TermA ${"x".repeat(Math.ceil(MAX_CONTENT_REPLACEMENT_EXPORT_BYTES / 2))}`;
+    const afterBody = beforeBody.replace("TermA", "TermB");
+    const value = proposal("article", 43, { beforeBody, afterBody });
+    const createObjectURL = vi.fn(() => "blob:oversized");
+
+    expect(() => downloadReplacementPreview([value], configuration, {
+      createObjectURL,
+      revokeObjectURL: vi.fn(),
+      createAnchor: vi.fn(),
+      appendAnchor: vi.fn(),
+    })).toThrow("Content replacement CSV exceeds the 32 MiB export limit.");
+    expect(createObjectURL).not.toHaveBeenCalled();
   });
 
   it("exports typed results and sanitized exceptions without raw payloads or recovery data", () => {
@@ -338,8 +386,8 @@ function proposal(
     afterBody?: string;
   } = {},
 ): ReplacementProposal {
-  const beforeBody = content.beforeBody ?? "Use MyPVM.";
-  const afterBody = content.afterBody ?? "Use MyPBM.";
+  const beforeBody = content.beforeBody ?? "Use TermA.";
+  const afterBody = content.afterBody ?? "Use TermB.";
   const metadata = {
     titleContext: kind === "answer" ? "Answer context" : `${capitalize(kind)} ${id}`,
     webUrl: `https://example.stackenterprise.co/${kind[0]}/${id}`,
@@ -378,7 +426,7 @@ function proposal(
       }),
       body: { beforeMarkdown: beforeBody, afterMarkdown: afterBody },
     },
-    changedOccurrences: [{ field: "body", ruleId: "rule-10", start: 4, end: 9, before: "MyPVM", after: "MyPBM" }],
+    changedOccurrences: [{ field: "body", ruleId: "rule-10", start: 4, end: 9, before: "TermA", after: "TermB" }],
     protectedOccurrences: [{ field: "body", ruleId: "rule-10", start: 0, end: 5, before: "code", reason: "code" }],
     appliedRuleIds: ["rule-10"],
     metadata,
@@ -451,6 +499,7 @@ function resultCase(
       priorRequestModel: base.proposal.before,
       scannedRequestChecksum: "scan-secret",
       proposedRequestChecksum: "proposal-secret",
+      proposalFingerprint: base.proposal.proposalFingerprint,
       status: recoveryKind === "recovered" ? "applied" : recoveryKind === "conflict" ? "conflict" : "failed",
       result: {
         kind: recoveryKind,

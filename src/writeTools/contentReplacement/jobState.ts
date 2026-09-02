@@ -1,5 +1,6 @@
 import type {
   DetailBatchResult,
+  ExactTargetProof,
   InventoryCursor,
   InventorySliceResult,
   PersistedContentReplacementFailure,
@@ -10,6 +11,13 @@ import type {
   ReplacementItemRef,
   ReplacementWireRequestModel,
 } from "./types";
+import { canonicalReplacementRefKey, normalizeExactTargetProof } from "./exactManifest";
+import { toReplacementWireRequestModel } from "./proposals";
+import {
+  MAX_CONTENT_REPLACEMENT_PROPOSALS as SHARED_MAX_CONTENT_REPLACEMENT_PROPOSALS,
+  MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES,
+  isJsonWithinUtf8ByteLimit,
+} from "./limits";
 
 export interface CreateReplacementJobInput {
   id: string;
@@ -17,6 +25,7 @@ export interface CreateReplacementJobInput {
   baseUrl: string;
   configuration: ReplacementConfiguration;
   exactTargets?: ReplacementItemRef[];
+  exactProofs?: ExactTargetProof[];
   createdAt: string;
 }
 
@@ -33,7 +42,10 @@ type RecoveryPreviewResponseResult = {
 };
 
 type RecoveryApplyResponseResult =
-  | { status: "recovered" | "already-recovered" | "conflict"; observedRequestChecksum: string }
+  | {
+      status: "recovered" | "already-recovered" | "conflict" | "verification-failed";
+      observedRequestChecksum: string;
+    }
   | { status: "permission" | "validation" | "network" | "failed"; error: string };
 
 export type ReplacementJobEvent =
@@ -135,10 +147,10 @@ export interface ReplacementSelectionSnapshot {
   selectedChangedOccurrences: number;
 }
 
-export const MAX_CONTENT_REPLACEMENT_PROPOSALS = 100_000;
+export const MAX_CONTENT_REPLACEMENT_PROPOSALS = SHARED_MAX_CONTENT_REPLACEMENT_PROPOSALS;
 
 const PROPOSAL_LIMIT_FAILURE_MESSAGE =
-  "Content replacement reached the 100,000-proposal safety limit before candidate inspection finished. Start a narrower job.";
+  "Content replacement reached the 5,000-proposal safety limit before candidate inspection finished. Start a narrower job.";
 
 export function replacementItemKey(ref: ReplacementItemRef): string {
   if (ref.kind === "question") return `question:${ref.questionId}`;
@@ -148,9 +160,10 @@ export function replacementItemKey(ref: ReplacementItemRef): string {
 
 export function createReplacementJob(input: CreateReplacementJobInput): PersistedContentReplacementJob {
   const inventoryQueue: InventoryCursor[] = [];
-  const detailQueue = input.configuration.discovery.mode === "exact"
-    ? assertExactTargetSeed(input.exactTargets, input.configuration)
-    : [];
+  const exactSeed = input.configuration.discovery.mode === "exact"
+    ? assertExactTargetSeed(input.exactTargets, input.exactProofs, input.configuration)
+    : { targets: [], proofs: [] };
+  const detailQueue = exactSeed.targets;
   if (input.configuration.discovery.mode === "targeted") {
     inventoryQueue.push(...input.configuration.rules.map((rule) => ({
       kind: "search" as const,
@@ -165,8 +178,9 @@ export function createReplacementJob(input: CreateReplacementJobInput): Persiste
       inventoryQueue.push({ kind: "articles", page: 1 });
     }
   }
-  if (input.configuration.discovery.mode !== "exact" && input.exactTargets !== undefined) {
-    throw new TypeError("Exact targets require Exact replacement discovery.");
+  if (input.configuration.discovery.mode !== "exact" &&
+    (input.exactTargets !== undefined || input.exactProofs !== undefined)) {
+    throw new TypeError("Exact targets and proofs require Exact replacement discovery.");
   }
   return {
     schemaVersion: 2,
@@ -181,6 +195,7 @@ export function createReplacementJob(input: CreateReplacementJobInput): Persiste
     status: "paused",
     inventoryQueue,
     detailQueue,
+    ...(input.configuration.discovery.mode === "exact" ? { exactProofQueue: exactSeed.proofs } : {}),
     progress: {
       apiRequestsCompleted: 0,
       questionPages: 0,
@@ -339,6 +354,12 @@ export function getNextDetailBatch(job: PersistedContentReplacementJob): Replace
   if (job.stage !== "scan") return [];
   const remainingCapacity = MAX_CONTENT_REPLACEMENT_PROPOSALS - Object.keys(job.proposals).length;
   return job.detailQueue.slice(0, Math.max(0, Math.min(10, remainingCapacity)));
+}
+
+export function getNextExactProofBatch(job: PersistedContentReplacementJob): ExactTargetProof[] | undefined {
+  if (job.stage !== "scan" || job.configuration.discovery.mode !== "exact") return undefined;
+  const count = getNextDetailBatch(job).length;
+  return job.exactProofQueue?.slice(0, count);
 }
 
 export function getNextStaleRescanBatch(job: PersistedContentReplacementJob): ReplacementItemRef[] {
@@ -549,6 +570,7 @@ function reduceDetails(
   if (result.proposals.some((candidate) => !consumed.has(replacementItemKey(candidate.before.ref)))) {
     return job;
   }
+  if (!detailResultProofsMatch(job, refs, result)) return job;
   const existingKeys = new Set(Object.keys(job.proposals));
   const newProposalKeys = new Set(
     result.proposals
@@ -557,6 +579,9 @@ function reduceDetails(
   );
   if (existingKeys.size + newProposalKeys.size > MAX_CONTENT_REPLACEMENT_PROPOSALS) return job;
   const detailQueue = job.detailQueue.slice(refs.length);
+  const exactProofQueue = job.configuration.discovery.mode === "exact"
+    ? job.exactProofQueue?.slice(refs.length)
+    : undefined;
   const proposals = { ...job.proposals };
   for (const candidate of result.proposals) {
     const key = replacementItemKey(candidate.before.ref);
@@ -575,7 +600,14 @@ function reduceDetails(
     proposalsFound: Object.keys(proposals).length,
     protectedOccurrences: job.progress.protectedOccurrences + result.protectedOccurrenceCount,
   };
-  return touch({ ...job, detailQueue, proposals, progress, nextRetryAt: undefined }, at);
+  return touch({
+    ...job,
+    detailQueue,
+    ...(exactProofQueue === undefined ? {} : { exactProofQueue }),
+    proposals,
+    progress,
+    nextRetryAt: undefined,
+  }, at);
 }
 
 function reduceSelection(
@@ -662,6 +694,10 @@ function prepareApply(
   if (!selectionSnapshotsEqual(createReplacementSelectionSnapshot(job.proposals), expectedSelection)) return job;
   const entries = Object.entries(job.proposals);
   if (!entries.some(([, item]) => item.included)) return job;
+  if (entries.some(([, item]) => item.included && !isJsonWithinUtf8ByteLimit(
+    toReplacementWireRequestModel(item.proposal.before),
+    MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES,
+  ))) return job;
   const proposals: PersistedContentReplacementJob["proposals"] = {};
   for (const [key, item] of entries) {
     if (!item.included) {
@@ -677,6 +713,8 @@ function prepareApply(
         priorRequestModel: item.proposal.before,
         scannedRequestChecksum: item.proposal.scannedRequestChecksum,
         proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+        proposalFingerprint: item.proposal.proposalFingerprint,
+        ...(item.proposal.exactProof === undefined ? {} : { exactProof: item.proposal.exactProof }),
         status: "ready",
       },
     };
@@ -881,7 +919,13 @@ function reduceStaleRescan(
   if (requestedItemKeys.length === 0 || requestedItemKeys.length > 10 ||
     requestedItemKeys.some((key, index) => key !== expected[index])) return job;
   const requested = new Set(requestedItemKeys);
-  if (result.proposals.some((candidate) => !requested.has(replacementItemKey(candidate.before.ref)))) return job;
+  if (result.proposals.some((candidate) => {
+    const key = replacementItemKey(candidate.before.ref);
+    return !requested.has(key) || !sameOptionalExactProof(
+      candidate.exactProof,
+      job.proposals[key]?.proposal.exactProof,
+    );
+  })) return job;
   const accumulated = { ...operation.proposals };
   for (const proposal of result.proposals) accumulated[replacementItemKey(proposal.before.ref)] = proposal;
   const remainingItemKeys = operation.remainingItemKeys.slice(requestedItemKeys.length);
@@ -1040,7 +1084,7 @@ function failRecoveryPreview(
     proposals,
     progress: deriveTerminalProgress(job, proposals),
   };
-  return touch(failure.retryable
+  return touch(failure.retryable || failure.category === "authorization"
     ? consumeActiveOperation(failedJob, itemKey, "recovery-preview")
     : { ...failedJob, status: "completed", activeOperation: undefined }, at);
 }
@@ -1153,6 +1197,25 @@ function finishRecoveryItem(
         },
       },
     };
+  } else if (result.status === "verification-failed") {
+    nextItem = {
+      ...item,
+      status: "recovery-conflict",
+      failure: undefined,
+      recovery: {
+        ...item.recovery,
+        status: "conflict",
+        preview: undefined,
+        result: {
+          kind: "verification-failed",
+          expectedRequestChecksum: item.recovery.scannedRequestChecksum,
+          observedRequestChecksum: result.observedRequestChecksum,
+          sourceAttemptCount: item.attemptCount,
+          sourceApplyCompletedAt: item.result.completedAt,
+          completedAt: at,
+        },
+      },
+    };
   } else {
     const category = result.status === "permission" ? "authorization" :
       result.status === "failed" ? "server" : result.status;
@@ -1178,7 +1241,7 @@ function finishRecoveryItem(
     progress: deriveTerminalProgress(job, proposals),
     ...(hasRemaining ? {} : { status: "completed" as const }),
   };
-  const terminalRequestFailure = result.status === "permission" || result.status === "validation";
+  const terminalRequestFailure = result.status === "validation";
   return touch(terminalRequestFailure
     ? { ...finishedJob, status: "completed", activeOperation: undefined }
     : consumeActiveOperation(finishedJob, itemKey, "recovery-apply"), at);
@@ -1297,17 +1360,20 @@ function normalizeOrigin(value: string): string {
 
 function assertExactTargetSeed(
   exactTargets: readonly ReplacementItemRef[] | undefined,
+  exactProofs: readonly ExactTargetProof[] | undefined,
   configuration: ReplacementConfiguration,
-): ReplacementItemRef[] {
+): { targets: ReplacementItemRef[]; proofs: ExactTargetProof[] } {
   const discovery = configuration.discovery;
-  if (discovery.mode !== "exact") return [];
+  if (discovery.mode !== "exact") return { targets: [], proofs: [] };
   if (!Array.isArray(exactTargets) || exactTargets.length === 0 ||
-    exactTargets.length !== discovery.targetCount || exactTargets.length > MAX_CONTENT_REPLACEMENT_PROPOSALS) {
-    throw new TypeError("Exact replacement targets must match the configured target count.");
+    exactTargets.length !== discovery.targetCount || exactTargets.length > MAX_CONTENT_REPLACEMENT_PROPOSALS ||
+    !Array.isArray(exactProofs) || exactProofs.length !== exactTargets.length) {
+    throw new TypeError("Exact replacement targets and proofs must match the configured target count.");
   }
 
   const seen = new Set<string>();
   const normalized: ReplacementItemRef[] = [];
+  const proofs: ExactTargetProof[] = [];
   for (const target of exactTargets) {
     const canonical = canonicalExactTarget(target);
     if (!canonical || !isRefRelevant(canonical, configuration)) {
@@ -1320,7 +1386,40 @@ function assertExactTargetSeed(
     seen.add(key);
     normalized.push(canonical);
   }
-  return normalized;
+  for (let index = 0; index < exactProofs.length; index += 1) {
+    const proof = normalizeExactTargetProof(exactProofs[index]);
+    if (!proof || proof.targetIndex !== index || proof.targetCount !== normalized.length ||
+      proof.manifestRoot !== discovery.targetDigest ||
+      (index > 0 && canonicalReplacementRefKey(normalized[index - 1]) >= canonicalReplacementRefKey(normalized[index]))) {
+      throw new TypeError("Exact replacement targets must have aligned canonical manifest proofs.");
+    }
+    proofs.push(proof);
+  }
+  return { targets: normalized, proofs };
+}
+
+function detailResultProofsMatch(
+  job: PersistedContentReplacementJob,
+  refs: readonly ReplacementItemRef[],
+  result: DetailBatchResult,
+): boolean {
+  if (job.configuration.discovery.mode !== "exact") {
+    return result.proposals.every((proposal) => proposal.exactProof === undefined);
+  }
+  const proofs = job.exactProofQueue?.slice(0, refs.length);
+  if (!proofs || proofs.length !== refs.length) return false;
+  const proofByKey = new Map(refs.map((ref, index) => [replacementItemKey(ref), proofs[index]]));
+  return result.proposals.every((proposal) =>
+    sameOptionalExactProof(proposal.exactProof, proofByKey.get(replacementItemKey(proposal.before.ref))));
+}
+
+function sameOptionalExactProof(left: ExactTargetProof | undefined, right: ExactTargetProof | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.algorithm === right.algorithm && left.version === right.version &&
+    left.targetCount === right.targetCount && left.targetIndex === right.targetIndex &&
+    left.manifestRoot === right.manifestRoot &&
+    left.siblingHashes.length === right.siblingHashes.length &&
+    left.siblingHashes.every((hash, index) => hash === right.siblingHashes[index]);
 }
 
 function canonicalExactTarget(value: unknown): ReplacementItemRef | null {

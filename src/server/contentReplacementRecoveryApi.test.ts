@@ -7,11 +7,18 @@ import {
   type ContentReplacementClient,
 } from "../writeTools/contentReplacement/contentApi";
 import {
+  buildReplacementProposal,
   checksumRequestModel,
   createJobFingerprint,
   toReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/proposals";
-import type { ReplacementConfiguration, ReplacementRequestModel } from "../writeTools/contentReplacement/types";
+import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
+import type {
+  ReplacementConfiguration,
+  ReplacementRequestModel,
+  ReplacementWireRequestModel,
+} from "../writeTools/contentReplacement/types";
+import { MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES } from "../writeTools/contentReplacement/limits";
 import {
   handleContentReplacementRecoveryRequest,
   type ContentReplacementRecoveryPayload,
@@ -28,20 +35,20 @@ const credentials: SessionCredentials = {
 const priorQuestion: ReplacementRequestModel = {
   kind: "question",
   ref: { kind: "question", questionId: 10 },
-  request: { title: "Rename MyPVM", body: "Use MyPVM.", tags: ["product"] },
+  request: { title: "Rename TermA", body: "Use TermA.", tags: ["product"] },
 };
 
 const postApplyQuestion: ReplacementRequestModel = {
   kind: "question",
   ref: { kind: "question", questionId: 10 },
-  request: { title: "Rename MyPBM", body: "Use MyPBM.", tags: ["product"] },
+  request: { title: "Rename TermB", body: "Use TermB.", tags: ["product"] },
 };
 
 const configuration: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
   contentTypes: { questions: true, answers: true, articles: true },
   discovery: { mode: "full" },
-  rules: [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }],
+  rules: [{ id: "rule-1", find: "TermA", replace: "TermB" }],
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };
 
@@ -61,6 +68,13 @@ async function validRecoveryPayload(
 ): Promise<ContentReplacementRecoveryPayload> {
   const effectiveConfiguration = overrides.configuration ?? configuration;
   const scanCompatibility = overrides.scanCompatibility ?? "current";
+  const priorRequestModel = overrides.priorRequestModel ?? toReplacementWireRequestModel(priorQuestion);
+  const proposal = await buildReplacementProposal(
+    priorRequestModel,
+    effectiveConfiguration,
+    overrides.exactProof,
+  );
+  if (!proposal) throw new Error("Recovery fixture must produce a forward proposal.");
   return {
     action: "preview",
     credentials,
@@ -72,9 +86,12 @@ async function validRecoveryPayload(
       scanCompatibility,
     }),
     itemRef: priorQuestion.ref,
-    priorRequestModel: toReplacementWireRequestModel(priorQuestion),
-    expectedPriorRequestChecksum: await checksumRequestModel(priorQuestion),
-    expectedPostApplyChecksum: await checksumRequestModel(postApplyQuestion),
+    priorRequestModel,
+    expectedPriorRequestChecksum: proposal.scannedRequestChecksum,
+    expectedPostApplyChecksum: proposal.proposedRequestChecksum,
+    reviewedProposedRequestChecksum: proposal.proposedRequestChecksum,
+    reviewedProposalFingerprint: proposal.proposalFingerprint,
+    ...(overrides.exactProof === undefined ? {} : { exactProof: overrides.exactProof }),
     ...overrides,
   } as ContentReplacementRecoveryPayload;
 }
@@ -109,6 +126,23 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementRecoveryRequest", () => {
+  it("rejects an aggregate-over-budget prior model before constructing a client", async () => {
+    const payload = await validRecoveryPayload();
+    const prior = payload.priorRequestModel;
+    if (prior.kind !== "question") throw new Error("Expected a question fixture.");
+    payload.priorRequestModel = {
+      ...prior,
+      request: {
+        ...prior.request,
+        body: "é".repeat(1_048_576),
+      },
+    };
+    expect(new TextEncoder().encode(JSON.stringify(payload.priorRequestModel)).byteLength)
+      .toBeGreaterThan(MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES);
+
+    await expectInvalidWithoutClient(payload);
+  });
+
   it("authorizes legacy recovery with compatibility-bound fingerprint provenance", async () => {
     const payload = await validRecoveryPayload();
     const legacyPayload = {
@@ -141,17 +175,112 @@ describe("handleContentReplacementRecoveryRequest", () => {
     expect(createClient).not.toHaveBeenCalled();
   });
 
-  it("accepts compact Exact discovery without a target array", async () => {
+  it("requires a valid reviewed Exact proof before recovery reads", async () => {
+    const selection = await createExactTargetSelection([priorQuestion.ref]);
     const exact: ReplacementConfiguration = {
       ...configuration,
-      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+      discovery: selection.discovery,
     };
+    const payload = await validRecoveryPayload({
+      configuration: exact,
+      exactProof: selection.proofs[0],
+    });
     const response = await handleContentReplacementRecoveryRequest(
-      await validRecoveryPayload({ configuration: exact }),
+      payload,
       { createClient: () => fakeContentClient() },
     );
 
     expect(response.status).toBe(200);
+    const { exactProof: _proof, ...withoutProof } = payload;
+    await expectInvalidWithoutClient(withoutProof);
+    await expectInvalidWithoutClient({
+      ...payload,
+      exactProof: { ...selection.proofs[0], manifestRoot: "0".repeat(64) },
+    });
+  });
+
+  it("rejects forged forward evidence before client creation even when the forged prior checksum is self-consistent", async () => {
+    const payload = await validRecoveryPayload();
+    const prior = payload.priorRequestModel;
+    if (prior.kind !== "question") throw new Error("Expected a question fixture.");
+    const forgedBody: ReplacementWireRequestModel = {
+      ...prior,
+      request: { ...prior.request, body: "Attacker-controlled prior" },
+    };
+    const forgedTags: ReplacementWireRequestModel = {
+      ...prior,
+      request: { ...prior.request, tags: ["changed"] },
+    };
+    const forgedRef: ReplacementWireRequestModel = {
+      ...prior,
+      ref: { kind: "question" as const, questionId: 11 },
+    };
+    const changedConfiguration: ReplacementConfiguration = {
+      ...configuration,
+      rules: [{ id: "rule-1", find: "TermA", replace: "DifferentProduct" }],
+    };
+
+    await expectInvalidWithoutClient({
+      ...payload,
+      priorRequestModel: forgedBody,
+      expectedPriorRequestChecksum: await checksumRequestModel(forgedBody),
+    });
+    await expectInvalidWithoutClient({
+      ...payload,
+      priorRequestModel: forgedTags,
+      expectedPriorRequestChecksum: await checksumRequestModel(forgedTags),
+    });
+    await expectInvalidWithoutClient({
+      ...payload,
+      itemRef: forgedRef.ref,
+      priorRequestModel: forgedRef,
+      expectedPriorRequestChecksum: await checksumRequestModel(forgedRef),
+    });
+    await expectInvalidWithoutClient({
+      ...payload,
+      configuration: changedConfiguration,
+      jobFingerprint: await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration: changedConfiguration,
+        scanCompatibility: "current",
+      }),
+    });
+    await expectInvalidWithoutClient({ ...payload, reviewedProposedRequestChecksum: "f".repeat(64) });
+    await expectInvalidWithoutClient({ ...payload, reviewedProposalFingerprint: "f".repeat(64) });
+  });
+
+  it("rejects a self-checksummed forged article permission snapshot with zero PUT", async () => {
+    const prior: ReplacementRequestModel = {
+      kind: "article",
+      ref: { kind: "article", articleId: 12 },
+      request: {
+        title: "TermA policy",
+        body: "TermA",
+        tags: ["safe"],
+        type: "policy",
+        expirationDate: null,
+        permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [3] },
+      },
+    };
+    const payload = await validRecoveryPayload({
+      itemRef: prior.ref,
+      priorRequestModel: toReplacementWireRequestModel(prior),
+    });
+    const persistedPrior = payload.priorRequestModel;
+    if (persistedPrior.kind !== "article") throw new Error("Expected an article fixture.");
+    const forged: ReplacementWireRequestModel = {
+      ...persistedPrior,
+      request: {
+        ...persistedPrior.request,
+        permissions: { editableBy: "everyone" as const, editorUserIds: [], editorUserGroupIds: [] },
+      },
+    };
+
+    await expectInvalidWithoutClient({
+      ...payload,
+      priorRequestModel: forged,
+      expectedPriorRequestChecksum: await checksumRequestModel(forged),
+    });
   });
 
   it("previews a recoverable item read-only with normalized current and prior models", async () => {
@@ -244,13 +373,8 @@ describe("handleContentReplacementRecoveryRequest", () => {
     expect(client.updateItem).not.toHaveBeenCalled();
   });
 
-  it("applies recovery only from the expected post-apply state and returns the observed checksum", async () => {
-    const observed: ReplacementRequestModel = {
-      ...priorQuestion,
-      request: { ...priorQuestion.request, tags: ["product", "observed-after-put"] },
-      metadata: { owner: { id: 2, name: "response-only" } },
-    };
-    const client = fakeContentClient([postApplyQuestion, observed]);
+  it("applies recovery only from the expected post-apply state and verifies the exact prior state", async () => {
+    const client = fakeContentClient([postApplyQuestion, priorQuestion]);
 
     const response = await handleContentReplacementRecoveryRequest(
       await validRecoveryPayload({ action: "apply" }),
@@ -261,13 +385,34 @@ describe("handleContentReplacementRecoveryRequest", () => {
       ok: true,
       result: {
         status: "recovered",
-        observedRequestChecksum: await checksumRequestModel(observed),
+        observedRequestChecksum: await checksumRequestModel(priorQuestion),
       },
       throttleNotices: [],
     });
     expect(client.getItem).toHaveBeenCalledTimes(2);
     expect(client.updateItem).toHaveBeenCalledTimes(1);
     expect(client.updateItem).toHaveBeenCalledWith(priorQuestion);
+  });
+
+  it("returns verification-failed when the post-PUT readback is not the exact reviewed prior model", async () => {
+    const divergent: ReplacementRequestModel = {
+      ...priorQuestion,
+      request: { ...priorQuestion.request, tags: ["product", "server-added"] },
+    };
+    const client = fakeContentClient([postApplyQuestion, divergent]);
+
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ action: "apply" }),
+      { createClient: () => client },
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      result: {
+        status: "verification-failed",
+        observedRequestChecksum: await checksumRequestModel(divergent),
+      },
+    });
+    expect(client.updateItem).toHaveBeenCalledTimes(1);
   });
 
   it("does not PUT recovery when apply finds the prior checksum", async () => {
@@ -334,10 +479,28 @@ describe("handleContentReplacementRecoveryRequest", () => {
     expect(client.updateItem).toHaveBeenCalledTimes(1);
   });
 
+  it("returns HTTP 401 for an invalid upstream credential without issuing a PUT", async () => {
+    const client = fakeContentClient();
+    client.getItem = vi.fn().mockRejectedValue(
+      new ContentReplacementApiError("hostile credential detail", "http", 401),
+    );
+
+    const response = await handleContentReplacementRecoveryRequest(await validRecoveryPayload(), {
+      createClient: () => client,
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Stack Enterprise credentials were rejected.",
+    });
+    expect(client.updateItem).not.toHaveBeenCalled();
+  });
+
   it.each([
-    [401, "permission"], [403, "permission"], [400, "validation"], [422, "validation"],
+    [403, "permission"], [400, "validation"], [422, "validation"],
     [429, "network"], [502, "network"], [503, "network"], [504, "network"], [404, "failed"],
-  ] as const)("maps upstream status %i to an HTTP-200 %s item result", async (status, expected) => {
+  ] as const)("maps upstream non-credential status %i to an HTTP-200 %s item result", async (status, expected) => {
     const client = fakeContentClient();
     client.getItem = vi.fn().mockRejectedValue(
       new ContentReplacementApiError("secret-token hostile body", "http", status),
@@ -400,21 +563,21 @@ describe("handleContentReplacementRecoveryRequest", () => {
   it("accepts each exact canonical prior-model kind and PUTs no response-only fields", async () => {
     const cases: Array<{ prior: ReplacementRequestModel; post: ReplacementRequestModel }> = [
       {
-        prior: { kind: "answer", ref: { kind: "answer", questionId: 10, answerId: 11 }, request: { body: "MyPVM" } },
-        post: { kind: "answer", ref: { kind: "answer", questionId: 10, answerId: 11 }, request: { body: "MyPBM" } },
+        prior: { kind: "answer", ref: { kind: "answer", questionId: 10, answerId: 11 }, request: { body: "TermA" } },
+        post: { kind: "answer", ref: { kind: "answer", questionId: 10, answerId: 11 }, request: { body: "TermB" } },
       },
       {
         prior: {
           kind: "article", ref: { kind: "article", articleId: 12 },
           request: {
-            title: "MyPVM policy", body: "MyPVM", tags: ["safe"], type: "policy", expirationDate: null,
+            title: "TermA policy", body: "TermA", tags: ["safe"], type: "policy", expirationDate: null,
             permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [3] },
           },
         },
         post: {
           kind: "article", ref: { kind: "article", articleId: 12 },
           request: {
-            title: "MyPBM policy", body: "MyPBM", tags: ["safe"], type: "policy", expirationDate: null,
+            title: "TermB policy", body: "TermB", tags: ["safe"], type: "policy", expirationDate: null,
             permissions: { editableBy: "specificEditors", editorUserIds: [2], editorUserGroupIds: [3] },
           },
         },
@@ -463,12 +626,16 @@ describe("handleContentReplacementRecoveryRequest", () => {
       kind: "article",
       ref: { kind: "article", articleId: 12 },
       request: {
-        title: "Prior", body: "Prior", tags: [], type: "policy",
+        title: "TermA prior", body: "TermA prior", tags: [], type: "policy",
         permissions: { editableBy: "ownerOnly", editorUserIds: [], editorUserGroupIds: [] },
       },
     };
-    await expectInvalidWithoutClient(await validRecoveryPayload({
+    const payload = await validRecoveryPayload({
       itemRef: article.ref,
+      priorRequestModel: toReplacementWireRequestModel(article),
+    });
+    await expectInvalidWithoutClient({
+      ...payload,
       priorRequestModel: {
         ...article,
         request: {
@@ -476,8 +643,7 @@ describe("handleContentReplacementRecoveryRequest", () => {
           permissions: { ...article.request.permissions, editorUsers: [{ id: 2 }] },
         },
       } as never,
-      expectedPriorRequestChecksum: await checksumRequestModel(article),
-    }));
+    });
   });
 
   it.each([
@@ -543,8 +709,8 @@ describe("handleContentReplacementRecoveryRequest", () => {
       }
       return new Response(JSON.stringify({
         id: 10,
-        title: "Rename MyPBM",
-        bodyMarkdown: "Use MyPBM.",
+        title: "Rename TermB",
+        bodyMarkdown: "Use TermB.",
         tags: [{ name: "product" }],
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });

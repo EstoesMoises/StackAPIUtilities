@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
 import type { ContentReplacementJobManagerStorage } from "./ContentReplacementJobManager";
+import { MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES } from "../writeTools/contentReplacement/limits";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -76,18 +77,18 @@ describe("ContentReplacementDefineStep", () => {
     const onStartScan = vi.fn().mockResolvedValue(undefined);
     render(<ContentReplacementDefineStep onStartScan={onStartScan} />);
 
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "TermB");
     expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Review rules" }));
 
-    expect(screen.getByText("MyPVM → MyPBM")).toBeVisible();
+    expect(screen.getByText("TermA → TermB")).toBeVisible();
     expect(screen.getByText(/Questions, Answers, Articles/)).toBeVisible();
     expect(screen.getByText(/Starting the scan performs reads only/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Start scan" })).toBeEnabled();
 
     await user.click(screen.getByLabelText("Articles"));
-    expect(screen.queryByText("MyPVM → MyPBM")).not.toBeInTheDocument();
+    expect(screen.queryByText("TermA → TermB")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Review rules" }));
@@ -96,7 +97,7 @@ describe("ContentReplacementDefineStep", () => {
     expect(onStartScan).toHaveBeenCalledWith(expect.objectContaining({
       target: { kind: "enterprise-main" },
       contentTypes: { questions: true, answers: true, articles: false },
-      rules: [{ id: expect.any(String), find: "MyPVM", replace: "MyPBM" }],
+      rules: [{ id: expect.any(String), find: "TermA", replace: "TermB" }],
     }));
   });
 
@@ -104,17 +105,17 @@ describe("ContentReplacementDefineStep", () => {
     const user = userEvent.setup();
     render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
 
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
     await user.click(screen.getByRole("button", { name: "Add mapping" }));
-    await user.type(screen.getByLabelText("Find term 2"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 2 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 2"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 2 with"), "TermB");
     await user.click(screen.getByRole("button", { name: "Add mapping" }));
-    await user.type(screen.getByLabelText("Find term 3"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 3 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 3"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 3 with"), "TermB");
     await user.click(screen.getByRole("button", { name: "Review rules" }));
 
     expect(screen.getByText(/Mapping 1: enter a replacement term/i)).toBeVisible();
-    expect(screen.getByText('Removed duplicate rule "MyPVM" → "MyPBM".')).toBeVisible();
+    expect(screen.getByText('Removed duplicate rule "TermA" → "TermB".')).toBeVisible();
     expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
   });
 
@@ -148,7 +149,7 @@ describe("ContentReplacementDefineStep", () => {
 
     await user.upload(
       screen.getByLabelText("Import replacement CSV"),
-      new File(["find,replace\nMyPVM,MyPBM\nCPR,"], "rules.csv", { type: "text/csv" }),
+      new File(["find,replace\nTermA,TermB\nCPR,"], "rules.csv", { type: "text/csv" }),
     );
     const choice = await screen.findByRole("group", { name: "Apply imported mappings" });
     expect(within(choice).getByRole("button", { name: "Append imported rows" })).toBeVisible();
@@ -156,7 +157,7 @@ describe("ContentReplacementDefineStep", () => {
 
     await user.click(within(choice).getByRole("button", { name: "Append imported rows" }));
     expect(screen.getByLabelText("Find term 1")).toHaveValue("Manual");
-    expect(screen.getByLabelText("Find term 2")).toHaveValue("MyPVM");
+    expect(screen.getByLabelText("Find term 2")).toHaveValue("TermA");
     expect(screen.getByLabelText("Find term 3")).toHaveValue("CPR");
     expect(screen.getByText(/CSV row 3, replace: enter a replacement term/i)).toBeVisible();
 
@@ -187,6 +188,23 @@ describe("ContentReplacementDefineStep", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Disk read failed.");
   });
 
+  it("rejects an oversized replacement CSV by File.size before calling text", async () => {
+    const user = userEvent.setup();
+    const file = new File(
+      ["x".repeat(MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES + 1)],
+      "oversized-rules.csv",
+      { type: "text/csv" },
+    );
+    const text = vi.fn(() => Promise.resolve("find,replace\nold,new"));
+    Object.defineProperty(file, "text", { value: text });
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+
+    await user.upload(screen.getByLabelText("Import replacement CSV"), file);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/replacement CSV exceeds the 1 MiB UTF-8 limit/i);
+    expect(text).not.toHaveBeenCalled();
+  });
+
   it("consults current mappings when a deferred CSV read resolves", async () => {
     const user = userEvent.setup();
     const read = deferred<string>();
@@ -210,9 +228,9 @@ describe("ContentReplacementDefineStep", () => {
 
     await user.upload(
       screen.getByLabelText("Import replacement CSV"),
-      new File(["find,replace\nMyPVM,MyPBM\nBad,Row,Extra"], "mixed.csv", { type: "text/csv" }),
+      new File(["find,replace\nTermA,TermB\nBad,Row,Extra"], "mixed.csv", { type: "text/csv" }),
     );
-    expect(screen.getByLabelText("Find term 1")).toHaveValue("MyPVM");
+    expect(screen.getByLabelText("Find term 1")).toHaveValue("TermA");
     expect(screen.getByText(/CSV row 3 must contain exactly two columns/i)).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Review rules" }));
@@ -250,7 +268,7 @@ describe("ContentReplacementDefineStep", () => {
   it("announces failed validation and focuses the first invalid replacement", async () => {
     const user = userEvent.setup();
     render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
 
     await user.click(screen.getByRole("button", { name: "Review rules" }));
 
@@ -269,11 +287,11 @@ describe("ContentReplacementDefineStep", () => {
         scanReadiness={{ ready: false, message: "Reconnect Enterprise OAuth with write_access." }}
       />,
     );
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "TermB");
     await user.click(screen.getByRole("button", { name: "Review rules" }));
 
-    expect(screen.getByText("MyPVM → MyPBM")).toBeVisible();
+    expect(screen.getByText("TermA → TermB")).toBeVisible();
     expect(screen.getByText(/Reconnect Enterprise OAuth with write_access/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
     expect(onStartScan).not.toHaveBeenCalled();
@@ -282,8 +300,8 @@ describe("ContentReplacementDefineStep", () => {
   it("focuses the content-type group when zero scope is the first actionable blocker", async () => {
     const user = userEvent.setup();
     render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "TermB");
     await user.click(screen.getByLabelText("Questions"));
     await user.click(screen.getByLabelText("Answers"));
     await user.click(screen.getByLabelText("Articles"));
@@ -302,8 +320,8 @@ describe("ContentReplacementDefineStep", () => {
   it("focuses the accessible discard action when CSV errors are the only blocker", async () => {
     const user = userEvent.setup();
     render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "TermB");
     await user.upload(
       screen.getByLabelText("Import replacement CSV"),
       new File(["wrong,headers\nfoo,bar"], "invalid.csv", { type: "text/csv" }),
@@ -408,7 +426,7 @@ describe("ContentReplacementDefineStep", () => {
     await user.type(screen.getByLabelText("Replace term 1 with"), "after");
     await user.click(screen.getByRole("radio", { name: /Exact IDs or URLs/i }));
     const targets = Array.from(
-      { length: 100_001 },
+      { length: 5_001 },
       (_, index) => `https://example.stackenterprise.co/questions/${index + 1}`,
     ).join("\n");
     fireEvent.change(screen.getByLabelText("Paste target URLs"), { target: { value: targets } });

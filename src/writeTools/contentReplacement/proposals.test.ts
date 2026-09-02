@@ -45,26 +45,26 @@ describe("replacement proposals", () => {
       {
         kind: "question",
         ref: { kind: "question", questionId: 42 },
-        request: { title: "MyPVM setup", body: "Use MyPVM.", tags: ["support", "product"] },
+        request: { title: "TermA setup", body: "Use TermA.", tags: ["support", "product"] },
         metadata: { webUrl: "https://demo.stackenterprise.co/questions/42" },
       },
       {
         target: { kind: "enterprise-main" },
         contentTypes: { questions: true, answers: true, articles: true },
         discovery: { mode: "full" },
-        rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+        rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
         options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
       },
     );
 
     expect(proposal?.after.request).toEqual({
-      title: "MyPBM setup",
-      body: "Use MyPBM.",
+      title: "TermB setup",
+      body: "Use TermB.",
       tags: ["support", "product"],
     });
     expect(proposal?.changedOccurrences).toEqual([
-      expect.objectContaining({ field: "title", before: "MyPVM", after: "MyPBM" }),
-      expect.objectContaining({ field: "body", before: "MyPVM", after: "MyPBM" }),
+      expect.objectContaining({ field: "title", before: "TermA", after: "TermB" }),
+      expect.objectContaining({ field: "body", before: "TermA", after: "TermB" }),
     ]);
     expect(proposal?.appliedRuleIds).toEqual(["r1"]);
   });
@@ -74,8 +74,8 @@ describe("replacement proposals", () => {
       kind: "article",
       ref: { kind: "article", articleId: 7 },
       request: {
-        title: "MyPVM",
-        body: "MyPVM",
+        title: "TermA",
+        body: "TermA",
         tags: ["product"],
         type: "policy",
         expirationDate: null,
@@ -86,8 +86,8 @@ describe("replacement proposals", () => {
       kind: "article",
       ref: { kind: "article", articleId: 7 },
       request: {
-        title: "MyPVM",
-        body: "MyPVM",
+        title: "TermA",
+        body: "TermA",
         tags: ["product"],
         type: "policy",
         expirationDate: null,
@@ -105,7 +105,7 @@ describe("replacement proposals", () => {
         target: { kind: "enterprise-main" as const },
         contentTypes: { questions: true, answers: true, articles: true },
         discovery: { mode: "targeted" as const },
-        rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+        rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
         options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
       },
     };
@@ -118,7 +118,7 @@ describe("replacement proposals", () => {
   });
 
   it("checksums only the ordered PUT request object, not item identity or evidence metadata", async () => {
-    const request = { title: "MyPVM", body: "MyPVM", tags: ["support", "product"] };
+    const request = { title: "TermA", body: "TermA", tags: ["support", "product"] };
     await expect(
       checksumRequestModel({
         kind: "question",
@@ -145,7 +145,7 @@ describe("replacement proposals", () => {
       contentTypes: { questions: true, answers: false, articles: true },
       discovery: { mode: "targeted" as const },
       rules: [
-        { id: "first", sourceRow: 2, find: "MyPVM", replace: "MyPBM" },
+        { id: "first", sourceRow: 2, find: "TermA", replace: "TermB" },
         { id: "second", sourceRow: 3, find: "CPR", replace: "Benefits" },
       ],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
@@ -163,7 +163,7 @@ describe("replacement proposals", () => {
           ...configuration,
           rules: [
             { id: "renamed", sourceRow: 17, find: "CPR", replace: "Benefits" },
-            { id: "another", sourceRow: 18, find: "MyPVM", replace: "MyPBM" },
+            { id: "another", sourceRow: 18, find: "TermA", replace: "TermB" },
           ],
         },
       }),
@@ -175,7 +175,7 @@ describe("replacement proposals", () => {
       target: { kind: "enterprise-main" as const },
       contentTypes: { questions: true, answers: true, articles: true },
       discovery: { mode: "targeted" as const },
-      rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+      rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     };
     const exactSelection = await createExactTargetSelection([{ kind: "question", questionId: 42 }]);
@@ -198,7 +198,7 @@ describe("replacement proposals", () => {
       target: { kind: "enterprise-main" as const },
       contentTypes: { questions: true, answers: true, articles: true },
       discovery: { mode: "full" as const },
-      rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+      rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     };
 
@@ -219,13 +219,13 @@ describe("replacement proposals", () => {
         {
           kind: "answer",
           ref: { kind: "answer", questionId: 1, answerId: 2 },
-          request: { body: "`MyPVM`" },
+          request: { body: "`TermA`" },
         },
         {
           target: { kind: "enterprise-main" },
           contentTypes: { questions: true, answers: true, articles: true },
           discovery: { mode: "full" },
-          rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+          rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
           options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
         },
       ),
@@ -237,18 +237,18 @@ describe("replacement proposals", () => {
       {
         kind: "question",
         ref: { kind: "question", questionId: 42 },
-        request: { title: "[mypvm] MyPVM2 MyPVM", body: "MyPVM", tags: [] },
+        request: { title: "[terma] TermA2 TermA", body: "TermA", tags: [] },
       },
       {
         target: { kind: "enterprise-main" },
         contentTypes: { questions: true, answers: true, articles: true },
         discovery: { mode: "full" },
-        rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+        rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
         options: { caseSensitive: false, wholeTerm: true, replaceInCode: false },
       },
     );
 
-    expect(proposal?.fields.title?.afterMarkdown).toBe("[MyPBM] MyPVM2 MyPBM");
+    expect(proposal?.fields.title?.afterMarkdown).toBe("[TermB] TermA2 TermB");
     expect(proposal?.changedOccurrences.filter((occurrence) => occurrence.field === "title")).toHaveLength(2);
   });
 
@@ -257,13 +257,13 @@ describe("replacement proposals", () => {
       target: { kind: "enterprise-main" as const },
       contentTypes: { questions: true, answers: true, articles: true },
       discovery: { mode: "full" as const },
-      rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+      rules: [{ id: "r1", find: "TermA", replace: "TermB" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     };
     const model = {
       kind: "question" as const,
       ref: { kind: "question" as const, questionId: 42 },
-      request: { title: "MyPVM", body: "MyPVM", tags: [] },
+      request: { title: "TermA", body: "TermA", tags: [] },
     };
     const sameContentDifferentItem = { ...model, ref: { kind: "question" as const, questionId: 43 } };
 
@@ -276,6 +276,55 @@ describe("replacement proposals", () => {
 
     expect(proposal?.proposalFingerprint).not.toBe(differentItem?.proposalFingerprint);
     expect(proposal?.proposalFingerprint).not.toBe(differentConfiguration?.proposalFingerprint);
+  });
+
+  it("requires and retains a valid Exact manifest proof in proposal evidence and fingerprints", async () => {
+    const selection = await createExactTargetSelection([{ kind: "question", questionId: 42 }]);
+    const configuration = {
+      target: { kind: "enterprise-main" as const },
+      contentTypes: { questions: true, answers: false, articles: false },
+      discovery: selection.discovery,
+      rules: [{ id: "r1", find: "LegacyProduct", replace: "NewProduct" }],
+      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+    };
+    const model = {
+      kind: "question" as const,
+      ref: selection.targets[0] as Extract<(typeof selection.targets)[number], { kind: "question" }>,
+      request: { title: "LegacyProduct", body: "Safe", tags: [] },
+    };
+
+    const proposal = await buildReplacementProposal(model, configuration, selection.proofs[0]);
+
+    expect(proposal?.exactProof).toEqual(selection.proofs[0]);
+    await expect(buildReplacementProposal(model, configuration)).rejects.toThrow("Exact manifest proof");
+    await expect(buildReplacementProposal(model, configuration, {
+      ...selection.proofs[0],
+      targetIndex: 1,
+    })).rejects.toThrow("Exact manifest proof");
+  });
+
+  it("rejects Exact proof material for Targeted and Full proposals", async () => {
+    const selection = await createExactTargetSelection([{ kind: "question", questionId: 42 }]);
+    const model = {
+      kind: "question" as const,
+      ref: selection.targets[0] as Extract<(typeof selection.targets)[number], { kind: "question" }>,
+      request: { title: "LegacyProduct", body: "Safe", tags: [] },
+    };
+    const base = {
+      target: { kind: "enterprise-main" as const },
+      contentTypes: { questions: true, answers: false, articles: false },
+      rules: [{ id: "r1", find: "LegacyProduct", replace: "NewProduct" }],
+      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+    };
+
+    await expect(buildReplacementProposal(model, {
+      ...base,
+      discovery: { mode: "targeted" },
+    }, selection.proofs[0])).rejects.toThrow("only valid for Exact");
+    await expect(buildReplacementProposal(model, {
+      ...base,
+      discovery: { mode: "full" },
+    }, selection.proofs[0])).rejects.toThrow("only valid for Exact");
   });
 
   it("serializes object keys deterministically without reordering arrays", () => {

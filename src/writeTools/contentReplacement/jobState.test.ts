@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseContentReplacementJob } from "../../utils/browserContentReplacementStorage";
 import { buildReplacementProposal, createJobFingerprint } from "./proposals";
+import { createExactTargetSelection } from "./discovery";
+import { MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES } from "./limits";
 import type {
   PersistedContentReplacementFailure,
   PersistedContentReplacementJob,
@@ -15,6 +17,7 @@ import {
   createReplacementSelectionSnapshot,
   getNextApplyItem,
   getNextDetailBatch,
+  getNextExactProofBatch,
   getNextInventoryCursor,
   getNextRecoveryItem,
   getReplacementReviewPage,
@@ -128,12 +131,12 @@ function failure(
 }
 
 describe("replacement job state", () => {
-  it("seeds exact mode directly into the bounded detail queue", () => {
-    const targets: ReplacementItemRef[] = [
+  it("seeds Exact refs and aligned proof evidence directly into bounded detail queues", async () => {
+    const selection = await createExactTargetSelection([
       { kind: "question", questionId: 42 },
       { kind: "answer", questionId: 42, answerId: 87 },
       { kind: "article", articleId: 9 },
-    ];
+    ]);
 
     const job = createReplacementJob({
       id: "exact-job",
@@ -141,14 +144,70 @@ describe("replacement job state", () => {
       baseUrl: "https://example.stackenterprise.co",
       configuration: {
         ...configuration,
-        discovery: { mode: "exact", targetCount: 3, targetDigest: DIGEST_A },
+        discovery: selection.discovery,
       },
-      exactTargets: targets,
+      exactTargets: selection.targets,
+      exactProofs: selection.proofs,
       createdAt: AT,
-    } as Parameters<typeof createReplacementJob>[0] & { exactTargets: ReplacementItemRef[] });
+    });
 
     expect(job.inventoryQueue).toEqual([]);
-    expect(job.detailQueue).toEqual(targets);
+    expect(job.detailQueue).toEqual(selection.targets);
+    expect(job.exactProofQueue).toEqual(selection.proofs);
+    expect(getNextExactProofBatch(job)).toEqual(selection.proofs);
+  });
+
+  it("consumes aligned Exact proofs only when proposals retain the matching proof", async () => {
+    const selection = await createExactTargetSelection([
+      { kind: "question", questionId: 1 },
+      { kind: "question", questionId: 2 },
+    ]);
+    const exactConfiguration: ReplacementConfiguration = {
+      ...configuration,
+      discovery: selection.discovery,
+    };
+    const exactProposals = await Promise.all(selection.targets.map((ref, index) =>
+      buildReplacementProposal({
+        kind: "question" as const,
+        ref: ref as Extract<ReplacementItemRef, { kind: "question" }>,
+        request: { title: "Old title", body: "Safe", tags: [] },
+      }, exactConfiguration, selection.proofs[index])));
+    let job = createReplacementJob({
+      id: "exact-job",
+      fingerprint: DIGEST_D,
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: exactConfiguration,
+      exactTargets: selection.targets,
+      exactProofs: selection.proofs,
+      createdAt: AT,
+    });
+    const forged = exactProposals.map((candidate) => candidate!);
+    forged[0] = { ...forged[0], exactProof: selection.proofs[1] };
+
+    const rejected = reduceReplacementJob(job, {
+      type: "scan/details-succeeded",
+      refs: selection.targets,
+      result: { proposals: forged, inspectedCount: 2, protectedOccurrenceCount: 0 },
+      at: AT,
+    });
+    expect(rejected).toBe(job);
+
+    job = reduceReplacementJob(job, {
+      type: "scan/details-succeeded",
+      refs: selection.targets,
+      result: { proposals: exactProposals.map((candidate) => candidate!), inspectedCount: 2, protectedOccurrenceCount: 0 },
+      at: AT,
+    });
+    expect(job.detailQueue).toEqual([]);
+    expect(job.exactProofQueue).toEqual([]);
+    job = reduceReplacementJob(job, { type: "scan/queues-drained", at: AT });
+    job = prepareJob(job, LATER);
+    expect(Object.values(job.proposals).map((item) => item.recovery)).toEqual(
+      exactProposals.map((candidate) => expect.objectContaining({
+        proposalFingerprint: candidate!.proposalFingerprint,
+        exactProof: candidate!.exactProof,
+      })),
+    );
   });
 
   it("rejects exact targets that conflict with selected content types", () => {
@@ -162,8 +221,9 @@ describe("replacement job state", () => {
         discovery: { mode: "exact", targetCount: 1, targetDigest: DIGEST_A },
       },
       exactTargets: [{ kind: "question", questionId: 42 }],
+      exactProofs: [],
       createdAt: AT,
-    } as Parameters<typeof createReplacementJob>[0] & { exactTargets: ReplacementItemRef[] })).toThrow();
+    })).toThrow();
   });
 
   it("seeds one targeted cursor per distinct configured source term", () => {
@@ -379,15 +439,15 @@ describe("replacement job state", () => {
       kind: "question" as const,
       questionId: 200_001 + index,
     }));
-    const job = capacityScanJob(99_995, refs);
+    const job = capacityScanJob(4_995, refs);
 
-    expect(MAX_CONTENT_REPLACEMENT_PROPOSALS).toBe(100_000);
+    expect(MAX_CONTENT_REPLACEMENT_PROPOSALS).toBe(5_000);
     expect(getNextDetailBatch(job)).toEqual(refs.slice(0, 5));
   });
 
   it("blocks review when the proposal ceiling is full but detail refs remain", () => {
     const refs = [{ kind: "question" as const, questionId: 200_001 }];
-    const job = capacityScanJob(100_000, refs);
+    const job = capacityScanJob(5_000, refs);
 
     expect(getNextDetailBatch(job)).toEqual([]);
     expect(canEnterReview(job)).toBe(false);
@@ -400,7 +460,7 @@ describe("replacement job state", () => {
       failure: {
         category: "validation",
         retryable: false,
-        message: "Content replacement reached the 100,000-proposal safety limit before candidate inspection finished. Start a narrower job.",
+        message: "Content replacement reached the 5,000-proposal safety limit before candidate inspection finished. Start a narrower job.",
       },
     });
     expect(reduceReplacementJob(blocked, { type: "scan/queues-drained", at: LATER }) === blocked).toBe(true);
@@ -409,7 +469,7 @@ describe("replacement job state", () => {
   it("does not overwrite an existing failed scan when a duplicate queues-drained event arrives at capacity", () => {
     const refs: ReplacementItemRef[] = [{ kind: "question", questionId: 200_001 }];
     const job = {
-      ...capacityScanJob(100_000, refs),
+      ...capacityScanJob(5_000, refs),
       status: "failed" as const,
       failure: {
         category: "network" as const,
@@ -430,7 +490,7 @@ describe("replacement job state", () => {
     "keeps an already %s scan unchanged when queues-drained is replayed at capacity",
     (status) => {
       const refs: ReplacementItemRef[] = [{ kind: "question", questionId: 200_001 }];
-      const job = { ...capacityScanJob(100_000, refs), status };
+      const job = { ...capacityScanJob(5_000, refs), status };
 
       const duplicate = reduceReplacementJob(job, { type: "scan/queues-drained", at: LATER });
 
@@ -439,12 +499,12 @@ describe("replacement job state", () => {
     },
   );
 
-  it("rejects a malicious detail completion that would publish proposal 100,001", () => {
+  it("rejects a malicious detail completion that would publish proposal 5,001", () => {
     const refs = Array.from({ length: 10 }, (_, index) => ({
       kind: "question" as const,
       questionId: 200_001 + index,
     }));
-    const job = capacityScanJob(99_995, refs);
+    const job = capacityScanJob(4_995, refs);
     const candidates = refs.map(proposal);
 
     expect(reduceReplacementJob(job, {
@@ -454,15 +514,15 @@ describe("replacement job state", () => {
       at: LATER,
     })).toBe(job);
     expect(job.detailQueue).toEqual(refs);
-    expect(Object.keys(job.proposals)).toHaveLength(99_995);
+    expect(Object.keys(job.proposals)).toHaveLength(4_995);
   });
 
-  it("validates 10,000 canonical proposals with deterministic batches, selections, review pages, and serialization", async () => {
-    const questionInventoryCount = 10_000;
-    const refs = Array.from({ length: 10_000 }, (_, index) => ({
+  it("validates the 5,000-proposal ceiling with deterministic persistence, selections, and pages", async () => {
+    const questionInventoryCount = 5_000;
+    const refs = Array.from({ length: 5_000 }, (_, index) => ({
       kind: "answer" as const,
       questionId: index + 1,
-      answerId: index + 10_001,
+      answerId: index + 5_001,
     }));
     const configured = createJob({ questions: false, answers: true, articles: false });
     configured.fingerprint = await createJobFingerprint({
@@ -478,7 +538,7 @@ describe("replacement job state", () => {
     expect(canonical.every((candidate) => candidate !== null)).toBe(true);
     const proposals = Object.fromEntries(refs.map((ref, index) => {
       const candidate = canonical[index];
-      if (!candidate) throw new Error("Expected a canonical 10,000-proposal fixture.");
+      if (!candidate) throw new Error("Expected a canonical 5,000-proposal fixture.");
       return [replacementItemKey(ref), {
         proposal: candidate,
         included: true,
@@ -519,49 +579,49 @@ describe("replacement job state", () => {
     const review = await parseContentReplacementJob(JSON.parse(serializedReview));
 
     expect(scanning.progress).toMatchObject({
-      questionPages: 100,
-      answerPages: 10_000,
-      inventoryItems: 20_000,
+      questionPages: 50,
+      answerPages: 5_000,
+      inventoryItems: 10_000,
       detailsInspected: 0,
       proposalsFound: 0,
     });
     expect(review.progress).toMatchObject({
-      questionPages: 100,
-      answerPages: 10_000,
-      inventoryItems: 20_000,
-      detailsInspected: 10_000,
-      proposalsFound: 10_000,
+      questionPages: 50,
+      answerPages: 5_000,
+      inventoryItems: 10_000,
+      detailsInspected: 5_000,
+      proposalsFound: 5_000,
     });
 
     expect(getNextDetailBatch(scanning)).toEqual(refs.slice(0, 10));
     expect(getNextDetailBatch(scanning)).toEqual(getNextDetailBatch(scanning));
 
-    const excludedKeys = refs.slice(4_500, 5_500).map(replacementItemKey);
+    const excludedKeys = refs.slice(2_250, 2_750).map(replacementItemKey);
     const selected = reduceReplacementSelectionBulk(review, excludedKeys, false, "bulk", LATER);
     expect(summarizeReplacementJob(selected)).toMatchObject({
-      selectedItems: 9_000,
-      selectedChangedOccurrences: 9_000,
-      results: { excluded: 1_000 },
+      selectedItems: 4_500,
+      selectedChangedOccurrences: 4_500,
+      results: { excluded: 500 },
     });
 
     const entries = Object.entries(selected.proposals);
-    expect(getReplacementReviewPage(entries, 1)).toMatchObject({ page: 1, pageCount: 200, start: 1, end: 50 });
-    expect(getReplacementReviewPage(entries, 200)).toMatchObject({ page: 200, pageCount: 200, start: 9_951, end: 10_000 });
-    expect(getReplacementReviewPage(entries, 200).items).toHaveLength(50);
+    expect(getReplacementReviewPage(entries, 1)).toMatchObject({ page: 1, pageCount: 100, start: 1, end: 50 });
+    expect(getReplacementReviewPage(entries, 100)).toMatchObject({ page: 100, pageCount: 100, start: 4_951, end: 5_000 });
+    expect(getReplacementReviewPage(entries, 100).items).toHaveLength(50);
 
-    expect(Object.keys(review.proposals)).toHaveLength(10_000);
+    expect(Object.keys(review.proposals)).toHaveLength(5_000);
     expect(createReplacementSelectionSnapshot(review.proposals)).toEqual(
       {
         itemKeys: refs.map(replacementItemKey).sort(),
-        selectedItems: 10_000,
-        selectedChangedOccurrences: 10_000,
+        selectedItems: 5_000,
+        selectedChangedOccurrences: 5_000,
       },
     );
     expect(createReplacementSelectionSnapshot(selected.proposals)).toEqual(
       {
-        itemKeys: refs.filter((_ref, index) => index < 4_500 || index >= 5_500).map(replacementItemKey).sort(),
-        selectedItems: 9_000,
-        selectedChangedOccurrences: 9_000,
+        itemKeys: refs.filter((_ref, index) => index < 2_250 || index >= 2_750).map(replacementItemKey).sort(),
+        selectedItems: 4_500,
+        selectedChangedOccurrences: 4_500,
       },
     );
     expect(createReplacementSelectionSnapshot(review.proposals)).not.toEqual(
@@ -974,6 +1034,18 @@ describe("replacement job state", () => {
     expect(selected.map((item) => item.recovery?.priorRequestModel)).toEqual([first.before, second.before]);
     expect(selected.every((item) => item.status === "ready-to-apply")).toBe(true);
     expect(getNextApplyItem(next)?.proposal.before.ref).toEqual(first.before.ref);
+  });
+
+  it("never makes an aggregate-over-budget recovery snapshot Apply-ready", () => {
+    const candidate = proposal({ kind: "question", questionId: 1 });
+    if (candidate.before.kind !== "question") throw new Error("Expected question fixture.");
+    candidate.before.request.body = "é".repeat(1_048_576);
+    expect(new TextEncoder().encode(JSON.stringify(candidate.before)).byteLength)
+      .toBeGreaterThan(MAX_CONTENT_REPLACEMENT_REQUEST_MODEL_BYTES);
+    const reviewed = reviewJob(candidate);
+
+    expect(prepareJob(reviewed, LATER)).toBe(reviewed);
+    expect(reviewed.recoverySnapshotStatus).toBe("none");
   });
 
   it("starts apply items strictly in proposal FIFO order", () => {

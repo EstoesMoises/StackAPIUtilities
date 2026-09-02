@@ -60,6 +60,18 @@ describe("ContentReplacementJobManager", () => {
     expect(screen.queryByText("New scan required")).not.toBeInTheDocument();
   });
 
+  it("labels every proofless Exact checkpoint as requiring a new scan", async () => {
+    const fenced = {
+      ...replacementJob("proofless-exact", "results", "completed", true),
+      scanCompatibility: "exact-proof-restart-required" as const,
+    };
+
+    render(<ContentReplacementJobManager storage={managerStorage([fenced])} onOpenJob={vi.fn()} />);
+
+    expect(await screen.findByText("New scan required")).toBeVisible();
+    expect(screen.queryByText("Apply results")).not.toBeInTheDocument();
+  });
+
   it("requires inline confirmation before deleting the job and all recovery data", async () => {
     const user = userEvent.setup();
     const storage = managerStorage([replacementJob("job-with-recovery", "results", "completed", true)]);

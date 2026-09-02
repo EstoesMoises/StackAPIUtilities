@@ -75,15 +75,15 @@ describe("ContentReplacementWizard", () => {
     const jobController = controller(null);
     render(<ContentReplacementWizard credentials={credentials} controller={jobController} />);
 
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "TermB");
     await user.click(screen.getByRole("button", { name: "Review rules" }));
     await user.click(screen.getByRole("button", { name: "Start scan" }));
 
     expect(jobController.createJob).toHaveBeenCalledOnce();
     expect(jobController.startScan).toHaveBeenCalledOnce();
     expect(jobController.createJob).toHaveBeenCalledWith(expect.objectContaining({
-      rules: [expect.objectContaining({ find: "MyPVM", replace: "MyPBM" })],
+      rules: [expect.objectContaining({ find: "TermA", replace: "TermB" })],
     }));
   });
 
@@ -195,8 +195,8 @@ describe("ContentReplacementWizard", () => {
         onReconnect={onReconnect}
       />,
     );
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "TermB");
     await user.click(screen.getByRole("button", { name: "Review rules" }));
 
     expect(screen.getByText(/OAuth token has expired/i)).toBeVisible();
@@ -223,8 +223,8 @@ describe("ContentReplacementWizard", () => {
     failedController.storageError = "Content replacement progress could not be saved.";
     vi.mocked(failedController.createJob).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     render(<ContentReplacementWizard credentials={credentials} controller={failedController} />);
-    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
-    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.type(screen.getByLabelText("Find term 1"), "TermA");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "TermB");
     await user.click(screen.getByRole("button", { name: "Review rules" }));
 
     const retry = screen.getByRole("button", { name: "Save job and start scan" });
@@ -276,7 +276,7 @@ function job(overrides: Partial<PersistedContentReplacementJob>): PersistedConte
       target: { kind: "enterprise-main" },
       contentTypes: { questions: true, answers: true, articles: true },
       discovery: { mode: "full" },
-      rules: [{ id: "one", find: "MyPVM", replace: "MyPBM" }],
+      rules: [{ id: "one", find: "TermA", replace: "TermB" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     },
     stage: "scan",
@@ -310,8 +310,8 @@ function job(overrides: Partial<PersistedContentReplacementJob>): PersistedConte
 
 function reviewItem(): PersistedContentReplacementItem {
   const ref = { kind: "question" as const, questionId: 42 };
-  const beforeRequest = { title: "Use MyPVM", body: "Use MyPVM.", tags: ["test"] };
-  const afterRequest = { ...beforeRequest, title: "Use MyPBM", body: "Use MyPBM." };
+  const beforeRequest = { title: "Use TermA", body: "Use TermA.", tags: ["test"] };
+  const afterRequest = { ...beforeRequest, title: "Use TermB", body: "Use TermB." };
   return {
     included: true,
     attemptCount: 0,
@@ -324,7 +324,7 @@ function reviewItem(): PersistedContentReplacementItem {
         body: { beforeMarkdown: beforeRequest.body, afterMarkdown: afterRequest.body },
       },
       changedOccurrences: [{
-        field: "title", ruleId: "one", start: 4, end: 9, before: "MyPVM", after: "MyPBM",
+        field: "title", ruleId: "one", start: 4, end: 9, before: "TermA", after: "TermB",
       }],
       protectedOccurrences: [],
       appliedRuleIds: ["one"],
@@ -344,6 +344,7 @@ function applyItem(): PersistedContentReplacementItem {
       priorRequestModel: item.proposal.before,
       scannedRequestChecksum: item.proposal.scannedRequestChecksum,
       proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+      proposalFingerprint: item.proposal.proposalFingerprint,
       status: "ready",
     },
   };

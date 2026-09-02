@@ -58,10 +58,12 @@ function ContentReplacementReviewStepView({
   const [selectionOverrides, setSelectionOverrides] = useState<Record<string, boolean>>({});
   const [pendingSelectionSaves, setPendingSelectionSaves] = useState(0);
   const [selectionSaveError, setSelectionSaveError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
 
   useEffect(() => {
     setSelectionOverrides({});
+    setExportError(null);
   }, [job.updatedAt, controller.storageError, controller.operationError]);
 
   const entries = useMemo(
@@ -83,6 +85,7 @@ function ContentReplacementReviewStepView({
   );
   const error = selectionSaveError ?? controller.storageError ?? controller.operationError;
   const selectionBusy = pendingSelectionSaves > 0;
+  const readOnly = job.scanCompatibility !== "current";
 
   function updateFilter<K extends keyof ReviewFilters>(key: K, value: ReviewFilters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -150,6 +153,18 @@ function ContentReplacementReviewStepView({
     }
   }
 
+  function downloadPreview() {
+    setExportError(null);
+    try {
+      downloadReplacementPreview(
+        entries.map(({ item, included }) => ({ ...item, included })),
+        job.configuration,
+      );
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "The preview CSV could not be created.");
+    }
+  }
+
   return (
     <section className="content-replacement-review" aria-labelledby="content-replacement-review-heading">
       <header className="content-replacement-step-header">
@@ -161,13 +176,26 @@ function ContentReplacementReviewStepView({
           type="button"
           className="s-btn s-btn__outlined"
           disabled={selectionBusy}
-          onClick={() => downloadReplacementPreview(entries.map(({ item, included }) => ({ ...item, included })), job.configuration)}
+          onClick={downloadPreview}
         >
           Download complete preview CSV
         </button>
       </header>
 
       <ContentReplacementCoverageEvidence configuration={job.configuration} />
+
+      {exportError && (
+        <div className="content-replacement-error" role="alert">
+          <strong>Preview export was not created.</strong> {exportError}
+        </div>
+      )}
+
+      {readOnly && (
+        <div className="s-notice s-notice__warning" role="alert">
+          <strong>New scan required.</strong> This saved Exact review predates proof provenance and is read-only.
+          Export or inspect its evidence, then create a new job before changing selection or applying.
+        </div>
+      )}
 
       <PolicySummary controller={controller} />
 
@@ -253,7 +281,7 @@ function ContentReplacementReviewStepView({
           <button
             type="button"
             className="s-btn s-btn__outlined"
-            disabled={selectionBusy || filtered.length === 0}
+            disabled={readOnly || selectionBusy || filtered.length === 0}
             onClick={() => void setFilteredIncluded(true)}
           >
             Include {filtered.length} filtered {plural(filtered.length, "proposal")}
@@ -261,7 +289,7 @@ function ContentReplacementReviewStepView({
           <button
             type="button"
             className="s-btn s-btn__outlined"
-            disabled={selectionBusy || filtered.length === 0}
+            disabled={readOnly || selectionBusy || filtered.length === 0}
             onClick={() => void setFilteredIncluded(false)}
           >
             Exclude {filtered.length} filtered {plural(filtered.length, "proposal")}
@@ -302,7 +330,7 @@ function ContentReplacementReviewStepView({
                       <input
                         type="checkbox"
                         checked={included}
-                        disabled={selectionBusy}
+                        disabled={readOnly || selectionBusy}
                         aria-label={`Include ${identity.kind} ${identity.id}`}
                         onChange={(event) => void setIncluded(key, event.target.checked)}
                       />
@@ -334,7 +362,7 @@ function ContentReplacementReviewStepView({
                           jobBaseUrl={job.baseUrl}
                           item={item}
                           included={included}
-                          disabled={selectionBusy}
+                          disabled={readOnly || selectionBusy}
                           onSetIncluded={(next) => setIncluded(key, next)}
                         />
                       </td>
@@ -382,7 +410,7 @@ function ContentReplacementReviewStepView({
           type="button"
           className="s-btn s-btn__primary"
           disabled={
-            selected.length === 0 || controller.busy || selectionBusy || selectionSaveError !== null ||
+            readOnly || selected.length === 0 || controller.busy || selectionBusy || selectionSaveError !== null ||
             controller.storageError !== null || controller.operationError !== null
           }
           onClick={() => void continueToApply()}

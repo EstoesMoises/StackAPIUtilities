@@ -1,14 +1,23 @@
 import Papa from "papaparse";
 
-import { replacementItemKey } from "./jobState";
-import { stableSerialize } from "./proposals";
+import {
+  canonicalReplacementRefKey,
+  createExactTargetManifest,
+} from "./exactManifest";
+import {
+  MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES,
+  MAX_CONTENT_REPLACEMENT_EXACT_TARGETS,
+  MAX_CONTENT_REPLACEMENT_PASTE_BYTES,
+  utf8ByteLength,
+} from "./limits";
 import type {
   ExactTargetSelection,
   ReplacementDiscovery,
   ReplacementItemRef,
 } from "./types";
 
-export const MAX_EXACT_REPLACEMENT_TARGETS = 100_000;
+export const MAX_EXACT_REPLACEMENT_TARGETS = MAX_CONTENT_REPLACEMENT_EXACT_TARGETS;
+export { verifyExactTargetProof } from "./exactManifest";
 
 export interface DiscoveryPresentation {
   label: string;
@@ -30,6 +39,7 @@ export type ExactTargetParseErrorCode =
   | "extra-columns"
   | "invalid-columns"
   | "malformed-csv"
+  | "input-too-large"
   | "too-many-targets";
 
 export interface ExactTargetParseError {
@@ -46,6 +56,9 @@ export interface ExactTargetParseResult {
 export function parseExactTargetLines(value: string, connectedOrigin: string): ExactTargetParseResult {
   const errors: ExactTargetParseError[] = [];
   const targets: ReplacementItemRef[] = [];
+  if (utf8ByteLength(value) > MAX_CONTENT_REPLACEMENT_PASTE_BYTES) {
+    return { targets, errors: [{ code: "input-too-large", sourceLine: 1 }], duplicateCount: 0 };
+  }
   let origin: string;
   try {
     origin = new URL(connectedOrigin).origin;
@@ -53,86 +66,108 @@ export function parseExactTargetLines(value: string, connectedOrigin: string): E
     return { targets, errors: [{ code: "invalid-url", sourceLine: 1 }], duplicateCount: 0 };
   }
 
-  value.split(/\r?\n/u).forEach((line, index) => {
+  const seen = new Set<string>();
+  let duplicateCount = 0;
+  const lines = value.split(/\r?\n/u);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const source = line.trim();
-    if (source === "") return;
+    if (source === "") continue;
     const parsed = parseExactTargetUrl(source, origin);
     if ("code" in parsed) {
       errors.push({ code: parsed.code, sourceLine: index + 1 });
-      return;
+      continue;
     }
+    const key = canonicalReplacementRefKey(parsed.ref);
+    if (seen.has(key)) {
+      duplicateCount += 1;
+      continue;
+    }
+    if (targets.length >= MAX_EXACT_REPLACEMENT_TARGETS) {
+      errors.push({ code: "too-many-targets", sourceLine: index + 1 });
+      break;
+    }
+    seen.add(key);
     targets.push(parsed.ref);
-  });
+  }
 
-  return finalizeParsedTargets(targets, errors);
+  return { targets: normalizeExactTargets(targets), errors, duplicateCount };
 }
 
 export function parseExactTargetCsv(value: string, _connectedOrigin: string): ExactTargetParseResult {
-  const parsed = Papa.parse<string[]>(value, {
+  if (utf8ByteLength(value) > MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES) {
+    return { targets: [], errors: [{ code: "input-too-large", sourceLine: 1 }], duplicateCount: 0 };
+  }
+  const errors: ExactTargetParseError[] = [];
+  const targets: ReplacementItemRef[] = [];
+  const seen = new Set<string>();
+  let duplicateCount = 0;
+  let rowIndex = 0;
+  let validHeader = false;
+  Papa.parse<string[]>(value, {
     delimiter: ",",
     header: false,
     dynamicTyping: false,
     skipEmptyLines: false,
+    step(result, parser) {
+      const sourceLine = rowIndex + 1;
+      rowIndex += 1;
+      errors.push(...result.errors.map(() => ({ code: "malformed-csv" as const, sourceLine })));
+      const row = result.data;
+      if (sourceLine === 1) {
+        validHeader = hasExactCsvHeaders(row);
+        if (!validHeader) {
+          errors.unshift({ code: "invalid-headers", sourceLine: 1 });
+          parser.abort();
+        }
+        return;
+      }
+      if (!validHeader || row.every((cell) => cell.trim() === "")) return;
+      const parsed = parseExactTargetCsvRow(row, sourceLine);
+      if ("code" in parsed) {
+        errors.push({ code: parsed.code, sourceLine });
+        return;
+      }
+      const key = canonicalReplacementRefKey(parsed.ref);
+      if (seen.has(key)) {
+        duplicateCount += 1;
+        return;
+      }
+      if (targets.length >= MAX_EXACT_REPLACEMENT_TARGETS) {
+        errors.push({ code: "too-many-targets", sourceLine });
+        parser.abort();
+        return;
+      }
+      seen.add(key);
+      targets.push(parsed.ref);
+    },
   });
-  const errors: ExactTargetParseError[] = parsed.errors.map((error) => ({
-    code: "malformed-csv",
-    sourceLine: (error.row ?? 0) + 1,
-  }));
-  const header = parsed.data[0] ?? [];
-  if (!hasExactCsvHeaders(header)) {
-    errors.unshift({ code: "invalid-headers", sourceLine: 1 });
-    return { targets: [], errors, duplicateCount: 0 };
+  return { targets: normalizeExactTargets(targets), errors, duplicateCount };
+}
+
+function parseExactTargetCsvRow(
+  row: string[],
+  _sourceLine: number,
+): { ref: ReplacementItemRef } | { code: ExactTargetParseErrorCode } {
+  if (row.length > 3) return { code: "extra-columns" };
+  if (row.length !== 3) return { code: "invalid-columns" };
+  const type = (row[0] ?? "").trim();
+  const id = parsePositiveSafeInteger((row[1] ?? "").trim());
+  const parentQuestionId = (row[2] ?? "").trim();
+  if (!id) return { code: "invalid-id" };
+  if (type === "question" || type === "article") {
+    if (parentQuestionId !== "") return { code: "unexpected-parent-question" };
+    return type === "question"
+      ? { ref: { kind: "question", questionId: id } }
+      : { ref: { kind: "article", articleId: id } };
   }
-
-  const targets: ReplacementItemRef[] = [];
-  parsed.data.slice(1).forEach((row, index) => {
-    const sourceLine = index + 2;
-    if (row.every((cell) => cell.trim() === "")) return;
-    if (row.length > 3) {
-      errors.push({ code: "extra-columns", sourceLine });
-      return;
-    }
-    if (row.length !== 3) {
-      errors.push({ code: "invalid-columns", sourceLine });
-      return;
-    }
-
-    const type = (row[0] ?? "").trim();
-    const id = parsePositiveSafeInteger((row[1] ?? "").trim());
-    const parentQuestionId = (row[2] ?? "").trim();
-    if (!id) {
-      errors.push({ code: "invalid-id", sourceLine });
-      return;
-    }
-    if (type === "question") {
-      if (parentQuestionId !== "") {
-        errors.push({ code: "unexpected-parent-question", sourceLine });
-        return;
-      }
-      targets.push({ kind: "question", questionId: id });
-      return;
-    }
-    if (type === "article") {
-      if (parentQuestionId !== "") {
-        errors.push({ code: "unexpected-parent-question", sourceLine });
-        return;
-      }
-      targets.push({ kind: "article", articleId: id });
-      return;
-    }
-    if (type === "answer") {
-      const parent = parsePositiveSafeInteger(parentQuestionId);
-      if (!parent) {
-        errors.push({ code: "missing-parent-question", sourceLine });
-        return;
-      }
-      targets.push({ kind: "answer", questionId: parent, answerId: id });
-      return;
-    }
-    errors.push({ code: "invalid-type", sourceLine });
-  });
-
-  return finalizeParsedTargets(targets, errors);
+  if (type === "answer") {
+    const parent = parsePositiveSafeInteger(parentQuestionId);
+    return parent
+      ? { ref: { kind: "answer", questionId: parent, answerId: id } }
+      : { code: "missing-parent-question" };
+  }
+  return { code: "invalid-type" };
 }
 
 export function createExactTargetCsvTemplate(): string {
@@ -144,15 +179,19 @@ export function normalizeExactTargets(targets: readonly ReplacementItemRef[]): R
   const seen = new Set<string>();
   for (const target of targets) {
     const normalizedTarget = normalizeExactTarget(target);
-    const key = replacementItemKey(normalizedTarget);
+    const key = canonicalReplacementRefKey(normalizedTarget);
     if (seen.has(key)) continue;
     seen.add(key);
     normalized.push(normalizedTarget);
     if (normalized.length > MAX_EXACT_REPLACEMENT_TARGETS) {
-      throw new RangeError("Exact target lists cannot contain more than 100,000 unique targets.");
+      throw new RangeError("Exact target lists cannot contain more than 5,000 unique targets.");
     }
   }
-  return normalized;
+  return normalized.sort((left, right) => {
+    const leftKey = canonicalReplacementRefKey(left);
+    const rightKey = canonicalReplacementRefKey(right);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
 }
 
 function normalizeExactTarget(target: ReplacementItemRef): ReplacementItemRef {
@@ -170,13 +209,15 @@ export async function createExactTargetSelection(
   if (targets.length === 0) {
     throw new RangeError("Exact target lists must contain at least one target.");
   }
+  const manifest = await createExactTargetManifest(targets);
   return {
     discovery: {
       mode: "exact",
       targetCount: targets.length,
-      targetDigest: await sha256(stableSerialize(targets)),
+      targetDigest: manifest.root,
     },
     targets,
+    proofs: manifest.proofs,
   };
 }
 
@@ -198,22 +239,6 @@ const FULL_PRESENTATION = Object.freeze<DiscoveryPresentation>({
   label: "Exhaustive · all accessible selected content",
   exhaustive: true,
 });
-
-function finalizeParsedTargets(
-  targets: ReplacementItemRef[],
-  errors: ExactTargetParseError[],
-): ExactTargetParseResult {
-  try {
-    const normalized = normalizeExactTargets(targets);
-    return { targets: normalized, errors, duplicateCount: targets.length - normalized.length };
-  } catch (error) {
-    if (error instanceof RangeError) {
-      errors.push({ code: "too-many-targets", sourceLine: targets.length });
-      return { targets, errors, duplicateCount: 0 };
-    }
-    throw error;
-  }
-}
 
 function parseExactTargetUrl(
   value: string,
@@ -272,10 +297,4 @@ function parsePositiveSafeInteger(value: string): number | null {
   if (!/^[1-9]\d*$/u.test(value)) return null;
   const number = Number(value);
   return Number.isSafeInteger(number) ? number : null;
-}
-
-async function sha256(value: string): Promise<string> {
-  const bytes = new TextEncoder().encode(value);
-  const hash = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

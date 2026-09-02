@@ -11,9 +11,18 @@ import {
   createJobFingerprint,
   stableSerialize,
 } from "../writeTools/contentReplacement/proposals";
+import {
+  normalizeExactTargetProof,
+  verifyExactTargetProof,
+} from "../writeTools/contentReplacement/exactManifest";
+import {
+  isJsonWithinUtf8ByteLimit,
+  MAX_CONTENT_REPLACEMENT_JOB_BYTES,
+} from "../writeTools/contentReplacement/limits";
 import { MAX_CONTENT_REPLACEMENT_PROPOSALS } from "../writeTools/contentReplacement/jobState";
 import type {
   ArticlePermissionsRequest,
+  ExactTargetProof,
   InventoryCursor,
   PersistedContentReplacementFailure,
   PersistedContentReplacementActiveOperation,
@@ -62,19 +71,21 @@ const BASE_MAX_GRAPH_ENTRIES = 500_000;
 // Proposal allowances cover the ordinary richest canonical article shape:
 // metadata, permissions, result, recovery snapshot, and recovery preview, with
 // headroom for occurrence evidence. Independent per-object, depth, and content
-// limits still reject unusually complex jobs before the 100,000-item ceiling.
+// limits still reject unusually complex jobs before the 5,000-proposal ceiling.
 const MAX_GRAPH_NODES_PER_QUEUE_ITEM = 2;
 const MAX_GRAPH_ENTRIES_PER_QUEUE_ITEM = 5;
 const MAX_GRAPH_NODES_PER_PROPOSAL = 64;
 const MAX_GRAPH_ENTRIES_PER_PROPOSAL = 192;
 const MAX_CANONICAL_VALIDATION_CONCURRENCY = 16;
+const MAX_PROPOSAL_VALIDATION_CACHE_ENTRIES = 512;
+const MAX_PROPOSAL_VALIDATION_CACHE_CHARACTERS = 16 * 1_048_576;
 const MAX_INVENTORY_PAGE = 10_000;
 const MAX_OCCURRENCES = 100_000;
 const MAX_CONTENT_LENGTH = 1_048_576;
 const MAX_LIST_ITEMS = 10_000;
 const JOB_KEYS = [
   "schemaVersion", "scanCompatibility", "revision", "id", "fingerprint", "baseUrl", "target", "configuration",
-  "stage", "status", "inventoryQueue", "detailQueue", "progress", "proposals",
+  "stage", "status", "inventoryQueue", "detailQueue", "exactProofQueue", "progress", "proposals",
   "recoverySnapshotStatus", "activeOperation", "operationError", "nextRetryAt", "failure", "createdAt", "updatedAt",
 ] as const;
 const LEGACY_JOB_KEYS = [
@@ -96,6 +107,8 @@ const SUMMARY_KEYS = [
   "id", "sortKey", "baseUrl", "stage", "status", "mappingCount", "proposedPostCount",
   "recoverySnapshotStatus", "scanCompatibility", "activeOperationKind", "updatedAt",
 ] as const;
+const proposalValidationCache = new Map<string, string>();
+let proposalValidationCacheCharacters = 0;
 
 export interface ContentReplacementJobSummary {
   id: string;
@@ -421,11 +434,41 @@ function summaryFromIndexEntry(key: IDBValidKey, primaryKey: IDBValidKey): Conte
 
 export async function parseContentReplacementJob(value: unknown): Promise<PersistedContentReplacementJob> {
   const schemaVersion = contentReplacementSchemaVersion(value);
-  if (schemaVersion === 1) return migrateLegacyContentReplacementJob(value);
+  if (schemaVersion === 1) {
+    const migrated = await migrateLegacyContentReplacementJob(value);
+    assertPersistedJobByteBudget(migrated);
+    return migrated;
+  }
   if (schemaVersion !== 2) throw corruptJob();
   const normalized = normalizeContentReplacementJob(value);
+  assertPersistedJobByteBudget(normalized);
+  if (normalized.scanCompatibility === "exact-proof-restart-required" &&
+    ownDataProperty(value, "scanCompatibility") === "current") {
+    const sourceFingerprint = await createJobFingerprint({
+      baseUrl: normalized.baseUrl,
+      configuration: normalized.configuration,
+      scanCompatibility: "current",
+    });
+    if (normalized.fingerprint !== sourceFingerprint) throw corruptJob();
+    const migrated = {
+      ...normalized,
+      fingerprint: await createJobFingerprint({
+        baseUrl: normalized.baseUrl,
+        configuration: normalized.configuration,
+        scanCompatibility: "exact-proof-restart-required",
+      }),
+    };
+    await validateCurrentContentReplacementJob(migrated);
+    return migrated;
+  }
   await validateCurrentContentReplacementJob(normalized);
   return normalized;
+}
+
+function assertPersistedJobByteBudget(job: PersistedContentReplacementJob): void {
+  if (!isJsonWithinUtf8ByteLimit(job, MAX_CONTENT_REPLACEMENT_JOB_BYTES)) {
+    throw new TypeError("Content replacement job exceeds the 64 MiB storage limit.");
+  }
 }
 
 function contentReplacementSchemaVersion(value: unknown): 1 | 2 | null {
@@ -505,18 +548,26 @@ async function validateCurrentContentReplacementJob(
       scanCompatibility: normalized.scanCompatibility,
     });
     if (expectedFingerprint !== normalized.fingerprint) throw corruptJob();
+    await validatePersistedExactProofs(normalized);
     const items = Object.values(normalized.proposals);
     for (let offset = 0; offset < items.length; offset += MAX_CANONICAL_VALIDATION_CONCURRENCY) {
       await Promise.all(
         items.slice(offset, offset + MAX_CANONICAL_VALIDATION_CONCURRENCY)
-          .map((item) => validateCanonicalItem(item, normalized.configuration, normalized.updatedAt)),
+          .map((item) => validateCanonicalItem(
+            item,
+            normalized.configuration,
+            normalized.scanCompatibility,
+            normalized.updatedAt,
+          )),
       );
     }
     if (normalized.activeOperation?.kind === "stale-rescan") {
       for (const [key, proposal] of Object.entries(normalized.activeOperation.proposals)) {
-        const canonical = await buildReplacementProposal(proposal.before, normalized.configuration);
-        if (!canonical || canonicalItemKey(proposal.before.ref) !== key ||
-          stableSerialize(canonical) !== stableSerialize(proposal)) throw corruptJob();
+        if (canonicalItemKey(proposal.before.ref) !== key || !await isCanonicalPersistedProposal(
+          proposal,
+          normalized.configuration,
+          normalized.scanCompatibility,
+        )) throw corruptJob();
       }
     }
   } catch {
@@ -602,8 +653,12 @@ async function migrateLegacyItem(
   jobUpdatedAt: string,
 ): Promise<PersistedContentReplacementItem> {
   const proposal = await migrateLegacyProposal(item.proposal, configuration);
-  await validateRecoveryEvidence(item, jobUpdatedAt);
-  return { ...item, proposal };
+  const recovery = item.recovery === undefined
+    ? undefined
+    : { ...item.recovery, proposalFingerprint: proposal.proposalFingerprint };
+  const migrated = { ...item, proposal, ...(recovery === undefined ? {} : { recovery }) };
+  await validateRecoveryEvidence(migrated, jobUpdatedAt);
+  return migrated;
 }
 
 async function migrateLegacyProposal(
@@ -622,13 +677,55 @@ async function migrateLegacyProposal(
 async function validateCanonicalItem(
   item: PersistedContentReplacementItem,
   configuration: PersistedContentReplacementJob["configuration"],
+  scanCompatibility: PersistedContentReplacementJob["scanCompatibility"],
   jobUpdatedAt: string,
 ): Promise<void> {
-  const canonicalProposal = await buildReplacementProposal(item.proposal.before, configuration);
-  if (!canonicalProposal || stableSerialize(canonicalProposal) !== stableSerialize(item.proposal)) {
+  if (!await isCanonicalPersistedProposal(item.proposal, configuration, scanCompatibility)) {
     throw corruptJob();
   }
   await validateRecoveryEvidence(item, jobUpdatedAt);
+}
+
+async function isCanonicalPersistedProposal(
+  proposal: ReplacementProposal,
+  configuration: PersistedContentReplacementJob["configuration"],
+  scanCompatibility: PersistedContentReplacementJob["scanCompatibility"],
+): Promise<boolean> {
+  const serialized = stableSerialize(proposal);
+  const key = stableSerialize([
+    scanCompatibility,
+    currentSemanticConfiguration(configuration),
+    proposal.proposalFingerprint,
+  ]);
+  const cached = proposalValidationCache.get(key);
+  if (cached === serialized) {
+    proposalValidationCache.delete(key);
+    proposalValidationCache.set(key, cached);
+    return true;
+  }
+  const canonical = await buildCanonicalPersistedProposal(proposal, configuration, scanCompatibility);
+  if (!canonical || stableSerialize(canonical) !== serialized) return false;
+  cacheCanonicalProposal(key, serialized);
+  return true;
+}
+
+function cacheCanonicalProposal(key: string, serialized: string): void {
+  const characters = key.length + serialized.length;
+  if (characters > MAX_PROPOSAL_VALIDATION_CACHE_CHARACTERS) return;
+  const previous = proposalValidationCache.get(key);
+  if (previous !== undefined) {
+    proposalValidationCacheCharacters -= key.length + previous.length;
+    proposalValidationCache.delete(key);
+  }
+  proposalValidationCache.set(key, serialized);
+  proposalValidationCacheCharacters += characters;
+  while (proposalValidationCache.size > MAX_PROPOSAL_VALIDATION_CACHE_ENTRIES ||
+    proposalValidationCacheCharacters > MAX_PROPOSAL_VALIDATION_CACHE_CHARACTERS) {
+    const oldest = proposalValidationCache.entries().next().value as [string, string] | undefined;
+    if (!oldest) break;
+    proposalValidationCache.delete(oldest[0]);
+    proposalValidationCacheCharacters -= oldest[0].length + oldest[1].length;
+  }
 }
 
 async function validateRecoveryEvidence(
@@ -638,7 +735,9 @@ async function validateRecoveryEvidence(
   if (!item.recovery) return;
   if (
     stableSerialize(item.recovery.priorRequestModel) !== stableSerialize(item.proposal.before) ||
-    await checksumRequestModel(item.recovery.priorRequestModel) !== item.recovery.scannedRequestChecksum
+    await checksumRequestModel(item.recovery.priorRequestModel) !== item.recovery.scannedRequestChecksum ||
+    item.recovery.proposalFingerprint !== item.proposal.proposalFingerprint ||
+    stableSerialize(item.recovery.exactProof) !== stableSerialize(item.proposal.exactProof)
   ) {
     throw corruptJob();
   }
@@ -663,6 +762,77 @@ async function validateRecoveryEvidence(
   ) throw corruptJob();
 }
 
+async function buildCanonicalPersistedProposal(
+  proposal: ReplacementProposal,
+  configuration: PersistedContentReplacementJob["configuration"],
+  scanCompatibility: PersistedContentReplacementJob["scanCompatibility"],
+): Promise<ReplacementProposal | null> {
+  if (scanCompatibility !== "exact-proof-restart-required") {
+    return buildReplacementProposal(proposal.before, configuration, proposal.exactProof);
+  }
+  if (configuration.discovery.mode !== "exact" || proposal.exactProof !== undefined) throw corruptJob();
+  const withoutExactDiscovery = {
+    ...configuration,
+    discovery: { mode: "full" as const },
+  };
+  const canonical = await buildReplacementProposal(proposal.before, withoutExactDiscovery);
+  if (!canonical) return null;
+  return {
+    ...canonical,
+    proposalFingerprint: await legacySha256(stableSerialize({
+      ref: canonical.before.ref,
+      configuration: currentSemanticConfiguration(configuration),
+      scannedRequestChecksum: canonical.scannedRequestChecksum,
+      proposedRequestChecksum: canonical.proposedRequestChecksum,
+    })),
+  };
+}
+
+function currentSemanticConfiguration(
+  configuration: PersistedContentReplacementJob["configuration"],
+): unknown {
+  return {
+    target: configuration.target,
+    contentTypes: configuration.contentTypes,
+    discovery: configuration.discovery,
+    options: configuration.options,
+    rules: configuration.rules
+      .map(({ find, replace }) => ({ find, replace }))
+      .sort((left, right) => compareOrdinal(left.find, right.find) || compareOrdinal(left.replace, right.replace)),
+  };
+}
+
+async function validatePersistedExactProofs(job: PersistedContentReplacementJob): Promise<void> {
+  const staleProposals = job.activeOperation?.kind === "stale-rescan"
+    ? Object.values(job.activeOperation.proposals)
+    : [];
+  const proposals = [...Object.values(job.proposals).map((item) => item.proposal), ...staleProposals];
+  if (job.configuration.discovery.mode !== "exact") {
+    if (job.exactProofQueue !== undefined || proposals.some((proposal) => proposal.exactProof !== undefined)) {
+      throw corruptJob();
+    }
+    return;
+  }
+  if (job.scanCompatibility === "exact-proof-restart-required") {
+    if (job.exactProofQueue !== undefined || proposals.some((proposal) => proposal.exactProof !== undefined)) {
+      throw corruptJob();
+    }
+    return;
+  }
+  if (job.scanCompatibility !== "current" || !job.exactProofQueue ||
+    job.exactProofQueue.length !== job.detailQueue.length) throw corruptJob();
+  await Promise.all(job.detailQueue.map(async (ref, index) => {
+    const proof = job.exactProofQueue![index];
+    if (proof.targetIndex !== job.progress.detailsInspected + index ||
+      !await verifyExactTargetProof(ref, proof, job.configuration.discovery)) throw corruptJob();
+  }));
+  await Promise.all(proposals.map(async (proposal) => {
+    const proof = proposal.exactProof;
+    if (!proof || proof.targetIndex >= job.progress.detailsInspected ||
+      !await verifyExactTargetProof(proposal.before.ref, proof, job.configuration.discovery)) throw corruptJob();
+  }));
+}
+
 function normalizeContentReplacementJob(value: unknown): PersistedContentReplacementJob {
   const preflight = preflightContentReplacementJobRoot(value);
   const safeValue = cloneSafeDataGraph(
@@ -670,7 +840,9 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     contentReplacementGraphBudget(preflight.cardinalities),
     preflight.sourceSnapshots,
   );
-  const record = exactObject(safeValue, JOB_KEYS, ["activeOperation", "operationError", "nextRetryAt", "failure"]);
+  const record = exactObject(safeValue, JOB_KEYS, [
+    "exactProofQueue", "activeOperation", "operationError", "nextRetryAt", "failure",
+  ]);
   const configuration = validateConfiguration(record.configuration);
   const baseUrl = normalizeEnterpriseBaseUrl(record.baseUrl);
   const target = exactObject(record.target, ["kind"]);
@@ -695,6 +867,9 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   }
   const inventoryQueue = boundedArray(record.inventoryQueue, MAX_QUEUE_ITEMS).map(parseInventoryCursor);
   const detailQueue = boundedArray(record.detailQueue, MAX_QUEUE_ITEMS).map(parseItemRef);
+  const exactProofQueue = record.exactProofQueue === undefined
+    ? undefined
+    : boundedArray(record.exactProofQueue, MAX_CONTENT_REPLACEMENT_PROPOSALS).map(parseExactTargetProof);
   const progress = parseProgress(record.progress);
   const proposals = exactDynamicMap(record.proposals);
   const proposalEntries = Object.entries(proposals);
@@ -711,9 +886,13 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   const activeOperation = record.activeOperation === undefined
     ? undefined
     : parseActiveOperation(record.activeOperation, normalizedProposals, configuredRuleIds);
+  const scanCompatibility = record.scanCompatibility === "current" &&
+    configuration.discovery.mode === "exact" && exactProofQueue === undefined
+    ? "exact-proof-restart-required"
+    : record.scanCompatibility;
   const normalized: PersistedContentReplacementJob = {
     schemaVersion: 2,
-    scanCompatibility: record.scanCompatibility,
+    scanCompatibility,
     revision: record.revision as number,
     id: record.id,
     fingerprint: record.fingerprint,
@@ -724,6 +903,7 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     status: record.status,
     inventoryQueue,
     detailQueue,
+    ...(exactProofQueue === undefined ? {} : { exactProofQueue }),
     progress,
     proposals: normalizedProposals,
     recoverySnapshotStatus: record.recoverySnapshotStatus,
@@ -741,6 +921,7 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
 interface ContentReplacementGraphCardinalities {
   inventoryQueue: number;
   detailQueue: number;
+  exactProofQueue: number;
   proposals: number;
 }
 
@@ -770,7 +951,7 @@ function preflightContentReplacementJobRoot(
     if (prototype !== Object.prototype && prototype !== null) throw corruptJob();
     const keys = Reflect.ownKeys(value);
     const allowed = new Set<string>(jobKeys);
-    const optional = new Set(["activeOperation", "operationError", "nextRetryAt", "failure"]);
+    const optional = new Set(["exactProofQueue", "activeOperation", "operationError", "nextRetryAt", "failure"]);
     if (
       keys.length > jobKeys.length ||
       keys.some((key) => typeof key !== "string" || !allowed.has(key)) ||
@@ -793,15 +974,20 @@ function preflightContentReplacementJobRoot(
     }
     const inventoryQueue = preflightArraySnapshot(snapshot.inventoryQueue, MAX_QUEUE_ITEMS, sourceSnapshots);
     const detailQueue = preflightArraySnapshot(snapshot.detailQueue, MAX_QUEUE_ITEMS, sourceSnapshots);
+    const exactProofQueue = snapshot.exactProofQueue === undefined
+      ? { snapshot: undefined, cardinality: 0 }
+      : preflightArraySnapshot(snapshot.exactProofQueue, MAX_CONTENT_REPLACEMENT_PROPOSALS, sourceSnapshots);
     const proposals = preflightProposalSnapshot(snapshot.proposals, sourceSnapshots);
     snapshot.inventoryQueue = inventoryQueue.snapshot;
     snapshot.detailQueue = detailQueue.snapshot;
+    if (exactProofQueue.snapshot !== undefined) snapshot.exactProofQueue = exactProofQueue.snapshot;
     snapshot.proposals = proposals.snapshot;
     return {
       snapshot,
       cardinalities: {
         inventoryQueue: inventoryQueue.cardinality,
         detailQueue: detailQueue.cardinality,
+        exactProofQueue: exactProofQueue.cardinality,
         proposals: proposals.cardinality,
       },
       sourceSnapshots,
@@ -887,7 +1073,7 @@ function preflightProposalSnapshot(
 function contentReplacementGraphBudget(
   cardinalities: ContentReplacementGraphCardinalities,
 ): SafeGraphBudget {
-  const queueItems = cardinalities.inventoryQueue + cardinalities.detailQueue;
+  const queueItems = cardinalities.inventoryQueue + cardinalities.detailQueue + cardinalities.exactProofQueue;
   return {
     nodes: BASE_MAX_GRAPH_NODES +
       queueItems * MAX_GRAPH_NODES_PER_QUEUE_ITEM +
@@ -911,6 +1097,7 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
   ).length;
   if (
     (job.scanCompatibility === "legacy-restart-required" && job.configuration.discovery.mode !== "full") ||
+    (job.scanCompatibility === "exact-proof-restart-required" && job.configuration.discovery.mode !== "exact") ||
     job.progress.proposalsFound !== items.length ||
     job.progress.detailsInspected < job.progress.proposalsFound ||
     (job.configuration.discovery.mode !== "exact" &&
@@ -1303,14 +1490,15 @@ function parseProposal(
 ): ReplacementProposal {
   const record = exactObject(value, [
     "before", "after", "scannedRequestChecksum", "proposedRequestChecksum", "proposalFingerprint",
-    "fields", "changedOccurrences", "protectedOccurrences", "appliedRuleIds", "metadata",
-  ], ["metadata"]);
+    "exactProof", "fields", "changedOccurrences", "protectedOccurrences", "appliedRuleIds", "metadata",
+  ], ["exactProof", "metadata"]);
   const before = parseRequestModel(record.before);
   const after = parseRequestModel(record.after);
   if (!sameRef(before.ref, after.ref) || canonicalItemKey(before.ref) !== itemKey) throw corruptJob();
   const scannedRequestChecksum = digest(record.scannedRequestChecksum);
   const proposedRequestChecksum = digest(record.proposedRequestChecksum);
   const proposalFingerprint = digest(record.proposalFingerprint);
+  const exactProof = record.exactProof === undefined ? undefined : parseExactTargetProof(record.exactProof);
   const fields = parseProposalFields(record.fields, before.ref.kind);
   const changedOccurrences = boundedArray(record.changedOccurrences, MAX_OCCURRENCES)
     .map(parseChangedOccurrence);
@@ -1335,6 +1523,7 @@ function parseProposal(
     scannedRequestChecksum,
     proposedRequestChecksum,
     proposalFingerprint,
+    ...(exactProof === undefined ? {} : { exactProof }),
     fields,
     changedOccurrences,
     protectedOccurrences,
@@ -1527,11 +1716,17 @@ function parseRecovery(
 ): PersistedContentReplacementRecovery {
   const record = exactObject(value, [
     "priorRequestModel", "scannedRequestChecksum", "proposedRequestChecksum",
-    "observedPostApplyChecksum", "status", "preview", "result",
-  ], ["observedPostApplyChecksum", "preview", "result"]);
+    "proposalFingerprint", "exactProof", "observedPostApplyChecksum", "status", "preview", "result",
+  ], ["proposalFingerprint", "exactProof", "observedPostApplyChecksum", "preview", "result"]);
   const priorRequestModel = parseRequestModel(record.priorRequestModel);
   const scannedRequestChecksum = digest(record.scannedRequestChecksum);
   const proposedRequestChecksum = digest(record.proposedRequestChecksum);
+  const proposalFingerprint = record.proposalFingerprint === undefined
+    ? proposal.proposalFingerprint
+    : digest(record.proposalFingerprint);
+  const exactProof = record.exactProof === undefined
+    ? proposal.exactProof
+    : parseExactTargetProof(record.exactProof);
   const observedPostApplyChecksum = record.observedPostApplyChecksum === undefined
     ? undefined
     : digest(record.observedPostApplyChecksum);
@@ -1539,6 +1734,8 @@ function parseRecovery(
     !sameRef(priorRequestModel.ref, proposal.before.ref) ||
     scannedRequestChecksum !== proposal.scannedRequestChecksum ||
     proposedRequestChecksum !== proposal.proposedRequestChecksum ||
+    proposalFingerprint !== proposal.proposalFingerprint ||
+    stableSerialize(exactProof) !== stableSerialize(proposal.exactProof) ||
     !isRecoveryStatus(record.status)
   ) throw corruptJob();
   const preview = record.preview === undefined
@@ -1550,6 +1747,8 @@ function parseRecovery(
     priorRequestModel,
     scannedRequestChecksum,
     proposedRequestChecksum,
+    proposalFingerprint,
+    ...(exactProof === undefined ? {} : { exactProof }),
     ...(observedPostApplyChecksum === undefined ? {} : { observedPostApplyChecksum }),
     status: record.status,
     ...(preview === undefined ? {} : { preview }),
@@ -1770,6 +1969,12 @@ function parseItemRef(value: unknown): ReplacementItemRef {
   return ref;
 }
 
+function parseExactTargetProof(value: unknown): ExactTargetProof {
+  const proof = normalizeExactTargetProof(value);
+  if (!proof || proof.targetCount > MAX_CONTENT_REPLACEMENT_PROPOSALS) throw corruptJob();
+  return proof;
+}
+
 function canonicalItemKey(ref: ReplacementItemRef): string {
   if (ref.kind === "question") return `question:${ref.questionId}`;
   if (ref.kind === "answer") return `answer:${ref.questionId}:${ref.answerId}`;
@@ -1843,7 +2048,8 @@ function isSummaryActiveOperationKind(
 function isScanCompatibility(
   value: unknown,
 ): value is PersistedContentReplacementJob["scanCompatibility"] {
-  return value === "current" || value === "legacy-restart-required";
+  return value === "current" || value === "legacy-restart-required" ||
+    value === "exact-proof-restart-required";
 }
 
 function isFailureCategory(value: unknown): value is PersistedContentReplacementFailure["category"] {

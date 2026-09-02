@@ -4,12 +4,13 @@ import {
 } from "../credentials/credentialRules";
 import { getEnterpriseWriteCredentialReadiness } from "../credentials/enterpriseV3Credentials";
 import type { SessionCredentials } from "../domain/types";
+import { MAX_CONTENT_REPLACEMENT_ROUTE_BODY_BYTES } from "../writeTools/contentReplacement/limits";
 
-export const MAX_WRITE_ROUTE_BYTES = 1_048_576;
+export const MAX_WRITE_ROUTE_BYTES = MAX_CONTENT_REPLACEMENT_ROUTE_BODY_BYTES;
 
 const DEFAULT_REDACTION_MARKER = "[redacted]";
 const INVALID_JSON_MESSAGE = "Request body must contain valid JSON.";
-const OVERSIZED_BODY_MESSAGE = "Request body exceeds the 1 MiB limit.";
+const OVERSIZED_BODY_MESSAGE = "Request body exceeds the 4 MiB limit.";
 const REDACTOR_CANDIDATES = Symbol("redactorCandidates");
 const SAFE_JSON_FALLBACKS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] as const;
 

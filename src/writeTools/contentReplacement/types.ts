@@ -12,9 +12,19 @@ export type ReplacementItemRef =
   | { kind: "answer"; questionId: number; answerId: number }
   | { kind: "article"; articleId: number };
 
+export interface ExactTargetProof {
+  algorithm: "sha256-merkle";
+  version: 1;
+  targetCount: number;
+  targetIndex: number;
+  manifestRoot: string;
+  siblingHashes: string[];
+}
+
 export interface ExactTargetSelection {
   discovery: Extract<ReplacementDiscovery, { mode: "exact" }>;
   targets: ReplacementItemRef[];
+  proofs: ExactTargetProof[];
 }
 
 export interface ReplacementRule {
@@ -147,6 +157,7 @@ export interface ReplacementProposal {
   scannedRequestChecksum: string;
   proposedRequestChecksum: string;
   proposalFingerprint: string;
+  exactProof?: ExactTargetProof;
   fields: {
     title?: ReplacementFieldMarkdown;
     body: ReplacementFieldMarkdown;
@@ -202,7 +213,10 @@ export type ContentReplacementJobStatus =
   | "failed"
   | "cancelled";
 
-export type ContentReplacementScanCompatibility = "current" | "legacy-restart-required";
+export type ContentReplacementScanCompatibility =
+  | "current"
+  | "legacy-restart-required"
+  | "exact-proof-restart-required";
 
 export interface PersistedContentReplacementProgress {
   apiRequestsCompleted: number;
@@ -287,6 +301,8 @@ export interface PersistedContentReplacementRecovery {
   priorRequestModel: ReplacementRequestModel;
   scannedRequestChecksum: string;
   proposedRequestChecksum: string;
+  proposalFingerprint: string;
+  exactProof?: ExactTargetProof;
   observedPostApplyChecksum?: string;
   status: "pending" | "ready" | "applied" | "conflict" | "failed";
   preview?: PersistedContentReplacementRecoveryPreview;
@@ -346,6 +362,7 @@ export interface PersistedContentReplacementJob {
   status: ContentReplacementJobStatus;
   inventoryQueue: InventoryCursor[];
   detailQueue: ReplacementItemRef[];
+  exactProofQueue?: ExactTargetProof[];
   progress: PersistedContentReplacementProgress;
   proposals: Record<string, PersistedContentReplacementItem>;
   recoverySnapshotStatus: "none" | "preparing" | "ready" | "failed";

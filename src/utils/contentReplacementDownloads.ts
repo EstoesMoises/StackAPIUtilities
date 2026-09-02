@@ -1,5 +1,9 @@
 import { recordsToCsvWithHeaders } from "./downloads";
 import { getDiscoveryPresentation } from "../writeTools/contentReplacement/discovery";
+import {
+  MAX_CONTENT_REPLACEMENT_EXPORT_BYTES,
+  utf8ByteLength,
+} from "../writeTools/contentReplacement/limits";
 import type {
   PersistedContentReplacementItem,
   PersistedContentReplacementItemStatus,
@@ -190,10 +194,26 @@ function toRfc4180Csv(
   records: readonly Record<string, unknown>[],
 ): string {
   const header = recordsToCsvWithHeaders(headers, []);
-  return records.reduce((csv, record) => {
-    const rowWithHeader = recordsToCsvWithHeaders(headers, [record]);
-    return `${csv}\r\n${rowWithHeader.slice(header.length + 1)}`;
-  }, header);
+  const chunks = [header];
+  let byteLength = utf8ByteLength(header);
+  for (const record of records) {
+    const safeRecord = Object.fromEntries(
+      headers.map((key) => [key, spreadsheetSafeCell(record[key])]),
+    );
+    const rowWithHeader = recordsToCsvWithHeaders(headers, [safeRecord]);
+    const chunk = `\r\n${rowWithHeader.slice(header.length + 1)}`;
+    byteLength += utf8ByteLength(chunk);
+    if (byteLength > MAX_CONTENT_REPLACEMENT_EXPORT_BYTES) {
+      throw new RangeError("Content replacement CSV exceeds the 32 MiB export limit.");
+    }
+    chunks.push(chunk);
+  }
+  return chunks.join("");
+}
+
+function spreadsheetSafeCell(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  return /^[\s\p{Cc}\p{Cf}\p{Z}]*[=+\-@]/u.test(value) ? `'${value}` : value;
 }
 
 function downloadCsv(

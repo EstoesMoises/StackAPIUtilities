@@ -9,11 +9,16 @@ import {
   type ContentReplacementClient,
 } from "../writeTools/contentReplacement/contentApi";
 import { createJobFingerprint } from "../writeTools/contentReplacement/proposals";
+import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
 import type {
   ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementRequestModel,
 } from "../writeTools/contentReplacement/types";
+import {
+  MAX_CONTENT_REPLACEMENT_CONFIGURATION_BYTES,
+  MAX_CONTENT_REPLACEMENT_CREDENTIALS_BYTES,
+} from "../writeTools/contentReplacement/limits";
 import {
   handleContentReplacementScanRequest,
   type ContentReplacementScanPayload,
@@ -31,7 +36,7 @@ const configuration: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
   contentTypes: { questions: true, answers: true, articles: true },
   discovery: { mode: "full" },
-  rules: [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }],
+  rules: [{ id: "rule-1", find: "TermA", replace: "TermB" }],
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };
 
@@ -68,7 +73,7 @@ function fakeContentClient(
 ): ContentReplacementClient {
   return {
     getQuestionsPage: vi.fn().mockResolvedValue({
-      items: [{ id: 10, title: "Rename MyPVM", body: "<p>Body</p>" }],
+      items: [{ id: 10, title: "Rename TermA", body: "<p>Body</p>" }],
       page: 1,
       totalPages: 2,
       hasMore: true,
@@ -94,7 +99,7 @@ function fakeContentClient(
     getItem: vi.fn().mockResolvedValue({
       kind: "question",
       ref: { kind: "question", questionId: 10 },
-      request: { title: "Rename MyPVM", body: "MyPVM body", tags: ["product"] },
+      request: { title: "Rename TermA", body: "TermA body", tags: ["product"] },
     }),
     updateItem: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -114,6 +119,31 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementScanRequest", () => {
+  it("rejects aggregate configuration and credential budgets before client construction", async () => {
+    const largeConfiguration: ReplacementConfiguration = {
+      ...configuration,
+      rules: Array.from({ length: 500 }, (_, index) => ({
+        id: `rule-${index}-${String.fromCodePoint(0x5000 + index).repeat(180)}`,
+        find: String.fromCodePoint(0x1000 + index).repeat(200),
+        replace: String.fromCodePoint(0x3000 + index).repeat(500),
+      })),
+    };
+    const largeCredentials: SessionCredentials = {
+      ...credentials,
+      apiKey: "é".repeat(65_536),
+      accessToken: "é".repeat(65_536),
+      pat: "é".repeat(65_536),
+      oauthClientId: "é".repeat(65_536),
+    };
+    expect(new TextEncoder().encode(JSON.stringify(largeConfiguration)).byteLength)
+      .toBeGreaterThan(MAX_CONTENT_REPLACEMENT_CONFIGURATION_BYTES);
+    expect(new TextEncoder().encode(JSON.stringify(largeCredentials)).byteLength)
+      .toBeGreaterThan(MAX_CONTENT_REPLACEMENT_CREDENTIALS_BYTES);
+
+    await expectInvalidWithoutClient(await validScanPayload({ configuration: largeConfiguration }));
+    await expectInvalidWithoutClient(await validScanPayload({ credentials: largeCredentials }));
+  });
+
   it("requires current compatibility on a current-bound scan request", async () => {
     const response = await handleContentReplacementScanRequest({
       ...(await validScanPayload()),
@@ -144,7 +174,7 @@ describe("handleContentReplacementScanRequest", () => {
       ...configuration,
       discovery: { mode: "targeted" },
       rules: [
-        { id: "rule-1", find: "MyPVM", replace: "MyPBM" },
+        { id: "rule-1", find: "TermA", replace: "TermB" },
         { id: "rule-2", find: "Old", replace: "New" },
       ],
     };
@@ -186,7 +216,7 @@ describe("handleContentReplacementScanRequest", () => {
         },
       },
     });
-    expect(client.getSearchPage).toHaveBeenCalledWith("MyPVM", 1);
+    expect(client.getSearchPage).toHaveBeenCalledWith("TermA", 1);
   });
 
   it("rejects a search cursor on a Full-audit configuration", async () => {
@@ -300,14 +330,14 @@ describe("handleContentReplacementScanRequest", () => {
             before: {
               kind: "question",
               ref: { kind: "question", questionId: 10 },
-              request: { title: "Rename MyPVM", body: "MyPVM body", tags: ["product"] },
+              request: { title: "Rename TermA", body: "TermA body", tags: ["product"] },
             },
             after: {
-              request: { title: "Rename MyPBM", body: "MyPBM body", tags: ["product"] },
+              request: { title: "Rename TermB", body: "TermB body", tags: ["product"] },
             },
             changedOccurrences: [
-              { field: "title", ruleId: "rule-1", before: "MyPVM", after: "MyPBM" },
-              { field: "body", ruleId: "rule-1", before: "MyPVM", after: "MyPBM" },
+              { field: "title", ruleId: "rule-1", before: "TermA", after: "TermB" },
+              { field: "body", ruleId: "rule-1", before: "TermA", after: "TermB" },
             ],
             appliedRuleIds: ["rule-1"],
           },
@@ -317,6 +347,78 @@ describe("handleContentReplacementScanRequest", () => {
     });
     expect(client.getItem).toHaveBeenCalledTimes(1);
     expect(client.getQuestionsPage).not.toHaveBeenCalled();
+  });
+
+  it("fails the scan closed when a canonical detail exceeds the recovery-safe model budget", async () => {
+    const client = fakeContentClient({
+      getItem: vi.fn().mockResolvedValue({
+        kind: "question",
+        ref: { kind: "question", questionId: 10 },
+        request: { title: "Rename TermA", body: "é".repeat(1_048_576), tags: [] },
+      }),
+    });
+    const payload = await validScanPayload({
+      action: "details",
+      refs: [{ kind: "question", questionId: 10 }],
+    } as Partial<ContentReplacementScanPayload>);
+    delete (payload as { cursor?: unknown }).cursor;
+
+    const response = await handleContentReplacementScanRequest(payload, { createClient: () => client });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Content replacement request model exceeds the 2 MiB recovery-safe limit.",
+    });
+  });
+
+  it("requires valid aligned Exact proofs before creating a client and returns proof-bearing proposals", async () => {
+    const selection = await createExactTargetSelection([{ kind: "question", questionId: 10 }]);
+    const exactConfiguration: ReplacementConfiguration = {
+      ...configuration,
+      discovery: selection.discovery,
+    };
+    const payload = {
+      action: "details" as const,
+      credentials,
+      configuration: exactConfiguration,
+      scanCompatibility: "current" as const,
+      jobFingerprint: await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration: exactConfiguration,
+        scanCompatibility: "current",
+      }),
+      refs: selection.targets,
+      exactProofs: selection.proofs,
+    };
+    const client = fakeContentClient();
+
+    const response = await handleContentReplacementScanRequest(payload, { createClient: () => client });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      result: { proposals: [{ exactProof: selection.proofs[0] }] },
+    });
+    expect(client.getItem).toHaveBeenCalledTimes(1);
+
+    await expectInvalidWithoutClient({
+      ...payload,
+      exactProofs: [{ ...selection.proofs[0], manifestRoot: "0".repeat(64) }],
+    });
+    const { exactProofs: _proofs, ...withoutProofs } = payload;
+    await expectInvalidWithoutClient(withoutProofs);
+  });
+
+  it("rejects Exact proof material on non-Exact detail payloads before creating a client", async () => {
+    const selection = await createExactTargetSelection([{ kind: "question", questionId: 10 }]);
+    const payload = await validScanPayload({
+      action: "details",
+      refs: selection.targets,
+    } as Partial<ContentReplacementScanPayload>);
+    delete (payload as { cursor?: unknown }).cursor;
+
+    await expectInvalidWithoutClient({ ...payload, exactProofs: selection.proofs });
   });
 
   it("rejects a client fingerprint that does not match the normalized configuration", async () => {
@@ -817,8 +919,8 @@ describe("handleContentReplacementScanRequest", () => {
         kind: "question",
         ref: { kind: "question", questionId: 10 },
         request: {
-          title: "Rename MyPVM secret-token",
-          body: "MyPVM secret-token",
+          title: "Rename TermA secret-token",
+          body: "TermA secret-token",
           tags: ["secret-token"],
         },
         metadata: {
@@ -897,7 +999,7 @@ describe("handleContentReplacementScanRequest", () => {
       getItem: vi.fn().mockResolvedValue({
         kind: "question",
         ref: { kind: "question", questionId: 10 },
-        request: { title: "Rename MyPVM", body: "MyPVM text", tags: [] },
+        request: { title: "Rename TermA", body: "TermA text", tags: [] },
         metadata: { body: "untrusted metadata" },
       }),
     });

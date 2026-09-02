@@ -10,9 +10,15 @@ import {
   createContentReplacementClient,
   type ContentReplacementClient,
 } from "../writeTools/contentReplacement/contentApi";
-import { checksumRequestModel, createJobFingerprint } from "../writeTools/contentReplacement/proposals";
+import {
+  buildReplacementProposal,
+  checksumRequestModel,
+  createJobFingerprint,
+} from "../writeTools/contentReplacement/proposals";
+import { normalizeExactTargetProof, verifyExactTargetProof } from "../writeTools/contentReplacement/exactManifest";
 import type {
   ContentReplacementScanCompatibility,
+  ExactTargetProof,
   ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementWireRequestModel,
@@ -50,6 +56,9 @@ export interface ContentReplacementRecoveryPayload {
   priorRequestModel: ReplacementWireRequestModel;
   expectedPriorRequestChecksum: string;
   expectedPostApplyChecksum: string;
+  reviewedProposedRequestChecksum: string;
+  reviewedProposalFingerprint: string;
+  exactProof?: ExactTargetProof;
 }
 
 type RecoveryPreviewResult = {
@@ -60,7 +69,7 @@ type RecoveryPreviewResult = {
 };
 
 type RecoveryApplyResult =
-  | { status: "recovered" | "already-recovered" | "conflict"; observedRequestChecksum: string }
+  | { status: "recovered" | "already-recovered" | "conflict" | "verification-failed"; observedRequestChecksum: string }
   | { status: "permission" | "validation" | "network" | "failed"; error: string };
 
 export type ContentReplacementRecoveryResponseBody =
@@ -79,7 +88,7 @@ export async function handleContentReplacementRecoveryRequest(
   payload: unknown,
   dependencies: ContentReplacementRecoveryDependencies = {},
 ): Promise<Response> {
-  const validated = validateRecoveryPayload(payload);
+  const validated = await validateRecoveryPayload(payload);
   if (!validated) return plainJsonResponse({ ok: false, error: INVALID_REQUEST_MESSAGE }, 400);
 
   if (await checksumRequestModel(validated.priorRequestModel) !== validated.expectedPriorRequestChecksum) {
@@ -105,6 +114,21 @@ export async function handleContentReplacementRecoveryRequest(
   });
   if (validated.jobFingerprint !== expectedFingerprint) {
     return browserJsonResponse({ ok: false, error: FINGERPRINT_MISMATCH_MESSAGE }, 409);
+  }
+
+  const forwardProposal = await buildReplacementProposal(
+    validated.priorRequestModel,
+    validated.configuration,
+    validated.exactProof,
+  );
+  if (
+    !forwardProposal ||
+    forwardProposal.scannedRequestChecksum !== validated.expectedPriorRequestChecksum ||
+    forwardProposal.proposedRequestChecksum !== validated.reviewedProposedRequestChecksum ||
+    forwardProposal.proposalFingerprint !== validated.reviewedProposalFingerprint ||
+    validated.expectedPostApplyChecksum !== validated.reviewedProposedRequestChecksum
+  ) {
+    return browserJsonResponse({ ok: false, error: INVALID_REQUEST_MESSAGE }, 400);
   }
 
   const throttleNotices: ThrottleNotice[] = [];
@@ -175,11 +199,14 @@ export async function handleContentReplacementRecoveryRequest(
       validated.itemRef,
     );
     if (!observed) throw new Error("Invalid canonical request model.");
+    const observedRequestChecksum = await checksumRequestModel(observed);
     return browserJsonResponse({
       ok: true,
       result: {
-        status: "recovered",
-        observedRequestChecksum: await checksumRequestModel(observed),
+        status: observedRequestChecksum === validated.expectedPriorRequestChecksum
+          ? "recovered"
+          : "verification-failed",
+        observedRequestChecksum,
       },
       throttleNotices,
     }, 200);
@@ -188,13 +215,14 @@ export async function handleContentReplacementRecoveryRequest(
   }
 }
 
-function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayload | null {
+async function validateRecoveryPayload(value: unknown): Promise<ContentReplacementRecoveryPayload | null> {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
     if (!isExactObject(record, [
       "action", "credentials", "configuration", "scanCompatibility", "jobFingerprint", "itemRef", "priorRequestModel",
-      "expectedPriorRequestChecksum", "expectedPostApplyChecksum",
+      "expectedPriorRequestChecksum", "expectedPostApplyChecksum", "reviewedProposedRequestChecksum",
+      "reviewedProposalFingerprint", ...("exactProof" in record ? ["exactProof"] : []),
     ])) return null;
     if (record.action !== "preview" && record.action !== "apply") return null;
     const credentials = validateSessionCredentials(record.credentials);
@@ -205,10 +233,21 @@ function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayl
       !itemRef || !isSelectedKind(itemRef, configuration) ||
       !isSha256Digest(record.jobFingerprint) ||
       !isSha256Digest(record.expectedPriorRequestChecksum) ||
-      !isSha256Digest(record.expectedPostApplyChecksum)
+      !isSha256Digest(record.expectedPostApplyChecksum) ||
+      !isSha256Digest(record.reviewedProposedRequestChecksum) ||
+      !isSha256Digest(record.reviewedProposalFingerprint) ||
+      (record.scanCompatibility === "legacy-restart-required" && configuration.discovery.mode !== "full")
     ) return null;
     const priorRequestModel = validateExactPriorRequestModel(record.priorRequestModel, itemRef);
     if (!priorRequestModel) return null;
+    let exactProof: ExactTargetProof | undefined;
+    if (configuration.discovery.mode === "exact") {
+      const candidate = normalizeExactTargetProof(record.exactProof);
+      if (!candidate || !await verifyExactTargetProof(itemRef, candidate, configuration.discovery)) return null;
+      exactProof = candidate;
+    } else if ("exactProof" in record) {
+      return null;
+    }
     return {
       action: record.action,
       credentials,
@@ -219,6 +258,9 @@ function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayl
       priorRequestModel,
       expectedPriorRequestChecksum: record.expectedPriorRequestChecksum,
       expectedPostApplyChecksum: record.expectedPostApplyChecksum,
+      reviewedProposedRequestChecksum: record.reviewedProposedRequestChecksum,
+      reviewedProposalFingerprint: record.reviewedProposalFingerprint,
+      ...(exactProof === undefined ? {} : { exactProof }),
     };
   } catch {
     return null;
@@ -251,6 +293,9 @@ function itemFailureResponse(
   throttleNotices: ThrottleNotice[],
   respond: (body: ContentReplacementRecoveryResponseBody, status: number) => Response,
 ): Response {
+  if (error instanceof ContentReplacementApiError && error.category === "http" && safeErrorStatus(error) === 401) {
+    return respond({ ok: false, error: "Stack Enterprise credentials were rejected." }, 401);
+  }
   return respond({
     ok: true,
     result: { status: categorizeItemFailure(error), error: message },
@@ -263,7 +308,7 @@ function categorizeItemFailure(error: unknown): "permission" | "validation" | "n
     if (error.category === "transport") return "network";
     if (error.category === "schema") return "failed";
     const status = safeErrorStatus(error);
-    if (status === 401 || status === 403) return "permission";
+    if (status === 403) return "permission";
     if (status === 400 || status === 422) return "validation";
     if (status === 429 || status === 502 || status === 503 || status === 504) return "network";
     return "failed";
@@ -324,7 +369,7 @@ const PERMISSION_KEYS = new Set(["editableBy", "editorUserIds", "editorUserGroup
 const THROTTLE_KEYS = new Set(["kind", "seconds", "remaining"]);
 const RESULT_STATUSES = new Set([
   "recoverable", "recovered", "already-recovered", "conflict",
-  "permission", "validation", "network", "failed",
+  "verification-failed", "permission", "validation", "network", "failed",
 ]);
 const MODEL_KINDS = new Set(["question", "answer", "article"]);
 const ARTICLE_TYPES = new Set(["knowledgeArticle", "announcement", "policy", "howToGuide"]);

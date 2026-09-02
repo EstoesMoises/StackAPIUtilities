@@ -15,6 +15,7 @@ import {
   type ExactTargetParseError,
   type ExactTargetParseErrorCode,
 } from "../writeTools/contentReplacement/discovery";
+import { MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES } from "../writeTools/contentReplacement/limits";
 import type {
   ReplacementConfiguration,
   ReplacementContentKind,
@@ -291,6 +292,9 @@ export const ContentReplacementDiscoveryFields = forwardRef<
     if (!file) return;
 
     try {
+      if (file.size > MAX_CONTENT_REPLACEMENT_CSV_INPUT_BYTES) {
+        throw new Error("Target CSV exceeds the 1 MiB UTF-8 limit.");
+      }
       const csv = await readFileText(file);
       if (fileReadRequestId.current !== requestId) return;
       const parsed = parseExactTargetCsv(csv, expectedOrigin ?? "");
@@ -545,7 +549,8 @@ function formatParseError(error: ExactTargetParseError): string {
     "extra-columns": "contains unexpected extra columns",
     "invalid-columns": "must contain exactly three columns",
     "malformed-csv": "could not be parsed as CSV",
-    "too-many-targets": "use no more than 100,000 unique targets",
+    "input-too-large": "input must be no more than 1 MiB of UTF-8 text",
+    "too-many-targets": "use no more than 5,000 unique targets",
   };
   return message[error.code];
 }

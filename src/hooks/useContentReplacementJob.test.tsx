@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionCredentials } from "../domain/types";
 import { buildReplacementProposal, createJobFingerprint } from "../writeTools/contentReplacement/proposals";
+import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
+import { MAX_CONTENT_REPLACEMENT_ROUTE_BODY_BYTES } from "../writeTools/contentReplacement/limits";
 import {
   createReplacementJob,
   createReplacementSelectionSnapshot,
@@ -13,6 +15,7 @@ import type {
   ReplacementProposal,
 } from "../writeTools/contentReplacement/types";
 import {
+  serializeContentReplacementRequest,
   useContentReplacementJob,
   type ContentReplacementJobDependencies,
 } from "./useContentReplacementJob";
@@ -151,6 +154,13 @@ function prepareJob(job: PersistedContentReplacementJob, at: string): PersistedC
 }
 
 describe("useContentReplacementJob", () => {
+  it("rejects an oversized multibyte route body in the client preflight", () => {
+    const payload = { value: "é".repeat(Math.floor(MAX_CONTENT_REPLACEMENT_ROUTE_BODY_BYTES / 2) + 1) };
+
+    expect(serializeContentReplacementRequest(payload)).toBeNull();
+    expect(serializeContentReplacementRequest({ value: "safe" })).toBe('{"value":"safe"}');
+  });
+
   it("creates a validated normalized credential-free job before making it active", async () => {
     const deps = dependencies();
     const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
@@ -908,14 +918,46 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job?.proposals["question:1"].status).toBe("applied");
   });
 
-  it("turns an item-level permission response into a reconnectable credential interruption", async () => {
+  it("marks a 403 item terminal and continues applying the remaining reviewed items", async () => {
+    const first = await questionProposal(1);
+    const second = await questionProposal(2);
+    const prepared = prepareJob(await scannedReviewJob(first, second), AT);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { status: "permission", error: "upstream detail" },
+        throttleNotices: [],
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { status: "updated", observedRequestChecksum: second.proposedRequestChecksum },
+        throttleNotices: [],
+      }));
+    const deps = dependencies(fetcher, prepared);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, prepared, deps.value));
+
+    await act(async () => result.current.startApply());
+
+    expect(result.current.job).toMatchObject({
+      stage: "results",
+      status: "completed",
+      proposals: {
+        "question:1": { status: "failed", failure: { category: "authorization", retryable: false } },
+        "question:2": { status: "applied" },
+      },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
+    expect(JSON.stringify(deps.store.current())).not.toMatch(/top-secret-token|credentialFingerprint/i);
+  });
+
+  it("pauses Apply on HTTP 401 and requires a different credential", async () => {
     const proposal = await questionProposal();
     const prepared = prepareJob(await scannedReviewJob(proposal), AT);
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
-      ok: true,
-      result: { status: "permission", error: "upstream detail" },
-      throttleNotices: [],
-    }));
+      ok: false,
+      error: "Stack Enterprise credentials were rejected.",
+    }, 401));
     const deps = dependencies(fetcher, prepared);
     const { result } = renderHook(() => useContentReplacementJob(credentials, prepared, deps.value));
 
@@ -927,7 +969,6 @@ describe("useContentReplacementJob", () => {
       proposals: { "question:1": { status: "ready-to-apply" } },
     });
     expect(result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
-    expect(JSON.stringify(deps.store.current())).not.toMatch(/top-secret-token|credentialFingerprint/i);
   });
 
   it("interrupts a persisted applying item during rehydration and requires explicit resume", async () => {
@@ -1131,9 +1172,10 @@ describe("useContentReplacementJob", () => {
 
   it("resumes an Exact job with detail batches and no inventory cursor", async () => {
     const ref = { kind: "question" as const, questionId: 42 };
+    const selection = await createExactTargetSelection([ref]);
     const exact: ReplacementConfiguration = {
       ...configuration,
-      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+      discovery: selection.discovery,
     };
     const initial = createReplacementJob({
       id: "exact-resume",
@@ -1144,7 +1186,8 @@ describe("useContentReplacementJob", () => {
       }),
       baseUrl: "https://example.stackenterprise.co",
       configuration: exact,
-      exactTargets: [ref],
+      exactTargets: selection.targets,
+      exactProofs: selection.proofs,
       createdAt: AT,
     });
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
@@ -1161,9 +1204,40 @@ describe("useContentReplacementJob", () => {
     expect(payload).toMatchObject({
       action: "details",
       refs: [ref],
+      exactProofs: selection.proofs,
       configuration: { discovery: exact.discovery },
     });
     expect(payload).not.toHaveProperty("cursor");
+  });
+
+  it("keeps proofless Exact checkpoints read-only while preserving local deletion controls", async () => {
+    const proposal = await questionProposal();
+    const review = {
+      ...await scannedReviewJob(proposal),
+      scanCompatibility: "exact-proof-restart-required" as const,
+    };
+    const reviewDeps = dependencies(vi.fn(), review);
+    const reviewHook = renderHook(() => useContentReplacementJob(credentials, review, reviewDeps.value));
+
+    await act(async () => reviewHook.result.current.cancel());
+    await expect(reviewHook.result.current.setItemIncluded("question:1", false)).resolves.toBe(false);
+    await expect(reviewHook.result.current.prepareApply(createReplacementSelectionSnapshot(review.proposals)))
+      .resolves.toBe(false);
+    expect(reviewDeps.value.fetch).not.toHaveBeenCalled();
+    expect(reviewDeps.store.save).not.toHaveBeenCalled();
+
+    const applied = {
+      ...await appliedJob(proposal),
+      scanCompatibility: "exact-proof-restart-required" as const,
+    };
+    const recoveryDeps = dependencies(vi.fn(), applied);
+    const recoveryHook = renderHook(() => useContentReplacementJob(credentials, applied, recoveryDeps.value));
+    await act(async () => recoveryHook.result.current.prepareRecovery(["question:1"]));
+    await act(async () => recoveryHook.result.current.startRecovery(["question:1"]));
+    expect(recoveryDeps.value.fetch).not.toHaveBeenCalled();
+
+    await act(async () => recoveryHook.result.current.deleteJob());
+    expect(recoveryDeps.store.delete).toHaveBeenCalledWith(applied.id);
   });
 
   it("resumes a Full job from its exact saved answer cursor", async () => {
@@ -1797,7 +1871,8 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job?.proposals["question:1"].status).toBe("recovered");
   });
 
-  it.each([401, 403])("turns a raw recovery-apply HTTP %i into reconnect state and requires a fresh-token preview", async (status) => {
+  it("turns a raw recovery-apply HTTP 401 into reconnect state and requires a fresh-token preview", async () => {
+    const status = 401;
     const proposal = await questionProposal();
     const initial = await appliedJob(proposal);
     const previewResponse = jsonResponse({
@@ -1853,7 +1928,7 @@ describe("useContentReplacementJob", () => {
       activeOperation: { kind: "recovery-preview" },
       proposals: { "question:1": { status: "applied" } },
     });
-    expect(hook.result.current.operationError).toBe("Stack Enterprise credentials or permissions were rejected.");
+    expect(hook.result.current.operationError).toBe("Stack Enterprise credentials were rejected.");
     expect(hook.result.current.credentialReadiness).toMatchObject({ valid: false, refreshRequired: true });
     expect(JSON.stringify(deps.store.current())).not.toMatch(new RegExp(`response-secret-${status}|top-secret-token|rejectedCredential`, "i"));
 
@@ -1874,6 +1949,61 @@ describe("useContentReplacementJob", () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
     expect(JSON.parse(fetcher.mock.calls[2][1].body as string).action).toBe("preview");
     expect(hook.result.current.job?.proposals["question:1"].status).toBe("ready-to-recover");
+  });
+
+  it("marks a Recovery 403 terminal and continues recovering the remaining item", async () => {
+    const first = await questionProposal(1);
+    const second = await questionProposal(2);
+    const initial = await appliedJob(first, second);
+    const previewResponse = (proposal: ReplacementProposal) => jsonResponse({
+      ok: true,
+      result: {
+        status: "recoverable",
+        currentRequestModel: {
+          kind: "question",
+          ref: proposal.before.ref,
+          request: proposal.after.request,
+        },
+        priorRequestModel: {
+          kind: "question",
+          ref: proposal.before.ref,
+          request: proposal.before.request,
+        },
+        observedRequestChecksum: proposal.proposedRequestChecksum,
+      },
+      throttleNotices: [],
+    });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(previewResponse(first))
+      .mockResolvedValueOnce(previewResponse(second))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { status: "permission", error: "safe permission denial" },
+        throttleNotices: [],
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        result: { status: "recovered", observedRequestChecksum: second.scannedRequestChecksum },
+        throttleNotices: [],
+      }));
+    const deps = dependencies(fetcher, initial);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    await act(async () => result.current.prepareRecovery(["question:1", "question:2"]));
+    await act(async () => result.current.startRecovery(["question:1", "question:2"]));
+
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(result.current.job).toMatchObject({
+      status: "completed",
+      proposals: {
+        "question:1": {
+          status: "recovery-failed",
+          failure: { category: "authorization", retryable: false },
+        },
+        "question:2": { status: "recovered" },
+      },
+    });
+    expect(result.current.credentialReadiness).toMatchObject({ valid: true, refreshRequired: false });
   });
 
   it("persists a sanitized retryable recovery-preview network failure", async () => {

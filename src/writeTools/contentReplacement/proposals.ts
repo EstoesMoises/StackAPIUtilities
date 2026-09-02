@@ -1,5 +1,7 @@
 import { replaceMarkdown } from "./markdown";
+import { normalizeExactTargetProof, verifyExactTargetProof } from "./exactManifest";
 import type {
+  ExactTargetProof,
   ReplacementConfiguration,
   ContentReplacementScanCompatibility,
   ReplacementOccurrence,
@@ -92,7 +94,9 @@ export async function createJobFingerprint(input: {
 export async function buildReplacementProposal(
   model: ReplacementRequestModel,
   configuration: ReplacementConfiguration,
+  exactProofValue?: ExactTargetProof,
 ): Promise<ReplacementProposal | null> {
+  const exactProof = await validatedExactProof(model, configuration, exactProofValue);
   const title = model.kind === "answer"
     ? undefined
     : replaceTitle(model.request.title, configuration.rules, configuration.options);
@@ -113,6 +117,7 @@ export async function buildReplacementProposal(
       configuration: semanticConfiguration(configuration),
       scannedRequestChecksum,
       proposedRequestChecksum,
+      ...(exactProof === undefined ? {} : { exactProof }),
     }),
   );
 
@@ -122,6 +127,7 @@ export async function buildReplacementProposal(
     scannedRequestChecksum,
     proposedRequestChecksum,
     proposalFingerprint,
+    ...(exactProof === undefined ? {} : { exactProof }),
     fields: {
       ...(title && {
         title: {
@@ -139,6 +145,22 @@ export async function buildReplacementProposal(
     appliedRuleIds: [...new Set(changedOccurrences.map((occurrence) => occurrence.ruleId))],
     metadata: model.metadata,
   };
+}
+
+async function validatedExactProof(
+  model: ReplacementRequestModel,
+  configuration: ReplacementConfiguration,
+  value: ExactTargetProof | undefined,
+): Promise<ExactTargetProof | undefined> {
+  if (configuration.discovery.mode !== "exact") {
+    if (value !== undefined) throw new TypeError("Exact manifest proofs are only valid for Exact discovery.");
+    return undefined;
+  }
+  const proof = normalizeExactTargetProof(value);
+  if (!proof || !await verifyExactTargetProof(model.ref, proof, configuration.discovery)) {
+    throw new TypeError("A valid Exact manifest proof is required for every Exact proposal.");
+  }
+  return proof;
 }
 
 function normalizeForSerialization(value: unknown): unknown {
