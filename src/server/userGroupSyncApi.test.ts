@@ -143,6 +143,43 @@ describe("handleUserGroupSyncRequest", () => {
     expect(createClientDependency).toHaveBeenCalledWith(manualTokenCredentials);
   });
 
+  it("preserves the successful response contract when a short token matches the ok key", async () => {
+    const shortTokenCredentials: SessionCredentials = {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: "ok",
+      authSource: "manual-enterprise-token",
+    };
+    const client = createClient({
+      getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
+      getUserGroups: vi.fn().mockResolvedValue([]),
+    });
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: shortTokenCredentials,
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient: () => client },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        groups: [
+          expect.objectContaining({
+            groupName: "Ada Lovelace VRM",
+            createGroup: true,
+          }),
+        ],
+      }),
+    });
+  });
+
   it("rejects non-enterprise credentials", async () => {
     const response = await handleUserGroupSyncRequest({
       action: "preview",

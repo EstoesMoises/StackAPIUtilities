@@ -7,7 +7,7 @@ import type { SessionCredentials } from "../domain/types";
 
 export const MAX_WRITE_ROUTE_BYTES = 1_048_576;
 
-const REDACTED_CREDENTIAL = "[redacted]";
+const DEFAULT_REDACTION_MARKER = "[redacted]";
 const INVALID_JSON_MESSAGE = "Request body must contain valid JSON.";
 const OVERSIZED_BODY_MESSAGE = "Request body exceeds the 1 MiB limit.";
 
@@ -99,7 +99,7 @@ export function redactedJsonResponse<T>(
   status: number,
   redact: (value: string) => string,
 ): Response {
-  return jsonResponse(redactStrings(body, redact), status);
+  return jsonResponse(sanitizeForJson(body, redact, new WeakSet<object>()), status);
 }
 
 export async function readBoundedJsonRequest(
@@ -176,18 +176,15 @@ function createCredentialRedactor(
   const uniqueSecretCandidates = [...new Map(
     secretCandidates.map((candidate) => [candidate.secret, candidate]),
   ).values()].sort((left, right) => right.secret.length - left.secret.length);
+  const marker = chooseRedactionMarker(uniqueSecretCandidates);
 
-  return (value) =>
-    uniqueSecretCandidates.reduce(
-      (redactedValue, candidate) =>
-        redactedValue.split(candidate.secret).join(candidate.replacement),
-      value,
-    );
+  return (value) => redactInSinglePass(value, uniqueSecretCandidates, marker);
 }
 
 interface SecretCandidate {
   secret: string;
-  replacement: string;
+  prefix: string;
+  suffix: string;
 }
 
 function createRawSecretCandidate(value: string | undefined): SecretCandidate | null {
@@ -199,13 +196,14 @@ function createRawSecretCandidate(value: string | undefined): SecretCandidate | 
   const normalizedStart = value.indexOf(normalizedValue);
   return {
     secret: value,
-    replacement: `${value.slice(0, normalizedStart)}${REDACTED_CREDENTIAL}${value.slice(normalizedStart + normalizedValue.length)}`,
+    prefix: value.slice(0, normalizedStart),
+    suffix: value.slice(normalizedStart + normalizedValue.length),
   };
 }
 
 function createNormalizedSecretCandidate(value: string | undefined): SecretCandidate | null {
   return isNonBlankString(value)
-    ? { secret: value, replacement: REDACTED_CREDENTIAL }
+    ? { secret: value, prefix: "", suffix: "" }
     : null;
 }
 
@@ -213,22 +211,143 @@ function isSecretCandidate(value: SecretCandidate | null): value is SecretCandid
   return value !== null;
 }
 
-function redactStrings(value: unknown, redact: (value: string) => string): unknown {
+function chooseRedactionMarker(candidates: SecretCandidate[]): string {
+  if (isSafeMarker(DEFAULT_REDACTION_MARKER, candidates)) {
+    return DEFAULT_REDACTION_MARKER;
+  }
+
+  for (let codePoint = 0xe000; codePoint <= 0x10ffff; codePoint += 1) {
+    const marker = String.fromCodePoint(codePoint);
+    if (isSafeMarker(marker, candidates)) {
+      return marker;
+    }
+  }
+
+  return "";
+}
+
+function isSafeMarker(marker: string, candidates: SecretCandidate[]): boolean {
+  return candidates.every((candidate) => !marker.includes(candidate.secret));
+}
+
+function redactInSinglePass(
+  value: string,
+  candidates: SecretCandidate[],
+  marker: string,
+): string {
+  let redacted = "";
+  let index = 0;
+
+  while (index < value.length) {
+    const candidate = candidates.find((item) => value.startsWith(item.secret, index));
+    if (candidate) {
+      redacted += `${candidate.prefix}${marker}${candidate.suffix}`;
+      index += candidate.secret.length;
+    } else {
+      redacted += value[index];
+      index += 1;
+    }
+  }
+
+  return redacted;
+}
+
+function sanitizeForJson(
+  value: unknown,
+  redact: (value: string) => string,
+  ancestors: WeakSet<object>,
+): unknown {
+  try {
+    return sanitizeForJsonUnsafe(value, redact, ancestors);
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeForJsonUnsafe(
+  value: unknown,
+  redact: (value: string) => string,
+  ancestors: WeakSet<object>,
+): unknown {
   if (typeof value === "string") {
     return redact(value);
   }
 
-  if (Array.isArray(value)) {
-    return value.map((item) => redactStrings(item, redact));
+  if (typeof value === "bigint") {
+    return redact(String(value));
   }
 
-  if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [redact(key), redactStrings(item, redact)]),
-    );
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) {
+    return value;
   }
 
-  return value;
+  if (ancestors.has(value)) {
+    return "";
+  }
+
+  ancestors.add(value);
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (Array.isArray(value)) {
+      return sanitizeArray(descriptors, redact, ancestors);
+    }
+
+    return sanitizeObject(descriptors, redact, ancestors);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function sanitizeArray(
+  descriptors: PropertyDescriptorMap,
+  redact: (value: string) => string,
+  ancestors: WeakSet<object>,
+): unknown[] {
+  const lengthValue = descriptors.length?.value;
+  const length = Number.isSafeInteger(lengthValue) && lengthValue >= 0 ? lengthValue : 0;
+  const sanitized = new Array<unknown>(length);
+
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!isArrayIndex(key, length) || !("value" in descriptor)) {
+      continue;
+    }
+
+    sanitized[Number(key)] = sanitizeForJson(descriptor.value, redact, ancestors);
+  }
+
+  return sanitized;
+}
+
+function sanitizeObject(
+  descriptors: PropertyDescriptorMap,
+  redact: (value: string) => string,
+  ancestors: WeakSet<object>,
+): Record<string, unknown> {
+  const sanitized = Object.create(null) as Record<string, unknown>;
+
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (key === "toJSON" || !descriptor.enumerable || !("value" in descriptor)) {
+      continue;
+    }
+
+    Object.defineProperty(sanitized, key, {
+      value: sanitizeForJson(descriptor.value, redact, ancestors),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  return sanitized;
+}
+
+function isArrayIndex(key: string, length: number): boolean {
+  if (!/^(0|[1-9]\d*)$/.test(key)) {
+    return false;
+  }
+
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < length;
 }
 
 function isOversizedContentLength(value: string): boolean {
@@ -255,8 +374,4 @@ function jsonResponse(body: unknown, status: number): Response {
 
 function isNonBlankString(value: string | undefined): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

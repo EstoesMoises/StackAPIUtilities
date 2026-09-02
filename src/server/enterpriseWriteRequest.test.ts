@@ -170,6 +170,139 @@ describe("redactedJsonResponse", () => {
       details: [{ messages: ["token was  [redacted] ", "PAT [redacted]"] }],
     });
   });
+
+  it("does not reintroduce adversarial credentials through marker collisions", async () => {
+    const rawAccessToken = " [ ";
+    const rawPat = " redacted ";
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: rawAccessToken,
+      pat: rawPat,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+
+    const response = redactedJsonResponse(
+      {
+        ok: false,
+        error: {
+          access: "failed for [",
+          pat: "failed for redacted",
+          combined: "failed for [redacted]",
+        },
+      },
+      500,
+      result.redact,
+    );
+
+    const serialized = await response.text();
+    for (const secret of [rawAccessToken, rawPat, rawAccessToken.trim(), rawPat.trim()]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it("redacts overlapping credentials in one non-cascading pass", async () => {
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: "token",
+      pat: "token-longer",
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+
+    const response = redactedJsonResponse(
+      { ok: false, error: { first: "token-longer", second: "token" } },
+      500,
+      result.redact,
+    );
+
+    const serialized = await response.text();
+    expect(serialized).not.toContain("token-longer");
+    expect(serialized).not.toContain("token");
+  });
+
+  it("does not invoke nested toJSON hooks that could reveal a credential", async () => {
+    const secret = "to-json-secret";
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: secret,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+    const toJSON = vi.fn(() => ({ leaked: secret }));
+    const tainted = { safe: "retained", toJSON };
+
+    const response = redactedJsonResponse(
+      { ok: false, error: { nested: tainted } },
+      500,
+      result.redact,
+    );
+
+    const serialized = await response.text();
+    expect(toJSON).not.toHaveBeenCalled();
+    expect(serialized).not.toContain(secret);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: false,
+      error: { nested: { safe: "retained" } },
+    });
+  });
+
+  it("serializes cyclic error data safely without credentials", async () => {
+    const secret = "cycle-secret";
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: secret,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+    const error: Record<string, unknown> = { message: `failed for ${secret}` };
+    error.cause = error;
+
+    const response = redactedJsonResponse({ ok: false, error }, 500, result.redact);
+
+    const serialized = await response.text();
+    expect(serialized).not.toContain(secret);
+    expect(JSON.parse(serialized)).toMatchObject({
+      ok: false,
+      error: { message: expect.any(String), cause: expect.any(String) },
+    });
+  });
+
+  it("does not invoke getters and safely contains hostile proxies", async () => {
+    const secret = "getter-secret";
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: secret,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+    const getter = vi.fn(() => secret);
+    const accessorValue = Object.defineProperty({}, "leaked", {
+      get: getter,
+      enumerable: true,
+    });
+    const hostileProxy = new Proxy({}, {
+      ownKeys() {
+        throw new Error(`proxy failed for ${secret}`);
+      },
+    });
+
+    const response = redactedJsonResponse(
+      { ok: false, error: { accessorValue, hostileProxy } },
+      500,
+      result.redact,
+    );
+
+    const serialized = await response.text();
+    expect(getter).not.toHaveBeenCalled();
+    expect(serialized).not.toContain(secret);
+    expect(JSON.parse(serialized)).toMatchObject({ ok: false, error: expect.any(Object) });
+  });
 });
 
 describe("readBoundedJsonRequest", () => {
