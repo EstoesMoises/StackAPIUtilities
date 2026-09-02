@@ -81,9 +81,10 @@ export function ContentReplacementJobManager({
       setJobs((current) => current.filter((job) => job.id !== jobId));
       const nextTotalCount = Math.max(0, totalCount - 1);
       const nextPageCount = Math.max(1, Math.ceil(nextTotalCount / JOBS_PER_PAGE));
+      requestId.current += 1;
       setTotalCount(nextTotalCount);
-      if (page > nextPageCount) setPage(nextPageCount);
-      else setReloadRevision((current) => current + 1);
+      setPage((currentPage) => Math.max(1, Math.min(currentPage, nextPageCount)));
+      setReloadRevision((current) => current + 1);
       setPendingDeleteId(null);
       onDeleteJob?.(jobId);
       setAnnouncement(`Content replacement job ${jobId}, its post content, and recovery snapshots were deleted from this browser.`);

@@ -1019,6 +1019,37 @@ describe("browserContentReplacementStorage", () => {
     );
   });
 
+  it("maps a revoked stored-record proxy to the stable corruption error on load", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const id = "revoked-load-wrapper";
+    const revocable = Proxy.revocable(storedRecordForTest({ ...createJob(), id }), {});
+    fake.records.set(id, revocable.proxy);
+    revocable.revoke();
+
+    const error = await loadContentReplacementJob(id).catch((caught: unknown) => caught);
+    expect(error).toEqual(new TypeError("Stored content replacement job is invalid."));
+    expect(String(error)).not.toContain(id);
+  });
+
+  it("maps a revoked durable-record proxy to the stable corruption error during CAS recognition", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const initial = { ...createJob(), id: "revoked-cas-wrapper" };
+    const revocable = Proxy.revocable(storedRecordForTest(initial), {});
+    fake.records.set(initial.id, revocable.proxy);
+    revocable.revoke();
+    const next = { ...initial, revision: 1, updatedAt: "2026-09-01T12:01:00.000Z" };
+
+    const error = await compareAndSave(next, 0).catch((caught: unknown) => caught);
+    expect(error).toEqual(new TypeError("Stored content replacement job is invalid."));
+    expect(String(error)).not.toContain(initial.id);
+  });
+
   it("fails predictably when IndexedDB is unavailable", async () => {
     vi.stubGlobal("indexedDB", undefined);
     await expect(loadContentReplacementJob("valid-id")).rejects.toThrow("Content replacement storage is unavailable.");

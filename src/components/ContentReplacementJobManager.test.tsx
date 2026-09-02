@@ -132,6 +132,47 @@ describe("ContentReplacementJobManager", () => {
     expect(screen.queryByRole("button", { name: "Resume content replacement job job-02" })).not.toBeInTheDocument();
   });
 
+  it("fences a stale page read when deletion contracts from a page the user already left", async () => {
+    const user = userEvent.setup();
+    const jobs = Array.from({ length: 26 }, (_, index) =>
+      replacementJob(`job-${String(index + 1).padStart(2, "0")}`, "scan", "paused"),
+    );
+    const deleteGate = deferred<void>();
+    const stalePageOne = deferred<Awaited<ReturnType<ContentReplacementJobManagerStorage["list"]>>>();
+    const staleSnapshot = { jobs: jobs.slice(0, 25), totalCount: 26 };
+    const storage = managerStorage(jobs);
+    storage.list.mockImplementation(({ offset, limit }: { offset: number; limit: number }) => {
+      if (storage.list.mock.calls.length === 3) return stalePageOne.promise;
+      return Promise.resolve({ jobs: jobs.slice(offset, offset + limit), totalCount: jobs.length });
+    });
+    storage.delete.mockImplementation(async (id: string) => {
+      await deleteGate.promise;
+      const index = jobs.findIndex((job) => job.id === id);
+      if (index >= 0) jobs.splice(index, 1);
+    });
+    render(<ContentReplacementJobManager storage={storage} onOpenJob={vi.fn()} />);
+
+    await screen.findByText("26 browser-local jobs");
+    await user.click(screen.getByRole("button", { name: "Next jobs page" }));
+    await screen.findByRole("button", { name: "Resume content replacement job job-26" });
+    await user.click(screen.getByRole("button", { name: "Delete content replacement job job-26" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete job-26" }));
+    await waitFor(() => expect(storage.delete).toHaveBeenCalledWith("job-26"));
+
+    await user.click(screen.getByRole("button", { name: "Previous jobs page" }));
+    await waitFor(() => expect(storage.list).toHaveBeenCalledTimes(3));
+    deleteGate.resolve();
+
+    await waitFor(() => expect(storage.list).toHaveBeenCalledTimes(4));
+    expect(storage.list).toHaveBeenLastCalledWith({ offset: 0, limit: 25 });
+    expect(await screen.findByText("25 browser-local jobs")).toBeVisible();
+    stalePageOne.resolve(staleSnapshot);
+    await stalePageOne.promise;
+    await waitFor(() => expect(screen.queryByText("26 browser-local jobs")).not.toBeInTheDocument());
+    expect(screen.queryByRole("navigation", { name: "Replacement job pagination" })).not.toBeInTheDocument();
+    expect(storage.list).toHaveBeenCalledTimes(4);
+  });
+
   it("announces a storage failure without exposing stale controls", async () => {
     const storage = managerStorage([]);
     storage.list.mockRejectedValueOnce(new Error("private database detail"));

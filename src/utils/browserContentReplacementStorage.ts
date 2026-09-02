@@ -131,10 +131,11 @@ export async function loadContentReplacementJob(
   const database = await openDatabase();
   try {
     const transaction = database.transaction(STORE_NAME, "readonly");
-    const [value] = await Promise.all([
-      requestToPromise<unknown>(transaction.objectStore(STORE_NAME).get(id)),
+    const [stored] = await Promise.all([
+      requestValueToPromise<unknown>(transaction.objectStore(STORE_NAME).get(id)),
       transactionToPromise(transaction),
     ]);
+    const value = stored.value;
     if (value === undefined) return null;
     const job = await parseContentReplacementJob(storedJobValue(value));
     assertStoredRecordCoherence(value, id, job);
@@ -160,8 +161,8 @@ export async function saveContentReplacementJob(
     const transaction = database.transaction(STORE_NAME, "readwrite");
     const transactionPromise = transactionToPromise(transaction);
     const store = transaction.objectStore(STORE_NAME);
-    const stored = await requestToPromise<unknown>(store.get(normalized.id));
-    const actualRevision = storedJobRevision(stored, normalized.id);
+    const stored = await requestValueToPromise<unknown>(store.get(normalized.id));
+    const actualRevision = storedJobRevision(stored.value, normalized.id);
     if (actualRevision !== expectedRevision) {
       await transactionPromise;
       return { status: "conflict" };
@@ -175,16 +176,20 @@ export async function saveContentReplacementJob(
 
 function storedJobRevision(value: unknown, expectedId: string): number | null {
   if (value === undefined) return null;
-  const job = storedJobValue(value);
-  if (typeof job !== "object" || job === null || Array.isArray(job)) throw corruptJob();
-  const id = Object.getOwnPropertyDescriptor(job, "id");
-  const revision = Object.getOwnPropertyDescriptor(job, "revision");
-  if (
-    !id || !("value" in id) || id.value !== expectedId ||
-    !revision || !("value" in revision) ||
-    !Number.isSafeInteger(revision.value) || revision.value < 0
-  ) throw corruptJob();
-  return revision.value as number;
+  try {
+    const job = storedJobValue(value);
+    if (typeof job !== "object" || job === null || Array.isArray(job)) throw corruptJob();
+    const id = Object.getOwnPropertyDescriptor(job, "id");
+    const revision = Object.getOwnPropertyDescriptor(job, "revision");
+    if (
+      !id || !("value" in id) || id.value !== expectedId ||
+      !revision || !("value" in revision) ||
+      !Number.isSafeInteger(revision.value) || revision.value < 0
+    ) throw corruptJob();
+    return revision.value as number;
+  } catch {
+    throw corruptJob();
+  }
 }
 
 function storedJobValue(value: unknown): unknown {
@@ -192,18 +197,14 @@ function storedJobValue(value: unknown): unknown {
 }
 
 function storedRecordEnvelope(value: unknown): StoredContentReplacementJobRecord | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  let keys: PropertyKey[];
+  if (!value || typeof value !== "object") return null;
   try {
-    keys = Reflect.ownKeys(value);
-  } catch {
-    throw corruptJob();
-  }
-  const wrapperCandidate = keys.includes("job") || keys.includes("summary");
-  if (!wrapperCandidate) return null;
-  if (keys.length !== 3 || keys.some((key) => typeof key !== "string" ||
-    (key !== "id" && key !== "job" && key !== "summary"))) throw corruptJob();
-  try {
+    if (Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    const wrapperCandidate = keys.includes("job") || keys.includes("summary");
+    if (!wrapperCandidate) return null;
+    if (keys.length !== 3 || keys.some((key) => typeof key !== "string" ||
+      (key !== "id" && key !== "job" && key !== "summary"))) throw corruptJob();
     const id = Object.getOwnPropertyDescriptor(value, "id");
     const job = Object.getOwnPropertyDescriptor(value, "job");
     const summary = Object.getOwnPropertyDescriptor(value, "summary");
@@ -1671,6 +1672,13 @@ async function openDatabase(): Promise<IDBDatabase> {
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error("Content replacement storage request failed."));
+  });
+}
+
+function requestValueToPromise<T>(request: IDBRequest<T>): Promise<{ value: T }> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve({ value: request.result });
     request.onerror = () => reject(new Error("Content replacement storage request failed."));
   });
 }
