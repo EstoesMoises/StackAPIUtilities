@@ -1563,10 +1563,10 @@ describe("AppShell", () => {
       throttleNotices: [],
     }));
     await waitFor(() => expect(storedJob?.status).toBe("completed"));
-    expect(screen.getByRole("heading", { name: "Scan content" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "User Group Sync" }));
     await user.click(screen.getByRole("button", { name: "Content Replacement" }));
-    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Review proposed changes" })).toBeVisible();
     expect(loadContentReplacementJobMock).toHaveBeenCalledWith(storedJob!.id);
   });
 

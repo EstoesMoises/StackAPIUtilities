@@ -348,7 +348,7 @@ describe("replacement job state", () => {
     expect(accepted.progress).toMatchObject({ apiRequestsCompleted: 1 });
   });
 
-  it("does not let partial targeted discovery enter Review", () => {
+  it("enters Review only after all targeted search and detail work drains", () => {
     const job = createReplacementJob({
       id: "targeted-job",
       fingerprint: DIGEST_D,
@@ -356,11 +356,20 @@ describe("replacement job state", () => {
       configuration: { ...configuration, discovery: { mode: "targeted" } },
       createdAt: AT,
     });
+    const remainingDetail = {
+      ...job,
+      inventoryQueue: [],
+      detailQueue: [{ kind: "question" as const, questionId: 42 }],
+    };
     const drained = { ...job, inventoryQueue: [], detailQueue: [] };
 
-    expect(canEnterReview(drained)).toBe(false);
+    expect(canEnterReview(job)).toBe(false);
+    expect(canEnterReview(remainingDetail)).toBe(false);
+    expect(reduceReplacementJob(job, { type: "scan/queues-drained", at: LATER })).toBe(job);
+    expect(reduceReplacementJob(remainingDetail, { type: "scan/queues-drained", at: LATER })).toBe(remainingDetail);
+    expect(canEnterReview(drained)).toBe(true);
     expect(reduceReplacementJob(drained, { type: "scan/queues-drained", at: LATER })).toMatchObject({
-      stage: "scan",
+      stage: "review",
       status: "completed",
     });
   });

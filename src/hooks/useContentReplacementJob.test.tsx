@@ -1081,7 +1081,7 @@ describe("useContentReplacementJob", () => {
       cursor: { kind: "search", ruleId: "rule-1", page: 1 },
     });
     expect(result.current.job).toMatchObject({
-      stage: "scan",
+      stage: "review",
       status: "completed",
       progress: { apiRequestsCompleted: 1, searchPages: 1, searchTermsCompleted: 1 },
     });

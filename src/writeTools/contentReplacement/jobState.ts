@@ -268,10 +268,6 @@ function reduceReplacementJobState(
           },
         }, event.at);
       }
-      if (job.configuration.discovery.mode === "targeted" &&
-        job.inventoryQueue.length === 0 && job.detailQueue.length === 0) {
-        return touch({ ...job, status: "completed", nextRetryAt: undefined }, event.at);
-      }
       if (!canEnterReview(job)) return job;
       return touch({ ...job, stage: "review", status: "completed", nextRetryAt: undefined }, event.at);
     case "scan/failed":
@@ -393,7 +389,6 @@ export function getReplacementReviewPage<T>(items: readonly T[], requestedPage: 
 
 export function canEnterReview(job: PersistedContentReplacementJob): boolean {
   return job.stage === "scan" && (job.status === "running" || job.status === "paused") &&
-    job.configuration.discovery.mode !== "targeted" &&
     job.inventoryQueue.length === 0 && job.detailQueue.length === 0;
 }
 
