@@ -1048,6 +1048,45 @@ describe("useContentReplacementJob", () => {
     expect(result.current.job).toMatchObject({ stage: "review", status: "completed" });
   });
 
+  it("accepts a targeted search result only for its configured rule", async () => {
+    const targeted: ReplacementConfiguration = {
+      ...configuration,
+      discovery: { mode: "targeted" },
+    };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [],
+        answerCursors: [],
+        nextCursor: null,
+        inspectedCount: 0,
+        pageKind: "search",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 1,
+          searchTermsCompleted: 1,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, null, deps.value));
+    await act(async () => result.current.createJob(targeted));
+
+    await act(async () => result.current.startScan());
+
+    expect(JSON.parse(fetcher.mock.calls[0][1].body as string)).toMatchObject({
+      cursor: { kind: "search", ruleId: "rule-1", page: 1 },
+    });
+    expect(result.current.job).toMatchObject({
+      stage: "scan",
+      status: "completed",
+      progress: { apiRequestsCompleted: 1, searchPages: 1, searchTermsCompleted: 1 },
+    });
+  });
+
   it("accepts a Full-audit questions page when valid-zero answers were skipped", async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       ok: true,

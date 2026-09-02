@@ -1485,7 +1485,7 @@ describe("AppShell", () => {
       if (String(input) === "/api/write-tools/content-replacement/scan") {
         const signal = init?.signal;
         signal?.addEventListener("abort", scanAbort);
-        const body = JSON.parse(String(init?.body)) as { cursor?: { kind: "questions" | "answers" | "articles" } };
+        const body = JSON.parse(String(init?.body)) as { cursor?: { kind: "questions" | "answers" | "articles" | "search" } };
         if (fetchMock.mock.calls.filter(([url]) => String(url) === "/api/write-tools/content-replacement/scan").length === 1) {
           return firstScan.promise;
         }
@@ -1494,6 +1494,13 @@ describe("AppShell", () => {
           result: {
             candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0,
             pageKind: body.cursor?.kind ?? "questions",
+            progress: {
+              apiRequestsCompleted: 1,
+              searchPages: body.cursor?.kind === "search" ? 1 : 0,
+              searchTermsCompleted: body.cursor?.kind === "search" ? 1 : 0,
+              answerBearingQuestionsQueued: 0,
+              zeroAnswerQuestionsSkipped: 0,
+            },
           },
           throttleNotices: [],
         });
@@ -1544,14 +1551,22 @@ describe("AppShell", () => {
       ok: true,
       result: {
         candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0,
-        pageKind: "questions",
+        pageKind: "search",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 1,
+          searchTermsCompleted: 1,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
       },
       throttleNotices: [],
     }));
-    expect(await screen.findByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    await waitFor(() => expect(storedJob?.status).toBe("completed"));
+    expect(screen.getByRole("heading", { name: "Scan content" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "User Group Sync" }));
     await user.click(screen.getByRole("button", { name: "Content Replacement" }));
-    expect(await screen.findByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Scan content" })).toBeVisible();
     expect(loadContentReplacementJobMock).toHaveBeenCalledWith(storedJob!.id);
   });
 
@@ -2664,9 +2679,15 @@ function contentReplacementJob(
     inventoryQueue: [],
     detailQueue: [],
     progress: {
+      apiRequestsCompleted: 0,
       questionPages: 0,
       answerPages: 0,
       articlePages: 0,
+      searchPages: 0,
+      searchTermsCompleted: 0,
+      indexedReferences: 0,
+      answerBearingQuestionsQueued: 0,
+      zeroAnswerQuestionsSkipped: 0,
       inventoryItems: 0,
       detailsInspected: 0,
       proposalsFound: 0,

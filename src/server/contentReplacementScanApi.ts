@@ -11,12 +11,6 @@ import {
 } from "../writeTools/contentReplacement/contentApi";
 import { createJobFingerprint } from "../writeTools/contentReplacement/proposals";
 import {
-  MAX_FIND_LENGTH,
-  MAX_REPLACEMENT_LENGTH,
-  MAX_REPLACEMENT_RULES,
-  validateReplacementRules,
-} from "../writeTools/contentReplacement/rules";
-import {
   assertValidDetailRefs,
   scanDetailBatch,
   scanInventorySlice,
@@ -25,11 +19,15 @@ import type {
   DetailBatchResult,
   InventoryCursor,
   InventorySliceResult,
-  ReplacementDiscovery,
   ReplacementConfiguration,
   ReplacementItemRef,
-  ReplacementRule,
 } from "../writeTools/contentReplacement/types";
+import {
+  isInventoryCursorRelevant as isSharedInventoryCursorRelevant,
+  validateConfiguration as validateSharedConfiguration,
+  validateInventoryCursor as validateSharedInventoryCursor,
+  validateSessionCredentials as validateSharedSessionCredentials,
+} from "./contentReplacementRequestValidation";
 import {
   prepareEnterpriseWriteContext,
   redactedJsonResponse,
@@ -45,10 +43,6 @@ const MAX_DETAIL_REFS = 10;
 const DEFAULT_RETRY_DELAY_SECONDS = 2;
 const MAX_SCAN_RETRY_WAIT_SECONDS = 5;
 const MAX_SCAN_CUMULATIVE_RETRY_WAIT_SECONDS = 10;
-const MAX_BASE_URL_LENGTH = 2_048;
-const MAX_CREDENTIAL_STRING_LENGTH = 65_536;
-const MAX_RULE_ID_LENGTH = 200;
-const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export type ContentReplacementScanPayload = {
   credentials: SessionCredentials;
@@ -205,35 +199,33 @@ function isOriginOnlyInstanceUrl(value: string): boolean {
 
 function validateScanPayload(value: unknown): ContentReplacementScanPayload | null {
   if (!isRecord(value) || !isExactObject(value, commonPayloadKeys(value.action))) return null;
-  if (!isExactSessionCredentials(value.credentials)) return null;
-  const configuration = validateConfiguration(value.configuration);
+  const credentials = validateSharedSessionCredentials(value.credentials);
+  const configuration = validateSharedConfiguration(value.configuration);
   if (!configuration || typeof value.jobFingerprint !== "string" || value.jobFingerprint.length === 0) {
     return null;
   }
 
-  if (
-    value.action === "inventory" &&
-    isInventoryCursor(value.cursor) &&
-    isInventoryCursorRelevant(value.cursor, configuration)
-  ) {
+  const cursor = value.action === "inventory" ? validateSharedInventoryCursor(value.cursor) : null;
+  if (value.action === "inventory" && credentials && cursor && isSharedInventoryCursorRelevant(cursor, configuration)) {
     return {
       action: "inventory",
-      credentials: value.credentials,
+      credentials,
       configuration,
       jobFingerprint: value.jobFingerprint,
-      cursor: value.cursor,
+      cursor,
     };
   }
 
   if (
     value.action === "details" &&
+    credentials &&
     isDetailRefs(value.refs) &&
     value.refs.every((ref) => isDetailRefRelevant(ref, configuration))
   ) {
     assertValidDetailRefs(value.refs);
     return {
       action: "details",
-      credentials: value.credentials,
+      credentials,
       configuration,
       jobFingerprint: value.jobFingerprint,
       refs: value.refs,
@@ -251,159 +243,6 @@ function commonPayloadKeys(action: unknown): readonly string[] {
     return ["action", "credentials", "configuration", "jobFingerprint", "refs"];
   }
   return [];
-}
-
-function isExactSessionCredentials(value: unknown): value is SessionCredentials {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      "instanceType",
-      "baseUrl",
-      "apiKey",
-      "accessToken",
-      "pat",
-      "authSource",
-      "oauthClientId",
-      "oauthScopes",
-      "accessTokenExpiresAt",
-    ]) ||
-    (value.instanceType !== "enterprise" && value.instanceType !== "basic-business") ||
-    !isBoundedString(value.baseUrl, 1, MAX_BASE_URL_LENGTH) ||
-    !isOptionalBoundedString(value.apiKey) ||
-    !isOptionalBoundedString(value.accessToken) ||
-    !isOptionalBoundedString(value.pat) ||
-    !isOptionalBoundedString(value.oauthClientId) ||
-    !isOptionalBoundedString(value.accessTokenExpiresAt) ||
-    !isOptionalAuthSource(value.authSource)
-  ) {
-    return false;
-  }
-
-  return value.oauthScopes === undefined || (
-    Array.isArray(value.oauthScopes) &&
-    value.oauthScopes.length <= 100 &&
-    value.oauthScopes.every((scope) => isBoundedString(scope, 1, 200))
-  );
-}
-
-function validateConfiguration(value: unknown): ReplacementConfiguration | null {
-  if (!isRecord(value) || !isExactObject(value, ["target", "contentTypes", "discovery", "rules", "options"])) {
-    return null;
-  }
-  if (!isRecord(value.target) || !isExactObject(value.target, ["kind"]) || value.target.kind !== "enterprise-main") {
-    return null;
-  }
-  if (
-    !isRecord(value.contentTypes) ||
-    !isExactObject(value.contentTypes, ["questions", "answers", "articles"]) ||
-    typeof value.contentTypes.questions !== "boolean" ||
-    typeof value.contentTypes.answers !== "boolean" ||
-    typeof value.contentTypes.articles !== "boolean" ||
-    !(value.contentTypes.questions || value.contentTypes.answers || value.contentTypes.articles)
-  ) {
-    return null;
-  }
-  const discovery = validateDiscovery(value.discovery);
-  if (!discovery) return null;
-  if (
-    !isRecord(value.options) ||
-    !isExactObject(value.options, ["caseSensitive", "wholeTerm", "replaceInCode"]) ||
-    typeof value.options.caseSensitive !== "boolean" ||
-    typeof value.options.wholeTerm !== "boolean" ||
-    typeof value.options.replaceInCode !== "boolean"
-  ) {
-    return null;
-  }
-  if (
-    !Array.isArray(value.rules) ||
-    value.rules.length < 1 ||
-    value.rules.length > MAX_REPLACEMENT_RULES ||
-    !value.rules.every(isExactReplacementRule)
-  ) {
-    return null;
-  }
-
-  const rules = value.rules as ReplacementRule[];
-  const options: ReplacementConfiguration["options"] = {
-    caseSensitive: value.options.caseSensitive,
-    wholeTerm: value.options.wholeTerm,
-    replaceInCode: value.options.replaceInCode,
-  };
-  const validatedRules = validateReplacementRules(rules, options);
-  if (validatedRules.errors.length > 0 || validatedRules.rules.length < 1) return null;
-
-  return {
-    target: { kind: "enterprise-main" },
-    contentTypes: {
-      questions: value.contentTypes.questions,
-      answers: value.contentTypes.answers,
-      articles: value.contentTypes.articles,
-    },
-    discovery,
-    rules: validatedRules.rules,
-    options: {
-      caseSensitive: value.options.caseSensitive,
-      wholeTerm: value.options.wholeTerm,
-      replaceInCode: value.options.replaceInCode,
-    },
-  };
-}
-
-function validateDiscovery(value: unknown): ReplacementDiscovery | null {
-  if (!isRecord(value) || typeof value.mode !== "string") return null;
-  if ((value.mode === "targeted" || value.mode === "full") && isExactObject(value, ["mode"])) {
-    return { mode: value.mode };
-  }
-  if (
-    value.mode === "exact" &&
-    isExactObject(value, ["mode", "targetCount", "targetDigest"]) &&
-    isPositiveSafeInteger(value.targetCount) &&
-    value.targetCount <= 100_000 &&
-    typeof value.targetDigest === "string" &&
-    SHA256_PATTERN.test(value.targetDigest)
-  ) {
-    return { mode: "exact", targetCount: value.targetCount, targetDigest: value.targetDigest };
-  }
-  return null;
-}
-
-function isExactReplacementRule(value: unknown): value is ReplacementRule {
-  return (
-    isRecord(value) &&
-    hasOnlyKeys(value, ["id", "find", "replace", "sourceRow"]) &&
-    isBoundedString(value.id, 1, MAX_RULE_ID_LENGTH) &&
-    isBoundedString(value.find, 0, MAX_FIND_LENGTH) &&
-    isBoundedString(value.replace, 0, MAX_REPLACEMENT_LENGTH) &&
-    (value.sourceRow === undefined || isPositiveSafeInteger(value.sourceRow))
-  );
-}
-
-function isInventoryCursor(value: unknown): value is InventoryCursor {
-  if (!isRecord(value)) return false;
-  if (value.kind === "questions" || value.kind === "articles") {
-    return isExactObject(value, ["kind", "page"]) && isInventoryPage(value.page);
-  }
-  return (
-    value.kind === "answers" &&
-    isExactObject(value, ["kind", "questionId", "page"]) &&
-    isPositiveSafeInteger(value.questionId) &&
-    isInventoryPage(value.page)
-  );
-}
-
-function isInventoryPage(value: unknown): value is number {
-  return isPositiveSafeInteger(value) && value <= MAX_INVENTORY_PAGE;
-}
-
-function isInventoryCursorRelevant(
-  cursor: InventoryCursor,
-  configuration: ReplacementConfiguration,
-): boolean {
-  if (cursor.kind === "questions") {
-    return configuration.contentTypes.questions || configuration.contentTypes.answers;
-  }
-  if (cursor.kind === "answers") return configuration.contentTypes.answers;
-  return configuration.contentTypes.articles;
 }
 
 function isDetailRefRelevant(
@@ -525,23 +364,6 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
   return Object.keys(value).every((key) => allowed.has(key));
 }
 
-function isBoundedString(value: unknown, minimum: number, maximum: number): value is string {
-  return typeof value === "string" && value.length >= minimum && value.length <= maximum;
-}
-
-function isOptionalBoundedString(value: unknown): value is string | undefined {
-  return value === undefined || isBoundedString(value, 0, MAX_CREDENTIAL_STRING_LENGTH);
-}
-
-function isOptionalAuthSource(value: unknown): value is SessionCredentials["authSource"] | undefined {
-  return (
-    value === undefined ||
-    value === "manual-pat" ||
-    value === "manual-enterprise-token" ||
-    value === "oauth-pkce"
-  );
-}
-
 function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
@@ -566,11 +388,15 @@ const ROOT_KEYS = new Set(["ok", "result", "throttleNotices", "error"]);
 const ERROR_KEYS = new Set(["code", "message", "retryAfterSeconds"]);
 const RESULT_KEYS = new Set([
   "candidates", "answerCursors", "nextCursor", "inspectedCount", "pageKind",
-  "proposals", "protectedOccurrenceCount",
+  "progress", "proposals", "protectedOccurrenceCount",
 ]);
 const THROTTLE_KEYS = new Set(["kind", "seconds", "remaining"]);
 const REF_KEYS = new Set(["kind", "questionId", "answerId", "articleId"]);
-const CURSOR_KEYS = new Set(["kind", "questionId", "page"]);
+const CURSOR_KEYS = new Set(["kind", "questionId", "ruleId", "page"]);
+const PROGRESS_KEYS = new Set([
+  "apiRequestsCompleted", "searchPages", "searchTermsCompleted",
+  "answerBearingQuestionsQueued", "zeroAnswerQuestionsSkipped",
+]);
 const PROPOSAL_KEYS = new Set([
   "before", "after", "scannedRequestChecksum", "proposedRequestChecksum", "proposalFingerprint",
   "fields", "changedOccurrences", "protectedOccurrences", "appliedRuleIds", "metadata",
@@ -588,7 +414,7 @@ const FIELDS_KEYS = new Set(["title", "body"]);
 const FIELD_MARKDOWN_KEYS = new Set(["beforeMarkdown", "afterMarkdown"]);
 const OCCURRENCE_KEYS = new Set(["field", "ruleId", "start", "end", "before", "after", "reason"]);
 const ITEM_KINDS = new Set(["question", "answer", "article"]);
-const CURSOR_KINDS = new Set(["questions", "answers", "articles"]);
+const CURSOR_KINDS = new Set(["questions", "answers", "articles", "search"]);
 const THROTTLE_KINDS = new Set(["backoff", "burst", "token-bucket"]);
 const ARTICLE_TYPES = new Set(["knowledgeArticle", "announcement", "policy", "howToGuide"]);
 const EDITOR_SCOPES = new Set(["ownerOnly", "specificEditors", "everyone"]);
@@ -604,6 +430,7 @@ function isTrustedScanResponseKey(
   if (path.length === 0) return ROOT_KEYS.has(key);
   if (matchesPath(path, "error")) return ERROR_KEYS.has(key);
   if (matchesPath(path, "result")) return RESULT_KEYS.has(key);
+  if (matchesPath(path, "result", "progress")) return PROGRESS_KEYS.has(key);
   if (isCollectionItemPath(path, "throttleNotices")) return THROTTLE_KEYS.has(key);
   if (isCollectionItemPath(path, "result", "candidates")) return REF_KEYS.has(key);
   if (isCollectionItemPath(path, "result", "answerCursors")) return CURSOR_KEYS.has(key);

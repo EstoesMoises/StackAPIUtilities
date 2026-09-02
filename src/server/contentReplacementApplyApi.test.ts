@@ -57,14 +57,15 @@ type CreateClient = (
 async function validApplyPayload(
   overrides: Partial<ContentReplacementApplyPayload> = {},
 ): Promise<ContentReplacementApplyPayload> {
-  const proposal = await buildReplacementProposal(beforeQuestion, configuration);
+  const effectiveConfiguration = overrides.configuration ?? configuration;
+  const proposal = await buildReplacementProposal(beforeQuestion, effectiveConfiguration);
   if (!proposal) throw new Error("fixture must produce a proposal");
   return {
     credentials,
-    configuration,
+    configuration: effectiveConfiguration,
     jobFingerprint: await createJobFingerprint({
       baseUrl: "https://demo.stackenterprise.co",
-      configuration,
+      configuration: effectiveConfiguration,
     }),
     itemRef: beforeQuestion.ref,
     expectedScannedRequestChecksum: proposal.scannedRequestChecksum,
@@ -110,6 +111,19 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementApplyRequest", () => {
+  it("accepts compact Exact discovery without a target array", async () => {
+    const exact: ReplacementConfiguration = {
+      ...configuration,
+      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+    };
+    const payload = await validApplyPayload({ configuration: exact });
+    const response = await handleContentReplacementApplyRequest(payload, {
+      createClient: () => fakeContentClient(),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
   it("writes one server-recomputed exact request and returns the observed post-write checksum", async () => {
     const after = await proposedQuestion();
     const observed = {

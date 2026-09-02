@@ -10,16 +10,19 @@ import {
   createContentReplacementClient,
   type ContentReplacementClient,
 } from "../writeTools/contentReplacement/contentApi";
-import { checksumRequestModel } from "../writeTools/contentReplacement/proposals";
+import { checksumRequestModel, createJobFingerprint } from "../writeTools/contentReplacement/proposals";
 import type {
+  ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/types";
 import {
   isExactObject,
   isOriginOnlyInstanceUrl,
+  isSelectedKind,
   isSha256Digest,
   normalizeCurrentRequestModel,
+  validateConfiguration,
   validateExactPriorRequestModel,
   validateItemRef,
   validateSessionCredentials,
@@ -32,12 +35,14 @@ import {
 } from "./enterpriseWriteRequest";
 
 const INVALID_REQUEST_MESSAGE = "Content replacement recovery request is invalid.";
+const FINGERPRINT_MISMATCH_MESSAGE = "Replacement job configuration changed. Start a new scan.";
 const MAX_RETRY_WAIT_SECONDS = 5;
 const MAX_CUMULATIVE_RETRY_WAIT_SECONDS = 10;
 
 export interface ContentReplacementRecoveryPayload {
   action: "preview" | "apply";
   credentials: SessionCredentials;
+  configuration: ReplacementConfiguration;
   jobFingerprint: string;
   itemRef: ReplacementItemRef;
   priorRequestModel: ReplacementWireRequestModel;
@@ -92,6 +97,13 @@ export async function handleContentReplacementRecoveryRequest(
       { ok: false, error: "Enterprise content recovery requires an origin-only instance URL." },
       400,
     );
+  }
+  const expectedFingerprint = await createJobFingerprint({
+    baseUrl: writeContext.instance.baseUrl,
+    configuration: validated.configuration,
+  });
+  if (validated.jobFingerprint !== expectedFingerprint) {
+    return browserJsonResponse({ ok: false, error: FINGERPRINT_MISMATCH_MESSAGE }, 409);
   }
 
   const throttleNotices: ThrottleNotice[] = [];
@@ -180,14 +192,16 @@ function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayl
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
     if (!isExactObject(record, [
-      "action", "credentials", "jobFingerprint", "itemRef", "priorRequestModel",
+      "action", "credentials", "configuration", "jobFingerprint", "itemRef", "priorRequestModel",
       "expectedPriorRequestChecksum", "expectedPostApplyChecksum",
     ])) return null;
     if (record.action !== "preview" && record.action !== "apply") return null;
     const credentials = validateSessionCredentials(record.credentials);
+    const configuration = validateConfiguration(record.configuration);
     const itemRef = validateItemRef(record.itemRef);
     if (
-      !credentials || !itemRef || !isSha256Digest(record.jobFingerprint) ||
+      !credentials || !configuration || !itemRef || !isSelectedKind(itemRef, configuration) ||
+      !isSha256Digest(record.jobFingerprint) ||
       !isSha256Digest(record.expectedPriorRequestChecksum) ||
       !isSha256Digest(record.expectedPostApplyChecksum)
     ) return null;
@@ -196,6 +210,7 @@ function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayl
     return {
       action: record.action,
       credentials,
+      configuration,
       jobFingerprint: record.jobFingerprint,
       itemRef,
       priorRequestModel,

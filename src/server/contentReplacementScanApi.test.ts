@@ -112,6 +112,99 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementScanRequest", () => {
+  it("accepts a configured targeted search cursor and returns its bounded result", async () => {
+    const targeted: ReplacementConfiguration = {
+      ...configuration,
+      discovery: { mode: "targeted" },
+      rules: [
+        { id: "rule-1", find: "MyPVM", replace: "MyPBM" },
+        { id: "rule-2", find: "Old", replace: "New" },
+      ],
+    };
+    const client = fakeContentClient({
+      getSearchPage: vi.fn().mockResolvedValue({
+        items: [{ type: "question", questionId: 10 }],
+        page: 1,
+        totalPages: 2,
+        hasMore: true,
+      }),
+    });
+    const response = await handleContentReplacementScanRequest({
+      action: "inventory",
+      credentials,
+      configuration: targeted,
+      jobFingerprint: await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration: targeted,
+      }),
+      cursor: { kind: "search", ruleId: "rule-1", page: 1 },
+    }, { createClient: () => client });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      result: {
+        candidates: [{ kind: "question", questionId: 10 }],
+        answerCursors: [],
+        nextCursor: { kind: "search", ruleId: "rule-1", page: 2 },
+        pageKind: "search",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 1,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+    });
+    expect(client.getSearchPage).toHaveBeenCalledWith("MyPVM", 1);
+  });
+
+  it("rejects a search cursor on a Full-audit configuration", async () => {
+    await expectInvalidWithoutClient(await validScanPayload({
+      cursor: { kind: "search", ruleId: "rule-1", page: 1 },
+    } as Partial<ContentReplacementScanPayload>));
+  });
+
+  it("rejects an unknown search rule before creating a client", async () => {
+    const targeted: ReplacementConfiguration = { ...configuration, discovery: { mode: "targeted" } };
+    const payload = await validScanPayload({
+      configuration: targeted,
+      cursor: { kind: "search", ruleId: "unknown-rule", page: 1 },
+    } as Partial<ContentReplacementScanPayload>);
+    payload.jobFingerprint = await createJobFingerprint({
+      baseUrl: "https://demo.stackenterprise.co",
+      configuration: targeted,
+    });
+
+    await expectInvalidWithoutClient(payload);
+  });
+
+  it("rejects Full inventory cursors on a Targeted configuration", async () => {
+    const targeted: ReplacementConfiguration = { ...configuration, discovery: { mode: "targeted" } };
+    const payload = await validScanPayload({ configuration: targeted } as Partial<ContentReplacementScanPayload>);
+    payload.jobFingerprint = await createJobFingerprint({
+      baseUrl: "https://demo.stackenterprise.co",
+      configuration: targeted,
+    });
+
+    await expectInvalidWithoutClient(payload);
+  });
+
+  it("rejects inventory cursors on an Exact configuration", async () => {
+    const exact: ReplacementConfiguration = {
+      ...configuration,
+      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+    };
+    const payload = await validScanPayload({ configuration: exact } as Partial<ContentReplacementScanPayload>);
+    payload.jobFingerprint = await createJobFingerprint({
+      baseUrl: "https://demo.stackenterprise.co",
+      configuration: exact,
+    });
+
+    await expectInvalidWithoutClient(payload);
+  });
+
   it("returns one bounded inventory slice with sanitized throttle notices", async () => {
     const client = fakeContentClient();
     const createClient = vi.fn<CreateClient>((normalizedCredentials, instance, onThrottle) => {

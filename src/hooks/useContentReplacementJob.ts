@@ -22,6 +22,7 @@ import {
   stableSerialize,
   toReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/proposals";
+import { createExactTargetSelection } from "../writeTools/contentReplacement/discovery";
 import {
   createReplacementJob,
   getNextApplyItem,
@@ -82,7 +83,7 @@ export interface ContentReplacementJobController {
   storageError: string | null;
   operationError: string | null;
   credentialReadiness: Pick<EnterpriseWriteCredentialReadiness, "valid" | "message"> & { refreshRequired: boolean };
-  createJob(configuration: ReplacementConfiguration): Promise<boolean>;
+  createJob(configuration: ReplacementConfiguration, exactTargets?: ReplacementItemRef[]): Promise<boolean>;
   startScan(): Promise<void>;
   pause(): void;
   resume(): Promise<void>;
@@ -471,20 +472,32 @@ export function useContentReplacementJob(
     return persist(reduceReplacementJob(withThrottle, { type: "run/clear-retry-at", at }), token);
   }, [persist, setBusy]);
 
-  const createJob = useCallback((configuration: ReplacementConfiguration): Promise<boolean> => {
+  const createJob = useCallback((configuration: ReplacementConfiguration, exactTargets?: ReplacementItemRef[]): Promise<boolean> => {
     if (rehydratingRef.current) return Promise.resolve(false);
     return enqueueLocalMutation(async () => {
     if (rehydratingRef.current) return false;
     const credentialCheck = currentCredentials(null, dependenciesRef.current.now());
     if (!credentialCheck.credentials) return false;
     const baseUrl = credentialCheck.credentials.baseUrl;
-    const fingerprint = await createJobFingerprint({ baseUrl, configuration });
+    let canonicalConfiguration = configuration;
+    let canonicalExactTargets: ReplacementItemRef[] | undefined;
+    if (configuration.discovery.mode === "exact") {
+      try {
+        const exactSelection = await createExactTargetSelection(exactTargets ?? []);
+        canonicalConfiguration = { ...configuration, discovery: exactSelection.discovery };
+        canonicalExactTargets = exactSelection.targets;
+      } catch {
+        return false;
+      }
+    }
+    const fingerprint = await createJobFingerprint({ baseUrl, configuration: canonicalConfiguration });
     const createdAt = dependenciesRef.current.now();
     const candidate = createReplacementJob({
       id: dependenciesRef.current.createId(),
       fingerprint,
       baseUrl,
-      configuration,
+      configuration: canonicalConfiguration,
+      exactTargets: canonicalExactTargets,
       createdAt,
     });
     stopOperation();
@@ -1149,6 +1162,7 @@ function recoveryPayload(
   return {
     action,
     credentials,
+    configuration: job.configuration,
     jobFingerprint: job.fingerprint,
     itemRef: item.proposal.before.ref,
     priorRequestModel,
@@ -1218,7 +1232,9 @@ function parseInventoryResult(
   if (!hasOnlyKeys(value, ["candidates", "answerCursors", "nextCursor", "inspectedCount", "pageKind", "progress"]) ||
     !Array.isArray(value.candidates) || !Array.isArray(value.answerCursors) ||
     !isCount(value.inspectedCount) ||
-    (value.pageKind !== "questions" && value.pageKind !== "answers" && value.pageKind !== "articles")) return null;
+    (value.pageKind !== "questions" && value.pageKind !== "answers" &&
+      value.pageKind !== "articles" && value.pageKind !== "search")) return null;
+  if (!cursorMatchesDiscovery(requested, configuration)) return null;
   const progress = parseInventoryProgress(value.progress);
   if (!progress) return null;
   const candidates = value.candidates.map(parseRef);
@@ -1234,6 +1250,7 @@ function parseInventoryResult(
     answerPages.length > value.inspectedCount || value.pageKind !== requested.kind ||
     new Set(candidateKeys).size !== candidateKeys.length ||
     new Set(answerKeys).size !== answerKeys.length || refs.some((ref) => !refMatchesInventory(ref, requested, configuration)) ||
+    (nextCursor !== null && !cursorMatchesDiscovery(nextCursor, configuration)) ||
     answerPages.some((cursor) => requested.kind !== "questions" || cursor.page !== 1) ||
     (requested.kind !== "questions" && answerPages.length !== 0) ||
     (requested.kind === "questions" && !configuration.contentTypes.answers &&
@@ -1242,6 +1259,7 @@ function parseInventoryResult(
     (requested.kind === "questions" && configuration.contentTypes.answers &&
       (answerPages.length !== progress.answerBearingQuestionsQueued ||
         progress.answerBearingQuestionsQueued + progress.zeroAnswerQuestionsSkipped !== value.inspectedCount)) ||
+    !isExactInventoryProgress(progress, requested, configuration, nextCursor, answerPages.length, value.inspectedCount) ||
     (nextCursor && !isContinuousCursor(requested, nextCursor))) return null;
   return {
     candidates: refs,
@@ -1251,6 +1269,29 @@ function parseInventoryResult(
     pageKind: value.pageKind,
     progress,
   };
+}
+
+function isExactInventoryProgress(
+  progress: InventorySliceResult["progress"],
+  requested: InventoryCursor,
+  configuration: ReplacementConfiguration,
+  nextCursor: InventoryCursor | null,
+  answerCursorCount: number,
+  inspectedCount: number,
+): boolean {
+  if (progress.apiRequestsCompleted !== 1 ||
+    progress.searchPages !== (requested.kind === "search" ? 1 : 0) ||
+    progress.searchTermsCompleted !== (requested.kind === "search" && nextCursor === null ? 1 : 0)) {
+    return false;
+  }
+  if (requested.kind === "search") {
+    return progress.answerBearingQuestionsQueued === 0 && progress.zeroAnswerQuestionsSkipped === 0;
+  }
+  if (requested.kind !== "questions" || !configuration.contentTypes.answers) {
+    return progress.answerBearingQuestionsQueued === 0 && progress.zeroAnswerQuestionsSkipped === 0;
+  }
+  return answerCursorCount === progress.answerBearingQuestionsQueued &&
+    progress.answerBearingQuestionsQueued + progress.zeroAnswerQuestionsSkipped === inspectedCount;
 }
 
 function parseInventoryProgress(value: unknown): InventorySliceResult["progress"] | null {
@@ -1455,12 +1496,17 @@ function parseThrottleNotices(value: unknown): ThrottleNotice[] | null {
 function parseCursor(value: unknown): InventoryCursor | null {
   if (!isRecord(value)) return null;
   if ((value.kind === "questions" || value.kind === "articles") &&
-    hasOnlyKeys(value, ["kind", "page"]) && isPositiveInteger(value.page)) {
+    hasOnlyKeys(value, ["kind", "page"]) && isPositiveInteger(value.page) && value.page <= 10_000) {
     return { kind: value.kind, page: value.page };
   }
   if (value.kind === "answers" && hasOnlyKeys(value, ["kind", "questionId", "page"]) &&
-    isPositiveInteger(value.questionId) && isPositiveInteger(value.page)) {
+    isPositiveInteger(value.questionId) && isPositiveInteger(value.page) && value.page <= 10_000) {
     return { kind: "answers", questionId: value.questionId, page: value.page };
+  }
+  if (value.kind === "search" && hasOnlyKeys(value, ["kind", "ruleId", "page"]) &&
+    typeof value.ruleId === "string" && value.ruleId.length > 0 && value.ruleId.length <= 200 &&
+    isPositiveInteger(value.page) && value.page <= 10_000) {
+    return { kind: "search", ruleId: value.ruleId, page: value.page };
   }
   return null;
 }
@@ -1576,8 +1622,23 @@ async function honorPersistedDeadline(
 
 function isContinuousCursor(current: InventoryCursor, next: InventoryCursor): boolean {
   if (current.kind !== next.kind || next.page !== current.page + 1) return false;
-  if (current.kind === "search") return false;
+  if (current.kind === "search") return next.kind === "search" && next.ruleId === current.ruleId;
   return current.kind !== "answers" || (next.kind === "answers" && next.questionId === current.questionId);
+}
+
+function cursorMatchesDiscovery(
+  cursor: InventoryCursor,
+  configuration: ReplacementConfiguration,
+): boolean {
+  if (configuration.discovery.mode === "exact") return false;
+  if (configuration.discovery.mode === "targeted") {
+    return cursor.kind === "search" && configuration.rules.some((rule) => rule.id === cursor.ruleId);
+  }
+  if (cursor.kind === "questions") {
+    return configuration.contentTypes.questions || configuration.contentTypes.answers;
+  }
+  if (cursor.kind === "answers") return configuration.contentTypes.answers;
+  return cursor.kind === "articles" && configuration.contentTypes.articles;
 }
 
 function refMatchesInventory(
@@ -1585,9 +1646,13 @@ function refMatchesInventory(
   cursor: InventoryCursor,
   configuration: ReplacementConfiguration,
 ): boolean {
+  if (cursor.kind === "search") {
+    return (ref.kind === "question" && configuration.contentTypes.questions) ||
+      (ref.kind === "answer" && configuration.contentTypes.answers) ||
+      (ref.kind === "article" && configuration.contentTypes.articles);
+  }
   if (cursor.kind === "questions") return ref.kind === "question" && configuration.contentTypes.questions;
   if (cursor.kind === "articles") return ref.kind === "article" && configuration.contentTypes.articles;
-  if (cursor.kind === "search") return false;
   return ref.kind === "answer" && ref.questionId === cursor.questionId && configuration.contentTypes.answers;
 }
 

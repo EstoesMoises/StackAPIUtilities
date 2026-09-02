@@ -203,9 +203,15 @@ export type ContentReplacementJobStatus =
   | "cancelled";
 
 export interface PersistedContentReplacementProgress {
+  apiRequestsCompleted: number;
   questionPages: number;
   answerPages: number;
   articlePages: number;
+  searchPages: number;
+  searchTermsCompleted: number;
+  indexedReferences: number;
+  answerBearingQuestionsQueued: number;
+  zeroAnswerQuestionsSkipped: number;
   inventoryItems: number;
   detailsInspected: number;
   proposalsFound: number;

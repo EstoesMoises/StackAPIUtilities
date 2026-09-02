@@ -16,6 +16,7 @@ export interface CreateReplacementJobInput {
   fingerprint: string;
   baseUrl: string;
   configuration: ReplacementConfiguration;
+  exactTargets?: ReplacementItemRef[];
   createdAt: string;
 }
 
@@ -147,11 +148,25 @@ export function replacementItemKey(ref: ReplacementItemRef): string {
 
 export function createReplacementJob(input: CreateReplacementJobInput): PersistedContentReplacementJob {
   const inventoryQueue: InventoryCursor[] = [];
-  if (input.configuration.contentTypes.questions || input.configuration.contentTypes.answers) {
-    inventoryQueue.push({ kind: "questions", page: 1 });
+  const detailQueue = input.configuration.discovery.mode === "exact"
+    ? assertExactTargetSeed(input.exactTargets, input.configuration)
+    : [];
+  if (input.configuration.discovery.mode === "targeted") {
+    inventoryQueue.push(...input.configuration.rules.map((rule) => ({
+      kind: "search" as const,
+      ruleId: rule.id,
+      page: 1,
+    })));
+  } else if (input.configuration.discovery.mode === "full") {
+    if (input.configuration.contentTypes.questions || input.configuration.contentTypes.answers) {
+      inventoryQueue.push({ kind: "questions", page: 1 });
+    }
+    if (input.configuration.contentTypes.articles) {
+      inventoryQueue.push({ kind: "articles", page: 1 });
+    }
   }
-  if (input.configuration.contentTypes.articles) {
-    inventoryQueue.push({ kind: "articles", page: 1 });
+  if (input.configuration.discovery.mode !== "exact" && input.exactTargets !== undefined) {
+    throw new TypeError("Exact targets require Exact replacement discovery.");
   }
   return {
     schemaVersion: 1,
@@ -164,11 +179,17 @@ export function createReplacementJob(input: CreateReplacementJobInput): Persiste
     stage: "scan",
     status: "paused",
     inventoryQueue,
-    detailQueue: [],
+    detailQueue,
     progress: {
+      apiRequestsCompleted: 0,
       questionPages: 0,
       answerPages: 0,
       articlePages: 0,
+      searchPages: 0,
+      searchTermsCompleted: 0,
+      indexedReferences: 0,
+      answerBearingQuestionsQueued: 0,
+      zeroAnswerQuestionsSkipped: 0,
       inventoryItems: 0,
       detailsInspected: 0,
       proposalsFound: 0,
@@ -246,6 +267,10 @@ function reduceReplacementJobState(
             occurredAt: event.at,
           },
         }, event.at);
+      }
+      if (job.configuration.discovery.mode === "targeted" &&
+        job.inventoryQueue.length === 0 && job.detailQueue.length === 0) {
+        return touch({ ...job, status: "completed", nextRetryAt: undefined }, event.at);
       }
       if (!canEnterReview(job)) return job;
       return touch({ ...job, stage: "review", status: "completed", nextRetryAt: undefined }, event.at);
@@ -368,6 +393,7 @@ export function getReplacementReviewPage<T>(items: readonly T[], requestedPage: 
 
 export function canEnterReview(job: PersistedContentReplacementJob): boolean {
   return job.stage === "scan" && (job.status === "running" || job.status === "paused") &&
+    job.configuration.discovery.mode !== "targeted" &&
     job.inventoryQueue.length === 0 && job.detailQueue.length === 0;
 }
 
@@ -463,13 +489,19 @@ function reduceInventory(
   result: InventorySliceResult,
   at: string,
 ): PersistedContentReplacementJob {
-  if (job.stage !== "scan" || !sameCursor(job.inventoryQueue[0], cursor)) return job;
+  if (
+    job.stage !== "scan" ||
+    !sameCursor(job.inventoryQueue[0], cursor) ||
+    !isCursorRelevant(cursor, job.configuration) ||
+    !isInventorySliceForCursor(result, cursor, job.configuration)
+  ) return job;
   const remaining = job.inventoryQueue.slice(1);
+  const continuingCursor = result.nextCursor && isCursorRelevant(result.nextCursor, job.configuration)
+    ? [result.nextCursor]
+    : [];
   const inventoryQueue = dedupeByKey([
-    ...remaining,
-    ...(result.nextCursor && isCursorRelevant(result.nextCursor, job.configuration)
-      ? [result.nextCursor]
-      : []),
+    ...(cursor.kind === "search" ? continuingCursor : remaining),
+    ...(cursor.kind === "search" ? remaining : continuingCursor),
     ...(cursor.kind === "questions" && job.configuration.contentTypes.answers
       ? result.answerCursors
       : []),
@@ -479,19 +511,29 @@ function reduceInventory(
     ...Object.keys(job.proposals),
   ]);
   const detailQueue = [...job.detailQueue];
+  let newlyIndexedReferences = 0;
   for (const ref of result.candidates) {
     if (!isRefRelevant(ref, job.configuration)) continue;
     const key = replacementItemKey(ref);
     if (!knownDetailKeys.has(key)) {
       knownDetailKeys.add(key);
       detailQueue.push(ref);
+      if (cursor.kind === "search") newlyIndexedReferences += 1;
     }
   }
   const progress = {
     ...job.progress,
+    apiRequestsCompleted: job.progress.apiRequestsCompleted + result.progress.apiRequestsCompleted,
     questionPages: job.progress.questionPages + (cursor.kind === "questions" ? 1 : 0),
     answerPages: job.progress.answerPages + (cursor.kind === "answers" ? 1 : 0),
     articlePages: job.progress.articlePages + (cursor.kind === "articles" ? 1 : 0),
+    searchPages: job.progress.searchPages + result.progress.searchPages,
+    searchTermsCompleted: job.progress.searchTermsCompleted + result.progress.searchTermsCompleted,
+    indexedReferences: job.progress.indexedReferences + newlyIndexedReferences,
+    answerBearingQuestionsQueued:
+      job.progress.answerBearingQuestionsQueued + result.progress.answerBearingQuestionsQueued,
+    zeroAnswerQuestionsSkipped:
+      job.progress.zeroAnswerQuestionsSkipped + result.progress.zeroAnswerQuestionsSkipped,
     inventoryItems: job.progress.inventoryItems + result.inspectedCount,
   };
   return touch({ ...job, inventoryQueue, detailQueue, progress, nextRetryAt: undefined }, at);
@@ -504,8 +546,9 @@ function reduceDetails(
   at: string,
 ): PersistedContentReplacementJob {
   if (job.stage !== "scan") return job;
-  if (refs.length > 10 || refs.some((ref, index) =>
+  if (refs.length < 1 || refs.length > 10 || refs.some((ref, index) =>
     replacementItemKey(ref) !== replacementItemKey(job.detailQueue[index]))) return job;
+  if (result.inspectedCount !== refs.length) return job;
   const consumed = new Set(refs.map(replacementItemKey));
   if (result.proposals.some((candidate) => !consumed.has(replacementItemKey(candidate.before.ref)))) {
     return job;
@@ -531,6 +574,7 @@ function reduceDetails(
   }
   const progress = {
     ...job.progress,
+    apiRequestsCompleted: job.progress.apiRequestsCompleted + refs.length,
     detailsInspected: job.progress.detailsInspected + result.inspectedCount,
     proposalsFound: Object.keys(proposals).length,
     protectedOccurrences: job.progress.protectedOccurrences + result.protectedOccurrenceCount,
@@ -1255,21 +1299,77 @@ function normalizeOrigin(value: string): string {
   }
 }
 
+function assertExactTargetSeed(
+  exactTargets: readonly ReplacementItemRef[] | undefined,
+  configuration: ReplacementConfiguration,
+): ReplacementItemRef[] {
+  const discovery = configuration.discovery;
+  if (discovery.mode !== "exact") return [];
+  if (!Array.isArray(exactTargets) || exactTargets.length === 0 ||
+    exactTargets.length !== discovery.targetCount || exactTargets.length > MAX_CONTENT_REPLACEMENT_PROPOSALS) {
+    throw new TypeError("Exact replacement targets must match the configured target count.");
+  }
+
+  const seen = new Set<string>();
+  const normalized: ReplacementItemRef[] = [];
+  for (const target of exactTargets) {
+    const canonical = canonicalExactTarget(target);
+    if (!canonical || !isRefRelevant(canonical, configuration)) {
+      throw new TypeError("Exact replacement targets must use selected content types.");
+    }
+    const key = replacementItemKey(canonical);
+    if (seen.has(key)) {
+      throw new TypeError("Exact replacement targets must be canonical and unique.");
+    }
+    seen.add(key);
+    normalized.push(canonical);
+  }
+  return normalized;
+}
+
+function canonicalExactTarget(value: unknown): ReplacementItemRef | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind === "question" && hasExactKeys(record, ["kind", "questionId"]) && isPositiveSafeInteger(record.questionId)) {
+    return { kind: "question", questionId: record.questionId };
+  }
+  if (record.kind === "answer" && hasExactKeys(record, ["kind", "questionId", "answerId"]) &&
+    isPositiveSafeInteger(record.questionId) && isPositiveSafeInteger(record.answerId)) {
+    return { kind: "answer", questionId: record.questionId, answerId: record.answerId };
+  }
+  if (record.kind === "article" && hasExactKeys(record, ["kind", "articleId"]) && isPositiveSafeInteger(record.articleId)) {
+    return { kind: "article", articleId: record.articleId };
+  }
+  return null;
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && Object.keys(value).every((key) => keys.includes(key));
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 function inventoryCursorKey(cursor: InventoryCursor): string {
-  return cursor.kind === "answers"
-    ? `answers:${cursor.questionId}:${cursor.page}`
-    : `${cursor.kind}:${cursor.page}`;
+  if (cursor.kind === "answers") return `answers:${cursor.questionId}:${cursor.page}`;
+  if (cursor.kind === "search") return `search:${cursor.ruleId}:${cursor.page}`;
+  return `${cursor.kind}:${cursor.page}`;
 }
 
 function isCursorRelevant(
   cursor: InventoryCursor,
   configuration: ReplacementConfiguration,
 ): boolean {
+  if (configuration.discovery.mode === "exact") return false;
+  if (configuration.discovery.mode === "targeted") {
+    return cursor.kind === "search" && configuration.rules.some((rule) => rule.id === cursor.ruleId);
+  }
   if (cursor.kind === "questions") {
     return configuration.contentTypes.questions || configuration.contentTypes.answers;
   }
   if (cursor.kind === "answers") return configuration.contentTypes.answers;
-  return configuration.contentTypes.articles;
+  return cursor.kind === "articles" && configuration.contentTypes.articles;
 }
 
 function isRefRelevant(
@@ -1283,6 +1383,39 @@ function isRefRelevant(
 
 function sameCursor(left: InventoryCursor | undefined, right: InventoryCursor): boolean {
   return left !== undefined && inventoryCursorKey(left) === inventoryCursorKey(right);
+}
+
+function isInventorySliceForCursor(
+  result: InventorySliceResult,
+  cursor: InventoryCursor,
+  configuration: ReplacementConfiguration,
+): boolean {
+  if (result.pageKind !== cursor.kind || !isProgressDelta(result.progress)) return false;
+  if (result.nextCursor !== null &&
+    (!isCursorRelevant(result.nextCursor, configuration) || !isContinuousCursor(cursor, result.nextCursor))) {
+    return false;
+  }
+  return true;
+}
+
+function isProgressDelta(value: InventorySliceResult["progress"]): boolean {
+  return isNonNegativeSafeInteger(value.apiRequestsCompleted) &&
+    isNonNegativeSafeInteger(value.searchPages) &&
+    isNonNegativeSafeInteger(value.searchTermsCompleted) &&
+    isNonNegativeSafeInteger(value.answerBearingQuestionsQueued) &&
+    isNonNegativeSafeInteger(value.zeroAnswerQuestionsSkipped);
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isContinuousCursor(current: InventoryCursor, next: InventoryCursor): boolean {
+  if (current.kind !== next.kind || next.page !== current.page + 1) return false;
+  if (current.kind === "answers") {
+    return next.kind === "answers" && next.questionId === current.questionId;
+  }
+  return current.kind !== "search" || (next.kind === "search" && next.ruleId === current.ruleId);
 }
 
 function dedupeByKey<T>(values: readonly T[], keyOf: (value: T) => string): T[] {

@@ -7,6 +7,7 @@ import {
 } from "../writeTools/contentReplacement/rules";
 import type {
   ArticlePermissionsRequest,
+  InventoryCursor,
   ReplacementDiscovery,
   ReplacementConfiguration,
   ReplacementItemRef,
@@ -19,6 +20,7 @@ const MAX_CREDENTIAL_STRING_LENGTH = 65_536;
 const MAX_RULE_ID_LENGTH = 200;
 const MAX_CONTENT_STRING_LENGTH = 1_048_576;
 const MAX_STRING_LIST_ITEMS = 10_000;
+const MAX_INVENTORY_PAGE = 10_000;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export function validateSessionCredentials(value: unknown): SessionCredentials | null {
@@ -172,8 +174,50 @@ export function isSelectedKind(
   return configuration.contentTypes.articles;
 }
 
+export function validateInventoryCursor(value: unknown): InventoryCursor | null {
+  try {
+    if (!isRecord(value)) return null;
+    if ((value.kind === "questions" || value.kind === "articles") &&
+      isExactObject(value, ["kind", "page"]) && isInventoryPage(value.page)) {
+      return { kind: value.kind, page: value.page };
+    }
+    if (value.kind === "answers" &&
+      isExactObject(value, ["kind", "questionId", "page"]) &&
+      isPositiveSafeInteger(value.questionId) && isInventoryPage(value.page)) {
+      return { kind: "answers", questionId: value.questionId, page: value.page };
+    }
+    if (value.kind === "search" &&
+      isExactObject(value, ["kind", "ruleId", "page"]) &&
+      isBoundedString(value.ruleId, 1, MAX_RULE_ID_LENGTH) && isInventoryPage(value.page)) {
+      return { kind: "search", ruleId: value.ruleId, page: value.page };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function isInventoryCursorRelevant(
+  cursor: InventoryCursor,
+  configuration: ReplacementConfiguration,
+): boolean {
+  if (configuration.discovery.mode === "exact") return false;
+  if (configuration.discovery.mode === "targeted") {
+    return cursor.kind === "search" && configuration.rules.some((rule) => rule.id === cursor.ruleId);
+  }
+  if (cursor.kind === "questions") {
+    return configuration.contentTypes.questions || configuration.contentTypes.answers;
+  }
+  if (cursor.kind === "answers") return configuration.contentTypes.answers;
+  return cursor.kind === "articles" && configuration.contentTypes.articles;
+}
+
 export function isSha256Digest(value: unknown): value is string {
   return typeof value === "string" && SHA256_PATTERN.test(value);
+}
+
+function isInventoryPage(value: unknown): value is number {
+  return isPositiveSafeInteger(value) && value <= MAX_INVENTORY_PAGE;
 }
 
 export function isOriginOnlyInstanceUrl(value: string): boolean {

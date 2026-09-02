@@ -268,7 +268,10 @@ function job(proposals: Record<string, PersistedContentReplacementItem>): Persis
     inventoryQueue: [],
     detailQueue: [],
     progress: {
+      apiRequestsCompleted: 0,
       questionPages: 1, answerPages: 1, articlePages: 1, inventoryItems: 3,
+      searchPages: 0, searchTermsCompleted: 0, indexedReferences: 0,
+      answerBearingQuestionsQueued: 0, zeroAnswerQuestionsSkipped: 0,
       detailsInspected: 3, proposalsFound: Object.keys(proposals).length,
       protectedOccurrences: Object.keys(proposals).length, applyCompleted: 0, recoveryCompleted: 0,
     },

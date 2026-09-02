@@ -8,9 +8,10 @@ import {
 } from "../writeTools/contentReplacement/contentApi";
 import {
   checksumRequestModel,
+  createJobFingerprint,
   toReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/proposals";
-import type { ReplacementRequestModel } from "../writeTools/contentReplacement/types";
+import type { ReplacementConfiguration, ReplacementRequestModel } from "../writeTools/contentReplacement/types";
 import {
   handleContentReplacementRecoveryRequest,
   type ContentReplacementRecoveryPayload,
@@ -36,6 +37,14 @@ const postApplyQuestion: ReplacementRequestModel = {
   request: { title: "Rename MyPBM", body: "Use MyPBM.", tags: ["product"] },
 };
 
+const configuration: ReplacementConfiguration = {
+  target: { kind: "enterprise-main" },
+  contentTypes: { questions: true, answers: true, articles: true },
+  discovery: { mode: "full" },
+  rules: [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }],
+  options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -50,10 +59,15 @@ type CreateClient = (
 async function validRecoveryPayload(
   overrides: Partial<ContentReplacementRecoveryPayload> = {},
 ): Promise<ContentReplacementRecoveryPayload> {
+  const effectiveConfiguration = overrides.configuration ?? configuration;
   return {
     action: "preview",
     credentials,
-    jobFingerprint: "1".repeat(64),
+    configuration: effectiveConfiguration,
+    jobFingerprint: await createJobFingerprint({
+      baseUrl: "https://demo.stackenterprise.co",
+      configuration: effectiveConfiguration,
+    }),
     itemRef: priorQuestion.ref,
     priorRequestModel: toReplacementWireRequestModel(priorQuestion),
     expectedPriorRequestChecksum: await checksumRequestModel(priorQuestion),
@@ -92,6 +106,19 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementRecoveryRequest", () => {
+  it("accepts compact Exact discovery without a target array", async () => {
+    const exact: ReplacementConfiguration = {
+      ...configuration,
+      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+    };
+    const response = await handleContentReplacementRecoveryRequest(
+      await validRecoveryPayload({ configuration: exact }),
+      { createClient: () => fakeContentClient() },
+    );
+
+    expect(response.status).toBe(200);
+  });
+
   it("previews a recoverable item read-only with normalized current and prior models", async () => {
     const client = fakeContentClient([{
       ...postApplyQuestion,
@@ -433,14 +460,18 @@ describe("handleContentReplacementRecoveryRequest", () => {
     expect(createClient).not.toHaveBeenCalled();
   });
 
-  it("treats a canonical digest as opaque recovery evidence instead of pretending to recompute it", async () => {
+  it("revalidates the compact configuration fingerprint before recovery reads", async () => {
     const createClient = vi.fn<CreateClient>(() => fakeContentClient());
     const payload = await validRecoveryPayload({ jobFingerprint: "a".repeat(64) });
 
     const response = await handleContentReplacementRecoveryRequest(payload, { createClient });
 
-    expect(response.status).toBe(200);
-    expect(createClient).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Replacement job configuration changed. Start a new scan.",
+    });
+    expect(createClient).not.toHaveBeenCalled();
   });
 
   it("uses the five-second production read cap without a long server wait", async () => {

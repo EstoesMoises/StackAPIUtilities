@@ -128,6 +128,243 @@ function failure(
 }
 
 describe("replacement job state", () => {
+  it("seeds exact mode directly into the bounded detail queue", () => {
+    const targets: ReplacementItemRef[] = [
+      { kind: "question", questionId: 42 },
+      { kind: "answer", questionId: 42, answerId: 87 },
+      { kind: "article", articleId: 9 },
+    ];
+
+    const job = createReplacementJob({
+      id: "exact-job",
+      fingerprint: DIGEST_D,
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: {
+        ...configuration,
+        discovery: { mode: "exact", targetCount: 3, targetDigest: DIGEST_A },
+      },
+      exactTargets: targets,
+      createdAt: AT,
+    } as Parameters<typeof createReplacementJob>[0] & { exactTargets: ReplacementItemRef[] });
+
+    expect(job.inventoryQueue).toEqual([]);
+    expect(job.detailQueue).toEqual(targets);
+  });
+
+  it("rejects exact targets that conflict with selected content types", () => {
+    expect(() => createReplacementJob({
+      id: "exact-job",
+      fingerprint: DIGEST_D,
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: {
+        ...configuration,
+        contentTypes: { questions: false, answers: true, articles: false },
+        discovery: { mode: "exact", targetCount: 1, targetDigest: DIGEST_A },
+      },
+      exactTargets: [{ kind: "question", questionId: 42 }],
+      createdAt: AT,
+    } as Parameters<typeof createReplacementJob>[0] & { exactTargets: ReplacementItemRef[] })).toThrow();
+  });
+
+  it("seeds one targeted cursor per distinct configured source term", () => {
+    const job = createReplacementJob({
+      id: "targeted-job",
+      fingerprint: DIGEST_D,
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: {
+        ...configuration,
+        discovery: { mode: "targeted" },
+        rules: [
+          { id: "rule-1", find: "Old", replace: "New" },
+          { id: "rule-2", find: "Legacy", replace: "Current" },
+        ],
+      },
+      createdAt: AT,
+    });
+
+    expect(job.inventoryQueue).toEqual([
+      { kind: "search", ruleId: "rule-1", page: 1 },
+      { kind: "search", ruleId: "rule-2", page: 1 },
+    ]);
+  });
+
+  it("counts only accepted search references once while advancing a paginated rule", () => {
+    const configurationWithSearch: ReplacementConfiguration = {
+      ...configuration,
+      discovery: { mode: "targeted" },
+      rules: [
+        { id: "rule-1", find: "Old", replace: "New" },
+        { id: "rule-2", find: "Legacy", replace: "Current" },
+      ],
+    };
+    let job = createReplacementJob({
+      id: "targeted-job",
+      fingerprint: DIGEST_D,
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: configurationWithSearch,
+      createdAt: AT,
+    });
+
+    job = reduceReplacementJob(job, {
+      type: "scan/inventory-succeeded",
+      cursor: { kind: "search", ruleId: "rule-1", page: 1 },
+      result: {
+        candidates: [
+          { kind: "question", questionId: 1 },
+          { kind: "article", articleId: 2 },
+          { kind: "question", questionId: 1 },
+        ],
+        answerCursors: [],
+        nextCursor: { kind: "search", ruleId: "rule-1", page: 2 },
+        inspectedCount: 3,
+        pageKind: "search",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 1,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+      at: LATER,
+    });
+
+    expect(job.inventoryQueue).toEqual([
+      { kind: "search", ruleId: "rule-1", page: 2 },
+      { kind: "search", ruleId: "rule-2", page: 1 },
+    ]);
+    expect(job.detailQueue).toEqual([
+      { kind: "question", questionId: 1 },
+      { kind: "article", articleId: 2 },
+    ]);
+    expect(job.progress).toMatchObject({
+      apiRequestsCompleted: 1,
+      searchPages: 1,
+      searchTermsCompleted: 0,
+      indexedReferences: 2,
+    });
+
+    job = reduceReplacementJob(job, {
+      type: "scan/inventory-succeeded",
+      cursor: { kind: "search", ruleId: "rule-1", page: 2 },
+      result: {
+        candidates: [
+          { kind: "question", questionId: 1 },
+          { kind: "answer", questionId: 1, answerId: 3 },
+        ],
+        answerCursors: [],
+        nextCursor: null,
+        inspectedCount: 2,
+        pageKind: "search",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 1,
+          searchTermsCompleted: 1,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+      at: LATER,
+    });
+
+    job = reduceReplacementJob(job, {
+      type: "scan/inventory-succeeded",
+      cursor: { kind: "search", ruleId: "rule-2", page: 1 },
+      result: {
+        candidates: [
+          { kind: "question", questionId: 1 },
+          { kind: "article", articleId: 2 },
+        ],
+        answerCursors: [],
+        nextCursor: null,
+        inspectedCount: 2,
+        pageKind: "search",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 1,
+          searchTermsCompleted: 1,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+      at: LATER,
+    });
+
+    expect(job.detailQueue).toEqual([
+      { kind: "question", questionId: 1 },
+      { kind: "article", articleId: 2 },
+      { kind: "answer", questionId: 1, answerId: 3 },
+    ]);
+    expect(job.progress).toMatchObject({
+      apiRequestsCompleted: 3,
+      searchPages: 3,
+      searchTermsCompleted: 2,
+      indexedReferences: 3,
+    });
+  });
+
+  it("increments request metrics only for the matching current inventory response", () => {
+    const job = createJob({ questions: true, answers: false, articles: false });
+    const stale = reduceReplacementJob(job, {
+      type: "scan/inventory-succeeded",
+      cursor: { kind: "articles", page: 1 },
+      result: {
+        candidates: [],
+        answerCursors: [],
+        nextCursor: null,
+        inspectedCount: 0,
+        pageKind: "articles",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 0,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+      at: LATER,
+    });
+    const accepted = reduceReplacementJob(stale, {
+      type: "scan/inventory-succeeded",
+      cursor: { kind: "questions", page: 1 },
+      result: {
+        candidates: [],
+        answerCursors: [],
+        nextCursor: null,
+        inspectedCount: 0,
+        pageKind: "questions",
+        progress: {
+          apiRequestsCompleted: 1,
+          searchPages: 0,
+          searchTermsCompleted: 0,
+          answerBearingQuestionsQueued: 0,
+          zeroAnswerQuestionsSkipped: 0,
+        },
+      },
+      at: LATER,
+    });
+
+    expect(stale).toBe(job);
+    expect(accepted.progress).toMatchObject({ apiRequestsCompleted: 1 });
+  });
+
+  it("does not let partial targeted discovery enter Review", () => {
+    const job = createReplacementJob({
+      id: "targeted-job",
+      fingerprint: DIGEST_D,
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: { ...configuration, discovery: { mode: "targeted" } },
+      createdAt: AT,
+    });
+    const drained = { ...job, inventoryQueue: [], detailQueue: [] };
+
+    expect(canEnterReview(drained)).toBe(false);
+    expect(reduceReplacementJob(drained, { type: "scan/queues-drained", at: LATER })).toMatchObject({
+      stage: "scan",
+      status: "completed",
+    });
+  });
+
   it("caps the next detail request by the five remaining proposal slots", () => {
     const refs = Array.from({ length: 10 }, (_, index) => ({
       kind: "question" as const,

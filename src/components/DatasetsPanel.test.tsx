@@ -223,7 +223,10 @@ function replacementJob(): PersistedContentReplacementJob {
     inventoryQueue: [],
     detailQueue: [],
     progress: {
+      apiRequestsCompleted: 0,
       questionPages: 1, answerPages: 1, articlePages: 1, inventoryItems: 1,
+      searchPages: 0, searchTermsCompleted: 0, indexedReferences: 0,
+      answerBearingQuestionsQueued: 0, zeroAnswerQuestionsSkipped: 0,
       detailsInspected: 1, proposalsFound: 1, protectedOccurrences: 0,
       applyCompleted: 0, recoveryCompleted: 0,
     },

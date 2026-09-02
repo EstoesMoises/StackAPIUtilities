@@ -76,8 +76,14 @@ const JOB_KEYS = [
   "recoverySnapshotStatus", "activeOperation", "operationError", "nextRetryAt", "failure", "createdAt", "updatedAt",
 ] as const;
 const PROGRESS_KEYS = [
-  "questionPages", "answerPages", "articlePages", "inventoryItems", "detailsInspected",
+  "apiRequestsCompleted", "questionPages", "answerPages", "articlePages", "searchPages",
+  "searchTermsCompleted", "indexedReferences", "answerBearingQuestionsQueued", "zeroAnswerQuestionsSkipped",
+  "inventoryItems", "detailsInspected",
   "proposalsFound", "protectedOccurrences", "applyCompleted", "recoveryCompleted",
+] as const;
+const LEGACY_PROGRESS_COUNTER_KEYS = [
+  "apiRequestsCompleted", "searchPages", "searchTermsCompleted", "indexedReferences",
+  "answerBearingQuestionsQueued", "zeroAnswerQuestionsSkipped",
 ] as const;
 const SUMMARY_KEYS = [
   "id", "sortKey", "baseUrl", "stage", "status", "mappingCount", "proposedPostCount",
@@ -690,6 +696,14 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
     (!job.configuration.contentTypes.articles && job.progress.articlePages !== 0) ||
     (!(job.configuration.contentTypes.questions || job.configuration.contentTypes.answers) &&
       job.progress.questionPages !== 0) ||
+    (job.configuration.discovery.mode !== "targeted" &&
+      (job.progress.searchPages !== 0 || job.progress.searchTermsCompleted !== 0 ||
+        job.progress.indexedReferences !== 0)) ||
+    (job.configuration.discovery.mode !== "full" &&
+      (job.progress.answerBearingQuestionsQueued !== 0 || job.progress.zeroAnswerQuestionsSkipped !== 0)) ||
+    (job.configuration.discovery.mode === "exact" &&
+      (job.progress.apiRequestsCompleted !== job.progress.detailsInspected ||
+        job.progress.detailsInspected + job.detailQueue.length !== job.configuration.discovery.targetCount)) ||
     job.inventoryQueue.some((cursor) => !isInventoryCursorRelevant(cursor, job.configuration)) ||
     job.detailQueue.some((ref) => !isItemRefRelevant(ref, job.configuration)) ||
     items.some((item) => !isItemRefRelevant(item.proposal.before.ref, job.configuration))
@@ -999,11 +1013,15 @@ function isInventoryCursorRelevant(
   cursor: InventoryCursor,
   configuration: PersistedContentReplacementJob["configuration"],
 ): boolean {
+  if (configuration.discovery.mode === "exact") return false;
+  if (configuration.discovery.mode === "targeted") {
+    return cursor.kind === "search" && configuration.rules.some((rule) => rule.id === cursor.ruleId);
+  }
   if (cursor.kind === "questions") {
     return configuration.contentTypes.questions || configuration.contentTypes.answers;
   }
   if (cursor.kind === "answers") return configuration.contentTypes.answers;
-  return configuration.contentTypes.articles;
+  return cursor.kind === "articles" && configuration.contentTypes.articles;
 }
 
 function isItemRefRelevant(
@@ -1460,9 +1478,13 @@ function parseFailure(value: unknown): PersistedContentReplacementFailure {
 }
 
 function parseProgress(value: unknown): PersistedContentReplacementProgress {
-  const record = exactObject(value, PROGRESS_KEYS);
+  const record = exactObject(value, PROGRESS_KEYS, LEGACY_PROGRESS_COUNTER_KEYS);
   const output = {} as Record<(typeof PROGRESS_KEYS)[number], number>;
-  for (const key of PROGRESS_KEYS) output[key] = count(record[key]);
+  for (const key of PROGRESS_KEYS) {
+    output[key] = record[key] === undefined && LEGACY_PROGRESS_COUNTER_KEYS.includes(key as never)
+      ? 0
+      : count(record[key]);
+  }
   return output;
 }
 
@@ -1477,6 +1499,14 @@ function parseInventoryCursor(value: unknown): InventoryCursor {
     return {
       kind: "answers",
       questionId: positiveInteger(record.questionId),
+      page: inventoryPage(record.page),
+    };
+  }
+  if (record.kind === "search") {
+    exactObject(record, ["kind", "ruleId", "page"]);
+    return {
+      kind: "search",
+      ruleId: boundedString(record.ruleId, 1, 200),
       page: inventoryPage(record.page),
     };
   }
