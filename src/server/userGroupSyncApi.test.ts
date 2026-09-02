@@ -234,6 +234,31 @@ describe("handleUserGroupSyncRequest", () => {
     expect(createClient).not.toHaveBeenCalled();
   });
 
+  it("rejects Stack Enterprise hostname suffix attacks", async () => {
+    const createClient = vi.fn();
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: {
+          ...credentials,
+          baseUrl: "https://stackenterprise.co.evil.example",
+        },
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Enterprise user group sync requires a Stack Enterprise instance URL.",
+    });
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
   it("rejects local HTTP targets as Enterprise write targets", async () => {
     const createClient = vi.fn();
 
