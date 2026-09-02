@@ -2715,6 +2715,7 @@ function contentReplacementSummary(job: PersistedContentReplacementJob): Content
     proposedPostCount: Object.keys(job.proposals).length,
     recoverySnapshotStatus: job.recoverySnapshotStatus,
     scanCompatibility: job.scanCompatibility,
+    activeOperationKind: job.activeOperation?.kind ?? "none",
   };
 }
 

@@ -63,9 +63,11 @@ async function validApplyPayload(
   return {
     credentials,
     configuration: effectiveConfiguration,
+    scanCompatibility: "current",
     jobFingerprint: await createJobFingerprint({
       baseUrl: "https://demo.stackenterprise.co",
       configuration: effectiveConfiguration,
+      scanCompatibility: "current",
     }),
     itemRef: beforeQuestion.ref,
     expectedScannedRequestChecksum: proposal.scannedRequestChecksum,
@@ -111,6 +113,31 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementApplyRequest", () => {
+  it("requires current compatibility on a current-bound apply request", async () => {
+    const response = await handleContentReplacementApplyRequest({
+      ...(await validApplyPayload()),
+      scanCompatibility: "current",
+    }, { createClient: () => fakeContentClient() });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects legacy compatibility before creating an apply client", async () => {
+    const createClient = vi.fn<CreateClient>();
+    const response = await handleContentReplacementApplyRequest({
+      ...(await validApplyPayload()),
+      scanCompatibility: "legacy-restart-required",
+      jobFingerprint: await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration,
+        scanCompatibility: "legacy-restart-required",
+      }),
+    }, { createClient });
+
+    expect(response.status).toBe(400);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
   it("accepts compact Exact discovery without a target array", async () => {
     const exact: ReplacementConfiguration = {
       ...configuration,

@@ -85,10 +85,18 @@ function ContentReplacementApplyStepView({
   const items = entries.map(([, item]) => item);
   const summary = summarizeReplacementJob(job);
   const selectedByKind = countSelectedByKind(entries);
+  const successfulEntries = entries.filter(([, item]) => hasObservedApplySuccess(item));
   const applyStarted = entries.some(([, item]) => item.attemptCount > 0 || isApplyTerminal(item));
-  const runningApply = job.stage === "apply" && job.status === "running";
-  const pausedApply = job.stage === "apply" && job.status === "paused" && applyStarted;
-  const showConfirmation = job.stage === "apply" && !runningApply && !applyStarted;
+  const currentApply = job.stage === "apply" && job.scanCompatibility === "current";
+  const legacyApply = job.stage === "apply" && job.scanCompatibility === "legacy-restart-required";
+  const hasFrozenApplyItems = entries.some(([, item]) =>
+    item.status === "pending" || item.status === "ready-to-apply" || item.status === "applying"
+  );
+  const legacyRecoveryOnly = job.scanCompatibility === "legacy-restart-required" &&
+    successfulEntries.length > 0 && (legacyApply || hasFrozenApplyItems);
+  const runningApply = currentApply && job.status === "running";
+  const pausedApply = currentApply && job.status === "paused" && applyStarted;
+  const showConfirmation = currentApply && !runningApply && !applyStarted;
   const confirmationKey = useMemo(
     () => showConfirmation ? applyScopeKey(job) : null,
     [job, showConfirmation],
@@ -116,7 +124,6 @@ function ContentReplacementApplyStepView({
   ).length;
   const applyingEntry = entries.find(([, item]) => item.status === "applying");
 
-  const successfulEntries = entries.filter(([, item]) => hasObservedApplySuccess(item));
   const selectedRecoveryEntries = successfulEntries.filter(([key]) => recoverySelection[key] !== false);
   const selectedRecoveryKeys = selectedRecoveryEntries.map(([key]) => key);
   const previewedEntries = selectedRecoveryEntries.filter(([, item]) => item.recovery?.preview);
@@ -141,7 +148,10 @@ function ContentReplacementApplyStepView({
     controller.credentialReadiness.valid && !recoveryOperationLocked && !controller.busy &&
     !actionPending && !controller.storageError;
 
-  const filteredEntries = entries.filter(([key, item]) =>
+  const resultEntries = legacyRecoveryOnly
+    ? entries.filter(([, item]) => isApplyTerminal(item) || item.status === "excluded")
+    : entries;
+  const filteredEntries = resultEntries.filter(([key, item]) =>
     matchesResultFilter(item, resultFilter) && matchesSearch(key, item, resultSearch)
   );
   const pageCount = Math.max(1, Math.ceil(filteredEntries.length / PAGE_SIZE));
@@ -265,6 +275,13 @@ function ContentReplacementApplyStepView({
         </>
       )}
 
+      {legacyApply && !legacyRecoveryOnly && (
+        <header className="content-replacement-step-header">
+          <h2 id="content-replacement-apply-heading">New scan required</h2>
+          <p>This legacy job cannot resume or begin live writes. Start a new scan with the current discovery modes.</p>
+        </header>
+      )}
+
       {(runningApply || pausedApply) && (
         <section aria-labelledby="content-replacement-apply-heading">
           <header className="content-replacement-step-header">
@@ -314,13 +331,18 @@ function ContentReplacementApplyStepView({
         </section>
       )}
 
-      {(job.stage === "results" || job.stage === "recovery") && (
+      {(job.stage === "results" || job.stage === "recovery" || legacyRecoveryOnly) && (
         <>
           <header className="content-replacement-step-header">
-            <h2 id="content-replacement-apply-heading">Apply results</h2>
-            <p>Each post retains its own observed result. Failed and stale posts were not described as rolled back.</p>
+            <h2 id="content-replacement-apply-heading">{legacyRecoveryOnly ? "Prior apply results" : "Apply results"}</h2>
+            <p>{legacyRecoveryOnly
+              ? "This legacy job is recovery-only. Unfinished writes remain stopped."
+              : "Each post retains its own observed result. Failed and stale posts were not described as rolled back."}</p>
           </header>
-          <ResultSummary job={job} />
+          <ResultSummary
+            items={resultEntries.map(([, item]) => item)}
+            protectedOccurrences={job.progress.protectedOccurrences}
+          />
           {(controller.storageError || controller.operationError) && (
             <div className="s-notice s-notice__warning" role="alert">
               <strong>Operation needs attention.</strong> {controller.storageError ?? controller.operationError}
@@ -446,8 +468,14 @@ function ApplyScopeSummary({
   );
 }
 
-function ResultSummary({ job }: { job: PersistedContentReplacementJob }) {
-  const results = projectResultSummary(job);
+function ResultSummary({
+  items,
+  protectedOccurrences,
+}: {
+  items: readonly PersistedContentReplacementItem[];
+  protectedOccurrences: number;
+}) {
+  const results = projectResultSummary(items, protectedOccurrences);
   return (
     <section role="region" aria-label="Apply result summary">
       <dl className="content-replacement-result-counts">
@@ -898,7 +926,10 @@ function projectResultOutcome(item: PersistedContentReplacementItem): ResultOutc
   return "network-api";
 }
 
-function projectResultSummary(job: PersistedContentReplacementJob) {
+function projectResultSummary(
+  items: readonly PersistedContentReplacementItem[],
+  protectedOccurrences: number,
+) {
   const counts = {
     updated: 0,
     alreadyApplied: 0,
@@ -908,12 +939,12 @@ function projectResultSummary(job: PersistedContentReplacementJob) {
     validation: 0,
     network: 0,
     failed: 0,
-    protectedOnly: job.progress.protectedOccurrences,
+    protectedOnly: protectedOccurrences,
     recovered: 0,
     recoveryConflict: 0,
     recoveryFailed: 0,
   };
-  for (const item of Object.values(job.proposals)) {
+  for (const item of items) {
     const outcome = projectResultOutcome(item);
     if (outcome === "updated") counts.updated += 1;
     else if (outcome === "already-applied") counts.alreadyApplied += 1;

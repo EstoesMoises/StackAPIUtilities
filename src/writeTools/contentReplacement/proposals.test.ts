@@ -100,6 +100,7 @@ describe("replacement proposals", () => {
   it("fingerprints instance, target, rules, options, and content types", async () => {
     const base = {
       baseUrl: "https://demo.stackenterprise.co",
+      scanCompatibility: "current" as const,
       configuration: {
         target: { kind: "enterprise-main" as const },
         contentTypes: { questions: true, answers: true, articles: true },
@@ -150,9 +151,14 @@ describe("replacement proposals", () => {
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     };
 
-    await expect(createJobFingerprint({ baseUrl: " https://demo.stackenterprise.co/path ", configuration })).resolves.toBe(
+    await expect(createJobFingerprint({
+      baseUrl: " https://demo.stackenterprise.co/path ",
+      configuration,
+      scanCompatibility: "current",
+    })).resolves.toBe(
       await createJobFingerprint({
         baseUrl: "https://demo.stackenterprise.co",
+        scanCompatibility: "current",
         configuration: {
           ...configuration,
           rules: [
@@ -174,12 +180,37 @@ describe("replacement proposals", () => {
     };
     const exactSelection = await createExactTargetSelection([{ kind: "question", questionId: 42 }]);
 
-    await expect(createJobFingerprint({ baseUrl: "https://demo.stackenterprise.co", configuration: targeted })).resolves.not.toBe(
+    await expect(createJobFingerprint({
+      baseUrl: "https://demo.stackenterprise.co",
+      configuration: targeted,
+      scanCompatibility: "current",
+    })).resolves.not.toBe(
       await createJobFingerprint({
         baseUrl: "https://demo.stackenterprise.co",
         configuration: { ...targeted, discovery: exactSelection.discovery },
+        scanCompatibility: "current",
       }),
     );
+  });
+
+  it("binds scan compatibility provenance into job fingerprints", async () => {
+    const configuration = {
+      target: { kind: "enterprise-main" as const },
+      contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" as const },
+      rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+    };
+
+    await expect(createJobFingerprint({
+      baseUrl: "https://demo.stackenterprise.co",
+      configuration,
+      scanCompatibility: "current",
+    })).resolves.not.toBe(await createJobFingerprint({
+      baseUrl: "https://demo.stackenterprise.co",
+      configuration,
+      scanCompatibility: "legacy-restart-required",
+    }));
   });
 
   it("returns no proposal when neither editable field changes", async () => {

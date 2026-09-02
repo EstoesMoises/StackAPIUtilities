@@ -47,6 +47,7 @@ const MAX_SCAN_CUMULATIVE_RETRY_WAIT_SECONDS = 10;
 export type ContentReplacementScanPayload = {
   credentials: SessionCredentials;
   configuration: ReplacementConfiguration;
+  scanCompatibility: "current";
   jobFingerprint: string;
 } & (
   | { action: "inventory"; cursor: InventoryCursor }
@@ -104,6 +105,7 @@ export async function handleContentReplacementScanRequest(
   const expectedFingerprint = await createJobFingerprint({
     baseUrl: writeContext.instance.baseUrl,
     configuration: validated.configuration,
+    scanCompatibility: validated.scanCompatibility,
   });
   if (validated.jobFingerprint !== expectedFingerprint) {
     return browserJsonResponse({ ok: false, error: FINGERPRINT_MISMATCH_MESSAGE }, 409);
@@ -201,7 +203,8 @@ function validateScanPayload(value: unknown): ContentReplacementScanPayload | nu
   if (!isRecord(value) || !isExactObject(value, commonPayloadKeys(value.action))) return null;
   const credentials = validateSharedSessionCredentials(value.credentials);
   const configuration = validateSharedConfiguration(value.configuration);
-  if (!configuration || typeof value.jobFingerprint !== "string" || value.jobFingerprint.length === 0) {
+  if (!configuration || value.scanCompatibility !== "current" ||
+    typeof value.jobFingerprint !== "string" || value.jobFingerprint.length === 0) {
     return null;
   }
 
@@ -211,6 +214,7 @@ function validateScanPayload(value: unknown): ContentReplacementScanPayload | nu
       action: "inventory",
       credentials,
       configuration,
+      scanCompatibility: "current",
       jobFingerprint: value.jobFingerprint,
       cursor,
     };
@@ -227,6 +231,7 @@ function validateScanPayload(value: unknown): ContentReplacementScanPayload | nu
       action: "details",
       credentials,
       configuration,
+      scanCompatibility: "current",
       jobFingerprint: value.jobFingerprint,
       refs: value.refs,
     };
@@ -237,10 +242,10 @@ function validateScanPayload(value: unknown): ContentReplacementScanPayload | nu
 
 function commonPayloadKeys(action: unknown): readonly string[] {
   if (action === "inventory") {
-    return ["action", "credentials", "configuration", "jobFingerprint", "cursor"];
+    return ["action", "credentials", "configuration", "scanCompatibility", "jobFingerprint", "cursor"];
   }
   if (action === "details") {
-    return ["action", "credentials", "configuration", "jobFingerprint", "refs"];
+    return ["action", "credentials", "configuration", "scanCompatibility", "jobFingerprint", "refs"];
   }
   return [];
 }

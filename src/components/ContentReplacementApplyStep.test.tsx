@@ -176,6 +176,35 @@ describe("ContentReplacementApplyStep", () => {
     expect(screen.getByRole("button", { name: "Resume apply" })).toBeDisabled();
   });
 
+  it("offers recovery but never Apply resume for a migrated partial write with successful evidence", async () => {
+    const user = userEvent.setup();
+    const partial = applyJob({
+      scanCompatibility: "legacy-restart-required",
+      proposals: {
+        "question:42": item("question", 42, "applied", { resultKind: "applied" }),
+        "answer:42:84": item("answer", 84, "ready-to-apply", { questionId: 42 }),
+      },
+      progress: { ...applyJob().progress, applyCompleted: 1 },
+    });
+    const partialController = controller(partial);
+    const view = render(<ContentReplacementApplyStep controller={partialController} />);
+
+    expect(screen.queryByRole("button", { name: "Resume apply" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Guarded recovery" })).toBeVisible();
+    const summary = screen.getByRole("region", { name: "Apply result summary" });
+    expect(summary).toBeVisible();
+    expect(within(summary).getByText("Network/API failures").parentElement).toHaveTextContent("0");
+    expect(screen.queryByText("Answer 84")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Preview recovery for 1 post" }));
+    expect(partialController.prepareRecovery).toHaveBeenCalledWith(["question:42"]);
+
+    view.rerender(<ContentReplacementApplyStep controller={controller(applyJob({
+      scanCompatibility: "legacy-restart-required",
+    }))} />);
+    expect(screen.queryByRole("heading", { name: "Guarded recovery" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Apply changes|Resume apply/ })).not.toBeInTheDocument();
+  });
+
   it("does not traverse full request bodies during incremental large apply progress", () => {
     const apply = trackedBodyJob(2_000, false);
     const applyView = render(<ContentReplacementApplyStep controller={controller(apply.current)} />);

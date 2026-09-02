@@ -60,13 +60,16 @@ async function validRecoveryPayload(
   overrides: Partial<ContentReplacementRecoveryPayload> = {},
 ): Promise<ContentReplacementRecoveryPayload> {
   const effectiveConfiguration = overrides.configuration ?? configuration;
+  const scanCompatibility = overrides.scanCompatibility ?? "current";
   return {
     action: "preview",
     credentials,
     configuration: effectiveConfiguration,
+    scanCompatibility,
     jobFingerprint: await createJobFingerprint({
       baseUrl: "https://demo.stackenterprise.co",
       configuration: effectiveConfiguration,
+      scanCompatibility,
     }),
     itemRef: priorQuestion.ref,
     priorRequestModel: toReplacementWireRequestModel(priorQuestion),
@@ -106,6 +109,38 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementRecoveryRequest", () => {
+  it("authorizes legacy recovery with compatibility-bound fingerprint provenance", async () => {
+    const payload = await validRecoveryPayload();
+    const legacyPayload = {
+      ...payload,
+      scanCompatibility: "legacy-restart-required",
+      jobFingerprint: await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration,
+        scanCompatibility: "legacy-restart-required",
+      }),
+    };
+
+    const response = await handleContentReplacementRecoveryRequest(legacyPayload, {
+      createClient: () => fakeContentClient(),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects a field-only compatibility flip before recovery reads", async () => {
+    const createClient = vi.fn<CreateClient>();
+    const payload = await validRecoveryPayload();
+
+    const response = await handleContentReplacementRecoveryRequest({
+      ...payload,
+      scanCompatibility: "legacy-restart-required",
+    }, { createClient });
+
+    expect(response.status).toBe(409);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
   it("accepts compact Exact discovery without a target array", async () => {
     const exact: ReplacementConfiguration = {
       ...configuration,

@@ -109,6 +109,7 @@ async function scannedReviewJob(...proposals: ReplacementProposal[]): Promise<Pe
   const fingerprint = await createJobFingerprint({
     baseUrl: "https://example.stackenterprise.co",
     configuration,
+    scanCompatibility: "current",
   });
   let job = createReplacementJob({
     id: "job-1", fingerprint, baseUrl: "https://example.stackenterprise.co",
@@ -1101,6 +1102,7 @@ describe("useContentReplacementJob", () => {
       fingerprint: await createJobFingerprint({
         baseUrl: "https://example.stackenterprise.co",
         configuration: targeted,
+        scanCompatibility: "current",
       }),
       baseUrl: "https://example.stackenterprise.co",
       configuration: targeted,
@@ -1138,6 +1140,7 @@ describe("useContentReplacementJob", () => {
       fingerprint: await createJobFingerprint({
         baseUrl: "https://example.stackenterprise.co",
         configuration: exact,
+        scanCompatibility: "current",
       }),
       baseUrl: "https://example.stackenterprise.co",
       configuration: exact,
@@ -1173,6 +1176,7 @@ describe("useContentReplacementJob", () => {
       fingerprint: await createJobFingerprint({
         baseUrl: "https://example.stackenterprise.co",
         configuration: fullAnswers,
+        scanCompatibility: "current",
       }),
       baseUrl: "https://example.stackenterprise.co",
       configuration: fullAnswers,
@@ -1253,10 +1257,25 @@ describe("useContentReplacementJob", () => {
     expect(hook.result.current.job).toEqual(initial);
   });
 
-  it("keeps guarded recovery available for a legacy job with successful write evidence", async () => {
+  it("keeps guarded recovery available for a legacy partial Apply without resuming untouched writes", async () => {
     const proposal = await questionProposal();
-    const initial = await appliedJob(proposal);
+    const untouchedProposal = await questionProposal(2);
+    let initial = prepareJob(await scannedReviewJob(proposal, untouchedProposal), AT);
+    initial = reduceReplacementJob(initial, { type: "apply/start", at: AT });
+    initial = reduceReplacementJob(initial, { type: "apply/item-started", itemKey: "question:1", at: AT });
+    initial = reduceReplacementJob(initial, {
+      type: "apply/item-finished",
+      itemKey: "question:1",
+      result: { status: "updated", observedRequestChecksum: proposal.proposedRequestChecksum },
+      at: AT,
+    });
+    initial = reduceReplacementJob(initial, { type: "run/pause", at: LATER });
     initial.scanCompatibility = "legacy-restart-required";
+    initial.fingerprint = await createJobFingerprint({
+      baseUrl: initial.baseUrl,
+      configuration: initial.configuration,
+      scanCompatibility: "legacy-restart-required",
+    });
     const currentWireModel = {
       kind: "question" as const,
       ref: proposal.before.ref,
@@ -1280,6 +1299,7 @@ describe("useContentReplacementJob", () => {
     const payload = JSON.parse(fetcher.mock.calls[0][1].body as string);
     expect(payload).toMatchObject({
       action: "preview",
+      scanCompatibility: "legacy-restart-required",
       configuration: { discovery: { mode: "full" } },
       jobFingerprint: initial.fingerprint,
       expectedPriorRequestChecksum: proposal.scannedRequestChecksum,
@@ -1287,6 +1307,10 @@ describe("useContentReplacementJob", () => {
     });
     expect(hook.result.current.job?.proposals["question:1"].recovery?.preview?.status)
       .toBe("recoverable");
+    expect(hook.result.current.job).toMatchObject({
+      stage: "recovery",
+      proposals: { "question:2": { status: "ready-to-apply", attemptCount: 0 } },
+    });
   });
 
   it("creates a replacement job without mutating the old paused job during a switch", async () => {

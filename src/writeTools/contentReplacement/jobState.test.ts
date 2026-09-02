@@ -468,6 +468,7 @@ describe("replacement job state", () => {
     configured.fingerprint = await createJobFingerprint({
       baseUrl: configured.baseUrl,
       configuration: configured.configuration,
+      scanCompatibility: "current",
     });
     const canonical = await Promise.all(refs.map((ref) => buildReplacementProposal({
       kind: "answer",

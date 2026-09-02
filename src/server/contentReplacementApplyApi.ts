@@ -44,6 +44,7 @@ const MAX_CUMULATIVE_RETRY_WAIT_SECONDS = 10;
 export interface ContentReplacementApplyPayload {
   credentials: SessionCredentials;
   configuration: ReplacementConfiguration;
+  scanCompatibility: "current";
   jobFingerprint: string;
   itemRef: ReplacementItemRef;
   expectedScannedRequestChecksum: string;
@@ -90,6 +91,7 @@ export async function handleContentReplacementApplyRequest(
   const expectedFingerprint = await createJobFingerprint({
     baseUrl: writeContext.instance.baseUrl,
     configuration: validated.configuration,
+    scanCompatibility: validated.scanCompatibility,
   });
   if (validated.jobFingerprint !== expectedFingerprint) {
     return browserJsonResponse({ ok: false, error: FINGERPRINT_MISMATCH_MESSAGE }, 409);
@@ -188,7 +190,7 @@ function validateApplyPayload(value: unknown): ContentReplacementApplyPayload | 
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
     if (!isExactObject(record, [
-      "credentials", "configuration", "jobFingerprint", "itemRef",
+      "credentials", "configuration", "scanCompatibility", "jobFingerprint", "itemRef",
       "expectedScannedRequestChecksum", "expectedProposedRequestChecksum",
       "expectedProposalFingerprint",
     ])) return null;
@@ -196,7 +198,8 @@ function validateApplyPayload(value: unknown): ContentReplacementApplyPayload | 
     const configuration = validateConfiguration(record.configuration);
     const itemRef = validateItemRef(record.itemRef);
     if (
-      !credentials || !configuration || !itemRef || !isSelectedKind(itemRef, configuration) ||
+      !credentials || !configuration || record.scanCompatibility !== "current" ||
+      !itemRef || !isSelectedKind(itemRef, configuration) ||
       !isSha256Digest(record.jobFingerprint) ||
       !isSha256Digest(record.expectedScannedRequestChecksum) ||
       !isSha256Digest(record.expectedProposedRequestChecksum) ||
@@ -205,6 +208,7 @@ function validateApplyPayload(value: unknown): ContentReplacementApplyPayload | 
     return {
       credentials,
       configuration,
+      scanCompatibility: "current",
       jobFingerprint: record.jobFingerprint,
       itemRef,
       expectedScannedRequestChecksum: record.expectedScannedRequestChecksum,

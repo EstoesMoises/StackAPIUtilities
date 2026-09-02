@@ -34,7 +34,7 @@ import type {
 } from "../writeTools/contentReplacement/types";
 
 const DATABASE_NAME = "stack-api-content-replacement";
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const STORE_NAME = "jobs";
 const SUMMARY_INDEX_NAME = "by-summary";
 const SUMMARY_INDEX_PATH = [
@@ -47,6 +47,7 @@ const SUMMARY_INDEX_PATH = [
   "summary.proposedPostCount",
   "summary.recoverySnapshotStatus",
   "summary.scanCompatibility",
+  "summary.activeOperationKind",
 ] as const;
 const MAX_SUMMARY_PAGE_SIZE = 100;
 const MAX_SUMMARY_OFFSET = 1_000_000;
@@ -93,7 +94,7 @@ const LEGACY_PROGRESS_KEYS = [
 ] as const;
 const SUMMARY_KEYS = [
   "id", "sortKey", "baseUrl", "stage", "status", "mappingCount", "proposedPostCount",
-  "recoverySnapshotStatus", "scanCompatibility", "updatedAt",
+  "recoverySnapshotStatus", "scanCompatibility", "activeOperationKind", "updatedAt",
 ] as const;
 
 export interface ContentReplacementJobSummary {
@@ -105,6 +106,7 @@ export interface ContentReplacementJobSummary {
   proposedPostCount: number;
   recoverySnapshotStatus: PersistedContentReplacementJob["recoverySnapshotStatus"];
   scanCompatibility: PersistedContentReplacementJob["scanCompatibility"];
+  activeOperationKind: NonNullable<PersistedContentReplacementJob["activeOperation"]>["kind"] | "none";
   updatedAt: string;
 }
 
@@ -287,6 +289,7 @@ function summaryFromJob(job: PersistedContentReplacementJob): StoredContentRepla
     proposedPostCount: job.progress.proposalsFound,
     recoverySnapshotStatus: job.recoverySnapshotStatus,
     scanCompatibility: job.scanCompatibility,
+    activeOperationKind: job.activeOperation?.kind ?? "none",
     updatedAt: job.updatedAt,
   };
 }
@@ -307,6 +310,7 @@ function summaryFromLegacyJob(value: unknown): StoredContentReplacementJobSummar
   const scanCompatibility = schemaVersion === 1
     ? "legacy-restart-required"
     : ownDataProperty(source, "scanCompatibility");
+  const activeOperationKind = summaryActiveOperationKind(source);
   if (!isJobId(id) || typeof baseUrl !== "string" || normalizeEnterpriseBaseUrl(baseUrl) !== baseUrl ||
     !isStage(stage) || !isStatus(status) || !isRecoverySnapshotStatus(recoverySnapshotStatus) ||
     (schemaVersion !== 1 && schemaVersion !== 2) || !isScanCompatibility(scanCompatibility) ||
@@ -324,8 +328,22 @@ function summaryFromLegacyJob(value: unknown): StoredContentReplacementJobSummar
     proposedPostCount: proposedPostCount as number,
     recoverySnapshotStatus,
     scanCompatibility,
+    activeOperationKind,
     updatedAt,
   };
+}
+
+function summaryActiveOperationKind(source: unknown): ContentReplacementJobSummary["activeOperationKind"] {
+  if (!source || typeof source !== "object" || Array.isArray(source)) throw corruptJob();
+  const descriptor = Object.getOwnPropertyDescriptor(source, "activeOperation");
+  if (!descriptor) return "none";
+  if (!("value" in descriptor) || !descriptor.enumerable) throw corruptJob();
+  if (descriptor.value === undefined) return "none";
+  const kind = ownDataProperty(descriptor.value, "kind");
+  if (kind !== "stale-rescan" && kind !== "recovery-preview" && kind !== "recovery-apply") {
+    throw corruptJob();
+  }
+  return kind;
 }
 
 function ownDataProperty(value: unknown, key: string): unknown {
@@ -377,12 +395,14 @@ function summaryFromIndexEntry(key: IDBValidKey, primaryKey: IDBValidKey): Conte
   const [
     sortKey, updatedAtValue, baseUrl, stage, status, mappingCount, proposedPostCount,
     recoverySnapshotStatus, scanCompatibility,
+    activeOperationKind,
   ] = key;
   const updatedAt = timestamp(updatedAtValue);
   if (sortKey !== summarySortKey(updatedAt, primaryKey) ||
     typeof baseUrl !== "string" || normalizeEnterpriseBaseUrl(baseUrl) !== baseUrl ||
     !isStage(stage) || !isStatus(status) || !isRecoverySnapshotStatus(recoverySnapshotStatus) ||
     !isScanCompatibility(scanCompatibility) ||
+    !isSummaryActiveOperationKind(activeOperationKind) ||
     !Number.isSafeInteger(mappingCount) || (mappingCount as number) < 0 ||
     !Number.isSafeInteger(proposedPostCount) || (proposedPostCount as number) < 0) throw corruptJob();
   return {
@@ -394,6 +414,7 @@ function summaryFromIndexEntry(key: IDBValidKey, primaryKey: IDBValidKey): Conte
     proposedPostCount: proposedPostCount as number,
     recoverySnapshotStatus,
     scanCompatibility,
+    activeOperationKind,
     updatedAt,
   };
 }
@@ -481,6 +502,7 @@ async function validateCurrentContentReplacementJob(
     const expectedFingerprint = await createJobFingerprint({
       baseUrl: normalized.baseUrl,
       configuration: normalized.configuration,
+      scanCompatibility: normalized.scanCompatibility,
     });
     if (expectedFingerprint !== normalized.fingerprint) throw corruptJob();
     const items = Object.values(normalized.proposals);
@@ -530,23 +552,27 @@ async function migrateLegacyContentReplacementJob(value: unknown): Promise<Persi
       throw corruptJob();
     }
 
-    const proposalEntries = await Promise.all(Object.entries(normalized.proposals).map(async ([key, item]) => [
-      key,
-      await migrateLegacyItem(item, configuration, normalized.updatedAt),
-    ] as const));
+    const proposalEntries = await mapCanonicalEntries(
+      Object.entries(normalized.proposals),
+      ([key, item]) => migrateLegacyItem(item, configuration, normalized.updatedAt)
+        .then((migrated) => [key, migrated] as const),
+    );
     let activeOperation = normalized.activeOperation;
     if (activeOperation?.kind === "stale-rescan") {
-      const proposals = Object.fromEntries(await Promise.all(
-        Object.entries(activeOperation.proposals).map(async ([key, proposal]) => [
-          key,
-          await migrateLegacyProposal(proposal, configuration),
-        ] as const),
+      const proposals = Object.fromEntries(await mapCanonicalEntries(
+        Object.entries(activeOperation.proposals),
+        ([key, proposal]) => migrateLegacyProposal(proposal, configuration)
+          .then((migrated) => [key, migrated] as const),
       ));
       activeOperation = { ...activeOperation, proposals };
     }
     const migrated: PersistedContentReplacementJob = {
       ...normalized,
-      fingerprint: await createJobFingerprint({ baseUrl: normalized.baseUrl, configuration }),
+      fingerprint: await createJobFingerprint({
+        baseUrl: normalized.baseUrl,
+        configuration,
+        scanCompatibility: "legacy-restart-required",
+      }),
       proposals: Object.fromEntries(proposalEntries),
       ...(activeOperation === undefined ? {} : { activeOperation }),
     };
@@ -555,6 +581,19 @@ async function migrateLegacyContentReplacementJob(value: unknown): Promise<Persi
   } catch {
     throw corruptJob();
   }
+}
+
+async function mapCanonicalEntries<T, R>(
+  entries: readonly T[],
+  map: (entry: T) => Promise<R>,
+): Promise<R[]> {
+  const mapped: R[] = [];
+  for (let offset = 0; offset < entries.length; offset += MAX_CANONICAL_VALIDATION_CONCURRENCY) {
+    mapped.push(...await Promise.all(
+      entries.slice(offset, offset + MAX_CANONICAL_VALIDATION_CONCURRENCY).map(map),
+    ));
+  }
+  return mapped;
 }
 
 async function migrateLegacyItem(
@@ -986,7 +1025,10 @@ function assertStageInvariants(
   if (!allowedRootStatuses[job.stage].has(job.status)) throw corruptJob();
   if (job.stage === "results" && (job.status === "running" || job.status === "paused") &&
     job.activeOperation?.kind !== "stale-rescan") throw corruptJob();
-  if (items.some((item) => !allowedStatuses[job.stage].has(item.status))) throw corruptJob();
+  if (items.some((item) => !allowedStatuses[job.stage].has(item.status) && !(
+    job.stage === "recovery" && job.scanCompatibility === "legacy-restart-required" &&
+    (item.status === "pending" || item.status === "ready-to-apply" || item.status === "applying")
+  ))) throw corruptJob();
   if (job.activeOperation?.kind === "stale-rescan") {
     if (job.stage !== "results" || job.status === "completed") throw corruptJob();
     const requested = new Set(job.activeOperation.requestedItemKeys);
@@ -1791,6 +1833,13 @@ function isRecoverySnapshotStatus(
   return value === "none" || value === "preparing" || value === "ready" || value === "failed";
 }
 
+function isSummaryActiveOperationKind(
+  value: unknown,
+): value is ContentReplacementJobSummary["activeOperationKind"] {
+  return value === "none" || value === "stale-rescan" ||
+    value === "recovery-preview" || value === "recovery-apply";
+}
+
 function isScanCompatibility(
   value: unknown,
 ): value is PersistedContentReplacementJob["scanCompatibility"] {
@@ -2061,13 +2110,13 @@ async function openDatabase(): Promise<IDBDatabase> {
       const store = request.result.objectStoreNames.contains(STORE_NAME)
         ? request.transaction!.objectStore(STORE_NAME)
         : request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
-      if (event.oldVersion < 3 && store.indexNames.contains(SUMMARY_INDEX_NAME)) {
+      if (event.oldVersion < 4 && store.indexNames.contains(SUMMARY_INDEX_NAME)) {
         store.deleteIndex(SUMMARY_INDEX_NAME);
       }
       if (!store.indexNames.contains(SUMMARY_INDEX_NAME)) {
         store.createIndex(SUMMARY_INDEX_NAME, [...SUMMARY_INDEX_PATH], { unique: true });
       }
-      if (event.oldVersion < 3) {
+      if (event.oldVersion < 4) {
         const cursorRequest = store.openCursor();
         cursorRequest.onsuccess = () => {
           const cursor = cursorRequest.result;

@@ -195,7 +195,8 @@ export function ContentReplacementJobManager({
 
 function stageLabel(job: ContentReplacementJobSummary): string {
   if (job.scanCompatibility === "legacy-restart-required" &&
-    (job.stage === "define" || job.stage === "scan" || job.stage === "review" || job.stage === "apply")) {
+    (job.stage === "define" || job.stage === "scan" || job.stage === "review" || job.stage === "apply" ||
+      job.activeOperationKind === "stale-rescan")) {
     return "New scan required";
   }
   if (job.stage === "define") return "Definition saved";

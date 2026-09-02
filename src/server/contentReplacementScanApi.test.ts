@@ -52,9 +52,11 @@ async function validScanPayload(
     action: "inventory",
     credentials,
     configuration,
+    scanCompatibility: "current",
     jobFingerprint: await createJobFingerprint({
       baseUrl: "https://demo.stackenterprise.co",
       configuration,
+      scanCompatibility: "current",
     }),
     cursor: { kind: "questions", page: 1 },
     ...overrides,
@@ -112,6 +114,31 @@ async function expectInvalidWithoutClient(payload: unknown): Promise<void> {
 }
 
 describe("handleContentReplacementScanRequest", () => {
+  it("requires current compatibility on a current-bound scan request", async () => {
+    const response = await handleContentReplacementScanRequest({
+      ...(await validScanPayload()),
+      scanCompatibility: "current",
+    }, { createClient: () => fakeContentClient() });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects legacy compatibility before creating a scan client", async () => {
+    const createClient = vi.fn<CreateClient>();
+    const response = await handleContentReplacementScanRequest({
+      ...(await validScanPayload()),
+      scanCompatibility: "legacy-restart-required",
+      jobFingerprint: await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration,
+        scanCompatibility: "legacy-restart-required",
+      }),
+    }, { createClient });
+
+    expect(response.status).toBe(400);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
   it("accepts a configured targeted search cursor and returns its bounded result", async () => {
     const targeted: ReplacementConfiguration = {
       ...configuration,
@@ -133,9 +160,11 @@ describe("handleContentReplacementScanRequest", () => {
       action: "inventory",
       credentials,
       configuration: targeted,
+      scanCompatibility: "current",
       jobFingerprint: await createJobFingerprint({
         baseUrl: "https://demo.stackenterprise.co",
         configuration: targeted,
+        scanCompatibility: "current",
       }),
       cursor: { kind: "search", ruleId: "rule-1", page: 1 },
     }, { createClient: () => client });
@@ -175,6 +204,7 @@ describe("handleContentReplacementScanRequest", () => {
     payload.jobFingerprint = await createJobFingerprint({
       baseUrl: "https://demo.stackenterprise.co",
       configuration: targeted,
+      scanCompatibility: "current",
     });
 
     await expectInvalidWithoutClient(payload);
@@ -186,6 +216,7 @@ describe("handleContentReplacementScanRequest", () => {
     payload.jobFingerprint = await createJobFingerprint({
       baseUrl: "https://demo.stackenterprise.co",
       configuration: targeted,
+      scanCompatibility: "current",
     });
 
     await expectInvalidWithoutClient(payload);
@@ -200,6 +231,7 @@ describe("handleContentReplacementScanRequest", () => {
     payload.jobFingerprint = await createJobFingerprint({
       baseUrl: "https://demo.stackenterprise.co",
       configuration: exact,
+      scanCompatibility: "current",
     });
 
     await expectInvalidWithoutClient(payload);
@@ -406,6 +438,7 @@ describe("handleContentReplacementScanRequest", () => {
       const jobFingerprint = await createJobFingerprint({
         baseUrl: "https://demo.stackenterprise.co",
         configuration: selectedConfiguration,
+        scanCompatibility: "current",
       });
 
       for (const operation of operations) {
@@ -436,6 +469,7 @@ describe("handleContentReplacementScanRequest", () => {
               action: "inventory",
               credentials,
               configuration: selectedConfiguration,
+              scanCompatibility: "current",
               jobFingerprint,
               cursor: operation.value,
             }
@@ -443,6 +477,7 @@ describe("handleContentReplacementScanRequest", () => {
               action: "details",
               credentials,
               configuration: selectedConfiguration,
+              scanCompatibility: "current",
               jobFingerprint,
               refs: [operation.value],
             };
@@ -823,6 +858,7 @@ describe("handleContentReplacementScanRequest", () => {
     shortPayload.jobFingerprint = await createJobFingerprint({
       baseUrl: shortCredentials.baseUrl,
       configuration,
+      scanCompatibility: "current",
     });
 
     const response = await handleContentReplacementScanRequest(shortPayload, {
@@ -855,6 +891,7 @@ describe("handleContentReplacementScanRequest", () => {
     payload.jobFingerprint = await createJobFingerprint({
       baseUrl: shortCredentials.baseUrl,
       configuration,
+      scanCompatibility: "current",
     });
     const client = fakeContentClient({
       getItem: vi.fn().mockResolvedValue({

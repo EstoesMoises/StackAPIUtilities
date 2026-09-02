@@ -202,6 +202,8 @@ export type ContentReplacementJobStatus =
   | "failed"
   | "cancelled";
 
+export type ContentReplacementScanCompatibility = "current" | "legacy-restart-required";
+
 export interface PersistedContentReplacementProgress {
   apiRequestsCompleted: number;
   questionPages: number;
@@ -333,7 +335,7 @@ export type PersistedContentReplacementActiveOperation =
 
 export interface PersistedContentReplacementJob {
   schemaVersion: 2;
-  scanCompatibility: "current" | "legacy-restart-required";
+  scanCompatibility: ContentReplacementScanCompatibility;
   revision: number;
   id: string;
   fingerprint: string;

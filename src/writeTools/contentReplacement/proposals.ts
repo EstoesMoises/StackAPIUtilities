@@ -1,6 +1,7 @@
 import { replaceMarkdown } from "./markdown";
 import type {
   ReplacementConfiguration,
+  ContentReplacementScanCompatibility,
   ReplacementOccurrence,
   ReplacementOptions,
   ReplacementProposal,
@@ -77,11 +78,13 @@ export async function checksumRequestModel(model: ReplacementRequestModel): Prom
 export async function createJobFingerprint(input: {
   baseUrl: string;
   configuration: ReplacementConfiguration;
+  scanCompatibility: ContentReplacementScanCompatibility;
 }): Promise<string> {
   return sha256(
     stableSerialize({
       baseUrl: normalizeBaseUrl(input.baseUrl),
       configuration: semanticConfiguration(input.configuration),
+      scanCompatibility: input.scanCompatibility,
     }),
   );
 }

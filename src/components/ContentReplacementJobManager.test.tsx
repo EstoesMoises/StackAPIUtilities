@@ -35,6 +35,31 @@ describe("ContentReplacementJobManager", () => {
     expect(screen.getByRole("button", { name: "Resume content replacement job legacy-job" })).toBeVisible();
   });
 
+  it("labels migrated results with unfinished stale rescan work as requiring a new scan", async () => {
+    const migrated = {
+      ...replacementJob("legacy-stale-rescan", "results", "paused"),
+      scanCompatibility: "legacy-restart-required" as const,
+      activeOperationKind: "stale-rescan" as const,
+    };
+
+    render(<ContentReplacementJobManager storage={managerStorage([migrated])} onOpenJob={vi.fn()} />);
+
+    expect(await screen.findByText("New scan required")).toBeVisible();
+    expect(screen.queryByText("Apply results")).not.toBeInTheDocument();
+  });
+
+  it("keeps completed migrated results without stale work recovery-visible", async () => {
+    const migrated = {
+      ...replacementJob("legacy-results", "results", "completed", true),
+      scanCompatibility: "legacy-restart-required" as const,
+    };
+
+    render(<ContentReplacementJobManager storage={managerStorage([migrated])} onOpenJob={vi.fn()} />);
+
+    expect(await screen.findByText("Apply results")).toBeVisible();
+    expect(screen.queryByText("New scan required")).not.toBeInTheDocument();
+  });
+
   it("requires inline confirmation before deleting the job and all recovery data", async () => {
     const user = userEvent.setup();
     const storage = managerStorage([replacementJob("job-with-recovery", "results", "completed", true)]);
@@ -227,6 +252,7 @@ function replacementJob(
     proposedPostCount: 1,
     recoverySnapshotStatus: withRecovery ? "ready" : "none",
     scanCompatibility: "current",
+    activeOperationKind: "none",
     updatedAt: "2026-09-02T12:00:00.000Z",
   };
 }

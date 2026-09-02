@@ -490,7 +490,11 @@ export function useContentReplacementJob(
         return false;
       }
     }
-    const fingerprint = await createJobFingerprint({ baseUrl, configuration: canonicalConfiguration });
+    const fingerprint = await createJobFingerprint({
+      baseUrl,
+      configuration: canonicalConfiguration,
+      scanCompatibility: "current",
+    });
     const createdAt = dependenciesRef.current.now();
     const candidate = createReplacementJob({
       id: dependenciesRef.current.createId(),
@@ -544,6 +548,7 @@ export function useContentReplacementJob(
             action: "inventory",
             credentials: credentialCheck.credentials,
             configuration: current.configuration,
+            scanCompatibility: "current",
             jobFingerprint: current.fingerprint,
             cursor,
           }
@@ -551,6 +556,7 @@ export function useContentReplacementJob(
             action: "details",
             credentials: credentialCheck.credentials,
             configuration: current.configuration,
+            scanCompatibility: "current",
             jobFingerprint: current.fingerprint,
             refs,
           };
@@ -768,6 +774,7 @@ export function useContentReplacementJob(
       const fetched = await request(APPLY_URL, {
         credentials: credentialCheck.credentials,
         configuration: current.configuration,
+        scanCompatibility: "current",
         jobFingerprint: current.fingerprint,
         itemRef: item.proposal.before.ref,
         expectedScannedRequestChecksum: item.proposal.scannedRequestChecksum,
@@ -837,6 +844,7 @@ export function useContentReplacementJob(
           action: "details",
           credentials: credentialCheck.credentials,
           configuration: current.configuration,
+          scanCompatibility: "current",
           jobFingerprint: current.fingerprint,
           refs,
         }, token);
@@ -1167,6 +1175,7 @@ function recoveryPayload(
     action,
     credentials,
     configuration: job.configuration,
+    scanCompatibility: job.scanCompatibility,
     jobFingerprint: job.fingerprint,
     itemRef: item.proposal.before.ref,
     priorRequestModel,

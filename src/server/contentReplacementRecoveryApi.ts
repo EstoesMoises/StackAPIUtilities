@@ -12,6 +12,7 @@ import {
 } from "../writeTools/contentReplacement/contentApi";
 import { checksumRequestModel, createJobFingerprint } from "../writeTools/contentReplacement/proposals";
 import type {
+  ContentReplacementScanCompatibility,
   ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementWireRequestModel,
@@ -43,6 +44,7 @@ export interface ContentReplacementRecoveryPayload {
   action: "preview" | "apply";
   credentials: SessionCredentials;
   configuration: ReplacementConfiguration;
+  scanCompatibility: ContentReplacementScanCompatibility;
   jobFingerprint: string;
   itemRef: ReplacementItemRef;
   priorRequestModel: ReplacementWireRequestModel;
@@ -80,8 +82,6 @@ export async function handleContentReplacementRecoveryRequest(
   const validated = validateRecoveryPayload(payload);
   if (!validated) return plainJsonResponse({ ok: false, error: INVALID_REQUEST_MESSAGE }, 400);
 
-  // Recovery has no configuration to recompute. Its job fingerprint is opaque
-  // canonical SHA-256 evidence; the prior model checksum is independently proven.
   if (await checksumRequestModel(validated.priorRequestModel) !== validated.expectedPriorRequestChecksum) {
     return plainJsonResponse({ ok: false, error: INVALID_REQUEST_MESSAGE }, 400);
   }
@@ -101,6 +101,7 @@ export async function handleContentReplacementRecoveryRequest(
   const expectedFingerprint = await createJobFingerprint({
     baseUrl: writeContext.instance.baseUrl,
     configuration: validated.configuration,
+    scanCompatibility: validated.scanCompatibility,
   });
   if (validated.jobFingerprint !== expectedFingerprint) {
     return browserJsonResponse({ ok: false, error: FINGERPRINT_MISMATCH_MESSAGE }, 409);
@@ -192,7 +193,7 @@ function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayl
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
     if (!isExactObject(record, [
-      "action", "credentials", "configuration", "jobFingerprint", "itemRef", "priorRequestModel",
+      "action", "credentials", "configuration", "scanCompatibility", "jobFingerprint", "itemRef", "priorRequestModel",
       "expectedPriorRequestChecksum", "expectedPostApplyChecksum",
     ])) return null;
     if (record.action !== "preview" && record.action !== "apply") return null;
@@ -200,7 +201,8 @@ function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayl
     const configuration = validateConfiguration(record.configuration);
     const itemRef = validateItemRef(record.itemRef);
     if (
-      !credentials || !configuration || !itemRef || !isSelectedKind(itemRef, configuration) ||
+      !credentials || !configuration || !isScanCompatibility(record.scanCompatibility) ||
+      !itemRef || !isSelectedKind(itemRef, configuration) ||
       !isSha256Digest(record.jobFingerprint) ||
       !isSha256Digest(record.expectedPriorRequestChecksum) ||
       !isSha256Digest(record.expectedPostApplyChecksum)
@@ -211,6 +213,7 @@ function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayl
       action: record.action,
       credentials,
       configuration,
+      scanCompatibility: record.scanCompatibility,
       jobFingerprint: record.jobFingerprint,
       itemRef,
       priorRequestModel,
@@ -220,6 +223,10 @@ function validateRecoveryPayload(value: unknown): ContentReplacementRecoveryPayl
   } catch {
     return null;
   }
+}
+
+function isScanCompatibility(value: unknown): value is ContentReplacementScanCompatibility {
+  return value === "current" || value === "legacy-restart-required";
 }
 
 function createDefaultClient(

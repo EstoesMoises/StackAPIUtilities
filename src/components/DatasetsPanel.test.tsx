@@ -190,6 +190,7 @@ function replacementStorage(jobs: PersistedContentReplacementJob[]): ContentRepl
     proposedPostCount: job.progress.proposalsFound,
     recoverySnapshotStatus: job.recoverySnapshotStatus,
     scanCompatibility: job.scanCompatibility,
+    activeOperationKind: job.activeOperation?.kind ?? "none",
     updatedAt: job.updatedAt,
   }));
   return {
