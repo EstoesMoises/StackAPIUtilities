@@ -394,6 +394,99 @@ describe("handleUserGroupSyncRequest", () => {
     expect(client.createUserGroup).toHaveBeenCalledWith({ name: "Ada Lovelace VRM", userIds: [1] });
   });
 
+  it("preserves operation status structurally while redacting the same literal from free-form values", async () => {
+    const statusTokenCredentials: SessionCredentials = {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: "succeeded",
+      authSource: "manual-enterprise-token",
+    };
+    const succeededExpectedPreview = {
+      syncMode: "add-only" as const,
+      groupNameTemplate: "succeeded",
+      blockingErrors: [],
+      skippedRows: [],
+      groups: [
+        {
+          manager: "Ada Lovelace",
+          groupName: "succeeded",
+          existingGroupId: null,
+          createGroup: true,
+          desiredUserIds: [1],
+          addUserIds: [1],
+          removeUserIds: [],
+        },
+      ],
+    };
+    const client = createClient({
+      getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
+      getUserGroups: vi.fn().mockResolvedValue([]),
+      createUserGroup: vi.fn().mockResolvedValue({ id: 10, name: "succeeded", users: [{ id: 1 }] }),
+    });
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "apply",
+        credentials: statusTokenCredentials,
+        csvText,
+        groupNameTemplate: "succeeded",
+        syncMode: "add-only",
+        expectedPreview: succeededExpectedPreview,
+      },
+      { createClient: () => client },
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      result: {
+        operations: [
+          {
+            kind: "create-group",
+            groupName: expect.not.stringContaining("succeeded"),
+            userIds: [1],
+            status: "succeeded",
+          },
+        ],
+      },
+    });
+    expect(body.result.preview.groupNameTemplate).not.toContain("succeeded");
+    expect(body.result.preview.groups[0].groupName).not.toContain("succeeded");
+  });
+
+  it("preserves the sync-mode enum when a short token matches its literal", async () => {
+    const syncModeTokenCredentials: SessionCredentials = {
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: "add-only",
+      authSource: "manual-enterprise-token",
+    };
+    const client = createClient({
+      getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
+      getUserGroups: vi.fn().mockResolvedValue([]),
+    });
+
+    const response = await handleUserGroupSyncRequest(
+      {
+        action: "preview",
+        credentials: syncModeTokenCredentials,
+        csvText,
+        groupNameTemplate: "{Senior Manager} VRM",
+        syncMode: "add-only",
+      },
+      { createClient: () => client },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      result: {
+        syncMode: "add-only",
+      },
+    });
+  });
+
   it("redacts submitted credentials from operation-level apply failures", async () => {
     const accessToken = "se_access_1234567890abcdef1234567890abcdef";
     const pat = "se_pat_abcdef1234567890abcdef1234567890";

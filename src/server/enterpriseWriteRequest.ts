@@ -35,6 +35,16 @@ export type BoundedJsonRequestResult =
   | { ok: true; value: unknown }
   | { ok: false; response: Response };
 
+export type JsonRedactionPathSegment = string | number;
+
+export interface JsonRedactionPolicy {
+  preserveKey?: (path: readonly JsonRedactionPathSegment[], key: string) => boolean;
+  preserveStringValue?: (
+    path: readonly JsonRedactionPathSegment[],
+    value: string,
+  ) => boolean;
+}
+
 export function prepareEnterpriseWriteContext(
   credentials: SessionCredentials,
 ): EnterpriseWriteContextResult {
@@ -98,8 +108,12 @@ export function redactedJsonResponse<T>(
   body: T,
   status: number,
   redact: (value: string) => string,
+  policy: JsonRedactionPolicy = {},
 ): Response {
-  return jsonResponse(sanitizeForJson(body, redact, new WeakSet<object>()), status);
+  return jsonResponse(
+    sanitizeForJson(body, redact, policy, [], new WeakSet<object>()),
+    status,
+  );
 }
 
 export async function readBoundedJsonRequest(
@@ -255,10 +269,12 @@ function redactInSinglePass(
 function sanitizeForJson(
   value: unknown,
   redact: (value: string) => string,
+  policy: JsonRedactionPolicy,
+  path: readonly JsonRedactionPathSegment[],
   ancestors: WeakSet<object>,
 ): unknown {
   try {
-    return sanitizeForJsonUnsafe(value, redact, ancestors);
+    return sanitizeForJsonUnsafe(value, redact, policy, path, ancestors);
   } catch {
     return "";
   }
@@ -267,10 +283,12 @@ function sanitizeForJson(
 function sanitizeForJsonUnsafe(
   value: unknown,
   redact: (value: string) => string,
+  policy: JsonRedactionPolicy,
+  path: readonly JsonRedactionPathSegment[],
   ancestors: WeakSet<object>,
 ): unknown {
   if (typeof value === "string") {
-    return redact(value);
+    return policy.preserveStringValue?.(path, value) ? value : redact(value);
   }
 
   if (typeof value === "bigint") {
@@ -289,10 +307,10 @@ function sanitizeForJsonUnsafe(
   try {
     const descriptors = Object.getOwnPropertyDescriptors(value);
     if (Array.isArray(value)) {
-      return sanitizeArray(descriptors, redact, ancestors);
+      return sanitizeArray(descriptors, redact, policy, path, ancestors);
     }
 
-    return sanitizeObject(descriptors, redact, ancestors);
+    return sanitizeObject(descriptors, redact, policy, path, ancestors);
   } finally {
     ancestors.delete(value);
   }
@@ -301,6 +319,8 @@ function sanitizeForJsonUnsafe(
 function sanitizeArray(
   descriptors: PropertyDescriptorMap,
   redact: (value: string) => string,
+  policy: JsonRedactionPolicy,
+  path: readonly JsonRedactionPathSegment[],
   ancestors: WeakSet<object>,
 ): unknown[] {
   const lengthValue = descriptors.length?.value;
@@ -312,7 +332,14 @@ function sanitizeArray(
       continue;
     }
 
-    sanitized[Number(key)] = sanitizeForJson(descriptor.value, redact, ancestors);
+    const index = Number(key);
+    sanitized[index] = sanitizeForJson(
+      descriptor.value,
+      redact,
+      policy,
+      [...path, index],
+      ancestors,
+    );
   }
 
   return sanitized;
@@ -321,21 +348,38 @@ function sanitizeArray(
 function sanitizeObject(
   descriptors: PropertyDescriptorMap,
   redact: (value: string) => string,
+  policy: JsonRedactionPolicy,
+  path: readonly JsonRedactionPathSegment[],
   ancestors: WeakSet<object>,
 ): Record<string, unknown> {
   const sanitized = Object.create(null) as Record<string, unknown>;
+  const trustedByOutputKey = new Map<string, boolean>();
 
   for (const [key, descriptor] of Object.entries(descriptors)) {
     if (key === "toJSON" || !descriptor.enumerable || !("value" in descriptor)) {
       continue;
     }
 
-    Object.defineProperty(sanitized, key, {
-      value: sanitizeForJson(descriptor.value, redact, ancestors),
+    const isTrustedKey = policy.preserveKey?.(path, key) === true;
+    const outputKey = isTrustedKey ? key : redact(key);
+    const existingKeyIsTrusted = trustedByOutputKey.get(outputKey);
+    if (existingKeyIsTrusted !== undefined && (existingKeyIsTrusted || !isTrustedKey)) {
+      continue;
+    }
+
+    Object.defineProperty(sanitized, outputKey, {
+      value: sanitizeForJson(
+        descriptor.value,
+        redact,
+        policy,
+        [...path, key],
+        ancestors,
+      ),
       enumerable: true,
       configurable: true,
       writable: true,
     });
+    trustedByOutputKey.set(outputKey, isTrustedKey);
   }
 
   return sanitized;

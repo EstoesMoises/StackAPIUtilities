@@ -13,6 +13,8 @@ import {
   prepareEnterpriseWriteContext,
   redactedJsonResponse,
   type EnterpriseWriteContextFailureCode,
+  type JsonRedactionPathSegment,
+  type JsonRedactionPolicy,
 } from "./enterpriseWriteRequest";
 
 export interface UserGroupSyncRequestPayload {
@@ -75,7 +77,12 @@ export async function handleUserGroupSyncRequest(
 
   const normalizedCredentials = writeContext.credentials;
   const browserJsonResponse = (body: UserGroupSyncResponseBody, status: number) =>
-    redactedJsonResponse(body, status, writeContext.redact);
+    redactedJsonResponse(
+      body,
+      status,
+      writeContext.redact,
+      USER_GROUP_SYNC_RESPONSE_REDACTION_POLICY,
+    );
   const normalizedInstance = writeContext.instance;
 
   const expectedPreview =
@@ -167,6 +174,160 @@ function userGroupSyncContextError(
   }
 
   return defaultMessage;
+}
+
+const USER_GROUP_SYNC_RESPONSE_REDACTION_POLICY: JsonRedactionPolicy = {
+  preserveKey: isTrustedUserGroupSyncResponseKey,
+  preserveStringValue: isTrustedUserGroupSyncResponseString,
+};
+
+const ROOT_RESPONSE_KEYS = new Set(["ok", "result", "error"]);
+const PLAN_KEYS = new Set([
+  "syncMode",
+  "groupNameTemplate",
+  "groups",
+  "skippedRows",
+  "blockingErrors",
+]);
+const APPLY_RESULT_KEYS = new Set(["preview", "operations"]);
+const GROUP_KEYS = new Set([
+  "manager",
+  "groupName",
+  "existingGroupId",
+  "createGroup",
+  "desiredUserIds",
+  "addUserIds",
+  "removeUserIds",
+]);
+const SKIPPED_ROW_KEYS = new Set(["rowNumber", "email", "seniorManager", "reason"]);
+const OPERATION_KEYS = new Set(["kind", "groupName", "userIds", "status", "error"]);
+const OPERATION_KINDS = new Set(["create-group", "add-members", "remove-member"]);
+const OPERATION_STATUSES = new Set(["succeeded", "failed"]);
+const SKIPPED_ROW_REASONS = new Set([
+  "Missing Senior Manager",
+  "Missing Email",
+  "Duplicate Email",
+  "Email not found in Stack Enterprise",
+]);
+
+function isTrustedUserGroupSyncResponseKey(
+  path: readonly JsonRedactionPathSegment[],
+  key: string,
+): boolean {
+  if (path.length === 0) {
+    return ROOT_RESPONSE_KEYS.has(key);
+  }
+
+  if (matchesPath(path, "result")) {
+    return PLAN_KEYS.has(key) || APPLY_RESULT_KEYS.has(key);
+  }
+
+  if (matchesPath(path, "result", "preview")) {
+    return PLAN_KEYS.has(key);
+  }
+
+  if (matchesCollectionItemPath(path, "groups") || matchesPreviewCollectionItemPath(path, "groups")) {
+    return GROUP_KEYS.has(key);
+  }
+
+  if (
+    matchesCollectionItemPath(path, "skippedRows") ||
+    matchesPreviewCollectionItemPath(path, "skippedRows")
+  ) {
+    return SKIPPED_ROW_KEYS.has(key);
+  }
+
+  if (matchesCollectionItemPath(path, "operations")) {
+    return OPERATION_KEYS.has(key);
+  }
+
+  return false;
+}
+
+function isTrustedUserGroupSyncResponseString(
+  path: readonly JsonRedactionPathSegment[],
+  value: string,
+): boolean {
+  if (
+    (matchesPath(path, "result", "syncMode") ||
+      matchesPath(path, "result", "preview", "syncMode")) &&
+    isUserGroupSyncMode(value)
+  ) {
+    return true;
+  }
+
+  if (matchesCollectionItemValuePath(path, "operations", "kind")) {
+    return OPERATION_KINDS.has(value);
+  }
+
+  if (matchesCollectionItemValuePath(path, "operations", "status")) {
+    return OPERATION_STATUSES.has(value);
+  }
+
+  if (
+    (matchesCollectionItemValuePath(path, "skippedRows", "reason") ||
+      matchesPreviewCollectionItemValuePath(path, "skippedRows", "reason"))
+  ) {
+    return SKIPPED_ROW_REASONS.has(value);
+  }
+
+  return false;
+}
+
+function matchesPath(
+  path: readonly JsonRedactionPathSegment[],
+  ...expected: readonly JsonRedactionPathSegment[]
+): boolean {
+  return path.length === expected.length && path.every((segment, index) => segment === expected[index]);
+}
+
+function matchesCollectionItemPath(
+  path: readonly JsonRedactionPathSegment[],
+  collection: string,
+): boolean {
+  return path.length === 3 && path[0] === "result" && path[1] === collection && typeof path[2] === "number";
+}
+
+function matchesPreviewCollectionItemPath(
+  path: readonly JsonRedactionPathSegment[],
+  collection: string,
+): boolean {
+  return (
+    path.length === 4 &&
+    path[0] === "result" &&
+    path[1] === "preview" &&
+    path[2] === collection &&
+    typeof path[3] === "number"
+  );
+}
+
+function matchesCollectionItemValuePath(
+  path: readonly JsonRedactionPathSegment[],
+  collection: string,
+  key: string,
+): boolean {
+  return (
+    path.length === 4 &&
+    path[0] === "result" &&
+    path[1] === collection &&
+    typeof path[2] === "number" &&
+    path[3] === key
+  );
+}
+
+function matchesPreviewCollectionItemValuePath(
+  path: readonly JsonRedactionPathSegment[],
+  collection: string,
+  key: string,
+): boolean {
+  return (
+    path.length === 5 &&
+    path[0] === "result" &&
+    path[1] === "preview" &&
+    path[2] === collection &&
+    typeof path[3] === "number" &&
+    path[4] === key
+  );
 }
 
 function isUserGroupSyncRequestPayload(value: unknown): value is UserGroupSyncRequestPayload {

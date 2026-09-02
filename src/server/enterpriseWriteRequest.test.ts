@@ -202,6 +202,32 @@ describe("redactedJsonResponse", () => {
     }
   });
 
+  it("redacts credentials used as arbitrary nested object keys", async () => {
+    const secret = "leaked-secret";
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: secret,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+
+    const response = redactedJsonResponse(
+      {
+        ok: false,
+        error: {
+          [secret]: "key must be sanitized",
+          detail: `value also contains ${secret}`,
+        },
+      },
+      500,
+      result.redact,
+    );
+
+    const serialized = await response.text();
+    expect(serialized).not.toContain(secret);
+  });
+
   it("redacts overlapping credentials in one non-cascading pass", async () => {
     const result = prepareEnterpriseWriteContext({
       instanceType: "enterprise",
