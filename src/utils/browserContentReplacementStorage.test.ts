@@ -282,6 +282,31 @@ describe("browserContentReplacementStorage", () => {
     }
   });
 
+  it("persists a successful recovery with the API's divergent post-PUT readback checksum", async () => {
+    installFakeIndexedDB();
+    const job = createRecoveryTerminalJob("recovered");
+    const item = job.proposals["question:42"];
+    const observed = structuredClone(item.proposal.before);
+    if (observed.kind !== "question") throw new Error("Expected question fixture.");
+    observed.request.tags = ["api", "observed-after-put"];
+    const observedReadbackChecksum = await checksumRequestModel(observed);
+    if (
+      observedReadbackChecksum === item.recovery!.scannedRequestChecksum ||
+      observedReadbackChecksum === item.recovery!.observedPostApplyChecksum
+    ) throw new Error("Expected a divergent observed readback checksum fixture.");
+    item.recovery!.result!.observedRequestChecksum = observedReadbackChecksum;
+
+    await saveContentReplacementJob(job);
+    const loaded = await loadContentReplacementJob(job.id);
+
+    expect(loaded).toEqual(job);
+    expect(loaded!.proposals["question:42"].recovery).toMatchObject({
+      scannedRequestChecksum: item.proposal.scannedRequestChecksum,
+      observedPostApplyChecksum: item.proposal.proposedRequestChecksum,
+      result: { kind: "recovered", observedRequestChecksum: observedReadbackChecksum },
+    });
+  });
+
   it.each([
     ["missing successful apply result", (job: any) => { delete job.proposals["question:42"].result; }],
     ["mismatched apply checksum", (job: any) => { job.proposals["question:42"].result.observedRequestChecksum = "f".repeat(64); }],
@@ -321,6 +346,22 @@ describe("browserContentReplacementStorage", () => {
       );
     },
   );
+
+  it.each([
+    ["source attempt", (job: any) => { job.proposals["question:42"].recovery.result.sourceAttemptCount -= 1; }],
+    ["source apply timestamp", (job: any) => { job.proposals["question:42"].recovery.result.sourceApplyCompletedAt = "2026-09-01T12:01:00.000Z"; }],
+    ["prior checksum input", (job: any) => { job.proposals["question:42"].recovery.scannedRequestChecksum = "e".repeat(64); }],
+    ["prior request input", (job: any) => { job.proposals["question:42"].recovery.priorRequestModel.request.title = "Spoofed prior"; }],
+    ["observed post-apply input", (job: any) => { job.proposals["question:42"].recovery.observedPostApplyChecksum = "e".repeat(64); }],
+  ])("rejects a recovered outcome with spoofed %s evidence", async (_label, mutate) => {
+    installFakeIndexedDB();
+    const job = createRecoveryTerminalJob("recovered");
+    mutate(job);
+
+    await expect(saveContentReplacementJob(job)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
 
   it("rejects recovery review metadata that diverges from the canonical proposal", async () => {
     installFakeIndexedDB();
@@ -1308,6 +1349,8 @@ function createRecoveryTerminalJob(
     observedRequestChecksum: outcome === "recovered"
       ? item.recovery.scannedRequestChecksum
       : "f".repeat(64),
+    sourceAttemptCount: item.attemptCount,
+    sourceApplyCompletedAt: item.result.completedAt,
     completedAt: "2026-09-01T12:03:00.000Z",
   };
   delete item.recovery.preview;

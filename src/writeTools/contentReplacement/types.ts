@@ -240,6 +240,8 @@ export type PersistedContentReplacementRecoveryResult =
   | {
       kind: "recovered" | "conflict";
       observedRequestChecksum: string;
+      sourceAttemptCount: number;
+      sourceApplyCompletedAt: string;
       completedAt: string;
     };
 

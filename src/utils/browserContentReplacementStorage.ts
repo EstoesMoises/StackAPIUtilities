@@ -420,7 +420,7 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
     if (
       !hasSuccessfulApplyEvidence(item) || failure || !recovery || recovery.preview ||
       recovery.status !== "applied" || recovery.result?.kind !== "recovered" ||
-      recovery.result.observedRequestChecksum !== recovery.scannedRequestChecksum ||
+      !matchesRecoveryGeneration(item, recovery.result) ||
       Date.parse(result?.completedAt ?? "") > Date.parse(recovery.result.completedAt)
     ) throw corruptJob();
     return;
@@ -429,6 +429,7 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
     if (
       !hasSuccessfulApplyEvidence(item) || failure || !recovery || recovery.preview ||
       recovery.status !== "conflict" || recovery.result?.kind !== "conflict" ||
+      !matchesRecoveryGeneration(item, recovery.result) ||
       recovery.result.observedRequestChecksum === recovery.scannedRequestChecksum ||
       recovery.result.observedRequestChecksum === recovery.observedPostApplyChecksum ||
       Date.parse(result?.completedAt ?? "") > Date.parse(recovery.result.completedAt)
@@ -458,6 +459,14 @@ function hasSuccessfulApplyEvidence(item: PersistedContentReplacementItem): bool
   return item.attemptCount >= 1 && recovery !== undefined &&
     (result?.kind === "applied" || result?.kind === "unchanged") &&
     recovery.observedPostApplyChecksum === result.observedRequestChecksum;
+}
+
+function matchesRecoveryGeneration(
+  item: PersistedContentReplacementItem,
+  recoveryResult: PersistedContentReplacementRecoveryResult,
+): boolean {
+  return recoveryResult.sourceAttemptCount === item.attemptCount &&
+    recoveryResult.sourceApplyCompletedAt === item.result?.completedAt;
 }
 
 function isWithinJobTime(
@@ -791,11 +800,15 @@ function parseRecovery(
 }
 
 function parseRecoveryResult(value: unknown): PersistedContentReplacementRecoveryResult {
-  const record = exactObject(value, ["kind", "observedRequestChecksum", "completedAt"]);
+  const record = exactObject(value, [
+    "kind", "observedRequestChecksum", "sourceAttemptCount", "sourceApplyCompletedAt", "completedAt",
+  ]);
   if (record.kind !== "recovered" && record.kind !== "conflict") throw corruptJob();
   return {
     kind: record.kind,
     observedRequestChecksum: digest(record.observedRequestChecksum),
+    sourceAttemptCount: count(record.sourceAttemptCount),
+    sourceApplyCompletedAt: timestamp(record.sourceApplyCompletedAt),
     completedAt: timestamp(record.completedAt),
   };
 }
