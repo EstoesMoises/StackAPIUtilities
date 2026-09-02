@@ -26,6 +26,7 @@ import type {
   ReplacementProposal,
   ReplacementProtectedOccurrence,
   ReplacementRequestModel,
+  ReplacementWireRequestModel,
   ReplacementItemRef,
 } from "../writeTools/contentReplacement/types";
 
@@ -122,7 +123,7 @@ async function parseContentReplacementJob(value: unknown): Promise<PersistedCont
     for (let offset = 0; offset < items.length; offset += MAX_CANONICAL_VALIDATION_CONCURRENCY) {
       await Promise.all(
         items.slice(offset, offset + MAX_CANONICAL_VALIDATION_CONCURRENCY)
-          .map((item) => validateCanonicalItem(item, normalized.configuration)),
+          .map((item) => validateCanonicalItem(item, normalized.configuration, normalized.updatedAt)),
       );
     }
     return normalized;
@@ -134,6 +135,7 @@ async function parseContentReplacementJob(value: unknown): Promise<PersistedCont
 async function validateCanonicalItem(
   item: PersistedContentReplacementItem,
   configuration: PersistedContentReplacementJob["configuration"],
+  jobUpdatedAt: string,
 ): Promise<void> {
   const canonicalProposal = await buildReplacementProposal(item.proposal.before, configuration);
   if (!canonicalProposal || stableSerialize(canonicalProposal) !== stableSerialize(item.proposal)) {
@@ -148,6 +150,8 @@ async function validateCanonicalItem(
   }
   const preview = item.recovery.preview;
   if (!preview) return;
+  const result = item.result;
+  if (result?.kind !== "applied" && result?.kind !== "unchanged") throw corruptJob();
   const observedChecksum = await checksumRequestModel(preview.currentRequestModel);
   const expectedStatus = observedChecksum === item.recovery.scannedRequestChecksum
     ? "already-recovered"
@@ -157,13 +161,17 @@ async function validateCanonicalItem(
   if (
     observedChecksum !== preview.observedCurrentChecksum ||
     preview.expectedPostApplyChecksum !== item.recovery.observedPostApplyChecksum ||
-    preview.status !== expectedStatus
+    preview.status !== expectedStatus ||
+    preview.sourceAttemptCount !== item.attemptCount ||
+    preview.sourceApplyCompletedAt !== result.completedAt ||
+    Date.parse(result.completedAt) > Date.parse(preview.previewedAt) ||
+    Date.parse(preview.previewedAt) > Date.parse(jobUpdatedAt)
   ) throw corruptJob();
 }
 
 function normalizeContentReplacementJob(value: unknown): PersistedContentReplacementJob {
-  assertSafeDataGraph(value);
-  const record = exactObject(value, JOB_KEYS, ["nextRetryAt", "failure"]);
+  const safeValue = cloneSafeDataGraph(value);
+  const record = exactObject(safeValue, JOB_KEYS, ["nextRetryAt", "failure"]);
   const configuration = validateConfiguration(record.configuration);
   const baseUrl = normalizeEnterpriseBaseUrl(record.baseUrl);
   const target = exactObject(record.target, ["kind"]);
@@ -235,7 +243,8 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
     job.progress.detailsInspected < job.progress.proposalsFound ||
     job.progress.inventoryItems < job.progress.detailsInspected ||
     !Number.isSafeInteger(protectedOccurrences) ||
-    job.progress.protectedOccurrences !== protectedOccurrences ||
+    job.progress.protectedOccurrences < protectedOccurrences ||
+    Math.ceil(job.progress.protectedOccurrences / MAX_OCCURRENCES) > job.progress.detailsInspected ||
     job.progress.applyCompleted !== applyCompleted ||
     job.progress.recoveryCompleted !== recoveryCompleted ||
     (!job.configuration.contentTypes.answers && job.progress.answerPages !== 0) ||
@@ -247,11 +256,24 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
     items.some((item) => !isItemRefRelevant(item.proposal.before.ref, job.configuration))
   ) throw corruptJob();
 
-  for (const item of items) assertItemInvariants(item);
+  if ((job.status === "failed") !== (job.failure !== undefined)) throw corruptJob();
+  if (job.failure && !isWithinJobTime(job.failure.occurredAt, job)) throw corruptJob();
+  for (const item of items) {
+    assertItemInvariants(item);
+    if (item.result && !isWithinJobTime(item.result.completedAt, job)) throw corruptJob();
+    if (item.failure && !isWithinJobTime(item.failure.occurredAt, job)) throw corruptJob();
+  }
   assertStageInvariants(job, items);
   if (
     job.recoverySnapshotStatus === "ready" &&
-    items.some((item) => item.included && !isCompleteRecoverySnapshot(item.recovery))
+    items.some((item) => item.included && (
+      !isCompleteRecoverySnapshot(item.recovery) ||
+      item.recovery.status === "pending" || item.recovery.status === "failed"
+    ))
+  ) throw corruptJob();
+  if (
+    job.recoverySnapshotStatus === "none" &&
+    items.some((item) => item.recovery !== undefined)
   ) throw corruptJob();
 }
 
@@ -266,10 +288,10 @@ function assertStageInvariants(
     define: new Set(),
     scan: new Set(["pending"]),
     review: new Set(["pending", "excluded"]),
-    apply: new Set(["excluded", "ready-to-apply", "applying", "applied", "stale", "failed"]),
+    apply: new Set(["pending", "excluded", "ready-to-apply", "applying", "applied", "stale", "failed"]),
     results: new Set(["excluded", "applied", "stale", "failed", "recovered", "recovery-conflict"]),
     recovery: new Set([
-      "excluded", "applied", "ready-to-recover", "recovering", "recovered",
+      "excluded", "applied", "stale", "ready-to-recover", "recovering", "recovered",
       "recovery-conflict", "failed",
     ]),
   };
@@ -280,6 +302,40 @@ function assertStageInvariants(
   if (
     (job.stage === "define" || job.stage === "scan" || job.stage === "review") &&
     job.recoverySnapshotStatus !== "none"
+  ) throw corruptJob();
+  if (
+    (job.stage === "results" || job.stage === "recovery") &&
+    job.recoverySnapshotStatus !== "ready"
+  ) throw corruptJob();
+  if (
+    job.stage === "apply" && job.recoverySnapshotStatus === "ready" &&
+    items.some((item) => item.included && item.status === "pending")
+  ) throw corruptJob();
+  if (
+    job.stage === "apply" &&
+    (job.recoverySnapshotStatus === "none" || job.recoverySnapshotStatus === "preparing") &&
+    items.some((item) => item.included && item.status !== "pending" && item.status !== "ready-to-apply")
+  ) throw corruptJob();
+  if (
+    job.stage === "apply" && job.recoverySnapshotStatus === "failed" && job.status !== "failed"
+  ) throw corruptJob();
+  if (
+    job.status === "completed" && job.stage === "apply" &&
+    items.some((item) => item.included && (
+      item.status === "pending" || item.status === "ready-to-apply" || item.status === "applying"
+    ))
+  ) throw corruptJob();
+  if (
+    job.status === "completed" && job.stage === "recovery" &&
+    items.some((item) => item.status === "ready-to-recover" || item.status === "recovering")
+  ) throw corruptJob();
+  if (
+    items.some((item) => item.status === "applying") &&
+    (job.stage !== "apply" || job.status !== "running" || job.recoverySnapshotStatus !== "ready")
+  ) throw corruptJob();
+  if (
+    items.some((item) => item.status === "recovering") &&
+    (job.stage !== "recovery" || job.status !== "running" || job.recoverySnapshotStatus !== "ready")
   ) throw corruptJob();
 }
 
@@ -301,20 +357,29 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
   if (status === "ready-to-apply" || status === "applying") {
     if (
       result || failure || !isCompleteRecoverySnapshot(recovery) ||
-      recovery.status !== "ready" || recovery.preview
+      recovery.status !== "ready" || recovery.preview || recovery.observedPostApplyChecksum ||
+      (status === "applying" && item.attemptCount < 1)
     ) {
       throw corruptJob();
     }
     return;
   }
   if (status === "failed") {
-    if (item.attemptCount < 1 || result || !failure || !isCompleteRecoverySnapshot(recovery) || recovery.preview) {
+    if (
+      item.attemptCount < 1 || result || !failure || !isCompleteRecoverySnapshot(recovery) ||
+      recovery.preview || recovery.observedPostApplyChecksum ||
+      (recovery.status !== "ready" && recovery.status !== "failed")
+    ) {
       throw corruptJob();
     }
     return;
   }
   if (status === "stale") {
-    if (item.attemptCount < 1 || result?.kind !== "stale" || failure || !isCompleteRecoverySnapshot(recovery) || recovery.preview) {
+    if (
+      item.attemptCount < 1 || result?.kind !== "stale" || failure ||
+      !isCompleteRecoverySnapshot(recovery) || recovery.preview || recovery.observedPostApplyChecksum ||
+      recovery.status !== "ready"
+    ) {
       throw corruptJob();
     }
     return;
@@ -322,14 +387,15 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
   if (status === "recovered") {
     if (
       item.attemptCount < 1 || result?.kind !== "recovered" || failure || !recovery || recovery.preview ||
-      recovery.status !== "applied" || result.observedRequestChecksum !== recovery.scannedRequestChecksum
+      !recovery.observedPostApplyChecksum || recovery.status !== "applied" ||
+      result.observedRequestChecksum !== recovery.scannedRequestChecksum
     ) throw corruptJob();
     return;
   }
   if (status === "recovery-conflict") {
     if (
       item.attemptCount < 1 || result?.kind !== "recovery-conflict" || failure || !recovery ||
-      recovery.status !== "conflict" ||
+      !recovery.observedPostApplyChecksum || recovery.status !== "conflict" ||
       (recovery.preview !== undefined && recovery.preview.status !== "conflict")
     ) throw corruptJob();
     return;
@@ -342,9 +408,7 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
     recovery.status !== "ready"
   ) throw corruptJob();
   if (status === "ready-to-recover") {
-    if (
-      !recovery.preview || recovery.preview.status === "conflict" || recovery.status !== "ready"
-    ) throw corruptJob();
+    if (!recovery.preview || recovery.status !== "ready") throw corruptJob();
   } else if (status === "recovering") {
     if (recovery.preview) throw corruptJob();
   } else if (status === "applied") {
@@ -352,6 +416,14 @@ function assertItemInvariants(item: PersistedContentReplacementItem): void {
   } else {
     throw corruptJob();
   }
+}
+
+function isWithinJobTime(
+  value: string,
+  job: Pick<PersistedContentReplacementJob, "createdAt" | "updatedAt">,
+): boolean {
+  const time = Date.parse(value);
+  return Date.parse(job.createdAt) <= time && time <= Date.parse(job.updatedAt);
 }
 
 function isCompleteRecoverySnapshot(
@@ -476,10 +548,33 @@ function proposalFieldsMatch(
 }
 
 function parseRequestModel(value: unknown): ReplacementRequestModel {
-  const record = exactObject(value, ["kind", "ref", "request", "metadata"], ["metadata"]);
+  return parseRequestModelInternal(value, true);
+}
+
+function parseWireRequestModel(value: unknown): ReplacementWireRequestModel {
+  return parseRequestModelInternal(value, false);
+}
+
+function parseRequestModelInternal(
+  value: unknown,
+  allowMetadata: true,
+): ReplacementRequestModel;
+function parseRequestModelInternal(
+  value: unknown,
+  allowMetadata: false,
+): ReplacementWireRequestModel;
+function parseRequestModelInternal(
+  value: unknown,
+  allowMetadata: boolean,
+): ReplacementRequestModel {
+  const record = allowMetadata
+    ? exactObject(value, ["kind", "ref", "request", "metadata"], ["metadata"])
+    : exactObject(value, ["kind", "ref", "request"]);
   const ref = parseItemRef(record.ref);
   if (record.kind !== ref.kind) throw corruptJob();
-  const metadata = record.metadata === undefined ? undefined : parseMetadata(record.metadata);
+  const metadata = allowMetadata && record.metadata !== undefined
+    ? parseMetadata(record.metadata)
+    : undefined;
   const withMetadata = <T extends ReplacementRequestModel>(model: T): T =>
     (metadata === undefined ? model : { ...model, metadata });
   if (ref.kind === "answer") {
@@ -657,16 +752,18 @@ function parseRecoveryPreview(
 ): PersistedContentReplacementRecoveryPreview {
   const record = exactObject(value, [
     "status", "currentRequestModel", "observedCurrentChecksum",
-    "expectedPostApplyChecksum", "previewedAt",
+    "expectedPostApplyChecksum", "sourceAttemptCount", "sourceApplyCompletedAt", "previewedAt",
   ]);
   if (!isRecoveryPreviewStatus(record.status)) throw corruptJob();
-  const currentRequestModel = parseRequestModel(record.currentRequestModel);
+  const currentRequestModel = parseWireRequestModel(record.currentRequestModel);
   if (!sameRef(currentRequestModel.ref, expectedRef)) throw corruptJob();
   return {
     status: record.status,
     currentRequestModel,
     observedCurrentChecksum: digest(record.observedCurrentChecksum),
     expectedPostApplyChecksum: digest(record.expectedPostApplyChecksum),
+    sourceAttemptCount: count(record.sourceAttemptCount),
+    sourceApplyCompletedAt: timestamp(record.sourceApplyCompletedAt),
     previewedAt: timestamp(record.previewedAt),
   };
 }
@@ -921,70 +1018,117 @@ function exactDynamicMap(value: unknown): Record<string, unknown> {
   return plainRecord(value);
 }
 
-function assertSafeDataGraph(value: unknown): void {
+function cloneSafeDataGraph(value: unknown): unknown {
   try {
-    walkSafeDataGraph(value);
+    return cloneDataGraphFromDescriptors(value);
   } catch {
     throw corruptJob();
   }
 }
 
-function walkSafeDataGraph(value: unknown): void {
-  if (!value || typeof value !== "object") return;
-  type Frame = { item: object; depth: number; exiting: boolean };
-  const seen = new WeakSet<object>();
-  const active = new WeakSet<object>();
-  const stack: Frame[] = [{ item: value as object, depth: 0, exiting: false }];
+function cloneDataGraphFromDescriptors(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  type Entry = { key: string; value: unknown };
+  type Inspected = { clone: object; entries: Entry[] };
+  type Frame = { item: object; clone: object; entries: Entry[]; index: number; depth: number };
   let nodeCount = 0;
 
-  while (stack.length > 0) {
-    const frame = stack.pop()!;
-    if (frame.exiting) {
-      active.delete(frame.item);
-      seen.add(frame.item);
-      continue;
-    }
-    if (active.has(frame.item)) throw corruptJob();
-    if (seen.has(frame.item)) continue;
+  const inspect = (item: object, depth: number): Inspected => {
     nodeCount += 1;
-    if (nodeCount > MAX_GRAPH_NODES || frame.depth > MAX_GRAPH_DEPTH) throw corruptJob();
+    if (nodeCount > MAX_GRAPH_NODES || depth > MAX_GRAPH_DEPTH) throw corruptJob();
 
-    const array = Array.isArray(frame.item) ? frame.item : null;
-    const isArray = array !== null;
-    const prototype = Object.getPrototypeOf(frame.item);
+    const isArray = Array.isArray(item);
+    const prototype = Reflect.getPrototypeOf(item);
     if (
       (isArray && prototype !== Array.prototype) ||
       (!isArray && prototype !== Object.prototype && prototype !== null)
     ) throw corruptJob();
-    if (array && array.length > MAX_SCHEMA_ARRAY_LENGTH) throw corruptJob();
 
-    const descriptors = Object.getOwnPropertyDescriptors(frame.item);
-    const keys = Reflect.ownKeys(descriptors);
+    let arrayLength: number | undefined;
+    if (isArray) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(item, "length");
+      if (
+        !lengthDescriptor || !("value" in lengthDescriptor) ||
+        typeof lengthDescriptor.value !== "number" ||
+        !Number.isInteger(lengthDescriptor.value) ||
+        lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_SCHEMA_ARRAY_LENGTH
+      ) throw corruptJob();
+      arrayLength = lengthDescriptor.value;
+    }
+
+    const keys = Reflect.ownKeys(item);
     if (keys.length > MAX_SCHEMA_ARRAY_LENGTH + (isArray ? 1 : 0)) throw corruptJob();
+    const entries: Entry[] = [];
     let arrayElementCount = 0;
-    const children: object[] = [];
     for (const key of keys) {
       if (typeof key !== "string") throw corruptJob();
       if (isArray && key === "length") continue;
       if (key === "__proto__" || key === "prototype" || key === "constructor") throw corruptJob();
-      if (array) {
-        if (!isCanonicalArrayIndex(key, array.length)) throw corruptJob();
+      if (isArray) {
+        if (!isCanonicalArrayIndex(key, arrayLength!)) throw corruptJob();
         arrayElementCount += 1;
       }
-      const descriptor = descriptors[key];
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw corruptJob();
-      if (descriptor.value && typeof descriptor.value === "object") {
-        children.push(descriptor.value as object);
+      if (typeof descriptor.value === "function") throw corruptJob();
+      entries.push({ key, value: descriptor.value });
+    }
+    if (isArray && arrayElementCount !== arrayLength) throw corruptJob();
+    return {
+      clone: isArray ? new Array(arrayLength) : Object.create(prototype),
+      entries,
+    };
+  };
+
+  const root = inspect(value as object, 0);
+  const seen = new WeakMap<object, object>([[value as object, root.clone]]);
+  const active = new WeakSet<object>();
+  active.add(value as object);
+  const stack: Frame[] = [{
+    item: value as object,
+    clone: root.clone,
+    entries: root.entries,
+    index: 0,
+    depth: 0,
+  }];
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    if (frame.index >= frame.entries.length) {
+      active.delete(frame.item);
+      stack.pop();
+      continue;
+    }
+    const entry = frame.entries[frame.index++];
+    let clonedValue = entry.value;
+    if (entry.value && typeof entry.value === "object") {
+      const child = entry.value as object;
+      if (active.has(child)) throw corruptJob();
+      const existing = seen.get(child);
+      if (existing) {
+        clonedValue = existing;
+      } else {
+        const inspected = inspect(child, frame.depth + 1);
+        clonedValue = inspected.clone;
+        seen.set(child, inspected.clone);
+        active.add(child);
+        stack.push({
+          item: child,
+          clone: inspected.clone,
+          entries: inspected.entries,
+          index: 0,
+          depth: frame.depth + 1,
+        });
       }
     }
-    if (array && arrayElementCount !== array.length) throw corruptJob();
-
-    active.add(frame.item);
-    stack.push({ ...frame, exiting: true });
-    for (let index = children.length - 1; index >= 0; index -= 1) {
-      stack.push({ item: children[index], depth: frame.depth + 1, exiting: false });
-    }
+    Object.defineProperty(frame.clone, entry.key, {
+      value: clonedValue,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
+  return root.clone;
 }
 
 function isCanonicalArrayIndex(key: string, length: number): boolean {

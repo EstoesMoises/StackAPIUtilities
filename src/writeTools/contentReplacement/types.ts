@@ -68,25 +68,28 @@ export interface ReplacementMetadata {
   lastActivityDate?: string | null;
 }
 
-export type ReplacementRequestModel =
+export type ReplacementWireRequestModel =
   | {
       kind: "question";
       ref: Extract<ReplacementItemRef, { kind: "question" }>;
       request: QuestionUpdateRequest;
-      metadata?: ReplacementMetadata;
     }
   | {
       kind: "answer";
       ref: Extract<ReplacementItemRef, { kind: "answer" }>;
       request: AnswerUpdateRequest;
-      metadata?: ReplacementMetadata;
     }
   | {
       kind: "article";
       ref: Extract<ReplacementItemRef, { kind: "article" }>;
       request: ArticleUpdateRequest;
-      metadata?: ReplacementMetadata;
     };
+
+type WithReplacementMetadata<T> = T extends ReplacementWireRequestModel
+  ? T & { metadata?: ReplacementMetadata }
+  : never;
+
+export type ReplacementRequestModel = WithReplacementMetadata<ReplacementWireRequestModel>;
 
 export type ReplacementProposalField = "title" | "body";
 
@@ -243,9 +246,11 @@ export interface PersistedContentReplacementRecovery {
 
 export interface PersistedContentReplacementRecoveryPreview {
   status: "recoverable" | "already-recovered" | "conflict";
-  currentRequestModel: ReplacementRequestModel;
+  currentRequestModel: ReplacementWireRequestModel;
   observedCurrentChecksum: string;
   expectedPostApplyChecksum: string;
+  sourceAttemptCount: number;
+  sourceApplyCompletedAt: string;
   previewedAt: string;
 }
 

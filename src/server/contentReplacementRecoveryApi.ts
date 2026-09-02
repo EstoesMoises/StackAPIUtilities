@@ -13,7 +13,7 @@ import {
 import { checksumRequestModel } from "../writeTools/contentReplacement/proposals";
 import type {
   ReplacementItemRef,
-  ReplacementRequestModel,
+  ReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/types";
 import {
   isExactObject,
@@ -40,15 +40,15 @@ export interface ContentReplacementRecoveryPayload {
   credentials: SessionCredentials;
   jobFingerprint: string;
   itemRef: ReplacementItemRef;
-  priorRequestModel: ReplacementRequestModel;
+  priorRequestModel: ReplacementWireRequestModel;
   expectedPriorRequestChecksum: string;
   expectedPostApplyChecksum: string;
 }
 
 type RecoveryPreviewResult = {
   status: "recoverable" | "already-recovered" | "conflict";
-  currentRequestModel: ReplacementRequestModel;
-  priorRequestModel: ReplacementRequestModel;
+  currentRequestModel: ReplacementWireRequestModel;
+  priorRequestModel: ReplacementWireRequestModel;
   observedRequestChecksum: string;
 };
 
@@ -110,7 +110,7 @@ export async function handleContentReplacementRecoveryRequest(
     return itemFailureResponse(error, "Unable to create the content client.", throttleNotices, browserJsonResponse);
   }
 
-  let current: ReplacementRequestModel;
+  let current: ReplacementWireRequestModel;
   try {
     const normalized = normalizeCurrentRequestModel(
       await client.getItem(validated.itemRef),

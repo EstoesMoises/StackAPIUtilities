@@ -11,10 +11,13 @@ import {
   checksumRequestModel,
   createJobFingerprint,
 } from "../writeTools/contentReplacement/proposals";
+import { scanDetailBatch } from "../writeTools/contentReplacement/scanner";
+import type { ContentReplacementClient } from "../writeTools/contentReplacement/contentApi";
 import type {
   PersistedContentReplacementJob,
   ReplacementProposal,
   ReplacementRequestModel,
+  ReplacementWireRequestModel,
 } from "../writeTools/contentReplacement/types";
 
 const originalIndexedDB = globalThis.indexedDB;
@@ -67,13 +70,16 @@ describe("browserContentReplacementStorage", () => {
     item.recovery.observedPostApplyChecksum = item.proposal.proposedRequestChecksum;
     item.recovery.preview = {
       status: "recoverable",
-      currentRequestModel: structuredClone(item.proposal.after),
+      currentRequestModel: withoutMetadata(item.proposal.after),
       observedCurrentChecksum: item.proposal.proposedRequestChecksum,
       expectedPostApplyChecksum: item.proposal.proposedRequestChecksum,
+      sourceAttemptCount: item.attemptCount,
+      sourceApplyCompletedAt: item.result.completedAt,
       previewedAt: "2026-09-01T12:03:00.000Z",
     };
     item.status = "ready-to-recover";
     job.stage = "recovery";
+    job.status = "paused";
 
     await saveContentReplacementJob(job);
 
@@ -90,9 +96,11 @@ describe("browserContentReplacementStorage", () => {
       item.recovery.observedPostApplyChecksum = item.proposal.proposedRequestChecksum;
       item.recovery.preview = {
         status: "recoverable",
-        currentRequestModel: structuredClone(item.proposal.after),
+        currentRequestModel: withoutMetadata(item.proposal.after),
         observedCurrentChecksum: item.proposal.proposedRequestChecksum,
         expectedPostApplyChecksum: item.proposal.proposedRequestChecksum,
+        sourceAttemptCount: item.attemptCount,
+        sourceApplyCompletedAt: item.result.completedAt,
         previewedAt: "2026-09-01T12:03:00.000Z",
       };
       item.status = "ready-to-recover";
@@ -103,6 +111,11 @@ describe("browserContentReplacementStorage", () => {
       (job: any) => { job.proposals["question:42"].recovery.preview.observedCurrentChecksum = "f".repeat(64); },
       (job: any) => { job.proposals["question:42"].recovery.preview.status = "already-recovered"; },
       (job: any) => { job.proposals["question:42"].recovery.preview.expectedPostApplyChecksum = "f".repeat(64); },
+      (job: any) => { job.proposals["question:42"].recovery.preview.sourceAttemptCount -= 1; },
+      (job: any) => { job.proposals["question:42"].recovery.preview.sourceApplyCompletedAt = "2026-09-01T12:01:00.000Z"; },
+      (job: any) => { job.proposals["question:42"].recovery.preview.previewedAt = "2026-09-01T12:01:00.000Z"; },
+      (job: any) => { job.proposals["question:42"].recovery.preview.previewedAt = "2026-09-01T12:05:00.000Z"; },
+      (job: any) => { job.proposals["question:42"].recovery.preview.currentRequestModel.metadata = { titleContext: "fabricated" }; },
       (job: any) => { job.proposals["question:42"].recovery.preview.apiKey = "secret"; },
     ]) {
       const job = createPreviewJob();
@@ -120,31 +133,35 @@ describe("browserContentReplacementStorage", () => {
     recoveredItem.status = "ready-to-recover";
     recoveredItem.recovery.preview = {
       status: "already-recovered",
-      currentRequestModel: structuredClone(recoveredItem.proposal.before),
+      currentRequestModel: withoutMetadata(recoveredItem.proposal.before),
       observedCurrentChecksum: recoveredItem.proposal.scannedRequestChecksum,
       expectedPostApplyChecksum: recoveredItem.proposal.proposedRequestChecksum,
+      sourceAttemptCount: recoveredItem.attemptCount,
+      sourceApplyCompletedAt: recoveredItem.result.completedAt,
       previewedAt: "2026-09-01T12:03:00.000Z",
     };
     alreadyRecovered.stage = "recovery";
+    alreadyRecovered.status = "paused";
     await expect(saveContentReplacementJob(alreadyRecovered)).resolves.toBeUndefined();
 
     const conflict = createAppliedJob() as any;
     const conflictItem = conflict.proposals["question:42"];
-    const current = structuredClone(conflictItem.proposal.before);
+    const current = withoutMetadata(conflictItem.proposal.before);
+    if (current.kind !== "question") throw new Error("Expected question fixture.");
     current.request.title = "Changed after apply";
     const observedCurrentChecksum = await checksumRequestModel(current);
-    conflictItem.status = "recovery-conflict";
-    conflictItem.result = { kind: "recovery-conflict", completedAt: conflict.updatedAt };
-    conflictItem.recovery.status = "conflict";
+    conflictItem.status = "ready-to-recover";
     conflictItem.recovery.preview = {
       status: "conflict",
       currentRequestModel: current,
       observedCurrentChecksum,
       expectedPostApplyChecksum: conflictItem.proposal.proposedRequestChecksum,
+      sourceAttemptCount: conflictItem.attemptCount,
+      sourceApplyCompletedAt: conflictItem.result.completedAt,
       previewedAt: "2026-09-01T12:03:00.000Z",
     };
     conflict.stage = "recovery";
-    conflict.progress.recoveryCompleted = 1;
+    conflict.status = "paused";
     await expect(saveContentReplacementJob(conflict)).resolves.toBeUndefined();
   });
 
@@ -159,6 +176,39 @@ describe("browserContentReplacementStorage", () => {
 
     expect((await loadContentReplacementJob(job.id))!.proposals["question:42"].recovery)
       .toEqual(job.proposals["question:42"].recovery);
+  });
+
+  it("persists aggregate protected occurrences from a protected-only scanned detail", async () => {
+    installFakeIndexedDB();
+    const job = createJob();
+    const detail = await scanDetailBatch({
+      getItem: async () => ({
+        kind: "question" as const,
+        ref: { kind: "question" as const, questionId: 42 },
+        request: { title: "Safe", body: "`Old`", tags: ["api"] },
+      }),
+    } as unknown as ContentReplacementClient, {
+      refs: [{ kind: "question", questionId: 42 }],
+      configuration: job.configuration,
+    });
+    expect(detail).toMatchObject({
+      proposals: [],
+      inspectedCount: 1,
+      protectedOccurrenceCount: 1,
+    });
+    job.stage = "review";
+    job.status = "completed";
+    job.inventoryQueue = [];
+    job.detailQueue = [];
+    job.progress.questionPages = 1;
+    job.progress.inventoryItems = 1;
+    job.progress.detailsInspected = detail.inspectedCount;
+    job.progress.proposalsFound = detail.proposals.length;
+    job.progress.protectedOccurrences = detail.protectedOccurrenceCount;
+
+    await saveContentReplacementJob(job);
+
+    await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
   });
 
   it("rejects recovery review metadata that diverges from the canonical proposal", async () => {
@@ -193,6 +243,7 @@ describe("browserContentReplacementStorage", () => {
     item.result = undefined;
     delete item.result;
     item.failure = createFailure();
+    delete item.recovery!.observedPostApplyChecksum;
 
     await saveContentReplacementJob(job);
 
@@ -493,6 +544,34 @@ describe("browserContentReplacementStorage", () => {
     expect(getter).not.toHaveBeenCalled();
   });
 
+  it("normalizes only descriptor-cloned data without invoking root or nested proxy get traps", async () => {
+    const fake = installFakeIndexedDB();
+    const rootGet = vi.fn(() => { throw new Error("root get trap must not run"); });
+    const rootProxy = new Proxy(createJob(), { get: rootGet });
+
+    await saveContentReplacementJob(rootProxy);
+    expect(rootGet).not.toHaveBeenCalled();
+
+    const nestedJob = createJob();
+    const nestedGet = vi.fn(() => { throw new Error("nested get trap must not run"); });
+    nestedJob.configuration = new Proxy(nestedJob.configuration, { get: nestedGet });
+    fake.records.set(nestedJob.id, nestedJob);
+
+    await expect(loadContentReplacementJob(nestedJob.id)).resolves.toEqual(createJob());
+    expect(nestedGet).not.toHaveBeenCalled();
+  });
+
+  it("contains descriptor trap failures behind the stable content-free corruption error", async () => {
+    installFakeIndexedDB();
+    const hostile = new Proxy(createJob(), {
+      ownKeys: () => { throw new Error("sensitive descriptor failure"); },
+    });
+
+    await expect(saveContentReplacementJob(hostile)).rejects.toEqual(
+      new TypeError("Stored content replacement job is invalid."),
+    );
+  });
+
   it("handles thousands of genuinely canonical proposals with bounded validation", async () => {
     installFakeIndexedDB();
     const job = createJob();
@@ -644,11 +723,126 @@ describe("browserContentReplacementStorage", () => {
     }
   });
 
+  it("accepts reducer-compatible intermediate running, paused, retry, and failed states", async () => {
+    installFakeIndexedDB();
+    const applyPreparing = createReviewJob();
+    applyPreparing.stage = "apply";
+    applyPreparing.status = "running";
+    applyPreparing.recoverySnapshotStatus = "preparing";
+
+    const applying = createApplyReadyJob();
+    applying.status = "running";
+    applying.proposals["question:42"].status = "applying";
+    applying.proposals["question:42"].attemptCount = 1;
+
+    const retryReady = createApplyReadyJob();
+    retryReady.proposals["question:42"].attemptCount = 1;
+
+    const applyPreparedBeforeGateFlip = createApplyReadyJob();
+    applyPreparedBeforeGateFlip.status = "running";
+    applyPreparedBeforeGateFlip.recoverySnapshotStatus = "preparing";
+
+    const snapshotFailed = createReviewJob();
+    snapshotFailed.stage = "apply";
+    snapshotFailed.status = "failed";
+    snapshotFailed.failure = createFailure();
+    snapshotFailed.recoverySnapshotStatus = "failed";
+
+    const recovering = createAppliedJob();
+    recovering.stage = "recovery";
+    recovering.status = "running";
+    recovering.proposals["question:42"].status = "recovering";
+
+    const failedScan = createJob();
+    failedScan.status = "failed";
+    failedScan.failure = createFailure();
+    failedScan.updatedAt = "2026-09-01T12:04:00.000Z";
+
+    for (const job of [
+      applyPreparing, applying, retryReady, applyPreparedBeforeGateFlip,
+      snapshotFailed, recovering, failedScan,
+    ]) {
+      await expect(saveContentReplacementJob(job)).resolves.toBeUndefined();
+    }
+  });
+
+  it.each([
+    ["completed apply with ready work", () => {
+      const job = createApplyReadyJob();
+      job.status = "completed";
+      return job;
+    }],
+    ["completed apply with applying work", () => {
+      const job = createApplyReadyJob();
+      job.status = "completed";
+      job.proposals["question:42"].status = "applying";
+      job.proposals["question:42"].attemptCount = 1;
+      return job;
+    }],
+    ["failed root without failure", () => {
+      const job = createJob();
+      job.status = "failed";
+      return job;
+    }],
+    ["nonfailed root with failure", () => {
+      const job = createJob();
+      job.failure = createFailure();
+      return job;
+    }],
+    ["applying item while root paused", () => {
+      const job = createApplyReadyJob();
+      job.proposals["question:42"].status = "applying";
+      job.proposals["question:42"].attemptCount = 1;
+      return job;
+    }],
+    ["recovering item while root paused", () => {
+      const job = createAppliedJob();
+      job.stage = "recovery";
+      job.status = "paused";
+      job.proposals["question:42"].status = "recovering";
+      return job;
+    }],
+    ["stale apply result with observed post-apply generation", () => {
+      const job = createAppliedJob();
+      job.proposals["question:42"].status = "stale";
+      job.proposals["question:42"].result = { kind: "stale", completedAt: job.updatedAt };
+      return job;
+    }],
+    ["failed apply result with applied recovery generation", () => {
+      const job = createAppliedJob();
+      const item = job.proposals["question:42"];
+      item.status = "failed";
+      delete item.result;
+      item.failure = createFailure();
+      item.recovery!.status = "applied";
+      return job;
+    }],
+    ["none snapshot gate with ready recovery data", () => {
+      const job = createApplyReadyJob();
+      job.recoverySnapshotStatus = "none";
+      return job;
+    }],
+    ["ready snapshot gate with failed recovery data", () => {
+      const job = createApplyReadyJob();
+      const item = job.proposals["question:42"];
+      item.status = "failed";
+      item.attemptCount = 1;
+      item.failure = createFailure();
+      item.recovery!.status = "failed";
+      return job;
+    }],
+  ])("rejects reducer-incompatible state: %s", async (_label, createInvalidJob) => {
+    installFakeIndexedDB();
+    await expect(saveContentReplacementJob(createInvalidJob())).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
   it.each([
     ["proposal count", (job: any) => { job.progress.proposalsFound = 0; }],
     ["detail count", (job: any) => { job.progress.detailsInspected = 0; }],
     ["inventory count", (job: any) => { job.progress.inventoryItems = 0; }],
-    ["protected count", (job: any) => { job.progress.protectedOccurrences = 1; }],
+    ["protected count exceeds inspected-item bound", (job: any) => { job.progress.protectedOccurrences = 100_001; }],
     ["apply completion count", (job: any) => { job.progress.applyCompleted = 0; }],
     ["recovery completion count", (job: any) => { job.progress.recoveryCompleted = 1; }],
     ["applied without result", (job: any) => { delete job.proposals["question:42"].result; }],
@@ -837,13 +1031,55 @@ function createAppliedJob(): PersistedContentReplacementJob {
   return job;
 }
 
+function createReviewJob(): PersistedContentReplacementJob {
+  const job = createPopulatedJob();
+  const item = job.proposals["question:42"];
+  job.stage = "review";
+  job.status = "completed";
+  job.recoverySnapshotStatus = "none";
+  item.attemptCount = 0;
+  item.status = "pending";
+  delete item.result;
+  delete item.failure;
+  delete item.recovery;
+  job.progress.applyCompleted = 0;
+  return job;
+}
+
+function createApplyReadyJob(): PersistedContentReplacementJob {
+  const job = createReviewJob();
+  const item = job.proposals["question:42"];
+  job.stage = "apply";
+  job.status = "paused";
+  job.recoverySnapshotStatus = "ready";
+  item.status = "ready-to-apply";
+  item.recovery = {
+    priorRequestModel: structuredClone(item.proposal.before),
+    scannedRequestChecksum: item.proposal.scannedRequestChecksum,
+    proposedRequestChecksum: item.proposal.proposedRequestChecksum,
+    status: "ready",
+  };
+  return job;
+}
+
+function withoutMetadata(model: ReplacementRequestModel): ReplacementWireRequestModel {
+  const clone = structuredClone(model);
+  delete clone.metadata;
+  return clone;
+}
+
 function createRecoveryPreview(job: PersistedContentReplacementJob): Record<string, unknown> {
   const item = job.proposals["question:42"];
+  if (item.result?.kind !== "applied" && item.result?.kind !== "unchanged") {
+    throw new Error("Expected successful apply result fixture.");
+  }
   return {
     status: "recoverable",
-    currentRequestModel: structuredClone(item.proposal.after),
+    currentRequestModel: withoutMetadata(item.proposal.after),
     observedCurrentChecksum: item.proposal.proposedRequestChecksum,
     expectedPostApplyChecksum: item.proposal.proposedRequestChecksum,
+    sourceAttemptCount: item.attemptCount,
+    sourceApplyCompletedAt: item.result.completedAt,
     previewedAt: "2026-09-01T12:03:00.000Z",
   };
 }
@@ -867,23 +1103,7 @@ function createValidStateFixtures(): PersistedContentReplacementJob[] {
 
   const scan = createJob();
 
-  const review = createPopulatedJob();
-  const reviewItem = review.proposals["question:42"];
-  review.stage = "review";
-  review.status = "completed";
-  review.recoverySnapshotStatus = "none";
-  review.inventoryQueue = [];
-  review.detailQueue = [];
-  reviewItem.attemptCount = 0;
-  reviewItem.status = "pending";
-  delete reviewItem.result;
-  delete reviewItem.failure;
-  delete reviewItem.recovery;
-  review.progress.questionPages = 1;
-  review.progress.inventoryItems = 1;
-  review.progress.detailsInspected = 1;
-  review.progress.protectedOccurrences = reviewItem.proposal.protectedOccurrences.length;
-  review.progress.applyCompleted = 0;
+  const review = createReviewJob();
 
   const excluded = structuredClone(review);
   const excludedItem = excluded.proposals["question:42"];
@@ -892,18 +1112,7 @@ function createValidStateFixtures(): PersistedContentReplacementJob[] {
   excludedItem.status = "excluded";
   excludedItem.result = { kind: "excluded", completedAt: excluded.updatedAt };
 
-  const apply = structuredClone(review);
-  const applyItem = apply.proposals["question:42"];
-  apply.stage = "apply";
-  apply.status = "paused";
-  apply.recoverySnapshotStatus = "ready";
-  applyItem.status = "ready-to-apply";
-  applyItem.recovery = {
-    priorRequestModel: structuredClone(applyItem.proposal.before),
-    scannedRequestChecksum: applyItem.proposal.scannedRequestChecksum,
-    proposedRequestChecksum: applyItem.proposal.proposedRequestChecksum,
-    status: "ready",
-  };
+  const apply = createApplyReadyJob();
 
   const retry = structuredClone(apply);
   retry.proposals["question:42"].attemptCount = 1;

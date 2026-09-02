@@ -9,7 +9,7 @@ import type {
   ArticlePermissionsRequest,
   ReplacementConfiguration,
   ReplacementItemRef,
-  ReplacementRequestModel,
+  ReplacementWireRequestModel,
   ReplacementRule,
 } from "../writeTools/contentReplacement/types";
 
@@ -178,14 +178,14 @@ export function sameRef(left: ReplacementItemRef, right: ReplacementItemRef): bo
 export function normalizeCurrentRequestModel(
   value: unknown,
   expectedRef: ReplacementItemRef,
-): ReplacementRequestModel | null {
+): ReplacementWireRequestModel | null {
   return normalizeRequestModel(value, expectedRef, false);
 }
 
 export function validateExactPriorRequestModel(
   value: unknown,
   expectedRef: ReplacementItemRef,
-): ReplacementRequestModel | null {
+): ReplacementWireRequestModel | null {
   return normalizeRequestModel(value, expectedRef, true);
 }
 
@@ -193,7 +193,7 @@ function normalizeRequestModel(
   value: unknown,
   expectedRef: ReplacementItemRef,
   requireExactModel: boolean,
-): ReplacementRequestModel | null {
+): ReplacementWireRequestModel | null {
   try {
     if (!isRecord(value)) return null;
     if (requireExactModel && !isExactObject(value, ["kind", "ref", "request"])) return null;
