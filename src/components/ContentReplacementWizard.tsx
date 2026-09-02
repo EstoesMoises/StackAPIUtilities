@@ -10,6 +10,7 @@ import type {
   ReplacementConfiguration,
 } from "../writeTools/contentReplacement/types";
 import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
+import { ContentReplacementReviewStep } from "./ContentReplacementReviewStep";
 import { ContentReplacementScanStep } from "./ContentReplacementScanStep";
 
 export interface ContentReplacementWizardProps {
@@ -105,10 +106,7 @@ function ContentReplacementWizardView({
           />
         )}
         {activeStep === 2 && (
-          <section className="content-replacement-placeholder" aria-labelledby="content-replacement-review-heading">
-            <h2 id="content-replacement-review-heading">Review proposed changes</h2>
-            <p>Review controls are added in the next implementation stage. This placeholder appears only after the complete scan reaches Review.</p>
-          </section>
+          <ContentReplacementReviewStep controller={controller} />
         )}
         {activeStep === 3 && (
           <section className="content-replacement-placeholder" aria-labelledby="content-replacement-apply-heading">

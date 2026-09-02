@@ -3,7 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionCredentials } from "../domain/types";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
-import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
+import type {
+  PersistedContentReplacementItem,
+  PersistedContentReplacementJob,
+} from "../writeTools/contentReplacement/types";
 import { ContentReplacementWizard } from "./ContentReplacementWizard";
 
 const credentials: SessionCredentials = {
@@ -57,14 +60,19 @@ describe("ContentReplacementWizard", () => {
     }));
   });
 
-  it("shows honest placeholders only after Review or Apply is reached", () => {
-    const reviewController = controller(job({ stage: "review", status: "completed" }));
+  it("renders the complete Review step and keeps only the Apply placeholder", () => {
+    const reviewController = controller(job({
+      stage: "review",
+      status: "completed",
+      proposals: { "question:42": reviewItem() },
+    }));
     const { rerender } = render(
       <ContentReplacementWizard credentials={credentials} controller={reviewController} />,
     );
     expect(screen.getByText("Review", { selector: "[aria-current='step']" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
-    expect(screen.getByText(/Review controls are added in the next implementation stage/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Download complete preview CSV" })).toBeVisible();
+    expect(screen.queryByText(/Review controls are added in the next implementation stage/i)).not.toBeInTheDocument();
 
     rerender(
       <ContentReplacementWizard credentials={credentials} controller={controller(job({ stage: "apply", status: "paused" }))} />,
@@ -72,6 +80,20 @@ describe("ContentReplacementWizard", () => {
     expect(screen.getByText("Apply", { selector: "[aria-current='step']" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Apply reviewed changes" })).toBeVisible();
     expect(screen.getByText(/Apply controls are added in the next implementation stage/i)).toBeVisible();
+  });
+
+  it("continues from Review through the controller after an included proposal is present", async () => {
+    const user = userEvent.setup();
+    const jobController = controller(job({
+      stage: "review",
+      status: "completed",
+      proposals: { "question:42": reviewItem() },
+    }));
+    render(<ContentReplacementWizard credentials={credentials} controller={jobController} />);
+
+    await user.click(screen.getByRole("button", { name: "Continue with 1 post and 1 changed occurrence" }));
+
+    expect(jobController.prepareApply).toHaveBeenCalledOnce();
   });
 
   it("uses the controller credential predicate to block scan creation", async () => {
@@ -186,5 +208,32 @@ function job(overrides: Partial<PersistedContentReplacementJob>): PersistedConte
     createdAt: "2026-09-02T12:00:00.000Z",
     updatedAt: "2026-09-02T12:00:00.000Z",
     ...overrides,
+  };
+}
+
+function reviewItem(): PersistedContentReplacementItem {
+  const ref = { kind: "question" as const, questionId: 42 };
+  const beforeRequest = { title: "Use MyPVM", body: "Use MyPVM.", tags: ["test"] };
+  const afterRequest = { ...beforeRequest, title: "Use MyPBM", body: "Use MyPBM." };
+  return {
+    included: true,
+    attemptCount: 0,
+    status: "pending",
+    proposal: {
+      before: { kind: "question", ref, request: beforeRequest },
+      after: { kind: "question", ref, request: afterRequest },
+      fields: {
+        title: { beforeMarkdown: beforeRequest.title, afterMarkdown: afterRequest.title },
+        body: { beforeMarkdown: beforeRequest.body, afterMarkdown: afterRequest.body },
+      },
+      changedOccurrences: [{
+        field: "title", ruleId: "one", start: 4, end: 9, before: "MyPVM", after: "MyPBM",
+      }],
+      protectedOccurrences: [],
+      appliedRuleIds: ["one"],
+      scannedRequestChecksum: "a".repeat(64),
+      proposedRequestChecksum: "b".repeat(64),
+      proposalFingerprint: "c".repeat(64),
+    },
   };
 }
