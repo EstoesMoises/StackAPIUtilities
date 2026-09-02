@@ -450,7 +450,13 @@ function createConfiguration(
   rules: ReplacementRule[],
   options: ReplacementOptions,
 ): ReplacementConfiguration {
-  return { target: { kind: "enterprise-main" }, contentTypes: { ...contentTypes }, rules: rules.map((rule) => ({ ...rule })), options: { ...options } };
+  return {
+    target: { kind: "enterprise-main" },
+    contentTypes: { ...contentTypes },
+    discovery: { mode: "targeted" },
+    rules: rules.map((rule) => ({ ...rule })),
+    options: { ...options },
+  };
 }
 
 function configurationSnapshotKey(

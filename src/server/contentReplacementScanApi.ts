@@ -25,6 +25,7 @@ import type {
   DetailBatchResult,
   InventoryCursor,
   InventorySliceResult,
+  ReplacementDiscovery,
   ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementRule,
@@ -47,6 +48,7 @@ const MAX_SCAN_CUMULATIVE_RETRY_WAIT_SECONDS = 10;
 const MAX_BASE_URL_LENGTH = 2_048;
 const MAX_CREDENTIAL_STRING_LENGTH = 65_536;
 const MAX_RULE_ID_LENGTH = 200;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export type ContentReplacementScanPayload = {
   credentials: SessionCredentials;
@@ -285,7 +287,7 @@ function isExactSessionCredentials(value: unknown): value is SessionCredentials 
 }
 
 function validateConfiguration(value: unknown): ReplacementConfiguration | null {
-  if (!isRecord(value) || !isExactObject(value, ["target", "contentTypes", "rules", "options"])) {
+  if (!isRecord(value) || !isExactObject(value, ["target", "contentTypes", "discovery", "rules", "options"])) {
     return null;
   }
   if (!isRecord(value.target) || !isExactObject(value.target, ["kind"]) || value.target.kind !== "enterprise-main") {
@@ -301,6 +303,8 @@ function validateConfiguration(value: unknown): ReplacementConfiguration | null 
   ) {
     return null;
   }
+  const discovery = validateDiscovery(value.discovery);
+  if (!discovery) return null;
   if (
     !isRecord(value.options) ||
     !isExactObject(value.options, ["caseSensitive", "wholeTerm", "replaceInCode"]) ||
@@ -335,6 +339,7 @@ function validateConfiguration(value: unknown): ReplacementConfiguration | null 
       answers: value.contentTypes.answers,
       articles: value.contentTypes.articles,
     },
+    discovery,
     rules: validatedRules.rules,
     options: {
       caseSensitive: value.options.caseSensitive,
@@ -342,6 +347,24 @@ function validateConfiguration(value: unknown): ReplacementConfiguration | null 
       replaceInCode: value.options.replaceInCode,
     },
   };
+}
+
+function validateDiscovery(value: unknown): ReplacementDiscovery | null {
+  if (!isRecord(value) || typeof value.mode !== "string") return null;
+  if ((value.mode === "targeted" || value.mode === "full") && isExactObject(value, ["mode"])) {
+    return { mode: value.mode };
+  }
+  if (
+    value.mode === "exact" &&
+    isExactObject(value, ["mode", "targetCount", "targetDigest"]) &&
+    isPositiveSafeInteger(value.targetCount) &&
+    value.targetCount <= 100_000 &&
+    typeof value.targetDigest === "string" &&
+    SHA256_PATTERN.test(value.targetDigest)
+  ) {
+    return { mode: "exact", targetCount: value.targetCount, targetDigest: value.targetDigest };
+  }
+  return null;
 }
 
 function isExactReplacementRule(value: unknown): value is ReplacementRule {

@@ -17,6 +17,7 @@ import type {
 const configuration: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
   contentTypes: { questions: true, answers: true, articles: true },
+  discovery: { mode: "full" },
   rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };

@@ -32,6 +32,7 @@ export function createDefaultReplacementConfiguration(): ReplacementConfiguratio
   return {
     target: { kind: "enterprise-main" },
     contentTypes: { questions: true, answers: true, articles: true },
+    discovery: { mode: "targeted" },
     rules: [],
     options: {
       caseSensitive: true,

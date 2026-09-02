@@ -23,7 +23,7 @@ import type {
 } from "../writeTools/contentReplacement/types";
 
 const originalIndexedDB = globalThis.indexedDB;
-const JOB_FINGERPRINT = "758cb96c6de3e89a529a6ea11728371ffe3d242c7d4bc56cf9c8f4a6a8aa1d05";
+const JOB_FINGERPRINT = "7d80eed3ce0140ec6116a9a34392f05f38eaaa4ae0ab8a7c7f8b7faad363ba0e";
 type JobStage = PersistedContentReplacementJob["stage"];
 type JobStatus = PersistedContentReplacementJob["status"];
 const ROOT_STAGE_STATUS_MATRIX = {
@@ -2017,6 +2017,7 @@ function createJob(): PersistedContentReplacementJob {
     configuration: {
       target: { kind: "enterprise-main" as const },
       contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" as const },
       rules: [{ id: "rule-1", find: "Old", replace: "New" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     },

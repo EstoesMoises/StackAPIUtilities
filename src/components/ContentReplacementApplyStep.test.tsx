@@ -719,6 +719,7 @@ function job(overrides: Partial<PersistedContentReplacementJob> = {}): Persisted
     configuration: {
       target: { kind: "enterprise-main" },
       contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" },
       rules: [{ id: "one", find: "MyPVM", replace: "MyPBM" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     },

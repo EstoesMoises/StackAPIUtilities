@@ -34,6 +34,7 @@ const DIGEST_D = "d".repeat(64);
 const configuration: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
   contentTypes: { questions: true, answers: true, articles: true },
+  discovery: { mode: "full" },
   rules: [{ id: "rule-1", find: "Old", replace: "New" }],
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };

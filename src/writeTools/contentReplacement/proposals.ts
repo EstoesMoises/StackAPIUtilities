@@ -166,6 +166,7 @@ function semanticConfiguration(configuration: ReplacementConfiguration): Omit<Re
   return {
     target: configuration.target,
     contentTypes: configuration.contentTypes,
+    discovery: configuration.discovery,
     options: configuration.options,
     rules: configuration.rules
       .map(({ find, replace }) => ({ find, replace }))

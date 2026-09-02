@@ -30,6 +30,7 @@ const credentials: SessionCredentials = {
 const configuration: ReplacementConfiguration = {
   target: { kind: "enterprise-main" },
   contentTypes: { questions: true, answers: false, articles: false },
+  discovery: { mode: "full" },
   rules: [{ id: "rule-1", find: "Old", replace: "New" }],
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };

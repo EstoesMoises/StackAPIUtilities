@@ -216,6 +216,7 @@ describe("ContentReplacementScanStep", () => {
       configuration: {
         target: { kind: "enterprise-main" },
         contentTypes: { questions: true, answers: false, articles: true },
+        discovery: { mode: "full" },
         rules: [
           { id: "one", find: "MyPVM", replace: "MyPBM" },
           { id: "two", find: "CPR", replace: "Benefits" },
@@ -277,6 +278,7 @@ function createJob(
     configuration: {
       target: { kind: "enterprise-main" },
       contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" },
       rules: [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     },

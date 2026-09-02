@@ -7,6 +7,7 @@ import {
 } from "../writeTools/contentReplacement/rules";
 import type {
   ArticlePermissionsRequest,
+  ReplacementDiscovery,
   ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementWireRequestModel,
@@ -55,7 +56,7 @@ export function validateSessionCredentials(value: unknown): SessionCredentials |
 
 export function validateConfiguration(value: unknown): ReplacementConfiguration | null {
   try {
-    if (!isRecord(value) || !isExactObject(value, ["target", "contentTypes", "rules", "options"])) {
+    if (!isRecord(value) || !isExactObject(value, ["target", "contentTypes", "discovery", "rules", "options"])) {
       return null;
     }
     if (!isRecord(value.target) || !isExactObject(value.target, ["kind"]) || value.target.kind !== "enterprise-main") {
@@ -71,6 +72,8 @@ export function validateConfiguration(value: unknown): ReplacementConfiguration 
     ) {
       return null;
     }
+    const discovery = validateDiscovery(value.discovery);
+    if (!discovery) return null;
     if (
       !isRecord(value.options) ||
       !isExactObject(value.options, ["caseSensitive", "wholeTerm", "replaceInCode"]) ||
@@ -103,12 +106,30 @@ export function validateConfiguration(value: unknown): ReplacementConfiguration 
         answers: value.contentTypes.answers,
         articles: value.contentTypes.articles,
       },
+      discovery,
       rules: validated.rules,
       options,
     };
   } catch {
     return null;
   }
+}
+
+function validateDiscovery(value: unknown): ReplacementDiscovery | null {
+  if (!isRecord(value) || typeof value.mode !== "string") return null;
+  if ((value.mode === "targeted" || value.mode === "full") && isExactObject(value, ["mode"])) {
+    return { mode: value.mode };
+  }
+  if (
+    value.mode === "exact" &&
+    isExactObject(value, ["mode", "targetCount", "targetDigest"]) &&
+    isPositiveSafeInteger(value.targetCount) &&
+    value.targetCount <= 100_000 &&
+    isSha256Digest(value.targetDigest)
+  ) {
+    return { mode: "exact", targetCount: value.targetCount, targetDigest: value.targetDigest };
+  }
+  return null;
 }
 
 export function validateItemRef(value: unknown): ReplacementItemRef | null {

@@ -9,6 +9,7 @@ describe("content replacement rules", () => {
   it("uses the safe matching defaults", () => {
     expect(createDefaultReplacementConfiguration()).toMatchObject({
       contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "targeted" },
       options: {
         caseSensitive: true,
         wholeTerm: true,

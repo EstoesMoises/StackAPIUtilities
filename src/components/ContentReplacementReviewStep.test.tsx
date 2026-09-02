@@ -256,6 +256,7 @@ function job(proposals: Record<string, PersistedContentReplacementItem>): Persis
     configuration: {
       target: { kind: "enterprise-main" },
       contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" },
       rules: [
         { id: "rule-2", find: "old", replace: "new" },
         { id: "rule-10", find: "MyPVM", replace: "MyPBM" },

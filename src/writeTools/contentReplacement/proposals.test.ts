@@ -6,6 +6,7 @@ import {
   stableSerialize,
   toReplacementWireRequestModel,
 } from "./proposals";
+import { createExactTargetSelection } from "./discovery";
 import type {
   ReplacementRequestModel,
   ReplacementWireRequestModel,
@@ -50,6 +51,7 @@ describe("replacement proposals", () => {
       {
         target: { kind: "enterprise-main" },
         contentTypes: { questions: true, answers: true, articles: true },
+        discovery: { mode: "full" },
         rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
         options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
       },
@@ -101,6 +103,7 @@ describe("replacement proposals", () => {
       configuration: {
         target: { kind: "enterprise-main" as const },
         contentTypes: { questions: true, answers: true, articles: true },
+        discovery: { mode: "targeted" as const },
         rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
         options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
       },
@@ -139,6 +142,7 @@ describe("replacement proposals", () => {
     const configuration = {
       target: { kind: "enterprise-main" as const },
       contentTypes: { questions: true, answers: false, articles: true },
+      discovery: { mode: "targeted" as const },
       rules: [
         { id: "first", sourceRow: 2, find: "MyPVM", replace: "MyPBM" },
         { id: "second", sourceRow: 3, find: "CPR", replace: "Benefits" },
@@ -160,6 +164,24 @@ describe("replacement proposals", () => {
     );
   });
 
+  it("fingerprints discovery mode and normalized exact targets", async () => {
+    const targeted = {
+      target: { kind: "enterprise-main" as const },
+      contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "targeted" as const },
+      rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
+      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+    };
+    const exactSelection = await createExactTargetSelection([{ kind: "question", questionId: 42 }]);
+
+    await expect(createJobFingerprint({ baseUrl: "https://demo.stackenterprise.co", configuration: targeted })).resolves.not.toBe(
+      await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration: { ...targeted, discovery: exactSelection.discovery },
+      }),
+    );
+  });
+
   it("returns no proposal when neither editable field changes", async () => {
     await expect(
       buildReplacementProposal(
@@ -171,6 +193,7 @@ describe("replacement proposals", () => {
         {
           target: { kind: "enterprise-main" },
           contentTypes: { questions: true, answers: true, articles: true },
+          discovery: { mode: "full" },
           rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
           options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
         },
@@ -188,6 +211,7 @@ describe("replacement proposals", () => {
       {
         target: { kind: "enterprise-main" },
         contentTypes: { questions: true, answers: true, articles: true },
+        discovery: { mode: "full" },
         rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
         options: { caseSensitive: false, wholeTerm: true, replaceInCode: false },
       },
@@ -201,6 +225,7 @@ describe("replacement proposals", () => {
     const configuration = {
       target: { kind: "enterprise-main" as const },
       contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" as const },
       rules: [{ id: "r1", find: "MyPVM", replace: "MyPBM" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     };

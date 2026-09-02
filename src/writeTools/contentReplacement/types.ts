@@ -1,9 +1,21 @@
 export type ReplacementContentKind = "question" | "answer" | "article";
 
+export type ReplacementDiscovery =
+  | { mode: "targeted" }
+  | { mode: "exact"; targetCount: number; targetDigest: string }
+  | { mode: "full" };
+
+export type ReplacementDiscoveryMode = ReplacementDiscovery["mode"];
+
 export type ReplacementItemRef =
   | { kind: "question"; questionId: number }
   | { kind: "answer"; questionId: number; answerId: number }
   | { kind: "article"; articleId: number };
+
+export interface ExactTargetSelection {
+  discovery: Extract<ReplacementDiscovery, { mode: "exact" }>;
+  targets: ReplacementItemRef[];
+}
 
 export interface ReplacementRule {
   id: string;
@@ -21,6 +33,7 @@ export interface ReplacementOptions {
 export interface ReplacementConfiguration {
   target: { kind: "enterprise-main" };
   contentTypes: { questions: boolean; answers: boolean; articles: boolean };
+  discovery: ReplacementDiscovery;
   rules: ReplacementRule[];
   options: ReplacementOptions;
 }

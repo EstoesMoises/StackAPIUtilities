@@ -2655,6 +2655,7 @@ function contentReplacementJob(
     configuration: {
       target: { kind: "enterprise-main" },
       contentTypes: { questions: true, answers: true, articles: true },
+      discovery: { mode: "full" },
       rules: [{ id: "rule-1", find: "Old term", replace: "New term" }],
       options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
     },
