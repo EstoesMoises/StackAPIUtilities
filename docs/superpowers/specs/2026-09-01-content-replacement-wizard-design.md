@@ -2,12 +2,12 @@
 
 ## Summary
 
-Stack API Utilities will add an Enterprise API v3 write tool for replacing renamed products, acronyms, and terms across questions, answers, and articles. The tool will support replacement rules entered manually in the browser or imported from CSV, scale to thousands of affected posts, and require a complete scan and review before any write occurs.
+Stack API Utilities will add an Enterprise API v3 write tool for replacing renamed products, acronyms, and terms across questions, answers, and articles. The tool will support replacement rules entered manually in the browser or imported from CSV, scale to thousands of affected posts, and require a completed mode-specific scan and review before any write occurs.
 
 The interaction is a guided full-page wizard rather than a single replace form or dense workbench. It follows four stages:
 
 1. Define replacement rules.
-2. Scan accessible content.
+2. Scan accessible content using an explicit discovery mode.
 3. Review proposed changes.
 4. Confirm, apply, and inspect results.
 
@@ -18,7 +18,8 @@ The browser must remain open during scanning and applying. Work is split into bo
 - Replace exact terms across question titles and bodies, answer bodies, and article titles and bodies.
 - Accept one or many replacement rules through manual entry and CSV import.
 - Make every proposed write inspectable before execution without forcing full-document detail into the default table view.
-- Exhaustively scan the selected Enterprise content space rather than treating search-index results as proof of completeness.
+- Let operators choose between fast search-assisted discovery, an exact supplied target list, and an exhaustive content-space audit.
+- State each mode's coverage guarantee everywhere the scan result is used; search-index results never imply exhaustive completeness.
 - Process thousands of posts without a single long-running browser or server request.
 - Preserve unrelated content, Markdown structure, tags, article permissions, and other required API fields.
 - Isolate write failures, protect posts changed after scanning, and produce audit-friendly results.
@@ -33,7 +34,7 @@ The browser must remain open during scanning and applying. Work is split into bo
 - Running across multiple Enterprise instances or content spaces in one job.
 - Regex-based replacement or an unrestricted scripting language.
 - A server-side scheduler, durable queue, shared job database, or persisted server credentials.
-- Treating the API search endpoint as an exhaustive content inventory.
+- Treating the API search endpoint as an exhaustive content inventory or describing zero indexed candidates as proof that the term is absent from the site.
 - Automatically overwriting a post that changed after the scan or after a completed replacement run.
 
 ## Supported Deployment and Scope
@@ -45,7 +46,7 @@ Each job targets exactly one explicit content space:
 - the Enterprise main site; or
 - one selected Private Team when team-scoped execution is enabled.
 
-The target instance URL, content-space identifier, replacement rules, and matching options form part of the job fingerprint. Changing any of them invalidates the existing scan and requires a new scan before apply.
+The target instance URL, content-space identifier, discovery mode and exact target list when present, replacement rules, and matching options form part of the job fingerprint. Changing any of them invalidates the existing scan and requires a new scan before apply. Jobs created before discovery modes exist cannot be silently reclassified; they remain locally visible but require a new scan.
 
 The first implementation should target the Enterprise main site, matching the existing User Group Sync precedent. Team-scoped routes remain an extension point and must not be implied as supported until credentials, target selection, and endpoint construction are implemented and tested end to end.
 
@@ -111,9 +112,36 @@ The tool does not modify tags. It preserves the existing tag names in the full r
 
 ## Enterprise API Flow
 
-### Exhaustive discovery
+### Discovery modes
 
-The scan uses paginated content endpoints as the source of completeness:
+The Define stage offers three mutually exclusive discovery modes. The selected mode is a durable part of the job, review evidence, confirmation summary, results, and exports.
+
+#### Targeted scan — recommended default
+
+Targeted scan queries `GET /search` once per distinct source term using the maximum page size and paginates every result page returned for that query. It accepts question, answer, and article search results, filters them by the selected content types, converts them to canonical item references, and deduplicates references found by more than one rule. Every returned reference is then fetched through its detail endpoint and evaluated with the exact replacement matcher; a search hit does not become a proposal unless the canonical Markdown or title contains an eligible occurrence.
+
+This mode is intentionally fast and intentionally non-exhaustive. The search specification does not define indexing freshness, tokenization, punctuation, case, code, URL, permissions, or maximum-result guarantees. The UI therefore labels it `Search-assisted · may miss matches` in Define, Scan, Review, Apply, Results, and every export. A zero-result run says `No indexed candidates found`; it never claims that the terms do not exist elsewhere on the instance. Apply confirmation requires a visible acknowledgement of this limitation.
+
+Failure to paginate every result page for any source term makes the targeted scan incomplete and blocks Review. Unknown or malformed search result shapes also fail the scan rather than being silently ignored.
+
+#### Exact IDs or URLs
+
+Exact-target scan accepts up to 100,000 deduplicated known questions, answers, and articles. Operators may add typed ID or URL rows in the browser, paste canonical Enterprise URLs one per line, or import a target CSV with the exact headers:
+
+```csv
+type,id,parent_question_id
+question,20118,
+answer,20119,20118
+article,20120,
+```
+
+`type` is one of `question`, `answer`, or `article`. `id` must be a positive safe integer. `parent_question_id` is required only for answers because the answer detail endpoint is nested under its question. A numeric browser row requires its adjacent Type selection; a pasted canonical URL may infer the type, and an answer URL supplies both IDs. URLs must have the connected Enterprise origin and a supported question, answer, or article path. Invalid and duplicate rows remain visible with source-line errors; duplicates may be removed with a notice.
+
+The scan fetches every valid supplied target directly, applies the canonical matcher, and reports `Exact target list · complete for N supplied posts`. A zero-result run means no eligible occurrence was found in the supplied posts only. Exact-target mode is the required mode for disposable canaries and for narrowly scoped corrections where the post list is already known.
+
+#### Full audit
+
+Full audit uses paginated content endpoints as the source of content-space completeness:
 
 - `GET /questions`
 - `GET /questions/{questionId}/answers`
@@ -121,13 +149,21 @@ The scan uses paginated content endpoints as the source of completeness:
 
 The team-scoped equivalents are used only after Private Team execution is implemented.
 
-Collection requests use the maximum supported page size. Question, answer, and article summary HTML is parsed and decoded only as a conservative candidate filter. The filter must inspect every visible text node and prefer false positives over false negatives. Every candidate is fetched through its detail endpoint before a proposed change is created so replacements are computed from canonical Markdown and the required current metadata:
+Collection requests use the maximum supported page size. When answers are selected, a question summary with a valid `answerCount` of zero does not create an answer-collection request. A positive count creates the first answer cursor, and a missing, negative, non-integral, or otherwise invalid count is treated conservatively by fetching the answer collection. This optimization changes request volume, not completeness.
+
+Question, answer, and article summary HTML is parsed and decoded only as a conservative candidate filter. The filter must inspect every visible text node and prefer false positives over false negatives. Every candidate is fetched through its detail endpoint before a proposed change is created so replacements are computed from canonical Markdown and the required current metadata:
 
 - `GET /questions/{questionId}`
 - `GET /questions/{questionId}/answers/{answerId}`
 - `GET /articles/{articleId}`
 
-Candidate filtering must prefer harmless extra detail requests over a possible false negative. The `/search` endpoint may provide a quick estimate or navigation aid, but it cannot replace exhaustive pagination because the specification does not define exact indexing, tokenization, case, or freshness guarantees.
+Candidate filtering must prefer harmless extra detail requests over a possible false negative. Full audit is labeled `Exhaustive · all accessible selected content` only after every required inventory and detail request completes. It is not the default because a large instance may require thousands of requests.
+
+### Shared scan accounting and control
+
+Before a scan starts, the mode choice shows its coverage meaning and request-volume profile. Exact-target mode shows its exact target count. Targeted and Full audit explain that the total is discovered progressively. During scanning, the UI reports actual API requests completed, queued candidate details, rate-limit state, and the mode-specific inventory counts. Any remaining-request figure derived from pagination metadata is labeled as an estimate.
+
+Pause and Cancel remain available in every mode. Rate-limit backoff auto-pauses as already specified. Switching modes never resumes or mutates an existing scan; it creates a new scan fingerprint and requires explicit Start scan.
 
 ### Updates
 
@@ -143,7 +179,7 @@ Each write preserves fields not targeted by the replacement and sends only reque
 
 Reads and writes honor server rate-limit headers and `Retry-After`. The job automatically pauses for backoff and displays the reason and next retry time. Reads may use small bounded concurrency; writes default to sequential or minimal concurrency until live-instance testing establishes a safe rate.
 
-Transient network failures and retryable server errors use bounded retries with server-directed delays. Authorization failures, invalid request errors, and exhausted retries become item-level failures during apply. A scan inventory failure is blocking because the tool cannot claim exhaustive review from partial discovery.
+Transient network failures and retryable server errors use bounded retries with server-directed delays. Authorization failures, invalid request errors, and exhausted retries become item-level failures during apply. A discovery failure is blocking because the tool cannot claim that the chosen scan mode finished from a partial result.
 
 ## Browser-Coordinated Job Architecture
 
@@ -211,16 +247,19 @@ The first step includes:
 - CSV upload and template download;
 - append-versus-replace choice when importing into an existing mapping list;
 - selected content types: Questions, Answers, and Articles;
+- a three-card discovery choice with Targeted scan selected by default, Exact IDs or URLs, and Full audit;
+- a persistent coverage label and request-volume explanation for the selected discovery mode;
+- an inline URL/list entry and target-CSV importer only when Exact IDs or URLs is selected;
 - exact, case-sensitive, whole-term defaults;
 - collapsed Advanced options;
 - inline blocking validation and conflict resolution; and
 - a concise review of protected Markdown contexts.
 
-The primary action is `Review rules`, followed by a rule-summary checkpoint and `Start scan`. Starting a scan never performs writes.
+The primary action is `Review rules`, followed by a rule-and-scope summary checkpoint and `Start scan`. Starting a scan never performs writes. Selecting Full audit shows a prominent large-instance warning; selecting Targeted scan states that search may miss matches without hiding the limitation in Advanced options.
 
 ### Step 2: Scan
 
-The scan screen reports real stages and counts:
+The scan screen keeps the selected mode and coverage guarantee in the page heading and reports real stages and counts appropriate to that mode:
 
 - question pages inventoried;
 - answer collections inventoried;
@@ -229,7 +268,9 @@ The scan screen reports real stages and counts:
 - proposed posts found; and
 - safety-excluded occurrences found.
 
-It exposes Pause and Cancel actions. Rate-limit backoff, credential expiry, network retry, and browser-storage failure have explicit states. A credential-expired scan pauses and resumes only after reconnection. A partially completed scan cannot advance to Review or claim complete coverage.
+It also reports completed API requests. Targeted mode replaces question/answer/article inventory counts with source terms searched, search pages read, indexed references found, and candidate details inspected. Exact-target mode reports supplied, validated, fetched, matched, and failed targets. Full audit retains the exhaustive inventory counters and distinguishes answer-bearing questions queued from zero-answer questions skipped.
+
+It exposes Pause and Cancel actions. Rate-limit backoff, credential expiry, network retry, and browser-storage failure have explicit states. A credential-expired scan pauses and resumes only after reconnection. A partially completed scan cannot advance to Review or claim its mode-specific coverage result.
 
 ### Step 3: Review
 
@@ -268,10 +309,11 @@ Confirmation is inline, not a browser confirmation dialog or modal. It repeats:
 - selected post count by content type;
 - total proposed replacements;
 - protected occurrences;
+- discovery mode and its coverage guarantee;
 - local recovery-snapshot behavior; and
 - the limitation that the API offers no all-post transaction.
 
-For a multi-post run, the user must acknowledge that the preview was reviewed and enter `APPLY` before the primary action becomes available. The button includes the exact scope, for example `Apply changes to 1,106 posts`.
+For a multi-post run, the user must acknowledge that the preview was reviewed and enter `APPLY` before the primary action becomes available. Targeted scans also require acknowledgement that search-assisted discovery may have missed matches outside the reviewed set. The button includes the exact scope, for example `Apply changes to 1,106 posts`.
 
 During apply, the screen shows completed, remaining, stale, failed, and rate-limited counts. Users may pause after the current bounded batch. They cannot edit mappings or selection while writes are in progress.
 
@@ -305,7 +347,10 @@ Posts changed since the replacement run are skipped as recovery conflicts and ne
 - **No credentials:** explain that an Enterprise OAuth token with `write_access` is required.
 - **Invalid CSV:** retain valid rows and identify invalid row numbers and fields.
 - **Conflicting rules:** block scanning and show the exact source-target conflict.
-- **No matches:** report a successful exhaustive scan with zero proposals; never present Apply.
+- **No full-audit matches:** report a successful exhaustive scan with zero proposals; never present Apply.
+- **No targeted matches:** report `No indexed candidates found` or `No eligible matches in indexed candidates`; never claim site-wide absence and never present Apply.
+- **No exact-target matches:** report that no eligible matches were found within the supplied targets; never present Apply.
+- **Invalid exact target:** retain valid targets, identify the source line and reason, and block scanning until every target row is valid.
 - **Incomplete inventory:** fail the scan and retain resumable progress without presenting a complete review.
 - **Rate limited:** show automatic backoff and next retry time.
 - **Expired credentials:** pause, reconnect, validate the same target, and resume.
@@ -349,7 +394,10 @@ Posts changed since the replacement run are skipped as recovery conflicts and ne
 
 ### API and server boundaries
 
+- Targeted search paginates every returned page per distinct source term, validates each result discriminator and identifier shape, deduplicates item references, and never treats search as exhaustive.
+- Exact-target parsing accepts supported same-origin URLs and structured CSV rows, rejects ambiguous answer IDs without a parent question ID, and fetches every validated target directly.
 - Exhaustive question, nested-answer, and article pagination cannot publish a partial scan as complete.
+- Full audit skips answer collection only when `answerCount` is a valid zero and conservatively fetches when the count is absent or invalid.
 - Candidate detail reads use canonical Markdown.
 - Question, answer, and article PUT payloads contain all required request fields and no response-only fields.
 - Article permissions convert from response objects to request IDs without changing access.
@@ -370,6 +418,8 @@ Posts changed since the replacement run are skipped as recovery conflicts and ne
 ### User interface
 
 - Manual and CSV rules normalize into the same editable mapping table.
+- Discovery cards are keyboard-operable, expose coverage and request-volume tradeoffs, and default to Targeted scan.
+- The selected coverage label persists through Scan, Review, Apply, Results, and exports.
 - Blocking validation prevents scan.
 - Scan progress, backoff, pause, resume, and failure states are accessible.
 - Review filters, selection, optional detail expansion, and preview export preserve exact counts.
@@ -390,7 +440,7 @@ Posts changed since the replacement run are skipped as recovery conflicts and ne
 ## Acceptance Criteria
 
 1. Users can create the same validated replacement-rule set manually or through CSV import.
-2. Scan inventories every accessible question, nested answer, and article page in the selected supported content space before Review is enabled.
+2. Users can choose Targeted scan, Exact IDs or URLs, or Full audit before scanning; the choice is fingerprinted and cannot change without a new scan.
 3. The default matcher is exact, case-sensitive, whole-term, and protects code and URL destinations.
 4. Every proposed write is reviewable, and optional detail exposes complete before/after Markdown and the normalized request payload.
 5. Apply cannot begin without a completed current scan, explicit selection, a complete local recovery snapshot, acknowledgment, and typed confirmation.
@@ -399,3 +449,6 @@ Posts changed since the replacement run are skipped as recovery conflicts and ne
 8. Credentials remain memory-only and absent from persisted jobs, exports, logs, and user-visible errors.
 9. Item-level permission or API failures do not stop unrelated safe writes and appear in an exportable exception report.
 10. Recovery restores only posts that still match the successful post-apply checksum and reports all conflicts.
+11. Targeted scan paginates and verifies every indexed candidate returned for every source term while clearly stating that search may miss content.
+12. Exact-target scan directly verifies every supplied valid question, answer, and article and reports completeness only for that supplied list.
+13. Full audit inventories every accessible selected content item; answer collections are skipped only for valid zero-answer question summaries.
