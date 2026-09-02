@@ -1,0 +1,135 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import type { SessionCredentials } from "../domain/types";
+import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
+import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
+import { ContentReplacementWizard } from "./ContentReplacementWizard";
+
+const credentials: SessionCredentials = {
+  instanceType: "enterprise",
+  baseUrl: "https://example.stackenterprise.co",
+  accessToken: "token",
+  authSource: "oauth-pkce",
+  oauthScopes: ["write_access"],
+  accessTokenExpiresAt: "2099-01-01T00:00:00.000Z",
+};
+
+describe("ContentReplacementWizard", () => {
+  it("renders a persistent ordered, non-bypassable step indicator", () => {
+    render(<ContentReplacementWizard credentials={credentials} controller={controller(null)} />);
+
+    const steps = screen.getByRole("list", { name: "Content replacement progress" });
+    expect(steps).toHaveTextContent("Define");
+    expect(steps).toHaveTextContent("Scan");
+    expect(steps).toHaveTextContent("Review");
+    expect(steps).toHaveTextContent("Apply");
+    expect(screen.getByText("Define", { selector: "[aria-current='step']" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Scan" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Apply" })).not.toBeInTheDocument();
+  });
+
+  it("marks completed steps with text and does not expose Review prematurely", () => {
+    const scanJob = job({ stage: "scan", status: "paused" });
+    render(<ContentReplacementWizard credentials={credentials} controller={controller(scanJob)} />);
+
+    expect(screen.getByText("Define").parentElement).toHaveTextContent("Complete");
+    expect(screen.getByText("Scan", { selector: "[aria-current='step']" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Review proposed changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Review/i })).not.toBeInTheDocument();
+  });
+
+  it("wires the reviewed Define configuration to one controller create-and-start sequence", async () => {
+    const user = userEvent.setup();
+    const jobController = controller(null);
+    render(<ContentReplacementWizard credentials={credentials} controller={jobController} />);
+
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    await user.click(screen.getByRole("button", { name: "Start scan" }));
+
+    expect(jobController.createJob).toHaveBeenCalledOnce();
+    expect(jobController.startScan).toHaveBeenCalledOnce();
+    expect(jobController.createJob).toHaveBeenCalledWith(expect.objectContaining({
+      rules: [expect.objectContaining({ find: "MyPVM", replace: "MyPBM" })],
+    }));
+  });
+
+  it("shows honest placeholders only after Review or Apply is reached", () => {
+    const reviewController = controller(job({ stage: "review", status: "completed" }));
+    const { rerender } = render(
+      <ContentReplacementWizard credentials={credentials} controller={reviewController} />,
+    );
+    expect(screen.getByText("Review", { selector: "[aria-current='step']" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+    expect(screen.getByText(/Review controls are added in the next implementation stage/i)).toBeVisible();
+
+    rerender(
+      <ContentReplacementWizard credentials={credentials} controller={controller(job({ stage: "apply", status: "paused" }))} />,
+    );
+    expect(screen.getByText("Apply", { selector: "[aria-current='step']" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Apply reviewed changes" })).toBeVisible();
+    expect(screen.getByText(/Apply controls are added in the next implementation stage/i)).toBeVisible();
+  });
+});
+
+function controller(currentJob: PersistedContentReplacementJob | null): ContentReplacementJobController {
+  return {
+    job: currentJob,
+    busy: false,
+    storageError: null,
+    operationError: null,
+    createJob: vi.fn().mockResolvedValue(undefined),
+    startScan: vi.fn().mockResolvedValue(undefined),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    cancel: vi.fn(),
+    deleteJob: vi.fn(),
+    deleteRecoverySnapshots: vi.fn(),
+    setItemIncluded: vi.fn(),
+    prepareApply: vi.fn(),
+    startApply: vi.fn(),
+    retryEligibleFailures: vi.fn(),
+    rescanStaleItems: vi.fn(),
+    prepareRecovery: vi.fn(),
+    startRecovery: vi.fn(),
+  };
+}
+
+function job(overrides: Partial<PersistedContentReplacementJob>): PersistedContentReplacementJob {
+  return {
+    schemaVersion: 1,
+    id: "job-1",
+    fingerprint: "f".repeat(64),
+    baseUrl: credentials.baseUrl,
+    target: { kind: "enterprise-main" },
+    configuration: {
+      target: { kind: "enterprise-main" },
+      contentTypes: { questions: true, answers: true, articles: true },
+      rules: [{ id: "one", find: "MyPVM", replace: "MyPBM" }],
+      options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
+    },
+    stage: "scan",
+    status: "paused",
+    inventoryQueue: [{ kind: "questions", page: 1 }],
+    detailQueue: [],
+    progress: {
+      questionPages: 0,
+      answerPages: 0,
+      articlePages: 0,
+      inventoryItems: 0,
+      detailsInspected: 0,
+      proposalsFound: 0,
+      protectedOccurrences: 0,
+      applyCompleted: 0,
+      recoveryCompleted: 0,
+    },
+    proposals: {},
+    recoverySnapshotStatus: "none",
+    createdAt: "2026-09-02T12:00:00.000Z",
+    updatedAt: "2026-09-02T12:00:00.000Z",
+    ...overrides,
+  };
+}

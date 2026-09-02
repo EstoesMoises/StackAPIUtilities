@@ -1,0 +1,188 @@
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("ContentReplacementDefineStep", () => {
+  it("renders safe defaults and keyboard-operable mapping controls", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+
+    expect(screen.getByText("Enterprise main site")).toBeVisible();
+    expect(screen.getByLabelText("Questions")).toBeChecked();
+    expect(screen.getByLabelText("Answers")).toBeChecked();
+    expect(screen.getByLabelText("Articles")).toBeChecked();
+    expect(screen.getByLabelText("Case-sensitive matching")).toBeChecked();
+    expect(screen.getByLabelText("Whole-term matching")).toBeChecked();
+    expect(screen.getByLabelText("Replace inside code")).not.toBeChecked();
+    expect(screen.getByText("Advanced").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByLabelText("Find term 1")).toBeVisible();
+    expect(screen.getByLabelText("Replace term 1 with")).toBeVisible();
+
+    await user.type(screen.getByLabelText("Find term 1"), "first");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "one");
+    await user.click(screen.getByRole("button", { name: "Add mapping" }));
+    await user.type(screen.getByLabelText("Find term 2"), "second");
+    await user.type(screen.getByLabelText("Replace term 2 with"), "two");
+    await user.click(screen.getByRole("button", { name: "Move mapping 2 up" }));
+
+    expect(screen.getByLabelText("Find term 1")).toHaveValue("second");
+    expect(screen.getByRole("button", { name: "Move mapping 1 up" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Remove mapping 2" }));
+    expect(screen.queryByLabelText("Find term 2")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove mapping 1" })).toBeDisabled();
+  });
+
+  it("shows plain warnings and the contexts that always remain protected", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+
+    await user.click(screen.getByText("Advanced"));
+    await user.click(screen.getByLabelText("Case-sensitive matching"));
+    await user.click(screen.getByLabelText("Whole-term matching"));
+    await user.click(screen.getByLabelText("Replace inside code"));
+
+    expect(screen.getByText(/Case sensitivity is off/i)).toBeVisible();
+    expect(screen.getByText(/Partial matching is on/i)).toBeVisible();
+    expect(screen.getByText(/Code replacement is on/i)).toBeVisible();
+    expect(screen.getByText(/Link, image, and autolink destinations/i)).toBeVisible();
+    expect(screen.getByText(/raw HTML attributes remain protected/i)).toBeVisible();
+  });
+
+  it("requires an exact rule-summary checkpoint before scan and invalidates it after edits", async () => {
+    const user = userEvent.setup();
+    const onStartScan = vi.fn().mockResolvedValue(undefined);
+    render(<ContentReplacementDefineStep onStartScan={onStartScan} />);
+
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "MyPBM");
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByText("MyPVM → MyPBM")).toBeVisible();
+    expect(screen.getByText(/Questions, Answers, Articles/)).toBeVisible();
+    expect(screen.getByText(/Starting the scan performs reads only/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeEnabled();
+
+    await user.click(screen.getByLabelText("Articles"));
+    expect(screen.queryByText("MyPVM → MyPBM")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+    await user.click(screen.getByRole("button", { name: "Start scan" }));
+    expect(onStartScan).toHaveBeenCalledOnce();
+    expect(onStartScan).toHaveBeenCalledWith(expect.objectContaining({
+      target: { kind: "enterprise-main" },
+      contentTypes: { questions: true, answers: true, articles: false },
+      rules: [{ id: expect.any(String), find: "MyPVM", replace: "MyPBM" }],
+    }));
+  });
+
+  it("keeps row errors visible and reports identical duplicates", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Find term 1"), "MyPVM");
+    await user.click(screen.getByRole("button", { name: "Add mapping" }));
+    await user.type(screen.getByLabelText("Find term 2"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 2 with"), "MyPBM");
+    await user.click(screen.getByRole("button", { name: "Add mapping" }));
+    await user.type(screen.getByLabelText("Find term 3"), "MyPVM");
+    await user.type(screen.getByLabelText("Replace term 3 with"), "MyPBM");
+    await user.click(screen.getByRole("button", { name: "Review rules" }));
+
+    expect(screen.getByText(/Mapping 1: enter a replacement term/i)).toBeVisible();
+    expect(screen.getByText('Removed duplicate rule "MyPVM" → "MyPBM".')).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start scan" })).toBeDisabled();
+  });
+
+  it("downloads the canonical local CSV template", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+    let downloadedBlob: Blob | undefined;
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn((blob: Blob) => {
+        downloadedBlob = blob;
+        return "blob:replacement-template";
+      }),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const link = { click: vi.fn(), download: "", href: "" };
+    vi.spyOn(document, "createElement").mockReturnValue(link as unknown as HTMLAnchorElement);
+
+    await user.click(screen.getByRole("button", { name: "Download CSV template" }));
+
+    expect(link.download).toBe("content-replacement-template.csv");
+    expect(await blobText(downloadedBlob!)).toBe("find,replace\n");
+    expect(screen.getByText(/CSV parsing stays in this browser/i)).toBeVisible();
+  });
+
+  it("offers append or replace for imports and retains invalid source rows", async () => {
+    const user = userEvent.setup();
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+    await user.type(screen.getByLabelText("Find term 1"), "Manual");
+    await user.type(screen.getByLabelText("Replace term 1 with"), "Existing");
+
+    await user.upload(
+      screen.getByLabelText("Import replacement CSV"),
+      new File(["find,replace\nMyPVM,MyPBM\nCPR,"], "rules.csv", { type: "text/csv" }),
+    );
+    const choice = await screen.findByRole("group", { name: "Apply imported mappings" });
+    expect(within(choice).getByRole("button", { name: "Append imported rows" })).toBeVisible();
+    expect(screen.queryByLabelText("Find term 2")).not.toBeInTheDocument();
+
+    await user.click(within(choice).getByRole("button", { name: "Append imported rows" }));
+    expect(screen.getByLabelText("Find term 1")).toHaveValue("Manual");
+    expect(screen.getByLabelText("Find term 2")).toHaveValue("MyPVM");
+    expect(screen.getByLabelText("Find term 3")).toHaveValue("CPR");
+    expect(screen.getByText(/CSV row 3, replace: enter a replacement term/i)).toBeVisible();
+
+    await user.upload(
+      screen.getByLabelText("Import replacement CSV"),
+      new File(["find,replace\nSolo,Only"], "replacement.csv", { type: "text/csv" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Replace current rows" }));
+    expect(screen.getByLabelText("Find term 1")).toHaveValue("Solo");
+    expect(screen.queryByLabelText("Find term 2")).not.toBeInTheDocument();
+  });
+
+  it("ignores stale file reads and reports the current file read error", async () => {
+    const user = userEvent.setup();
+    const first = deferred<string>();
+    const firstFile = new File(["ignored"], "slow.csv", { type: "text/csv" });
+    Object.defineProperty(firstFile, "text", { value: () => first.promise });
+    const secondFile = new File(["ignored"], "broken.csv", { type: "text/csv" });
+    Object.defineProperty(secondFile, "text", { value: () => Promise.reject(new Error("Disk read failed.")) });
+    render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);
+
+    await user.upload(screen.getByLabelText("Import replacement CSV"), firstFile);
+    await user.upload(screen.getByLabelText("Import replacement CSV"), secondFile);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Disk read failed.");
+
+    await act(async () => first.resolve("find,replace\nStale,Value"));
+    await waitFor(() => expect(screen.queryByText(/Stale/)).not.toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent("Disk read failed.");
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function blobText(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsText(blob);
+  });
+}
