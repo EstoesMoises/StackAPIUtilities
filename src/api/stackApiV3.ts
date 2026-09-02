@@ -18,6 +18,7 @@ interface StackApiV3ClientOptions {
   maxRetryWaitSeconds?: number;
   maxCumulativeRetryWaitSeconds?: number;
   maxBackoffNoticeSeconds?: number;
+  retryPutRequests?: boolean;
 }
 
 interface ValidatedStackApiV3Page<T> {
@@ -100,6 +101,7 @@ export class StackApiV3Client {
   private readonly maxRetryWaitSeconds: number;
   private readonly maxCumulativeRetryWaitSeconds: number;
   private readonly maxBackoffNoticeSeconds: number;
+  private readonly retryPutRequests: boolean;
 
   constructor(options: StackApiV3ClientOptions) {
     this.apiV3Url = options.apiV3Url.replace(/\/+$/, "");
@@ -116,6 +118,7 @@ export class StackApiV3Client {
     this.maxCumulativeRetryWaitSeconds =
       options.maxCumulativeRetryWaitSeconds ?? Number.POSITIVE_INFINITY;
     this.maxBackoffNoticeSeconds = options.maxBackoffNoticeSeconds ?? Number.POSITIVE_INFINITY;
+    this.retryPutRequests = options.retryPutRequests ?? true;
   }
 
   async getPagedItems<T = unknown>(
@@ -200,11 +203,27 @@ export class StackApiV3Client {
   }
 
   async putJson<T = unknown>(path: string, body: unknown): Promise<T> {
-    const response = await this.readResponse(this.buildUrl(path, {}), {
+    const url = this.buildUrl(path, {});
+    const init: RequestInit = {
       method: "PUT",
       headers: this.createJsonHeaders(),
       body: JSON.stringify(body),
-    });
+    };
+    const response = this.retryPutRequests
+      ? await this.readResponse(url, init)
+      : await this.fetchFn(url, init);
+
+    if (!this.retryPutRequests && response.status === 429 && this.onThrottle) {
+      await this.onThrottle({
+        kind: "backoff",
+        seconds: Math.min(
+          getRetryDelaySeconds(response.headers, this.nowFn()),
+          this.maxBackoffNoticeSeconds,
+        ),
+      });
+    } else if (!this.retryPutRequests && response.ok) {
+      await this.notifyThrottle(response.headers);
+    }
 
     return readJsonResponse<T>(response, "Stack API v3");
   }
