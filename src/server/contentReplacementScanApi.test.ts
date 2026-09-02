@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { StackApiError, type ThrottleNotice } from "../api/httpClient";
-import {
-  MAX_STACK_API_V3_RETRY_DELAY_SECONDS,
-  StackApiV3Client,
-} from "../api/stackApiV3";
+import { StackApiV3Client } from "../api/stackApiV3";
 import type { NormalizedInstance } from "../credentials/credentialRules";
 import type { SessionCredentials } from "../domain/types";
 import {
@@ -493,12 +490,12 @@ describe("handleContentReplacementScanRequest", () => {
     });
   });
 
-  it("surfaces an oversized upstream retry delay as a safe typed backoff without sleeping", async () => {
+  it("surfaces an exact browser-cap retry delay as a safe typed backoff without sleeping", async () => {
     const waitFn = vi.fn(async () => undefined);
     const fetchFn = vi.fn().mockResolvedValue(
       new Response("upstream secret-token body", {
         status: 429,
-        headers: { "Retry-After": "86401" },
+        headers: { "Retry-After": "86400" },
       }),
     );
 
@@ -510,7 +507,9 @@ describe("handleContentReplacementScanRequest", () => {
           fetchFn,
           waitFn,
           onThrottle,
-          maxRetryDelaySeconds: MAX_STACK_API_V3_RETRY_DELAY_SECONDS,
+          maxRetryWaitSeconds: 5,
+          maxCumulativeRetryWaitSeconds: 10,
+          maxBackoffNoticeSeconds: 86_400,
         }),
       ),
     });

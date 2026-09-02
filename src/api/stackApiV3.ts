@@ -15,7 +15,9 @@ interface StackApiV3ClientOptions {
   waitFn?: WaitFn;
   nowFn?: NowFn;
   paginationSafetyLimit?: number;
-  maxRetryDelaySeconds?: number;
+  maxRetryWaitSeconds?: number;
+  maxCumulativeRetryWaitSeconds?: number;
+  maxBackoffNoticeSeconds?: number;
 }
 
 interface ValidatedStackApiV3Page<T> {
@@ -66,7 +68,7 @@ const BURST_LOW_WATERMARK = 5;
 const TOKEN_BUCKET_LOW_WATERMARK = 30;
 const MAX_IDEMPOTENT_RETRIES = 3;
 const FALLBACK_RETRY_SECONDS = 2;
-export const MAX_STACK_API_V3_RETRY_DELAY_SECONDS = 86_400;
+export const MAX_STACK_API_V3_BACKOFF_NOTICE_SECONDS = 86_400;
 
 const waitSeconds: WaitFn = (seconds) =>
   new Promise((resolve) => setTimeout(resolve, seconds * 1_000));
@@ -95,7 +97,9 @@ export class StackApiV3Client {
   private readonly waitFn: WaitFn;
   private readonly nowFn: NowFn;
   private readonly paginationSafetyLimit: number;
-  private readonly maxRetryDelaySeconds: number;
+  private readonly maxRetryWaitSeconds: number;
+  private readonly maxCumulativeRetryWaitSeconds: number;
+  private readonly maxBackoffNoticeSeconds: number;
 
   constructor(options: StackApiV3ClientOptions) {
     this.apiV3Url = options.apiV3Url.replace(/\/+$/, "");
@@ -105,10 +109,13 @@ export class StackApiV3Client {
     this.waitFn = options.waitFn ?? waitSeconds;
     this.nowFn = options.nowFn ?? (() => Date.now());
     this.paginationSafetyLimit = options.paginationSafetyLimit ?? DEFAULT_PAGINATION_SAFETY_LIMIT;
-    this.maxRetryDelaySeconds = options.maxRetryDelaySeconds ?? MAX_STACK_API_V3_RETRY_DELAY_SECONDS;
-    if (!Number.isSafeInteger(this.maxRetryDelaySeconds) || this.maxRetryDelaySeconds < 0) {
-      throw new TypeError("Stack API v3 retry delay limit must be a non-negative safe integer.");
+    if (!areValidRetryBudgets(options)) {
+      throw new TypeError("Stack API v3 retry budgets must be non-negative safe integers.");
     }
+    this.maxRetryWaitSeconds = options.maxRetryWaitSeconds ?? Number.POSITIVE_INFINITY;
+    this.maxCumulativeRetryWaitSeconds =
+      options.maxCumulativeRetryWaitSeconds ?? Number.POSITIVE_INFINITY;
+    this.maxBackoffNoticeSeconds = options.maxBackoffNoticeSeconds ?? Number.POSITIVE_INFINITY;
   }
 
   async getPagedItems<T = unknown>(
@@ -267,6 +274,7 @@ export class StackApiV3Client {
   }
 
   private async readResponse(url: URL, init?: RequestInit): Promise<Response> {
+    let cumulativeWaitSeconds = 0;
     for (let retryCount = 0; ; retryCount += 1) {
       let response: Response;
       try {
@@ -274,12 +282,13 @@ export class StackApiV3Client {
       } catch (error) {
         if (
           retryCount >= MAX_IDEMPOTENT_RETRIES ||
-          FALLBACK_RETRY_SECONDS > this.maxRetryDelaySeconds
+          !this.canWaitForRetry(FALLBACK_RETRY_SECONDS, cumulativeWaitSeconds)
         ) {
           throw error;
         }
 
         await this.waitFn(FALLBACK_RETRY_SECONDS);
+        cumulativeWaitSeconds += FALLBACK_RETRY_SECONDS;
         continue;
       }
 
@@ -295,20 +304,25 @@ export class StackApiV3Client {
       }
 
       const seconds = getRetryDelaySeconds(response.headers, this.nowFn());
-      if (seconds > this.maxRetryDelaySeconds) {
-        if (response.status === 429 && this.onThrottle) {
-          await this.onThrottle({
-            kind: "backoff",
-            seconds: this.maxRetryDelaySeconds,
-          });
-        }
+      if (response.status === 429 && this.onThrottle) {
+        await this.onThrottle({
+          kind: "backoff",
+          seconds: Math.min(seconds, this.maxBackoffNoticeSeconds),
+        });
+      }
+      if (!this.canWaitForRetry(seconds, cumulativeWaitSeconds)) {
         return response;
       }
-      if (response.status === 429 && this.onThrottle) {
-        await this.onThrottle({ kind: "backoff", seconds });
-      }
       await this.waitFn(seconds);
+      cumulativeWaitSeconds += seconds;
     }
+  }
+
+  private canWaitForRetry(seconds: number, cumulativeWaitSeconds: number): boolean {
+    return (
+      seconds <= this.maxRetryWaitSeconds &&
+      seconds <= this.maxCumulativeRetryWaitSeconds - cumulativeWaitSeconds
+    );
   }
 
   private async notifyThrottle(headers: Headers): Promise<void> {
@@ -344,6 +358,14 @@ export class StackApiV3Client {
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function areValidRetryBudgets(options: StackApiV3ClientOptions): boolean {
+  return [
+    options.maxRetryWaitSeconds,
+    options.maxCumulativeRetryWaitSeconds,
+    options.maxBackoffNoticeSeconds,
+  ].every((value) => value === undefined || (Number.isSafeInteger(value) && value >= 0));
 }
 
 function validatePaginationEnvelope<T>(

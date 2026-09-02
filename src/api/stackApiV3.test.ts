@@ -119,20 +119,22 @@ describe("StackApiV3Client", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
-  it("surfaces an oversized retry delay without sleeping or retrying", async () => {
+  it("surfaces an exact browser-cap delay without sleeping or retrying when it exceeds the server wait budget", async () => {
     const onThrottle = vi.fn(async () => undefined);
     const waitFn = vi.fn(async () => undefined);
     const fetchFn = vi.fn().mockResolvedValue(
       new Response("upstream secret body", {
         status: 429,
-        headers: { "Retry-After": "86401" },
+        headers: { "Retry-After": "86400" },
       }),
     );
     const client = createClient({
       fetchFn,
       waitFn,
       onThrottle,
-      maxRetryDelaySeconds: 86_400,
+      maxRetryWaitSeconds: 5,
+      maxCumulativeRetryWaitSeconds: 10,
+      maxBackoffNoticeSeconds: 86_400,
     });
 
     await expect(client.getJson("/questions/42")).rejects.toThrow(
@@ -142,6 +144,97 @@ describe("StackApiV3Client", () => {
     expect(waitFn).not.toHaveBeenCalled();
     expect(onThrottle).toHaveBeenCalledTimes(1);
     expect(onThrottle).toHaveBeenCalledWith({ kind: "backoff", seconds: 86_400 });
+  });
+
+  it("stops repeated short waits before crossing the cumulative server budget", async () => {
+    const onThrottle = vi.fn(async () => undefined);
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("limited", { status: 429, headers: { "Retry-After": "2" } }),
+    );
+    const client = createClient({
+      fetchFn,
+      waitFn,
+      onThrottle,
+      maxRetryWaitSeconds: 3,
+      maxCumulativeRetryWaitSeconds: 5,
+      maxBackoffNoticeSeconds: 86_400,
+    });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow(
+      "Stack API v3 request failed with 429",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(waitFn.mock.calls).toEqual([[2], [2]]);
+    expect(onThrottle).toHaveBeenCalledTimes(3);
+  });
+
+  it("allows waits exactly on the per-wait and cumulative budget boundaries", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("limited", { status: 429, headers: { "Retry-After": "2" } }))
+      .mockResolvedValueOnce(new Response("limited", { status: 429, headers: { "Retry-After": "3" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 }), { status: 200 }));
+    const client = createClient({
+      fetchFn,
+      waitFn,
+      maxRetryWaitSeconds: 3,
+      maxCumulativeRetryWaitSeconds: 5,
+      maxBackoffNoticeSeconds: 86_400,
+    });
+
+    await expect(client.getJson("/questions/42")).resolves.toEqual({ id: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(waitFn.mock.calls).toEqual([[2], [3]]);
+  });
+
+  it("preserves an ordinary short retry under configured server budgets", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("limited", { status: 429, headers: { "Retry-After": "2" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42 }), { status: 200 }));
+    const client = createClient({
+      fetchFn,
+      waitFn,
+      maxRetryWaitSeconds: 5,
+      maxCumulativeRetryWaitSeconds: 10,
+      maxBackoffNoticeSeconds: 86_400,
+    });
+
+    await expect(client.getJson("/questions/42")).resolves.toEqual({ id: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(waitFn).toHaveBeenCalledWith(2);
+  });
+
+  it("rejects invalid configured retry budget numbers", () => {
+    for (const option of [
+      "maxRetryWaitSeconds",
+      "maxCumulativeRetryWaitSeconds",
+      "maxBackoffNoticeSeconds",
+    ] as const) {
+      for (const value of [-1, 1.5, Number.POSITIVE_INFINITY, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        expect(() => createClient({ [option]: value })).toThrow(
+          "Stack API v3 retry budgets must be non-negative safe integers.",
+        );
+      }
+    }
+  });
+
+  it("preserves the existing retry-attempt behavior when server budgets are not configured", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("unavailable", {
+        status: 503,
+        headers: { "Retry-After": String(Number.MAX_SAFE_INTEGER) },
+      }),
+    );
+    const client = createClient({ fetchFn, waitFn });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow(
+      "Stack API v3 request failed with 503",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(waitFn).toHaveBeenCalledTimes(3);
   });
 
   it("retries a GET after a retryable 503 response", async () => {

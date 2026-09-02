@@ -1,5 +1,5 @@
 import {
-  MAX_STACK_API_V3_RETRY_DELAY_SECONDS,
+  MAX_STACK_API_V3_BACKOFF_NOTICE_SECONDS,
   StackApiV3Client,
 } from "../api/stackApiV3";
 import type { ThrottleNotice } from "../api/httpClient";
@@ -42,6 +42,8 @@ const FINGERPRINT_MISMATCH_MESSAGE =
 const MAX_INVENTORY_PAGE = 10_000;
 const MAX_DETAIL_REFS = 10;
 const DEFAULT_RETRY_DELAY_SECONDS = 2;
+const MAX_SCAN_RETRY_WAIT_SECONDS = 5;
+const MAX_SCAN_CUMULATIVE_RETRY_WAIT_SECONDS = 10;
 const MAX_BASE_URL_LENGTH = 2_048;
 const MAX_CREDENTIAL_STRING_LENGTH = 65_536;
 const MAX_RULE_ID_LENGTH = 200;
@@ -177,7 +179,9 @@ function createDefaultClient(
       apiV3Url: instance.apiV3Url,
       token: credentials.accessToken ?? "",
       onThrottle,
-      maxRetryDelaySeconds: MAX_STACK_API_V3_RETRY_DELAY_SECONDS,
+      maxRetryWaitSeconds: MAX_SCAN_RETRY_WAIT_SECONDS,
+      maxCumulativeRetryWaitSeconds: MAX_SCAN_CUMULATIVE_RETRY_WAIT_SECONDS,
+      maxBackoffNoticeSeconds: MAX_STACK_API_V3_BACKOFF_NOTICE_SECONDS,
     }),
   );
 }
@@ -433,7 +437,7 @@ function sanitizeThrottleNotice(value: unknown): ThrottleNotice | null {
       !isRecord(value) ||
       !hasOnlyKeys(value, ["kind", "seconds", "remaining"]) ||
       (value.kind !== "backoff" && value.kind !== "burst" && value.kind !== "token-bucket") ||
-      !isBoundedNonNegativeInteger(value.seconds, MAX_STACK_API_V3_RETRY_DELAY_SECONDS) ||
+      !isBoundedNonNegativeInteger(value.seconds, MAX_STACK_API_V3_BACKOFF_NOTICE_SECONDS) ||
       (value.remaining !== undefined && !isBoundedNonNegativeInteger(value.remaining, Number.MAX_SAFE_INTEGER))
     ) {
       return null;
