@@ -251,7 +251,7 @@ function articleRef(summary: ArticleSummary): ReplacementItemRef {
   return { kind: "article", articleId: summary.id };
 }
 
-function assertValidDetailRefs(refs: readonly ReplacementItemRef[]): void {
+export function assertValidDetailRefs(refs: readonly ReplacementItemRef[]): void {
   if (refs.length < 1 || refs.length > MAX_DETAIL_BATCH_SIZE) throw invalidDetailBatch();
 
   const keys = new Set<string>();
