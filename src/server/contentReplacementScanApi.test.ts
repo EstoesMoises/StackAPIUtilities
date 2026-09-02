@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StackApiError, type ThrottleNotice } from "../api/httpClient";
 import { StackApiV3Client } from "../api/stackApiV3";
@@ -33,6 +33,10 @@ const configuration: ReplacementConfiguration = {
   rules: [{ id: "rule-1", find: "MyPVM", replace: "MyPBM" }],
   options: { caseSensitive: true, wholeTerm: true, replaceInCode: false },
 };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 type CreateClient = (
   normalizedCredentials: SessionCredentials,
@@ -527,6 +531,41 @@ describe("handleContentReplacementScanRequest", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(waitFn).not.toHaveBeenCalled();
     expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("upstream");
+  });
+
+  it.each([
+    ["exactly at the browser cap", "86400"],
+    ["above the browser cap", "86401"],
+  ])("uses production retry-budget wiring for Retry-After %s", async (_label, retryAfter) => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("hostile upstream secret-token response", {
+        status: 429,
+        headers: { "Retry-After": retryAfter },
+      }),
+    );
+    const scheduledWait = vi.fn(() => {
+      throw new Error("production default client scheduled an unsafe wait");
+    });
+    vi.stubGlobal("fetch", fetchFn);
+    vi.stubGlobal("setTimeout", scheduledWait);
+
+    const response = await handleContentReplacementScanRequest(await validScanPayload());
+    const serialized = await response.text();
+
+    expect(response.status).toBe(429);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: false,
+      error: {
+        code: "rate_limited",
+        message: "Content scan is temporarily rate limited.",
+        retryAfterSeconds: 86_400,
+      },
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(scheduledWait).not.toHaveBeenCalled();
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("hostile");
     expect(serialized).not.toContain("upstream");
   });
 
