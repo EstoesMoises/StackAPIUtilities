@@ -3,14 +3,29 @@ import { reportRegistry } from "../domain/reportRegistry";
 import { utilityRegistry } from "../domain/utilityRegistry";
 import type { ReportId, RunPeriodRole, SessionDataset, UtilityId } from "../domain/types";
 import { downloadSessionDataset } from "../utils/datasetDownloads";
+import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
+import {
+  ContentReplacementJobManager,
+  type ContentReplacementJobManagerStorage,
+} from "./ContentReplacementJobManager";
 
 interface DatasetsPanelProps {
   datasets: SessionDataset[];
   onRemoveDataset: (datasetId: string) => void;
   onFlushDatasets?: () => void;
+  onOpenContentReplacementJob?: (job: PersistedContentReplacementJob) => void;
+  onContentReplacementJobDeleted?: (jobId: string) => void;
+  contentReplacementStorage?: ContentReplacementJobManagerStorage;
 }
 
-export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: DatasetsPanelProps) {
+export function DatasetsPanel({
+  datasets,
+  onRemoveDataset,
+  onFlushDatasets,
+  onOpenContentReplacementJob,
+  onContentReplacementJobDeleted,
+  contentReplacementStorage,
+}: DatasetsPanelProps) {
   const sortedDatasets = [...datasets].sort((a, b) => b.loadedAt.localeCompare(a.loadedAt));
 
   return (
@@ -88,6 +103,13 @@ export function DatasetsPanel({ datasets, onRemoveDataset, onFlushDatasets }: Da
             </tbody>
           </table>
         </div>
+      )}
+      {onOpenContentReplacementJob && (
+        <ContentReplacementJobManager
+          onOpenJob={onOpenContentReplacementJob}
+          onDeleteJob={onContentReplacementJobDeleted}
+          storage={contentReplacementStorage}
+        />
       )}
     </section>
   );

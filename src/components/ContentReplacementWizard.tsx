@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { SessionCredentials } from "../domain/types";
 import { getEnterpriseWriteCredentialReadiness } from "../credentials/enterpriseV3Credentials";
 import {
@@ -36,13 +36,18 @@ function ConnectedContentReplacementWizard({
   onReconnect,
   now,
 }: Omit<ContentReplacementWizardProps, "controller">) {
-  const controller = useContentReplacementJob(credentials, initialJob);
+  const [selectedJob, setSelectedJob] = useState(initialJob);
+  useEffect(() => {
+    setSelectedJob(initialJob);
+  }, [initialJob]);
+  const controller = useContentReplacementJob(credentials, selectedJob);
   return (
     <ContentReplacementWizardView
       credentials={credentials}
       controller={controller}
       onReconnect={onReconnect}
       now={now}
+      onOpenLocalJob={setSelectedJob}
     />
   );
 }
@@ -52,7 +57,11 @@ function ContentReplacementWizardView({
   controller,
   onReconnect,
   now,
-}: ContentReplacementWizardProps & { controller: ContentReplacementJobController }) {
+  onOpenLocalJob,
+}: ContentReplacementWizardProps & {
+  controller: ContentReplacementJobController;
+  onOpenLocalJob?: (job: PersistedContentReplacementJob) => void;
+}) {
   const [confirmingConfigurationEdit, setConfirmingConfigurationEdit] = useState(false);
   const [definingNewJob, setDefiningNewJob] = useState(false);
   const activeStep = definingNewJob ? 0 : wizardStep(controller.job?.stage);
@@ -102,6 +111,7 @@ function ContentReplacementWizardView({
             setupError={controller.operationError ?? controller.storageError}
             storageError={controller.storageError}
             onReconnect={onReconnect}
+            onOpenLocalJob={onOpenLocalJob}
           />
         )}
         {activeStep === 1 && (

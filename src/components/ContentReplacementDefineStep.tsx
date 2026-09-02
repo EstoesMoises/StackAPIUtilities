@@ -11,10 +11,15 @@ import {
   type ReplacementRuleError,
 } from "../writeTools/contentReplacement/rules";
 import type {
+  PersistedContentReplacementJob,
   ReplacementConfiguration,
   ReplacementOptions,
   ReplacementRule,
 } from "../writeTools/contentReplacement/types";
+import {
+  ContentReplacementJobManager,
+  type ContentReplacementJobManagerStorage,
+} from "./ContentReplacementJobManager";
 
 export interface ContentReplacementDefineStepProps {
   onStartScan(configuration: ReplacementConfiguration): Promise<void> | void;
@@ -23,6 +28,8 @@ export interface ContentReplacementDefineStepProps {
   setupError?: string | null;
   storageError?: string | null;
   onReconnect?: () => void;
+  onOpenLocalJob?: (job: PersistedContentReplacementJob) => void;
+  contentReplacementStorage?: ContentReplacementJobManagerStorage;
 }
 
 interface ReviewedCheckpoint {
@@ -52,6 +59,8 @@ export function ContentReplacementDefineStep({
   setupError = null,
   storageError = null,
   onReconnect,
+  onOpenLocalJob,
+  contentReplacementStorage,
 }: ContentReplacementDefineStepProps) {
   const defaults = useMemo(createDefaultReplacementConfiguration, []);
   const nextRowId = useRef(2);
@@ -221,6 +230,13 @@ export function ContentReplacementDefineStep({
         <h2 id="content-replacement-define-heading">Define replacements</h2>
         <p>Map each exact term to its replacement, then review the rules before scanning.</p>
       </header>
+
+      {onOpenLocalJob && (
+        <ContentReplacementJobManager
+          onOpenJob={onOpenLocalJob}
+          storage={contentReplacementStorage}
+        />
+      )}
 
       <section className="content-replacement-section" aria-labelledby="content-replacement-target-heading">
         <h3 id="content-replacement-target-heading">Target</h3>

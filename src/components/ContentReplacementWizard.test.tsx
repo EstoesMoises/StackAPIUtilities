@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -19,6 +20,20 @@ const credentials: SessionCredentials = {
 };
 
 describe("ContentReplacementWizard", () => {
+  it("keeps every Content Replacement primary action at the 44px target size after shared button rules", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles/app.css`, "utf8");
+
+    expect(styles).toMatch(
+      /\.content-replacement-wizard\s*\{[^}]*animation:\s*none;/s,
+    );
+    expect(styles).toMatch(
+      /\.content-replacement-wizard \.s-btn\s*\{[^}]*transition:\s*none;/s,
+    );
+    expect(styles).toMatch(
+      /\.app-shell \.content-replacement-wizard \.s-btn__primary\s*\{[^}]*min-height:\s*44px;/s,
+    );
+  });
+
   it("renders a persistent ordered, non-bypassable step indicator", () => {
     render(<ContentReplacementWizard credentials={credentials} controller={controller(null)} />);
 

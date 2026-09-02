@@ -166,6 +166,31 @@ describe("CredentialsPanel", () => {
     });
   });
 
+  it("uses memory-only Enterprise write credentials for Content Replacement", async () => {
+    const user = userEvent.setup();
+    const popup = createPopup();
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const fetchMock = mockOAuthEndpoints("https://demo.stackenterprise.co/oauth?state=replacement");
+
+    renderCredentialsPanel({ workflow: { kind: "write-tool", writeToolId: "content-replacement" } });
+
+    expect(screen.getByText("Content Replacement credential notes")).toBeVisible();
+    expect(screen.getByLabelText("Instance type")).toHaveValue("enterprise");
+    expect(screen.getByLabelText("Instance type")).toBeDisabled();
+    expect(screen.getByLabelText("Workflow requirements")).toHaveTextContent("Enterprise sign-in");
+    expect(screen.getByText(/OAuth access tokens.*remain in memory/i)).toBeVisible();
+    await user.type(screen.getByLabelText("Instance URL"), "https://demo.stackenterprise.co");
+    await user.type(screen.getByLabelText("OAuth Client ID"), "client-123");
+    await user.click(screen.getByRole("button", { name: "Connect with Enterprise OAuth" }));
+
+    await waitFor(() => expect(findOAuthStartCall(fetchMock)).toBeDefined());
+    expect(JSON.parse(String(findOAuthStartCall(fetchMock)?.[1]?.body))).toMatchObject({
+      scopes: ["write_access"],
+    });
+    expect(profileStorageMocks.saveProfile).not.toHaveBeenCalled();
+    expect(profileStorageMocks.saveProfileAndSelect).not.toHaveBeenCalled();
+  });
+
   it("locks Enterprise-only workflows to their supported deployment", () => {
     renderCredentialsPanel({ workflow: { kind: "write-tool", writeToolId: "user-group-sync" } });
 
@@ -1872,7 +1897,7 @@ function renderCredentialsPanel({
   workflow?:
     | { kind: "report"; reportId: "tag-report" }
     | { kind: "utility"; utilityId: "sme-coverage-analyzer" }
-    | { kind: "write-tool"; writeToolId: "user-group-sync" };
+    | { kind: "write-tool"; writeToolId: "user-group-sync" | "content-replacement" };
 } = {}) {
   return render(
     <CredentialsPanel

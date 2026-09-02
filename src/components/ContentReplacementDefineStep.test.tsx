@@ -2,12 +2,30 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContentReplacementDefineStep } from "./ContentReplacementDefineStep";
+import type { ContentReplacementJobManagerStorage } from "./ContentReplacementJobManager";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("ContentReplacementDefineStep", () => {
+  it("includes the sensitive browser-local job manager in Define", async () => {
+    const storage: ContentReplacementJobManagerStorage = {
+      list: vi.fn().mockResolvedValue([]),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+    render(
+      <ContentReplacementDefineStep
+        onStartScan={vi.fn()}
+        onOpenLocalJob={vi.fn()}
+        contentReplacementStorage={storage}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Browser-local replacement jobs" })).toBeVisible();
+    expect(screen.getByText(/post bodies and complete request models/i)).toBeVisible();
+  });
+
   it("renders safe defaults and keyboard-operable mapping controls", async () => {
     const user = userEvent.setup();
     render(<ContentReplacementDefineStep onStartScan={vi.fn()} />);

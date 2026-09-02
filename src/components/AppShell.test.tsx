@@ -1411,6 +1411,29 @@ describe("AppShell", () => {
     expect(screen.getByLabelText("Upload user export CSV")).toBeInTheDocument();
   });
 
+  it("registers Content Replacement immediately after User Group Sync and opens the full wizard", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Write Tools" }));
+    const catalog = screen.getByRole("heading", { name: "Write Tools" }).closest("section")!;
+    const tools = within(catalog).getAllByRole("button");
+    expect(tools.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "User Group Sync",
+      "Content Replacement",
+    ]);
+    expect(within(tools[1]).getByText("Enterprise main site")).toBeVisible();
+    expect(within(tools[1]).getByText("Preview required")).toBeVisible();
+
+    await user.click(tools[1]);
+    expect(screen.getByRole("heading", { name: "Content Replacement", level: 1 })).toBeVisible();
+    const progress = screen.getByRole("list", { name: "Content replacement progress" });
+    expect(within(progress).getByText("Define", { selector: "[aria-current='step']" })).toBeVisible();
+    expect(progress).toHaveTextContent("Scan");
+    expect(progress).toHaveTextContent("Review");
+    expect(progress).toHaveTextContent("Apply");
+  });
+
   it("loads an uploaded report output into the selected dashboard", async () => {
     const user = userEvent.setup();
 
