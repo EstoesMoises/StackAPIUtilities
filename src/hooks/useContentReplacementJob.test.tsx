@@ -2,7 +2,11 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionCredentials } from "../domain/types";
 import { buildReplacementProposal, createJobFingerprint } from "../writeTools/contentReplacement/proposals";
-import { createReplacementJob, reduceReplacementJob } from "../writeTools/contentReplacement/jobState";
+import {
+  createReplacementJob,
+  createReplacementSelectionSnapshot,
+  reduceReplacementJob,
+} from "../writeTools/contentReplacement/jobState";
 import type {
   PersistedContentReplacementJob,
   ReplacementConfiguration,
@@ -109,7 +113,7 @@ async function scannedReviewJob(...proposals: ReplacementProposal[]): Promise<Pe
 }
 
 async function appliedJob(...proposals: ReplacementProposal[]): Promise<PersistedContentReplacementJob> {
-  let job = reduceReplacementJob(await scannedReviewJob(...proposals), { type: "apply/prepare", at: AT });
+  let job = prepareJob(await scannedReviewJob(...proposals), AT);
   job = reduceReplacementJob(job, { type: "apply/start", at: AT });
   for (const proposal of proposals) {
     const itemKey = `question:${proposal.before.ref.kind === "question" ? proposal.before.ref.questionId : 0}`;
@@ -120,6 +124,14 @@ async function appliedJob(...proposals: ReplacementProposal[]): Promise<Persiste
     });
   }
   return job;
+}
+
+function prepareJob(job: PersistedContentReplacementJob, at: string): PersistedContentReplacementJob {
+  return reduceReplacementJob(job, {
+    type: "apply/prepare",
+    expectedSelection: createReplacementSelectionSnapshot(job.proposals),
+    at,
+  });
 }
 
 describe("useContentReplacementJob", () => {
@@ -532,8 +544,8 @@ describe("useContentReplacementJob", () => {
     const deps = dependencies(fetcher, initial);
     deps.store.save.mockImplementationOnce(async (job) => { await snapshotSave.promise; void job; });
     const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
-    let preparation!: Promise<void>;
-    act(() => { preparation = result.current.prepareApply(); });
+    let preparation!: Promise<boolean>;
+    act(() => { preparation = result.current.prepareApply(createReplacementSelectionSnapshot(initial.proposals)); });
     await waitFor(() => expect(deps.store.save).toHaveBeenCalledTimes(1));
     expect(result.current.job).toEqual(initial);
     expect(fetcher).not.toHaveBeenCalled();
@@ -551,12 +563,154 @@ describe("useContentReplacementJob", () => {
     expect(JSON.stringify(body)).not.toContain("kept locally");
   });
 
+  it("bulk-selects captured unique keys with one reducer transition and one durable save", async () => {
+    const first = await questionProposal(1);
+    const second = await questionProposal(2);
+    const initial = await scannedReviewJob(first, second);
+    const deps = dependencies(vi.fn(), initial);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    let saved = false;
+    await act(async () => {
+      saved = await result.current.setItemsIncluded(["question:2", "question:1"], false);
+    });
+
+    expect(saved).toBe(true);
+    expect(deps.store.save).toHaveBeenCalledOnce();
+    expect(result.current.job?.proposals["question:1"]).toMatchObject({ included: false, exclusionReason: "bulk" });
+    expect(result.current.job?.proposals["question:2"]).toMatchObject({ included: false, exclusionReason: "bulk" });
+
+    let invalid = true;
+    await act(async () => {
+      invalid = await result.current.setItemsIncluded(["question:1", "question:1"], true);
+    });
+    expect(invalid).toBe(false);
+    expect(deps.store.save).toHaveBeenCalledOnce();
+  });
+
+  it("bulk-updates thousands of captured keys with one full-job save", async () => {
+    const proposals = await Promise.all(Array.from({ length: 2_000 }, (_, index) => questionProposal(index + 1)));
+    const initial = await scannedReviewJob(...proposals);
+    const deps = dependencies(vi.fn(), initial);
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+    const itemKeys = proposals.map((candidate) =>
+      `question:${candidate.before.ref.kind === "question" ? candidate.before.ref.questionId : 0}`
+    );
+
+    let saved = false;
+    await act(async () => {
+      saved = await result.current.setItemsIncluded(itemKeys, false);
+    });
+
+    expect(saved).toBe(true);
+    expect(deps.store.save).toHaveBeenCalledOnce();
+    expect(Object.values(result.current.job!.proposals).filter((candidate) => candidate.included)).toHaveLength(0);
+  });
+
+  it("returns selection-save failure and leaves the confirmed job unchanged", async () => {
+    const initial = await scannedReviewJob(await questionProposal());
+    const deps = dependencies(vi.fn(), initial);
+    deps.store.save.mockRejectedValueOnce(new Error("quota"));
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    let saved = true;
+    await act(async () => { saved = await result.current.setItemIncluded("question:1", false); });
+
+    expect(saved).toBe(false);
+    expect(result.current.job).toEqual(initial);
+    expect(result.current.storageError).toBe("Content replacement progress could not be saved.");
+  });
+
+  it("rolls back a failed bulk selection as one durable save", async () => {
+    const initial = await scannedReviewJob(await questionProposal(1), await questionProposal(2));
+    const deps = dependencies(vi.fn(), initial);
+    deps.store.save.mockRejectedValueOnce(new Error("quota"));
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    let saved = true;
+    await act(async () => {
+      saved = await result.current.setItemsIncluded(["question:2", "question:1"], false);
+    });
+
+    expect(saved).toBe(false);
+    expect(deps.store.save).toHaveBeenCalledOnce();
+    expect(result.current.job).toEqual(initial);
+  });
+
+  it("serializes a deferred selection save before preparing its exact reviewed snapshot", async () => {
+    const initial = await scannedReviewJob(await questionProposal(1), await questionProposal(2));
+    const reviewed = reduceReplacementJob(initial, {
+      type: "review/set-included",
+      itemKey: "question:1",
+      included: false,
+      reason: "user",
+      at: LATER,
+    });
+    const expectedSelection = createReplacementSelectionSnapshot(reviewed.proposals);
+    const gate = deferred<void>();
+    const deps = dependencies(vi.fn(), initial);
+    const baseSave = deps.store.save.getMockImplementation()!;
+    deps.store.save.mockImplementationOnce(async (saved) => {
+      await gate.promise;
+      await baseSave(saved);
+    });
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    let selection!: Promise<boolean>;
+    let preparation!: Promise<boolean>;
+    act(() => {
+      selection = result.current.setItemIncluded("question:1", false);
+      preparation = result.current.prepareApply(expectedSelection);
+    });
+    await waitFor(() => expect(deps.store.save).toHaveBeenCalledOnce());
+    expect(result.current.job).toEqual(initial);
+    gate.resolve();
+
+    let selectionSaved = false;
+    let prepared = false;
+    await act(async () => {
+      selectionSaved = await selection;
+      prepared = await preparation;
+    });
+    expect(selectionSaved).toBe(true);
+    expect(prepared).toBe(true);
+    expect(deps.store.save).toHaveBeenCalledTimes(2);
+    expect(result.current.job?.stage).toBe("apply");
+  });
+
+  it("refuses an expected newer selection after its save fails", async () => {
+    const initial = await scannedReviewJob(await questionProposal());
+    const reviewed = reduceReplacementJob(initial, {
+      type: "review/set-included",
+      itemKey: "question:1",
+      included: false,
+      reason: "user",
+      at: LATER,
+    });
+    const expectedSelection = createReplacementSelectionSnapshot(reviewed.proposals);
+    const deps = dependencies(vi.fn(), initial);
+    deps.store.save.mockRejectedValueOnce(new Error("quota"));
+    const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    let selectionSaved = true;
+    let prepared = true;
+    await act(async () => {
+      selectionSaved = await result.current.setItemIncluded("question:1", false);
+      prepared = await result.current.prepareApply(expectedSelection);
+    });
+
+    expect(selectionSaved).toBe(false);
+    expect(prepared).toBe(false);
+    expect(deps.store.save).toHaveBeenCalledOnce();
+    expect(result.current.job).toEqual(initial);
+  });
+
   it("refuses apply when the reloaded persisted snapshot is stale", async () => {
     const proposal = await questionProposal();
     const review = await scannedReviewJob(proposal);
     const deps = dependencies(vi.fn(), review);
     const { result } = renderHook(() => useContentReplacementJob(credentials, review, deps.value));
-    await act(async () => result.current.prepareApply());
+    await act(async () => result.current.prepareApply(createReplacementSelectionSnapshot(review.proposals)));
     deps.store.load.mockResolvedValueOnce(review);
 
     await act(async () => result.current.startApply());
@@ -568,7 +722,7 @@ describe("useContentReplacementJob", () => {
   it("rejects a malformed apply response union without persisting returned text", async () => {
     const proposal = await questionProposal();
     const review = await scannedReviewJob(proposal);
-    const prepared = reduceReplacementJob(review, { type: "apply/prepare", at: AT });
+    const prepared = prepareJob(review, AT);
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       ok: true,
       result: { status: "updated", observedRequestChecksum: proposal.proposedRequestChecksum },
@@ -640,7 +794,7 @@ describe("useContentReplacementJob", () => {
     ["missing expiry", { ...credentials, oauthScopes: ["write_access"], accessTokenExpiresAt: undefined }],
   ] as const)("pauses before apply activation for %s credentials", async (_label, supplied) => {
     const proposal = await questionProposal();
-    const prepared = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    const prepared = prepareJob(await scannedReviewJob(proposal), AT);
     const deps = dependencies(vi.fn(), prepared);
     const { result } = renderHook(() => useContentReplacementJob(supplied as SessionCredentials, prepared, deps.value));
 
@@ -655,7 +809,7 @@ describe("useContentReplacementJob", () => {
 
   it("accepts a manual Enterprise token while ignoring stale OAuth metadata", async () => {
     const proposal = await questionProposal();
-    const prepared = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    const prepared = prepareJob(await scannedReviewJob(proposal), AT);
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       ok: true,
       result: { status: "updated", observedRequestChecksum: proposal.proposedRequestChecksum },
@@ -678,7 +832,7 @@ describe("useContentReplacementJob", () => {
 
   it("turns an item-level permission response into a reconnectable credential interruption", async () => {
     const proposal = await questionProposal();
-    const prepared = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    const prepared = prepareJob(await scannedReviewJob(proposal), AT);
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       ok: true,
       result: { status: "permission", error: "upstream detail" },
@@ -700,7 +854,7 @@ describe("useContentReplacementJob", () => {
 
   it("interrupts a persisted applying item during rehydration and requires explicit resume", async () => {
     const proposal = await questionProposal();
-    let initial = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    let initial = prepareJob(await scannedReviewJob(proposal), AT);
     initial = reduceReplacementJob(initial, { type: "apply/start", at: AT });
     initial = reduceReplacementJob(initial, { type: "apply/item-started", itemKey: "question:1", at: AT });
     const deps = dependencies(vi.fn(), initial);
@@ -738,7 +892,7 @@ describe("useContentReplacementJob", () => {
 
   it("pauses apply before item activation when compatible credentials are unavailable", async () => {
     const proposal = await questionProposal();
-    const prepared = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    const prepared = prepareJob(await scannedReviewJob(proposal), AT);
     const deps = dependencies(vi.fn(), prepared);
     const { result } = renderHook(() => useContentReplacementJob(null, prepared, deps.value));
 
@@ -807,8 +961,8 @@ describe("useContentReplacementJob", () => {
       await storage().save(saved);
     });
     const { result } = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
-    let prepare!: Promise<void>;
-    act(() => { prepare = result.current.prepareApply(); });
+    let prepare!: Promise<boolean>;
+    act(() => { prepare = result.current.prepareApply(createReplacementSelectionSnapshot(initial.proposals)); });
     await waitFor(() => expect(deps.store.save).toHaveBeenCalledTimes(1));
     let deletion!: Promise<void>;
     act(() => { deletion = result.current.deleteJob(); });
@@ -841,8 +995,8 @@ describe("useContentReplacementJob", () => {
       await baseDelete();
     });
     const first = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
-    let prepare!: Promise<void>;
-    act(() => { prepare = first.result.current.prepareApply(); });
+    let prepare!: Promise<boolean>;
+    act(() => { prepare = first.result.current.prepareApply(createReplacementSelectionSnapshot(initial.proposals)); });
     await waitFor(() => expect(events).toEqual(["save-start"]));
     first.unmount();
 
@@ -864,10 +1018,7 @@ describe("useContentReplacementJob", () => {
 
   it("serializes a deferred save and cancellation across hook remounts for the same job", async () => {
     const proposal = await questionProposal();
-    const initial = reduceReplacementJob(await scannedReviewJob(proposal), {
-      type: "apply/prepare",
-      at: AT,
-    });
+    const initial = prepareJob(await scannedReviewJob(proposal), AT);
     const gate = deferred<void>();
     const deps = dependencies(vi.fn(), initial);
     const baseSave = deps.store.save.getMockImplementation()!;
@@ -1231,7 +1382,7 @@ describe("useContentReplacementJob", () => {
   it("retries network failures but leaves permission failures terminal", async () => {
     const first = await questionProposal(1);
     const second = await questionProposal(2);
-    let initial = reduceReplacementJob(await scannedReviewJob(first, second), { type: "apply/prepare", at: AT });
+    let initial = prepareJob(await scannedReviewJob(first, second), AT);
     initial = reduceReplacementJob(initial, { type: "apply/start", at: AT });
     initial = reduceReplacementJob(initial, { type: "apply/item-started", itemKey: "question:1", at: AT });
     initial = reduceReplacementJob(initial, {
@@ -1261,10 +1412,7 @@ describe("useContentReplacementJob", () => {
   it("rescans only requested stale refs through bounded canonical detail calls", async () => {
     const staleProposal = await questionProposal(1);
     const successfulProposal = await questionProposal(2);
-    let initial = reduceReplacementJob(
-      await scannedReviewJob(staleProposal, successfulProposal),
-      { type: "apply/prepare", at: AT },
-    );
+    let initial = prepareJob(await scannedReviewJob(staleProposal, successfulProposal), AT);
     initial = reduceReplacementJob(initial, { type: "apply/start", at: AT });
     initial = reduceReplacementJob(initial, { type: "apply/item-started", itemKey: "question:1", at: AT });
     initial = reduceReplacementJob(initial, {
@@ -1305,7 +1453,7 @@ describe("useContentReplacementJob", () => {
 
   it("persists every stale-rescan batch when more than ten refs are requested", async () => {
     const originals = await Promise.all(Array.from({ length: 11 }, (_, index) => questionProposal(index + 1)));
-    let initial = reduceReplacementJob(await scannedReviewJob(...originals), { type: "apply/prepare", at: AT });
+    let initial = prepareJob(await scannedReviewJob(...originals), AT);
     initial = reduceReplacementJob(initial, { type: "apply/start", at: AT });
     for (let id = 1; id <= 11; id += 1) {
       initial = reduceReplacementJob(initial, { type: "apply/item-started", itemKey: `question:${id}`, at: AT });
@@ -1354,7 +1502,7 @@ describe("useContentReplacementJob", () => {
 
   it("persists a sanitized root failure when a stale-item rescan transport fails", async () => {
     const proposal = await questionProposal();
-    let initial = reduceReplacementJob(await scannedReviewJob(proposal), { type: "apply/prepare", at: AT });
+    let initial = prepareJob(await scannedReviewJob(proposal), AT);
     initial = reduceReplacementJob(initial, { type: "apply/start", at: AT });
     initial = reduceReplacementJob(initial, { type: "apply/item-started", itemKey: "question:1", at: AT });
     initial = reduceReplacementJob(initial, {

@@ -1,7 +1,10 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
 import { downloadReplacementPreview } from "../utils/contentReplacementDownloads";
-import { replacementItemKey } from "../writeTools/contentReplacement/jobState";
+import {
+  createReplacementSelectionSnapshot,
+  replacementItemKey,
+} from "../writeTools/contentReplacement/jobState";
 import type {
   PersistedContentReplacementItem,
   PersistedContentReplacementJob,
@@ -53,6 +56,8 @@ function ContentReplacementReviewStepView({
   const [filters, setFilters] = useState<ReviewFilters>(INITIAL_FILTERS);
   const [page, setPage] = useState(1);
   const [selectionOverrides, setSelectionOverrides] = useState<Record<string, boolean>>({});
+  const [pendingSelectionSaves, setPendingSelectionSaves] = useState(0);
+  const [selectionSaveError, setSelectionSaveError] = useState<string | null>(null);
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
 
   useEffect(() => {
@@ -79,7 +84,8 @@ function ContentReplacementReviewStepView({
   );
   const start = filtered.length === 0 ? 0 : (boundedPage - 1) * PAGE_SIZE + 1;
   const end = Math.min(boundedPage * PAGE_SIZE, filtered.length);
-  const error = controller.storageError ?? controller.operationError;
+  const error = selectionSaveError ?? controller.storageError ?? controller.operationError;
+  const selectionBusy = pendingSelectionSaves > 0;
 
   function updateFilter<K extends keyof ReviewFilters>(key: K, value: ReviewFilters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -92,14 +98,40 @@ function ContentReplacementReviewStepView({
   }
 
   async function setIncluded(key: string, included: boolean) {
-    setSelectionOverrides((current) => ({ ...current, [key]: included }));
-    await controller.setItemIncluded(key, included);
+    return persistSelection([key], included, () => controller.setItemIncluded(key, included));
   }
 
   async function setFilteredIncluded(included: boolean) {
-    const updates = Object.fromEntries(filtered.map(({ key }) => [key, included]));
+    const itemKeys = filtered.map(({ key }) => key);
+    await persistSelection(itemKeys, included, () => controller.setItemsIncluded(itemKeys, included));
+  }
+
+  async function persistSelection(
+    itemKeys: readonly string[],
+    included: boolean,
+    save: () => Promise<boolean>,
+  ) {
+    const updates = Object.fromEntries(itemKeys.map((key) => [key, included]));
     setSelectionOverrides((current) => ({ ...current, ...updates }));
-    await Promise.all(filtered.map(({ key }) => controller.setItemIncluded(key, included)));
+    setSelectionSaveError(null);
+    setPendingSelectionSaves((current) => current + 1);
+    let saved = false;
+    try {
+      saved = await save();
+    } catch {
+      saved = false;
+    } finally {
+      setPendingSelectionSaves((current) => Math.max(0, current - 1));
+    }
+    if (!saved) {
+      setSelectionOverrides((current) => {
+        const next = { ...current };
+        itemKeys.forEach((key) => delete next[key]);
+        return next;
+      });
+      setSelectionSaveError("Selection was not saved. Try again.");
+    }
+    return saved;
   }
 
   function toggleExpanded(key: string) {
@@ -110,8 +142,15 @@ function ContentReplacementReviewStepView({
   }
 
   async function continueToApply() {
-    if (selected.length === 0) return;
-    await controller.prepareApply();
+    if (selected.length === 0 || selectionBusy || selectionSaveError) return;
+    const reviewedProposals = Object.fromEntries(
+      entries.map(({ key, item, included }) => [key, included === item.included ? item : { ...item, included }]),
+    );
+    const prepared = await controller.prepareApply(createReplacementSelectionSnapshot(reviewedProposals));
+    if (!prepared) {
+      setSelectionOverrides({});
+      setSelectionSaveError("The confirmed selection changed before Apply preparation. Review it and try again.");
+    }
   }
 
   return (
@@ -124,6 +163,7 @@ function ContentReplacementReviewStepView({
         <button
           type="button"
           className="s-btn s-btn__outlined"
+          disabled={selectionBusy}
           onClick={() => downloadReplacementPreview(entries.map(({ item, included }) => ({ ...item, included })), job.configuration)}
         >
           Download complete preview CSV
@@ -134,7 +174,11 @@ function ContentReplacementReviewStepView({
 
       {error && (
         <div className="content-replacement-error" role="alert">
-          <strong>Review changes were not saved.</strong> {error} Retry the selection or Continue action.
+          {selectionSaveError ? (
+            <strong>{selectionSaveError}</strong>
+          ) : (
+            <><strong>Review changes were not saved.</strong> {error} Retry the selection or Continue action.</>
+          )}
         </div>
       )}
 
@@ -143,6 +187,7 @@ function ContentReplacementReviewStepView({
           <span>Content type</span>
           <select
             className="s-select"
+            disabled={selectionBusy}
             value={filters.contentType}
             onChange={(event) => updateFilter("contentType", event.target.value as ContentTypeFilter)}
           >
@@ -154,7 +199,7 @@ function ContentReplacementReviewStepView({
         </label>
         <label>
           <span>Replacement rule</span>
-          <select className="s-select" value={filters.ruleId} onChange={(event) => updateFilter("ruleId", event.target.value)}>
+          <select className="s-select" disabled={selectionBusy} value={filters.ruleId} onChange={(event) => updateFilter("ruleId", event.target.value)}>
             <option value="all">All rules</option>
             {job.configuration.rules.map((rule) => (
               <option key={rule.id} value={rule.id}>{rule.find} → {rule.replace}</option>
@@ -165,6 +210,7 @@ function ContentReplacementReviewStepView({
           <span>Affected field</span>
           <select
             className="s-select"
+            disabled={selectionBusy}
             value={filters.field}
             onChange={(event) => updateFilter("field", event.target.value as FieldFilter)}
           >
@@ -177,6 +223,7 @@ function ContentReplacementReviewStepView({
           <span>Review status</span>
           <select
             className="s-select"
+            disabled={selectionBusy}
             value={filters.status}
             onChange={(event) => updateFilter("status", event.target.value as StatusFilter)}
           >
@@ -190,11 +237,12 @@ function ContentReplacementReviewStepView({
           <input
             className="s-input"
             type="search"
+            disabled={selectionBusy}
             value={filters.search}
             onChange={(event) => updateFilter("search", event.target.value)}
           />
         </label>
-        <button type="button" className="s-btn s-btn__outlined" onClick={clearFilters}>Clear filters</button>
+        <button type="button" className="s-btn s-btn__outlined" disabled={selectionBusy} onClick={clearFilters}>Clear filters</button>
       </div>
 
       <div className="content-replacement-review-toolbar">
@@ -206,7 +254,7 @@ function ContentReplacementReviewStepView({
           <button
             type="button"
             className="s-btn s-btn__outlined"
-            disabled={filtered.length === 0}
+            disabled={selectionBusy || filtered.length === 0}
             onClick={() => void setFilteredIncluded(true)}
           >
             Include {filtered.length} filtered {plural(filtered.length, "proposal")}
@@ -214,7 +262,7 @@ function ContentReplacementReviewStepView({
           <button
             type="button"
             className="s-btn s-btn__outlined"
-            disabled={filtered.length === 0}
+            disabled={selectionBusy || filtered.length === 0}
             onClick={() => void setFilteredIncluded(false)}
           >
             Exclude {filtered.length} filtered {plural(filtered.length, "proposal")}
@@ -255,6 +303,7 @@ function ContentReplacementReviewStepView({
                       <input
                         type="checkbox"
                         checked={included}
+                        disabled={selectionBusy}
                         aria-label={`Include ${identity.kind} ${identity.id}`}
                         onChange={(event) => void setIncluded(key, event.target.checked)}
                       />
@@ -286,6 +335,7 @@ function ContentReplacementReviewStepView({
                           jobBaseUrl={job.baseUrl}
                           item={item}
                           included={included}
+                          disabled={selectionBusy}
                           onSetIncluded={(next) => setIncluded(key, next)}
                         />
                       </td>
@@ -308,7 +358,7 @@ function ContentReplacementReviewStepView({
         <button
           type="button"
           className="s-btn s-btn__outlined"
-          disabled={boundedPage <= 1}
+          disabled={selectionBusy || boundedPage <= 1}
           onClick={() => setPage((current) => Math.max(1, current - 1))}
         >
           Previous page
@@ -317,7 +367,7 @@ function ContentReplacementReviewStepView({
         <button
           type="button"
           className="s-btn s-btn__outlined"
-          disabled={boundedPage >= pageCount}
+          disabled={selectionBusy || boundedPage >= pageCount}
           onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
         >
           Next page
@@ -332,7 +382,10 @@ function ContentReplacementReviewStepView({
         <button
           type="button"
           className="s-btn s-btn__primary"
-          disabled={selected.length === 0 || controller.busy}
+          disabled={
+            selected.length === 0 || controller.busy || selectionBusy || selectionSaveError !== null ||
+            controller.storageError !== null || controller.operationError !== null
+          }
           onClick={() => void continueToApply()}
         >
           Continue with {selected.length} {plural(selected.length, "post")} and {selectedOccurrences} changed {plural(selectedOccurrences, "occurrence")}
@@ -362,13 +415,15 @@ function ProposalDetails({
   jobBaseUrl,
   item,
   included,
+  disabled,
   onSetIncluded,
 }: {
   id: string;
   jobBaseUrl: string;
   item: PersistedContentReplacementItem;
   included: boolean;
-  onSetIncluded(included: boolean): Promise<void>;
+  disabled: boolean;
+  onSetIncluded(included: boolean): Promise<boolean>;
 }) {
   const proposal = item.proposal;
   const identity = proposalIdentity(proposal);
@@ -380,7 +435,7 @@ function ProposalDetails({
           <h3>{capitalize(identity.kind)} {identity.id} proposed changes</h3>
           <p>{proposal.changedOccurrences.length} changed and {proposal.protectedOccurrences.length} protected {plural(proposal.protectedOccurrences.length, "occurrence")}</p>
         </div>
-        <button type="button" className="s-btn s-btn__outlined" onClick={() => void onSetIncluded(!included)}>
+        <button type="button" className="s-btn s-btn__outlined" disabled={disabled} onClick={() => void onSetIncluded(!included)}>
           {included ? "Exclude" : "Include"} {identity.kind} {identity.id}
         </button>
       </header>

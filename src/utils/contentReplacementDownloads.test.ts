@@ -37,13 +37,11 @@ describe("content replacement downloads", () => {
     ], configuration);
 
     expect(csv.split("\r\n")[0]).toBe(
-      "contentType,itemId,questionId,title,webUrl,owner,lastEditor,lastActivityDate,ruleIds,fields,changedOccurrences,protectedOccurrences,protectedReasons,beforeTitle,afterTitle,beforeBodyMarkdown,afterBodyMarkdown,caseSensitive,wholeTerm,replaceInCode,selected",
+      "contentType,itemId,questionId,title,webUrl,ruleIds,fields,changedOccurrences,protectedOccurrences,beforeTitle,afterTitle,beforeBodyMarkdown,afterBodyMarkdown,caseSensitive,wholeTerm,replaceInCode,selected",
     );
     expect(csv.indexOf("answer,2,1")).toBeLessThan(csv.indexOf("question,10,"));
     expect(csv).toContain('"First line\nMyPVM, accessToken and ""authorization"""');
-    expect(csv).toContain("Code — unchanged");
-    expect(csv).toContain("Owner 7 (#7)");
-    expect(csv).toContain("Editor 8 (#8)");
+    expect(csv).toContain(",1 [code:1],");
     expect(csv).toContain(",true,false,false,");
     expect(csv).toMatch(/,false$/);
     expect(csv).not.toContain("scannedRequestChecksum");
@@ -62,6 +60,19 @@ describe("content replacement downloads", () => {
     expect(rows[1].startsWith("question,2,")).toBe(true);
     expect(rows[2].startsWith("article,2,")).toBe(true);
     expect(rows[2]).toContain("rule-2; rule-10");
+  });
+
+  it("encodes the protected total and deterministic reason counts in the approved column", () => {
+    const value = proposal("question", 4);
+    value.protectedOccurrences = [
+      { field: "body", ruleId: "rule-2", start: 12, end: 15, before: "old", reason: "destination" },
+      { field: "body", ruleId: "rule-10", start: 0, end: 5, before: "code", reason: "code" },
+      { field: "body", ruleId: "rule-2", start: 20, end: 23, before: "old", reason: "code" },
+    ];
+
+    const csv = createReplacementPreviewCsv([value], configuration);
+
+    expect(csv.split("\r\n")[1]).toContain(",3 [code:2;destination:1],");
   });
 
   it("exports typed results and sanitized exceptions without raw payloads or recovery data", () => {
@@ -90,15 +101,14 @@ describe("content replacement downloads", () => {
     const exceptions = createReplacementExceptionsCsv([applied, failed]);
 
     expect(results.split("\r\n")[0]).toBe(
-      "contentType,itemId,questionId,title,webUrl,status,outcome,attemptCount,changedOccurrences,protectedOccurrences,completedAt",
+      "contentType,itemId,questionId,title,webUrl,status,outcome,attemptCount,changedOccurrences,protectedOccurrences,completedAt,observedRequestChecksum",
     );
     expect(exceptions.split("\r\n")[0]).toBe(
-      "contentType,itemId,questionId,title,webUrl,status,category,message,retryable,statusCode,occurredAt",
+      "contentType,itemId,questionId,title,webUrl,status,category,message,retryable,statusCode,occurredAt,observedRequestChecksum",
     );
-    expect(results).toContain("question,11,,Question 11,https://example.stackenterprise.co/q/11,applied,applied,2,1,1,2026-09-02T13:00:00.000Z");
-    expect(exceptions).toContain("answer,3,1,Answer context,https://example.stackenterprise.co/a/3,failed,validation,The post no longer accepts this update.,false,400,2026-09-02T13:01:00.000Z");
+    expect(results).toContain("question,11,,Question 11,https://example.stackenterprise.co/q/11,applied,applied,2,1,1,2026-09-02T13:00:00.000Z,secret-checksum");
+    expect(exceptions).toContain("answer,3,1,Answer context,https://example.stackenterprise.co/a/3,failed,validation,The post no longer accepts this update.,false,400,2026-09-02T13:01:00.000Z,");
     expect(exceptions).not.toContain("question,11");
-    expect(`${results}${exceptions}`).not.toContain("secret-checksum");
     expect(`${results}${exceptions}`).not.toMatch(/priorRequestModel|recovery|authorization:/i);
   });
 
@@ -119,9 +129,74 @@ describe("content replacement downloads", () => {
 
     const csv = createReplacementExceptionsCsv([stale, verification]);
 
-    expect(csv).toContain("question,8,,Question 8,https://example.stackenterprise.co/q/8,failed,verification,The applied content could not be verified.,false,,2026-09-02T13:03:00.000Z");
-    expect(csv).toContain("article,9,,Article 9,https://example.stackenterprise.co/a/9,stale,stale,The post changed after review and was not updated.,false,,2026-09-02T13:02:00.000Z");
-    expect(csv).not.toMatch(/expected-secret|observed-secret/);
+    expect(csv).toContain("question,8,,Question 8,https://example.stackenterprise.co/q/8,failed,verification,The applied content could not be verified.,false,,2026-09-02T13:03:00.000Z,observed-secret");
+    expect(csv).toContain("article,9,,Article 9,https://example.stackenterprise.co/a/9,stale,stale,The post changed after review and was not updated.,false,,2026-09-02T13:02:00.000Z,");
+    expect(csv).not.toContain("expected-secret");
+  });
+
+  it.each([
+    ["applied", "applied", "apply-at", "apply-observed"],
+    ["unchanged", "unchanged", "unchanged-at", "unchanged-observed"],
+    ["stale", "stale", "stale-at", ""],
+    ["excluded", "excluded", "excluded-at", ""],
+    ["verification-failed", "verification-failed", "verify-at", "verify-observed"],
+    ["recovered", "recovered", "recovery-at", "recovery-observed"],
+    ["conflict", "conflict", "conflict-at", "conflict-observed"],
+    ["recovery-verification-failed", "verification-failed", "recovery-verify-at", "recovery-verify-observed"],
+  ] as const)("projects the typed %s result deterministically", (caseName, outcome, completedAt, observed) => {
+    const value = resultCase(caseName);
+    const csv = createReplacementResultsCsv([value]);
+
+    expect(csv.split("\r\n")[1].split(",").slice(6)).toEqual([
+      outcome,
+      "1",
+      "1",
+      "1",
+      completedAt,
+      observed,
+    ]);
+  });
+
+  it("uses nested recovery outcomes before retained apply results and distinguishes recovery causes", () => {
+    const recovered = resultCase("recovered");
+    const conflict = resultCase("conflict");
+    const verification = resultCase("recovery-verification-failed");
+
+    const results = createReplacementResultsCsv([recovered, conflict, verification]);
+    const exceptions = createReplacementExceptionsCsv([recovered, conflict, verification]);
+
+    expect(results).toContain(",recovered,recovered,1,1,1,recovery-at,recovery-observed");
+    expect(results).not.toContain("apply-observed");
+    expect(exceptions).not.toContain("question,21,");
+    expect(exceptions).toContain(",recovery-conflict,The post changed after replacement and was not recovered.,false,,conflict-at,conflict-observed");
+    expect(exceptions).toContain(",recovery-verification,The recovered content could not be verified.,false,,recovery-verify-at,recovery-verify-observed");
+  });
+
+  it.each([
+    ["pending", null],
+    ["excluded", null],
+    ["ready-to-apply", null],
+    ["applying", null],
+    ["applied", null],
+    ["stale", "stale"],
+    ["failed", "unknown"],
+    ["ready-to-recover", null],
+    ["recovering", null],
+    ["recovered", null],
+    ["recovery-conflict", "recovery-conflict"],
+    ["recovery-failed", "recovery-failed"],
+  ] as const)("uses the exhaustive %s item-status fallback", (status, exceptionCategory) => {
+    const value = item(proposal("article", 31), status !== "excluded", { status });
+
+    const results = createReplacementResultsCsv([value]);
+    const exceptions = createReplacementExceptionsCsv([value]);
+
+    expect(results.split("\r\n")[1].split(",")[5]).toBe(status);
+    if (exceptionCategory) {
+      expect(exceptions.split("\r\n")[1].split(",")[6]).toBe(exceptionCategory);
+    } else {
+      expect(exceptions.split("\r\n")).toHaveLength(1);
+    }
   });
 
   it("downloads the exact canonical template and always cleans up its anchor and URL", async () => {
@@ -274,6 +349,67 @@ function item(
     attemptCount: 0,
     status: included ? "pending" : "excluded",
     ...overrides,
+  };
+}
+
+function resultCase(
+  kind:
+    | "applied"
+    | "unchanged"
+    | "stale"
+    | "excluded"
+    | "verification-failed"
+    | "recovered"
+    | "conflict"
+    | "recovery-verification-failed",
+): PersistedContentReplacementItem {
+  const id = kind === "recovered" ? 21 : kind === "conflict" ? 22 : kind === "recovery-verification-failed" ? 23 : 20;
+  const base = item(proposal("question", id), kind !== "excluded", { attemptCount: 1 });
+  if (kind === "applied" || kind === "unchanged") {
+    return {
+      ...base,
+      status: "applied",
+      result: { kind, completedAt: kind === "applied" ? "apply-at" : "unchanged-at", observedRequestChecksum: kind === "applied" ? "apply-observed" : "unchanged-observed" },
+    };
+  }
+  if (kind === "stale" || kind === "excluded") {
+    return { ...base, status: kind, result: { kind, completedAt: `${kind}-at` } };
+  }
+  if (kind === "verification-failed") {
+    return {
+      ...base,
+      status: "failed",
+      result: {
+        kind,
+        completedAt: "verify-at",
+        expectedRequestChecksum: "verify-expected",
+        observedRequestChecksum: "verify-observed",
+      },
+    };
+  }
+  const recoveryKind = kind === "recovery-verification-failed" ? "verification-failed" : kind;
+  const auditPrefix = recoveryKind === "recovered"
+    ? "recovery"
+    : kind === "recovery-verification-failed"
+      ? "recovery-verify"
+      : recoveryKind;
+  return {
+    ...base,
+    status: recoveryKind === "recovered" ? "recovered" : recoveryKind === "conflict" ? "recovery-conflict" : "recovery-failed",
+    result: { kind: "applied", completedAt: "apply-at", observedRequestChecksum: "apply-observed" },
+    recovery: {
+      priorRequestModel: base.proposal.before,
+      scannedRequestChecksum: "scan-secret",
+      proposedRequestChecksum: "proposal-secret",
+      status: recoveryKind === "recovered" ? "applied" : recoveryKind === "conflict" ? "conflict" : "failed",
+      result: {
+        kind: recoveryKind,
+        observedRequestChecksum: `${auditPrefix}-observed`,
+        sourceAttemptCount: 1,
+        sourceApplyCompletedAt: "apply-at",
+        completedAt: `${auditPrefix}-at`,
+      },
+    },
   };
 }
 

@@ -9,6 +9,7 @@ import type {
 import {
   canEnterReview,
   createReplacementJob,
+  createReplacementSelectionSnapshot,
   getNextApplyItem,
   getNextDetailBatch,
   getNextInventoryCursor,
@@ -102,7 +103,15 @@ function reviewJob(...proposals: ReplacementProposal[]): PersistedContentReplace
 }
 
 function preparedJob(...proposals: ReplacementProposal[]): PersistedContentReplacementJob {
-  return reduceReplacementJob(reviewJob(...proposals), { type: "apply/prepare", at: AT });
+  return prepareJob(reviewJob(...proposals), AT);
+}
+
+function prepareJob(job: PersistedContentReplacementJob, at: string): PersistedContentReplacementJob {
+  return reduceReplacementJob(job, {
+    type: "apply/prepare",
+    expectedSelection: createReplacementSelectionSnapshot(job.proposals),
+    at,
+  });
 }
 
 function failure(
@@ -347,7 +356,7 @@ describe("replacement job state", () => {
       });
     }
     job = reduceReplacementJob(job, { type: "scan/queues-drained", at: AT });
-    job = reduceReplacementJob(job, { type: "apply/prepare", at: AT });
+    job = prepareJob(job, AT);
     job = reduceReplacementJob(job, { type: "apply/start", at: AT });
     for (let index = 0; index < originals.length; index += 1) {
       const key = `question:${index + 1}`;
@@ -390,10 +399,82 @@ describe("replacement job state", () => {
     });
   });
 
+  it("bulk-updates one captured unique key set deterministically and invalidates recovery once", () => {
+    const first = proposal({ kind: "question", questionId: 1 });
+    const second = proposal({ kind: "answer", questionId: 1, answerId: 2 });
+    const third = proposal({ kind: "article", articleId: 3 });
+    const initial = reviewJob(first, second, third);
+
+    const next = reduceReplacementJob(initial, {
+      type: "review/set-included-bulk",
+      itemKeys: ["article:3", "question:1"],
+      included: false,
+      reason: "bulk",
+      at: LATER,
+    });
+
+    expect(next).not.toBe(initial);
+    expect(next.updatedAt).toBe(LATER);
+    expect(next.recoverySnapshotStatus).toBe("none");
+    expect(next.proposals["question:1"]).toMatchObject({ included: false, exclusionReason: "bulk" });
+    expect(next.proposals["article:3"]).toMatchObject({ included: false, exclusionReason: "bulk" });
+    expect(next.proposals["answer:1:2"].included).toBe(true);
+    expect(Object.keys(next.proposals)).toEqual(Object.keys(initial.proposals));
+
+    expect(reduceReplacementJob(initial, {
+      type: "review/set-included-bulk",
+      itemKeys: ["question:1", "question:1"],
+      included: false,
+      reason: "bulk",
+      at: LATER,
+    })).toBe(initial);
+    expect(reduceReplacementJob(initial, {
+      type: "review/set-included-bulk",
+      itemKeys: ["question:404"],
+      included: false,
+      reason: "bulk",
+      at: LATER,
+    })).toBe(initial);
+  });
+
+  it("prepares apply only when the exact reviewed selection snapshot still matches", () => {
+    const initial = reviewJob(
+      proposal({ kind: "question", questionId: 1 }),
+      proposal({ kind: "article", articleId: 2 }),
+    );
+    const reviewed = createReplacementSelectionSnapshot(initial.proposals);
+    const changed = reduceReplacementJob(initial, {
+      type: "review/set-included",
+      itemKey: "question:1",
+      included: false,
+      reason: "user",
+      at: LATER,
+    });
+
+    expect(reduceReplacementJob(changed, {
+      type: "apply/prepare",
+      expectedSelection: reviewed,
+      at: LATER,
+    })).toBe(changed);
+
+    const current = createReplacementSelectionSnapshot(changed.proposals);
+    const prepared = reduceReplacementJob(changed, {
+      type: "apply/prepare",
+      expectedSelection: current,
+      at: LATER,
+    });
+    expect(prepared.stage).toBe("apply");
+    expect(current).toEqual({
+      itemKeys: ["article:2"],
+      selectedItems: 1,
+      selectedChangedOccurrences: 1,
+    });
+  });
+
   it("prepares every selected recovery atomically before apply becomes eligible", () => {
     const first = proposal({ kind: "question", questionId: 1 });
     const second = proposal({ kind: "article", articleId: 2 });
-    const next = reduceReplacementJob(reviewJob(first, second), { type: "apply/prepare", at: LATER });
+    const next = prepareJob(reviewJob(first, second), LATER);
     const selected = Object.values(next.proposals).filter((item) => item.included);
 
     expect(next.recoverySnapshotStatus).toBe("ready");
@@ -419,7 +500,7 @@ describe("replacement job state", () => {
     const excluded = reduceReplacementJob(reviewJob(first), {
       type: "review/set-included", itemKey: "question:1", included: false, reason: "user", at: AT,
     });
-    expect(reduceReplacementJob(excluded, { type: "apply/prepare", at: LATER })).toEqual(excluded);
+    expect(prepareJob(excluded, LATER)).toEqual(excluded);
     expect(getNextApplyItem(excluded)).toBeNull();
   });
 

@@ -1,10 +1,12 @@
 import { recordsToCsvWithHeaders } from "./downloads";
 import type {
   PersistedContentReplacementItem,
+  PersistedContentReplacementItemStatus,
+  PersistedContentReplacementRecoveryResult,
+  PersistedContentReplacementResult,
   ReplacementConfiguration,
   ReplacementItemRef,
   ReplacementProposal,
-  ReplacementProtectedOccurrenceReason,
 } from "../writeTools/contentReplacement/types";
 
 const CSV_MIME_TYPE = "text/csv;charset=utf-8";
@@ -15,14 +17,10 @@ const PREVIEW_HEADERS = [
   "questionId",
   "title",
   "webUrl",
-  "owner",
-  "lastEditor",
-  "lastActivityDate",
   "ruleIds",
   "fields",
   "changedOccurrences",
   "protectedOccurrences",
-  "protectedReasons",
   "beforeTitle",
   "afterTitle",
   "beforeBodyMarkdown",
@@ -45,6 +43,7 @@ const RESULT_HEADERS = [
   "changedOccurrences",
   "protectedOccurrences",
   "completedAt",
+  "observedRequestChecksum",
 ] as const;
 
 const EXCEPTION_HEADERS = [
@@ -59,6 +58,7 @@ const EXCEPTION_HEADERS = [
   "retryable",
   "statusCode",
   "occurredAt",
+  "observedRequestChecksum",
 ] as const;
 
 export interface ReplacementDownloadAnchor {
@@ -89,18 +89,12 @@ export function createReplacementPreviewCsv(
 ): string {
   const records = sortInputs(input).map((entry) => {
     const proposal = proposalFrom(entry);
-    const metadata = proposal.metadata ?? proposal.before.metadata;
     return {
       ...identityRecord(proposal),
-      owner: formatPerson(metadata?.owner),
-      lastEditor: formatPerson(metadata?.lastEditor),
-      lastActivityDate: metadata?.lastActivityDate ?? "",
       ruleIds: sortNatural(proposal.appliedRuleIds).join("; "),
       fields: sortNatural([...new Set(proposal.changedOccurrences.map(({ field }) => field))]).join("; "),
       changedOccurrences: proposal.changedOccurrences.length,
-      protectedOccurrences: proposal.protectedOccurrences.length,
-      protectedReasons: sortNatural([...new Set(proposal.protectedOccurrences.map(({ reason }) => reasonLabel(reason)))])
-        .join("; "),
+      protectedOccurrences: protectedOccurrencesValue(proposal),
       beforeTitle: proposal.fields.title?.beforeMarkdown ?? "",
       afterTitle: proposal.fields.title?.afterMarkdown ?? "",
       beforeBodyMarkdown: proposal.fields.body.beforeMarkdown,
@@ -117,15 +111,19 @@ export function createReplacementPreviewCsv(
 export function createReplacementResultsCsv(
   items: readonly PersistedContentReplacementItem[],
 ): string {
-  const records = sortInputs(items).map((item) => ({
-    ...identityRecord(item.proposal),
-    status: item.status,
-    outcome: item.result?.kind ?? "",
-    attemptCount: item.attemptCount,
-    changedOccurrences: item.proposal.changedOccurrences.length,
-    protectedOccurrences: item.proposal.protectedOccurrences.length,
-    completedAt: item.result?.completedAt ?? "",
-  }));
+  const records = sortInputs(items).map((item) => {
+    const result = projectResult(item);
+    return {
+      ...identityRecord(item.proposal),
+      status: item.status,
+      outcome: result.outcome,
+      attemptCount: item.attemptCount,
+      changedOccurrences: item.proposal.changedOccurrences.length,
+      protectedOccurrences: item.proposal.protectedOccurrences.length,
+      completedAt: result.completedAt,
+      observedRequestChecksum: result.observedRequestChecksum,
+    };
+  });
   return toRfc4180Csv(RESULT_HEADERS, records);
 }
 
@@ -228,11 +226,6 @@ function titleFrom(proposal: ReplacementProposal): string {
   return proposal.before.kind === "answer" ? "" : proposal.before.request.title;
 }
 
-function formatPerson(person: { id: number; name?: string } | undefined): string {
-  if (!person) return "";
-  return person.name ? `${person.name} (#${person.id})` : `#${person.id}`;
-}
-
 function itemId(ref: ReplacementItemRef): number {
   if (ref.kind === "question") return ref.questionId;
   if (ref.kind === "answer") return ref.answerId;
@@ -291,61 +284,163 @@ function compareNaturalStrings(left: string, right: string): number {
   return 0;
 }
 
-function reasonLabel(reason: ReplacementProtectedOccurrenceReason): string {
-  switch (reason) {
-    case "code": return "Code — unchanged";
-    case "destination": return "Link or image destination — unchanged";
-    case "raw-html-attribute": return "Raw HTML attribute — unchanged";
-    case "raw-html-syntax": return "Raw HTML syntax — unchanged";
-    case "raw-html-hidden": return "Raw HTML script or style content — unchanged";
+function exceptionDetails(item: PersistedContentReplacementItem): Record<string, unknown> | null {
+  const recoveryResult = item.recovery?.result;
+  if (recoveryResult) return recoveryException(recoveryResult);
+  if (item.result) {
+    const resultException = applyException(item.result);
+    if (resultException) return resultException;
+  }
+  if (item.failure) return {
+    category: item.failure.category,
+    message: item.failure.message,
+    retryable: item.failure.retryable,
+    statusCode: item.failure.statusCode ?? "",
+    occurredAt: item.failure.occurredAt,
+    observedRequestChecksum: "",
+  };
+  return statusException(item.status);
+}
+
+interface ResultProjection {
+  outcome: string;
+  completedAt: string;
+  observedRequestChecksum: string;
+}
+
+function projectResult(item: PersistedContentReplacementItem): ResultProjection {
+  if (item.recovery?.result) return projectRecoveryResult(item.recovery.result);
+  if (item.result) return projectApplyResult(item.result);
+  return { outcome: "", completedAt: "", observedRequestChecksum: "" };
+}
+
+function projectRecoveryResult(result: PersistedContentReplacementRecoveryResult): ResultProjection {
+  switch (result.kind) {
+    case "recovered":
+    case "conflict":
+    case "verification-failed":
+      return {
+        outcome: result.kind,
+        completedAt: result.completedAt,
+        observedRequestChecksum: result.observedRequestChecksum,
+      };
+    default:
+      return assertNever(result.kind);
   }
 }
 
-function exceptionDetails(item: PersistedContentReplacementItem): Record<string, unknown> | null {
-  if (item.failure) {
-    return {
-      category: item.failure.category,
-      message: item.failure.message,
-      retryable: item.failure.retryable,
-      statusCode: item.failure.statusCode ?? "",
-      occurredAt: item.failure.occurredAt,
-    };
+function projectApplyResult(result: PersistedContentReplacementResult): ResultProjection {
+  switch (result.kind) {
+    case "applied":
+    case "unchanged":
+      return {
+        outcome: result.kind,
+        completedAt: result.completedAt,
+        observedRequestChecksum: result.observedRequestChecksum,
+      };
+    case "stale":
+    case "excluded":
+      return { outcome: result.kind, completedAt: result.completedAt, observedRequestChecksum: "" };
+    case "verification-failed":
+      return {
+        outcome: result.kind,
+        completedAt: result.completedAt,
+        observedRequestChecksum: result.observedRequestChecksum,
+      };
+    default:
+      return assertNever(result);
   }
-  if (item.result?.kind === "stale" || item.status === "stale") {
-    return {
-      category: "stale",
-      message: "The post changed after review and was not updated.",
-      retryable: false,
-      statusCode: "",
-      occurredAt: item.result?.completedAt ?? "",
-    };
+}
+
+function recoveryException(result: PersistedContentReplacementRecoveryResult): Record<string, unknown> | null {
+  switch (result.kind) {
+    case "recovered":
+      return null;
+    case "conflict":
+      return auditException(
+        "recovery-conflict",
+        "The post changed after replacement and was not recovered.",
+        result.completedAt,
+        result.observedRequestChecksum,
+      );
+    case "verification-failed":
+      return auditException(
+        "recovery-verification",
+        "The recovered content could not be verified.",
+        result.completedAt,
+        result.observedRequestChecksum,
+      );
+    default:
+      return assertNever(result.kind);
   }
-  if (item.result?.kind === "verification-failed") {
-    return {
-      category: "verification",
-      message: "The applied content could not be verified.",
-      retryable: false,
-      statusCode: "",
-      occurredAt: item.result.completedAt,
-    };
+}
+
+function applyException(result: PersistedContentReplacementResult): Record<string, unknown> | null {
+  switch (result.kind) {
+    case "applied":
+    case "unchanged":
+    case "excluded":
+      return null;
+    case "stale":
+      return auditException("stale", "The post changed after review and was not updated.", result.completedAt, "");
+    case "verification-failed":
+      return auditException(
+        "verification",
+        "The applied content could not be verified.",
+        result.completedAt,
+        result.observedRequestChecksum,
+      );
+    default:
+      return assertNever(result);
   }
-  if (item.recovery?.result?.kind === "conflict" || item.status === "recovery-conflict") {
-    return {
-      category: "recovery-conflict",
-      message: "The post changed after replacement and was not recovered.",
-      retryable: false,
-      statusCode: "",
-      occurredAt: item.recovery?.result?.completedAt ?? "",
-    };
+}
+
+function statusException(status: PersistedContentReplacementItemStatus): Record<string, unknown> | null {
+  switch (status) {
+    case "stale":
+      return auditException("stale", "The post changed after review and was not updated.", "", "");
+    case "recovery-conflict":
+      return auditException("recovery-conflict", "The post changed after replacement and was not recovered.", "", "");
+    case "recovery-failed":
+      return auditException("recovery-failed", "The recovery attempt failed.", "", "");
+    case "failed":
+      return auditException("unknown", "The replacement attempt failed.", "", "");
+    case "pending":
+    case "excluded":
+    case "ready-to-apply":
+    case "applying":
+    case "applied":
+    case "ready-to-recover":
+    case "recovering":
+    case "recovered":
+      return null;
+    default:
+      return assertNever(status);
   }
-  if (item.recovery?.result?.kind === "verification-failed") {
-    return {
-      category: "recovery-verification",
-      message: "The recovered content could not be verified.",
-      retryable: false,
-      statusCode: "",
-      occurredAt: item.recovery.result.completedAt,
-    };
+}
+
+function auditException(
+  category: string,
+  message: string,
+  occurredAt: string,
+  observedRequestChecksum: string,
+): Record<string, unknown> {
+  return { category, message, retryable: false, statusCode: "", occurredAt, observedRequestChecksum };
+}
+
+function protectedOccurrencesValue(proposal: ReplacementProposal): string {
+  const counts = new Map<string, number>();
+  for (const { reason } of proposal.protectedOccurrences) {
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
   }
-  return null;
+  if (counts.size === 0) return "0";
+  const reasons = [...counts.entries()]
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(";");
+  return `${proposal.protectedOccurrences.length} [${reasons}]`;
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled content replacement audit state: ${String(value)}`);
 }

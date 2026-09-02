@@ -30,6 +30,7 @@ import {
   reduceReplacementJob,
   replacementItemKey,
 } from "../writeTools/contentReplacement/jobState";
+import type { ReplacementSelectionSnapshot } from "../writeTools/contentReplacement/jobState";
 import type {
   DetailBatchResult,
   InventoryCursor,
@@ -80,8 +81,9 @@ export interface ContentReplacementJobController {
   cancel(): Promise<void>;
   deleteJob(): Promise<void>;
   deleteRecoverySnapshots(): Promise<void>;
-  setItemIncluded(itemKey: string, included: boolean): Promise<void>;
-  prepareApply(): Promise<void>;
+  setItemIncluded(itemKey: string, included: boolean): Promise<boolean>;
+  setItemsIncluded(itemKeys: string[], included: boolean): Promise<boolean>;
+  prepareApply(expectedSelection: ReplacementSelectionSnapshot): Promise<boolean>;
   startApply(): Promise<void>;
   retryEligibleFailures(): Promise<void>;
   rescanStaleItems(itemKeys: string[]): Promise<void>;
@@ -530,9 +532,10 @@ export function useContentReplacementJob(
     });
   }, [enqueueLocalMutation, enqueueStorage, setJob, stopOperation]);
 
-  const setItemIncluded = useCallback((itemKey: string, included: boolean): Promise<void> => enqueueLocalMutation(async () => {
+  const setItemIncluded = useCallback((itemKey: string, included: boolean): Promise<boolean> => enqueueLocalMutation(async () => {
     const current = jobRef.current;
-    if (!current) return;
+    if (!current || current.stage !== "review" || !current.proposals[itemKey]) return false;
+    if (current.proposals[itemKey].included === included) return true;
     const next = reduceReplacementJob(current, {
       type: "review/set-included",
       itemKey,
@@ -540,14 +543,37 @@ export function useContentReplacementJob(
       reason: "user",
       at: dependenciesRef.current.now(),
     });
-    if (next !== current) await persist(next);
+    return next !== current && await persist(next);
   }), [enqueueLocalMutation, persist]);
 
-  const prepareApply = useCallback((): Promise<void> => enqueueLocalMutation(async () => {
+  const setItemsIncluded = useCallback((itemKeys: string[], included: boolean): Promise<boolean> =>
+    enqueueLocalMutation(async () => {
+      const current = jobRef.current;
+      const uniqueKeys = new Set(itemKeys);
+      if (
+        !current || current.stage !== "review" || itemKeys.length === 0 ||
+        uniqueKeys.size !== itemKeys.length || itemKeys.some((key) => !current.proposals[key])
+      ) return false;
+      if (itemKeys.every((key) => current.proposals[key].included === included)) return true;
+      const next = reduceReplacementJob(current, {
+        type: "review/set-included-bulk",
+        itemKeys,
+        included,
+        reason: "bulk",
+        at: dependenciesRef.current.now(),
+      });
+      return next !== current && await persist(next);
+    }), [enqueueLocalMutation, persist]);
+
+  const prepareApply = useCallback((expectedSelection: ReplacementSelectionSnapshot): Promise<boolean> => enqueueLocalMutation(async () => {
     const current = jobRef.current;
-    if (!current) return;
-    const next = reduceReplacementJob(current, { type: "apply/prepare", at: dependenciesRef.current.now() });
-    if (next !== current) await persist(next);
+    if (!current) return false;
+    const next = reduceReplacementJob(current, {
+      type: "apply/prepare",
+      expectedSelection,
+      at: dependenciesRef.current.now(),
+    });
+    return next !== current && await persist(next);
   }), [enqueueLocalMutation, persist]);
 
   const applyLoop = useCallback(async (token: number): Promise<void> => {
@@ -958,6 +984,7 @@ export function useContentReplacementJob(
     deleteJob,
     deleteRecoverySnapshots,
     setItemIncluded,
+    setItemsIncluded,
     prepareApply,
     startApply,
     retryEligibleFailures,

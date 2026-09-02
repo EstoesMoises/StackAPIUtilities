@@ -72,7 +72,14 @@ export type ReplacementJobEvent =
       reason?: "user" | "bulk";
       at: string;
     }
-  | { type: "apply/prepare"; at: string }
+  | {
+      type: "review/set-included-bulk";
+      itemKeys: string[];
+      included: boolean;
+      reason: "bulk";
+      at: string;
+    }
+  | { type: "apply/prepare"; expectedSelection: ReplacementSelectionSnapshot; at: string }
   | { type: "apply/start"; at: string }
   | { type: "apply/item-started"; itemKey: string; at: string }
   | { type: "apply/item-finished"; itemKey: string; result: ApplyResponseResult; at: string }
@@ -119,6 +126,12 @@ export interface ReplacementJobSummary {
     recoveryConflict: number;
     recoveryFailed: number;
   };
+}
+
+export interface ReplacementSelectionSnapshot {
+  itemKeys: string[];
+  selectedItems: number;
+  selectedChangedOccurrences: number;
 }
 
 export function replacementItemKey(ref: ReplacementItemRef): string {
@@ -229,8 +242,10 @@ export function reduceReplacementJob(
       }, event.at);
     case "review/set-included":
       return reduceSelection(job, event, event.at);
+    case "review/set-included-bulk":
+      return reduceReplacementSelectionBulk(job, event.itemKeys, event.included, event.reason, event.at);
     case "apply/prepare":
-      return prepareApply(job, event.at);
+      return prepareApply(job, event.expectedSelection, event.at);
     case "apply/start":
       if (
         job.recoverySnapshotStatus !== "ready" ||
@@ -468,16 +483,7 @@ function reduceSelection(
   const current = job.proposals[event.itemKey];
   if (!current || current.included === event.included) return job;
   const proposals = resetReviewItems(job.proposals);
-  proposals[event.itemKey] = event.included
-    ? { proposal: current.proposal, included: true, attemptCount: 0, status: "pending" }
-    : {
-        proposal: current.proposal,
-        included: false,
-        exclusionReason: event.reason ?? "user",
-        attemptCount: 0,
-        status: "excluded",
-        result: { kind: "excluded", completedAt: at },
-      };
+  proposals[event.itemKey] = reviewSelectionItem(current, event.included, event.reason ?? "user", at);
   return touch({
     ...job,
     proposals,
@@ -486,8 +492,54 @@ function reduceSelection(
   }, at);
 }
 
-function prepareApply(job: PersistedContentReplacementJob, at: string): PersistedContentReplacementJob {
+export function reduceReplacementSelectionBulk(
+  job: PersistedContentReplacementJob,
+  itemKeys: readonly string[],
+  included: boolean,
+  reason: "bulk",
+  at: string,
+): PersistedContentReplacementJob {
+  if (job.stage !== "review" || itemKeys.length === 0) return job;
+  const uniqueKeys = new Set(itemKeys);
+  if (uniqueKeys.size !== itemKeys.length || itemKeys.some((key) => !job.proposals[key])) return job;
+  const keys = [...itemKeys].sort(compareOrdinal);
+  if (keys.every((key) => job.proposals[key].included === included)) return job;
+  const proposals = resetReviewItems(job.proposals);
+  for (const key of keys) {
+    const current = job.proposals[key];
+    if (current.included !== included) proposals[key] = reviewSelectionItem(current, included, reason, at);
+  }
+  return touch({
+    ...job,
+    proposals,
+    recoverySnapshotStatus: "none",
+    progress: deriveTerminalProgress(job, proposals),
+  }, at);
+}
+
+export function createReplacementSelectionSnapshot(
+  proposals: Readonly<PersistedContentReplacementJob["proposals"]>,
+): ReplacementSelectionSnapshot {
+  const selected = Object.entries(proposals)
+    .filter(([, item]) => item.included)
+    .sort(([left], [right]) => compareOrdinal(left, right));
+  return {
+    itemKeys: selected.map(([key]) => key),
+    selectedItems: selected.length,
+    selectedChangedOccurrences: selected.reduce(
+      (count, [, item]) => count + item.proposal.changedOccurrences.length,
+      0,
+    ),
+  };
+}
+
+function prepareApply(
+  job: PersistedContentReplacementJob,
+  expectedSelection: ReplacementSelectionSnapshot,
+  at: string,
+): PersistedContentReplacementJob {
   if (job.stage !== "review") return job;
+  if (!selectionSnapshotsEqual(createReplacementSelectionSnapshot(job.proposals), expectedSelection)) return job;
   const entries = Object.entries(job.proposals);
   if (!entries.some(([, item]) => item.included)) return job;
   const proposals: PersistedContentReplacementJob["proposals"] = {};
@@ -518,6 +570,38 @@ function prepareApply(job: PersistedContentReplacementJob, at: string): Persiste
     failure: undefined,
     progress: deriveTerminalProgress(job, proposals),
   }, at);
+}
+
+function reviewSelectionItem(
+  current: PersistedContentReplacementItem,
+  included: boolean,
+  reason: "user" | "bulk",
+  at: string,
+): PersistedContentReplacementItem {
+  return included
+    ? { proposal: current.proposal, included: true, attemptCount: 0, status: "pending" }
+    : {
+        proposal: current.proposal,
+        included: false,
+        exclusionReason: reason,
+        attemptCount: 0,
+        status: "excluded",
+        result: { kind: "excluded", completedAt: at },
+      };
+}
+
+function selectionSnapshotsEqual(
+  current: ReplacementSelectionSnapshot,
+  expected: ReplacementSelectionSnapshot,
+): boolean {
+  return current.selectedItems === expected.selectedItems &&
+    current.selectedChangedOccurrences === expected.selectedChangedOccurrences &&
+    current.itemKeys.length === expected.itemKeys.length &&
+    current.itemKeys.every((key, index) => key === expected.itemKeys[index]);
+}
+
+function compareOrdinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function startApplyItem(

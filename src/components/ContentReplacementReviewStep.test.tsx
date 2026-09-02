@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ContentReplacementJobController } from "../hooks/useContentReplacementJob";
@@ -54,8 +54,9 @@ describe("ContentReplacementReviewStep", () => {
     expect(screen.queryByText("Answer 3")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Exclude 1 filtered proposal" }));
-    expect(jobController.setItemIncluded).toHaveBeenCalledTimes(1);
-    expect(jobController.setItemIncluded).toHaveBeenCalledWith("question:4", false);
+    expect(jobController.setItemsIncluded).toHaveBeenCalledTimes(1);
+    expect(jobController.setItemsIncluded).toHaveBeenCalledWith(["question:4"], false);
+    expect(jobController.setItemIncluded).not.toHaveBeenCalled();
     expect(summaryText("1 post selected · 1 changed occurrence")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Clear filters" }));
@@ -81,6 +82,70 @@ describe("ContentReplacementReviewStep", () => {
     await user.click(screen.getByLabelText("Include article 2"));
     await user.click(screen.getByRole("button", { name: "Continue with 1 post and 1 changed occurrence" }));
     expect(jobController.prepareApply).toHaveBeenCalledOnce();
+    expect(jobController.prepareApply).toHaveBeenCalledWith({
+      itemKeys: ["article:2"],
+      selectedItems: 1,
+      selectedChangedOccurrences: 1,
+    });
+  });
+
+  it("blocks selection-dependent actions until a deferred row save settles", async () => {
+    const user = userEvent.setup();
+    const gate = deferred<boolean>();
+    const jobController = controller(job({
+      "question:1": item(proposal("question", 1), true),
+      "article:2": item(proposal("article", 2), true),
+    }));
+    vi.mocked(jobController.setItemIncluded).mockReturnValueOnce(gate.promise);
+    render(<ContentReplacementReviewStep controller={jobController} />);
+
+    await user.click(screen.getByLabelText("Include question 1"));
+
+    expect(screen.getByRole("button", { name: "Continue with 1 post and 1 changed occurrence" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Exclude 2 filtered proposals" })).toBeDisabled();
+    expect(screen.getByLabelText("Content type")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
+    expect(jobController.prepareApply).not.toHaveBeenCalled();
+
+    await act(async () => gate.resolve(true));
+    await waitFor(() => expect(screen.getByRole("button", {
+      name: "Continue with 1 post and 1 changed occurrence",
+    })).toBeEnabled());
+  });
+
+  it("rolls back a failed row save and refuses Continue until selection is saved", async () => {
+    const user = userEvent.setup();
+    const jobController = controller(job({
+      "question:1": item(proposal("question", 1), true),
+      "article:2": item(proposal("article", 2), true),
+    }));
+    vi.mocked(jobController.setItemIncluded).mockResolvedValueOnce(false);
+    render(<ContentReplacementReviewStep controller={jobController} />);
+
+    await user.click(screen.getByLabelText("Include question 1"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Selection was not saved");
+    expect(summaryText("2 posts selected · 2 changed occurrences")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Continue with 2 posts and 2 changed occurrences" })).toBeDisabled();
+    expect(jobController.prepareApply).not.toHaveBeenCalled();
+  });
+
+  it("bulk selection persists once and rolls the entire filtered set back on failure", async () => {
+    const user = userEvent.setup();
+    const jobController = controller(job({
+      "question:1": item(proposal("question", 1), true),
+      "article:2": item(proposal("article", 2), true),
+    }));
+    vi.mocked(jobController.setItemsIncluded).mockResolvedValueOnce(false);
+    render(<ContentReplacementReviewStep controller={jobController} />);
+
+    await user.click(screen.getByRole("button", { name: "Exclude 2 filtered proposals" }));
+
+    expect(jobController.setItemsIncluded).toHaveBeenCalledOnce();
+    expect(jobController.setItemsIncluded).toHaveBeenCalledWith(["question:1", "article:2"], false);
+    expect(jobController.setItemIncluded).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Selection was not saved");
+    expect(summaryText("2 posts selected · 2 changed occurrences")).toBeVisible();
   });
 
   it("expands full safe Markdown details, highlights valid offsets, and maintains a three-item LRU", async () => {
@@ -168,8 +233,9 @@ function controller(currentJob: PersistedContentReplacementJob): ContentReplacem
     cancel: vi.fn(),
     deleteJob: vi.fn(),
     deleteRecoverySnapshots: vi.fn(),
-    setItemIncluded: vi.fn().mockResolvedValue(undefined),
-    prepareApply: vi.fn().mockResolvedValue(undefined),
+    setItemIncluded: vi.fn().mockResolvedValue(true),
+    setItemsIncluded: vi.fn().mockResolvedValue(true),
+    prepareApply: vi.fn().mockResolvedValue(true),
     startApply: vi.fn(),
     retryEligibleFailures: vi.fn(),
     rescanStaleItems: vi.fn(),
@@ -283,4 +349,10 @@ function capitalize(value: string): string {
 
 function summaryText(value: string): HTMLElement {
   return screen.getByText((_, element) => element?.tagName === "P" && element.textContent === value);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
 }
