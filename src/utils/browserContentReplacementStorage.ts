@@ -11,6 +11,7 @@ import {
   createJobFingerprint,
   stableSerialize,
 } from "../writeTools/contentReplacement/proposals";
+import { MAX_CONTENT_REPLACEMENT_PROPOSALS } from "../writeTools/contentReplacement/jobState";
 import type {
   ArticlePermissionsRequest,
   InventoryCursor,
@@ -56,15 +57,16 @@ const MAX_GRAPH_DEPTH = 256;
 const BASE_MAX_GRAPH_NODES = 150_000;
 const BASE_MAX_GRAPH_ENTRIES = 500_000;
 // Queue allowances cover one array slot plus the largest cursor/ref record.
-// Proposal allowances cover the 14 nodes and up to 47 descriptors in the
-// smallest serialized canonical item, with a bounded margin for representation.
+// Proposal allowances cover the ordinary richest canonical article shape:
+// metadata, permissions, result, recovery snapshot, and recovery preview, with
+// headroom for occurrence evidence. Independent per-object, depth, and content
+// limits still reject unusually complex jobs before the 100,000-item ceiling.
 const MAX_GRAPH_NODES_PER_QUEUE_ITEM = 2;
 const MAX_GRAPH_ENTRIES_PER_QUEUE_ITEM = 5;
-const MAX_GRAPH_NODES_PER_PROPOSAL = 16;
-const MAX_GRAPH_ENTRIES_PER_PROPOSAL = 48;
+const MAX_GRAPH_NODES_PER_PROPOSAL = 64;
+const MAX_GRAPH_ENTRIES_PER_PROPOSAL = 192;
 const MAX_CANONICAL_VALIDATION_CONCURRENCY = 16;
 const MAX_INVENTORY_PAGE = 10_000;
-const MAX_PROPOSALS = 100_000;
 const MAX_OCCURRENCES = 100_000;
 const MAX_CONTENT_LENGTH = 1_048_576;
 const MAX_LIST_ITEMS = 10_000;
@@ -436,8 +438,8 @@ async function validateCanonicalItem(
 }
 
 function normalizeContentReplacementJob(value: unknown): PersistedContentReplacementJob {
-  const cardinalities = preflightContentReplacementJobRoot(value);
-  const safeValue = cloneSafeDataGraph(value, contentReplacementGraphBudget(cardinalities));
+  const preflight = preflightContentReplacementJobRoot(value);
+  const safeValue = cloneSafeDataGraph(preflight.snapshot, contentReplacementGraphBudget(preflight.cardinalities));
   const record = exactObject(safeValue, JOB_KEYS, ["activeOperation", "operationError", "nextRetryAt", "failure"]);
   const configuration = validateConfiguration(record.configuration);
   const baseUrl = normalizeEnterpriseBaseUrl(record.baseUrl);
@@ -465,7 +467,7 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   const progress = parseProgress(record.progress);
   const proposals = exactDynamicMap(record.proposals);
   const proposalEntries = Object.entries(proposals);
-  if (proposalEntries.length > MAX_PROPOSALS) throw corruptJob();
+  if (proposalEntries.length > MAX_CONTENT_REPLACEMENT_PROPOSALS) throw corruptJob();
   const normalizedProposals: Record<string, PersistedContentReplacementItem> = {};
   const configuredRuleIds = new Set(configuration.rules.map((rule) => rule.id));
   for (const [key, item] of proposalEntries) {
@@ -515,7 +517,12 @@ interface SafeGraphBudget {
   entries: number;
 }
 
-function preflightContentReplacementJobRoot(value: unknown): ContentReplacementGraphCardinalities {
+interface ContentReplacementGraphPreflight {
+  snapshot: Record<string, unknown>;
+  cardinalities: ContentReplacementGraphCardinalities;
+}
+
+function preflightContentReplacementJobRoot(value: unknown): ContentReplacementGraphPreflight {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw corruptJob();
     const prototype = Reflect.getPrototypeOf(value);
@@ -528,43 +535,85 @@ function preflightContentReplacementJobRoot(value: unknown): ContentReplacementG
       keys.some((key) => typeof key !== "string" || !allowed.has(key)) ||
       JOB_KEYS.some((key) => !optional.has(key) && !keys.includes(key))
     ) throw corruptJob();
-    const rootValues = new Map<string, unknown>();
+    const snapshot = Object.create(prototype) as Record<string, unknown>;
     for (const key of keys) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || typeof descriptor.value === "function") {
         throw corruptJob();
       }
-      rootValues.set(key as string, descriptor.value);
+      Object.defineProperty(snapshot, key, {
+        value: descriptor.value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
+    const inventoryQueue = preflightArraySnapshot(snapshot.inventoryQueue, MAX_QUEUE_ITEMS);
+    const detailQueue = preflightArraySnapshot(snapshot.detailQueue, MAX_QUEUE_ITEMS);
+    const proposals = preflightProposalSnapshot(snapshot.proposals);
+    snapshot.inventoryQueue = inventoryQueue;
+    snapshot.detailQueue = detailQueue;
+    snapshot.proposals = proposals;
     return {
-      inventoryQueue: preflightArrayCardinality(rootValues.get("inventoryQueue"), MAX_QUEUE_ITEMS),
-      detailQueue: preflightArrayCardinality(rootValues.get("detailQueue"), MAX_QUEUE_ITEMS),
-      proposals: preflightProposalCardinality(rootValues.get("proposals")),
+      snapshot,
+      cardinalities: {
+        inventoryQueue: inventoryQueue.length,
+        detailQueue: detailQueue.length,
+        proposals: Object.keys(proposals).length,
+      },
     };
   } catch {
     throw corruptJob();
   }
 }
 
-function preflightArrayCardinality(value: unknown, maximum: number): number {
+function preflightArraySnapshot(value: unknown, maximum: number): unknown[] {
   if (!Array.isArray(value) || Reflect.getPrototypeOf(value) !== Array.prototype) throw corruptJob();
   const length = Object.getOwnPropertyDescriptor(value, "length");
   if (!length || !("value" in length) || !Number.isInteger(length.value) || length.value < 0 || length.value > maximum) {
     throw corruptJob();
   }
-  return length.value as number;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== length.value + 1) throw corruptJob();
+  const snapshot = new Array(length.value as number);
+  let elementCount = 0;
+  for (const key of keys) {
+    if (key === "length") continue;
+    if (typeof key !== "string" || !isCanonicalArrayIndex(key, length.value as number)) throw corruptJob();
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || typeof descriptor.value === "function") {
+      throw corruptJob();
+    }
+    snapshot[Number(key)] = descriptor.value;
+    elementCount += 1;
+  }
+  if (elementCount !== length.value) throw corruptJob();
+  return snapshot;
 }
 
-function preflightProposalCardinality(value: unknown): number {
+function preflightProposalSnapshot(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw corruptJob();
   const prototype = Reflect.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) throw corruptJob();
   const keys = Reflect.ownKeys(value);
   if (
-    keys.length > MAX_PROPOSALS ||
+    keys.length > MAX_CONTENT_REPLACEMENT_PROPOSALS ||
     keys.some((key) => typeof key !== "string" || !isCanonicalItemKey(key))
   ) throw corruptJob();
-  return keys.length;
+  const snapshot = Object.create(prototype) as Record<string, unknown>;
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || typeof descriptor.value === "function") {
+      throw corruptJob();
+    }
+    Object.defineProperty(snapshot, key, {
+      value: descriptor.value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return snapshot;
 }
 
 function contentReplacementGraphBudget(

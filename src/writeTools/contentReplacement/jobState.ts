@@ -134,6 +134,11 @@ export interface ReplacementSelectionSnapshot {
   selectedChangedOccurrences: number;
 }
 
+export const MAX_CONTENT_REPLACEMENT_PROPOSALS = 100_000;
+
+const PROPOSAL_LIMIT_FAILURE_MESSAGE =
+  "Content replacement reached the 100,000-proposal safety limit before candidate inspection finished. Start a narrower job.";
+
 export function replacementItemKey(ref: ReplacementItemRef): string {
   if (ref.kind === "question") return `question:${ref.questionId}`;
   if (ref.kind === "answer") return `answer:${ref.questionId}:${ref.answerId}`;
@@ -225,6 +230,23 @@ function reduceReplacementJobState(
     case "scan/details-succeeded":
       return reduceDetails(job, event.refs, event.result, event.at);
     case "scan/queues-drained":
+      if (
+        job.stage === "scan" &&
+        Object.keys(job.proposals).length >= MAX_CONTENT_REPLACEMENT_PROPOSALS &&
+        job.detailQueue.length > 0
+      ) {
+        return touch({
+          ...job,
+          status: "failed",
+          nextRetryAt: undefined,
+          failure: {
+            category: "validation",
+            retryable: false,
+            message: PROPOSAL_LIMIT_FAILURE_MESSAGE,
+            occurredAt: event.at,
+          },
+        }, event.at);
+      }
       if (!canEnterReview(job)) return job;
       return touch({ ...job, stage: "review", status: "completed", nextRetryAt: undefined }, event.at);
     case "scan/failed":
@@ -292,7 +314,9 @@ export function getNextInventoryCursor(job: PersistedContentReplacementJob): Inv
 }
 
 export function getNextDetailBatch(job: PersistedContentReplacementJob): ReplacementItemRef[] {
-  return job.stage === "scan" ? job.detailQueue.slice(0, 10) : [];
+  if (job.stage !== "scan") return [];
+  const remainingCapacity = MAX_CONTENT_REPLACEMENT_PROPOSALS - Object.keys(job.proposals).length;
+  return job.detailQueue.slice(0, Math.max(0, Math.min(10, remainingCapacity)));
 }
 
 export function getNextStaleRescanBatch(job: PersistedContentReplacementJob): ReplacementItemRef[] {
@@ -486,6 +510,13 @@ function reduceDetails(
   if (result.proposals.some((candidate) => !consumed.has(replacementItemKey(candidate.before.ref)))) {
     return job;
   }
+  const existingKeys = new Set(Object.keys(job.proposals));
+  const newProposalKeys = new Set(
+    result.proposals
+      .map((candidate) => replacementItemKey(candidate.before.ref))
+      .filter((key) => !existingKeys.has(key)),
+  );
+  if (existingKeys.size + newProposalKeys.size > MAX_CONTENT_REPLACEMENT_PROPOSALS) return job;
   const detailQueue = job.detailQueue.slice(refs.length);
   const proposals = { ...job.proposals };
   for (const candidate of result.proposals) {

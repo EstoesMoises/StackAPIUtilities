@@ -9,6 +9,7 @@ import type {
   ReplacementProposal,
 } from "./types";
 import {
+  MAX_CONTENT_REPLACEMENT_PROPOSALS,
   canEnterReview,
   createReplacementJob,
   createReplacementSelectionSnapshot,
@@ -126,6 +127,54 @@ function failure(
 }
 
 describe("replacement job state", () => {
+  it("caps the next detail request by the five remaining proposal slots", () => {
+    const refs = Array.from({ length: 10 }, (_, index) => ({
+      kind: "question" as const,
+      questionId: 200_001 + index,
+    }));
+    const job = capacityScanJob(99_995, refs);
+
+    expect(MAX_CONTENT_REPLACEMENT_PROPOSALS).toBe(100_000);
+    expect(getNextDetailBatch(job)).toEqual(refs.slice(0, 5));
+  });
+
+  it("blocks review when the proposal ceiling is full but detail refs remain", () => {
+    const refs = [{ kind: "question" as const, questionId: 200_001 }];
+    const job = capacityScanJob(100_000, refs);
+
+    expect(getNextDetailBatch(job)).toEqual([]);
+    expect(canEnterReview(job)).toBe(false);
+    const blocked = reduceReplacementJob(job, { type: "scan/queues-drained", at: LATER });
+    expect(blocked).toMatchObject({
+      stage: "scan",
+      status: "failed",
+      detailQueue: refs,
+      failure: {
+        category: "validation",
+        retryable: false,
+        message: "Content replacement reached the 100,000-proposal safety limit before candidate inspection finished. Start a narrower job.",
+      },
+    });
+  });
+
+  it("rejects a malicious detail completion that would publish proposal 100,001", () => {
+    const refs = Array.from({ length: 10 }, (_, index) => ({
+      kind: "question" as const,
+      questionId: 200_001 + index,
+    }));
+    const job = capacityScanJob(99_995, refs);
+    const candidates = refs.map(proposal);
+
+    expect(reduceReplacementJob(job, {
+      type: "scan/details-succeeded",
+      refs,
+      result: { proposals: candidates, inspectedCount: 10, protectedOccurrenceCount: 0 },
+      at: LATER,
+    })).toBe(job);
+    expect(job.detailQueue).toEqual(refs);
+    expect(Object.keys(job.proposals)).toHaveLength(99_995);
+  });
+
   it("validates 10,000 canonical proposals with deterministic batches, selections, review pages, and serialization", async () => {
     const questionInventoryCount = 10_000;
     const refs = Array.from({ length: 10_000 }, (_, index) => ({
@@ -953,3 +1002,32 @@ describe("replacement job state", () => {
     expect(next.proposals["question:1"].result?.kind).toBe("stale");
   });
 });
+
+function capacityScanJob(
+  proposalCount: number,
+  detailQueue: ReplacementItemRef[],
+): PersistedContentReplacementJob {
+  const shared = {
+    proposal: proposal({ kind: "answer", questionId: 1, answerId: 1 }),
+    included: true,
+    attemptCount: 0,
+    status: "pending" as const,
+  };
+  const proposals = Object.fromEntries(Array.from({ length: proposalCount }, (_unused, index) => [
+    `answer:${index + 1}:${index + 1}`,
+    shared,
+  ]));
+  return {
+    ...createJob(),
+    status: "running",
+    inventoryQueue: [],
+    detailQueue,
+    proposals,
+    progress: {
+      ...createJob().progress,
+      inventoryItems: proposalCount + detailQueue.length,
+      detailsInspected: proposalCount,
+      proposalsFound: proposalCount,
+    },
+  };
+}

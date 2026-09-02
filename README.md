@@ -102,10 +102,19 @@ guardrails: it paginates all accessible questions, each question's answer
 collection, and all articles, then fetches canonical detail records for
 conservative candidates. Inventory cursors have a 10,000-page ceiling, detail
 inspection sends at most 10 item references per request, and a persisted job is
-limited to exactly 100,000 proposals; a 100,001st proposal is rejected before
-its item content is inspected or any storage transaction opens. Separate finite
-content-length, collection, graph-depth, and graph-traversal safeguards still
-apply to unusually large individual proposals. Search-index results are not
+subject to a hard 100,000-proposal item ceiling. Detail requests are shortened
+to the remaining proposal capacity; once the ceiling is full, queued references
+are not fetched or silently discarded. The scan fails closed, keeps those
+references, and asks the operator to start a narrower job instead of claiming an
+exhaustive Review. Persisted input with 100,001 proposal keys is rejected before
+any proposal body is inspected or storage transaction opens. Exactly 100,000
+minimal canonical proposals pass parsing and the storage transaction logic, but
+this is an item ceiling, not a promise that every arbitrarily complex
+100,000-proposal graph will fit. Independent finite 1 MiB field-content,
+100,000-entry per-collection, 256-level graph-depth, and aggregate
+graph-traversal safeguards can reject unusually complex jobs earlier. Actual
+browser quota can also be lower and is surfaced as a storage failure.
+Search-index results are not
 treated as a complete inventory. An incomplete inventory, a response that would
 continue past page 10,000, or a job that cannot be validated within the
 persisted proposal cap fails closed and cannot advance to Review or Apply; the

@@ -4,6 +4,7 @@ import {
   deleteContentReplacementJob,
   listContentReplacementJobs,
   loadContentReplacementJob,
+  parseContentReplacementJob,
   saveContentReplacementJob as compareAndSaveContentReplacementJob,
 } from "./browserContentReplacementStorage";
 import {
@@ -1287,6 +1288,49 @@ describe("browserContentReplacementStorage", () => {
     expect(nestedGet).not.toHaveBeenCalled();
   });
 
+  it("uses one immutable descriptor snapshot when a root proxy changes between reflections", async () => {
+    installFakeIndexedDB();
+    const target = createJob();
+    let rootOwnKeysCalls = 0;
+    let idDescriptorCalls = 0;
+    const mutableRoot = new Proxy(target, {
+      ownKeys: () => {
+        rootOwnKeysCalls += 1;
+        return rootOwnKeysCalls === 1 ? Reflect.ownKeys(target) : [...Reflect.ownKeys(target), "authorization"];
+      },
+      getOwnPropertyDescriptor: (object, key) => {
+        if (key === "id") idDescriptorCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+
+    await expect(compareAndSaveContentReplacementJob(mutableRoot, null)).resolves.toEqual({ status: "saved" });
+    expect(rootOwnKeysCalls).toBe(1);
+    expect(idDescriptorCalls).toBe(1);
+  });
+
+  it("uses one immutable key and descriptor snapshot for a mutable proposal map", async () => {
+    installFakeIndexedDB();
+    const target = createJob().proposals;
+    let proposalOwnKeysCalls = 0;
+    let proposalDescriptorCalls = 0;
+    const job = createJob();
+    job.proposals = new Proxy(target, {
+      ownKeys: () => {
+        proposalOwnKeysCalls += 1;
+        return proposalOwnKeysCalls === 1 ? [] : ["question:1"];
+      },
+      getOwnPropertyDescriptor: (object, key) => {
+        proposalDescriptorCalls += 1;
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+    });
+
+    await expect(compareAndSaveContentReplacementJob(job, null)).resolves.toEqual({ status: "saved" });
+    expect(proposalOwnKeysCalls).toBe(1);
+    expect(proposalDescriptorCalls).toBe(0);
+  });
+
   it("contains descriptor trap failures behind the stable content-free corruption error", async () => {
     installFakeIndexedDB();
     const hostile = new Proxy(createJob(), {
@@ -1366,6 +1410,21 @@ describe("browserContentReplacementStorage", () => {
     }
   }, 180_000);
 
+  it("validates a meaningful-scale article job with metadata, results, recovery, and preview evidence", async () => {
+    let job: PersistedContentReplacementJob | undefined = await createCanonicalArticleRecoveryJob(5_000);
+    try {
+      const parsed = await parseContentReplacementJob(job);
+      expect(Object.keys(parsed.proposals)).toHaveLength(5_000);
+      expect(parsed.proposals["article:5000"]).toMatchObject({
+        status: "ready-to-recover",
+        proposal: { before: { metadata: { owner: { id: 1, name: "Owner" } } } },
+        recovery: { preview: { status: "recoverable", sourceAttemptCount: 1 } },
+      });
+    } finally {
+      job = undefined;
+    }
+  }, 60_000);
+
   it("rejects 100,001 proposal keys before inspecting an item or opening storage", async () => {
     const fake = installFakeIndexedDB();
     const job = createJob();
@@ -1386,7 +1445,7 @@ describe("browserContentReplacementStorage", () => {
     expect(fake.openCalls).toHaveLength(0);
   });
 
-  it("keeps a max-length malicious nested proposal inside the derived traversal budget", async () => {
+  it("fails a just-over-budget max-length nested graph after finite descriptor work", async () => {
     const fake = installFakeIndexedDB();
     const job = createJob() as any;
     const arrayKeys = [...Array.from({ length: 100_000 }, (_, index) => String(index)), "length"];
@@ -1421,7 +1480,7 @@ describe("browserContentReplacementStorage", () => {
     await expect(compareAndSaveContentReplacementJob(job, null)).rejects.toEqual(
       new TypeError("Stored content replacement job is invalid."),
     );
-    expect(nestedDescriptorCalls).toBeLessThan(500_000);
+    expect(nestedDescriptorCalls).toBe(500_000);
     expect(fake.openCalls).toHaveLength(0);
   });
 
@@ -1927,6 +1986,89 @@ async function createCanonicalAnswerBoundaryJob(
   job.progress.inventoryItems = proposalCount * 2;
   job.progress.detailsInspected = proposalCount;
   job.progress.proposalsFound = proposalCount;
+  return job;
+}
+
+async function createCanonicalArticleRecoveryJob(
+  proposalCount: number,
+): Promise<PersistedContentReplacementJob> {
+  const job = createJob();
+  job.stage = "recovery";
+  job.status = "paused";
+  job.inventoryQueue = [];
+  job.detailQueue = [];
+  job.recoverySnapshotStatus = "ready";
+  job.updatedAt = "2026-09-01T12:04:00.000Z";
+  const chunkSize = 256;
+  for (let offset = 0; offset < proposalCount; offset += chunkSize) {
+    const count = Math.min(chunkSize, proposalCount - offset);
+    const proposals = await Promise.all(Array.from({ length: count }, async (_unused, chunkIndex) => {
+      const articleId = offset + chunkIndex + 1;
+      const proposal = await buildReplacementProposal({
+        kind: "article",
+        ref: { kind: "article", articleId },
+        request: {
+          title: "Old title",
+          body: "Old body",
+          tags: ["policy", "migration"],
+          type: "policy",
+          expirationDate: null,
+          permissions: {
+            editableBy: "specificEditors",
+            editorUserIds: [1, 2],
+            editorUserGroupIds: [3, 4],
+          },
+        },
+        metadata: {
+          titleContext: `Article ${articleId}`,
+          webUrl: `https://example.stackenterprise.co/articles/${articleId}`,
+          owner: { id: 1, name: "Owner" },
+          lastEditor: { id: 2, name: "Editor" },
+          lastActivityDate: null,
+        },
+      }, job.configuration);
+      if (!proposal) throw new Error("Expected a canonical article recovery proposal.");
+      return { articleId, proposal };
+    }));
+    for (const { articleId, proposal } of proposals) {
+      job.proposals[`article:${articleId}`] = {
+        proposal,
+        included: true,
+        attemptCount: 1,
+        status: "ready-to-recover",
+        result: {
+          kind: "applied",
+          observedRequestChecksum: proposal.proposedRequestChecksum,
+          completedAt: "2026-09-01T12:02:00.000Z",
+        },
+        recovery: {
+          priorRequestModel: structuredClone(proposal.before),
+          scannedRequestChecksum: proposal.scannedRequestChecksum,
+          proposedRequestChecksum: proposal.proposedRequestChecksum,
+          observedPostApplyChecksum: proposal.proposedRequestChecksum,
+          status: "ready",
+          preview: {
+            status: "recoverable",
+            currentRequestModel: toReplacementWireRequestModel(proposal.after),
+            observedCurrentChecksum: proposal.proposedRequestChecksum,
+            expectedPostApplyChecksum: proposal.proposedRequestChecksum,
+            sourceAttemptCount: 1,
+            sourceApplyCompletedAt: "2026-09-01T12:02:00.000Z",
+            previewedAt: "2026-09-01T12:03:00.000Z",
+          },
+        },
+      };
+    }
+  }
+  job.progress.articlePages = Math.ceil(proposalCount / 100);
+  job.progress.inventoryItems = proposalCount;
+  job.progress.detailsInspected = proposalCount;
+  job.progress.proposalsFound = proposalCount;
+  job.progress.protectedOccurrences = Object.values(job.proposals).reduce(
+    (total, item) => total + item.proposal.protectedOccurrences.length,
+    0,
+  );
+  job.progress.applyCompleted = proposalCount;
   return job;
 }
 

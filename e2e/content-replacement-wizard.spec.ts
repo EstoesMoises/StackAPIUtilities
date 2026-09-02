@@ -94,7 +94,7 @@ const RESULT_HEADERS = [
 ] as const;
 
 test("reviews and safely applies a complete mocked content replacement job", async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const fixture = await installContentReplacementRoutes(page);
   await connectEnterpriseWriteCredentials(page);
 
@@ -143,6 +143,26 @@ test("reviews and safely applies a complete mocked content replacement job", asy
   await expect(page.getByRole("status", { name: "Review results count" })).toHaveText("3 matching proposals");
   await expect(page.getByText("3 posts selected")).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue with 3 posts and 5 changed occurrences" })).toBeVisible();
+
+  const indexedDbBoundary = await inspectIndexedDbStructuredClone(page);
+  expect(indexedDbBoundary).toEqual({
+    wrapperKeys: ["id", "job", "summary"],
+    sameReference: false,
+    mutationLeaked: false,
+    durableStage: "review",
+    durableStatus: "completed",
+    proposalCount: 3,
+  });
+
+  await page.reload();
+  await connectEnterpriseWriteCredentials(page);
+  await page.getByRole("button", { name: "Write Tools", exact: true }).click();
+  await page.getByRole("button", { name: "Content Replacement", exact: true }).click();
+  const resumeStoredJob = page.getByRole("button", { name: /Resume content replacement job/ }).first();
+  await expect(resumeStoredJob).toBeVisible();
+  await resumeStoredJob.click();
+  await expect(page.getByRole("heading", { name: "Review proposed changes" })).toBeVisible();
+  await expect(page.getByRole("status", { name: "Review results count" })).toHaveText("3 matching proposals");
 
   await page.getByRole("button", { name: "View details for question 101" }).click();
   const questionDetail = page.getByRole("region", { name: "Question 101 proposed changes" });
@@ -505,6 +525,40 @@ async function connectEnterpriseWriteCredentials(page: Page) {
   const popup = await popupPromise;
   await popup.waitForEvent("close");
   await expect(page.getByText("Credentials saved for this browser session.")).toBeVisible();
+}
+
+async function inspectIndexedDbStructuredClone(page: Page) {
+  return page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("stack-api-content-replacement", 2);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+    const readAll = () => new Promise<any[]>((resolve, reject) => {
+      const transaction = database.transaction("jobs", "readonly");
+      const request = transaction.objectStore("jobs").getAll();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+    try {
+      const firstRecords = await readAll();
+      if (firstRecords.length !== 1) throw new Error(`Expected one stored job, found ${firstRecords.length}.`);
+      const first = firstRecords[0];
+      first.job.status = "cancelled";
+      const secondRecords = await readAll();
+      const second = secondRecords[0];
+      return {
+        wrapperKeys: Object.keys(second).sort(),
+        sameReference: first === second || first.job === second.job,
+        mutationLeaked: second.job.status === "cancelled",
+        durableStage: second.job.stage,
+        durableStatus: second.job.status,
+        proposalCount: Object.keys(second.job.proposals).length,
+      };
+    } finally {
+      database.close();
+    }
+  });
 }
 
 function proposalEvidence(proposal: ReplacementProposal) {
