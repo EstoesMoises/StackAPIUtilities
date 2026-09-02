@@ -522,6 +522,43 @@ describe("ContentReplacementApplyStep", () => {
     expect(screen.getByRole("button", { name: "Preview recovery for 2 posts" })).toBeDisabled();
   });
 
+  it("shows New scan required for an opened legacy stale rescan and only exposes proven recovery", () => {
+    const legacyStaleRescan = resultJob();
+    legacyStaleRescan.scanCompatibility = "legacy-restart-required";
+    legacyStaleRescan.status = "paused";
+    legacyStaleRescan.activeOperation = {
+      kind: "stale-rescan",
+      requestedItemKeys: ["question:4"],
+      remainingItemKeys: ["question:4"],
+      completedItemKeys: [],
+      generation: "2026-09-02T12:05:00.000Z",
+      proposals: {},
+      inspectedCount: 0,
+      protectedOccurrenceCount: 0,
+    };
+    const view = render(<ContentReplacementApplyStep controller={controller(legacyStaleRescan)} />);
+
+    expect(screen.getAllByRole("heading", { name: "New scan required" })).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "Apply results" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", {
+      name: /Apply changes|Resume apply|Retry eligible failures|Rescan stale posts|Resume stale/i,
+    })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Guarded recovery" })).toBeVisible();
+
+    const staleOnly = item("question", 4, "stale", { resultKind: "stale" });
+    view.rerender(<ContentReplacementApplyStep controller={controller({
+      ...legacyStaleRescan,
+      proposals: { "question:4": staleOnly },
+      progress: {
+        ...legacyStaleRescan.progress,
+        proposalsFound: 1,
+        applyCompleted: 1,
+      },
+    })} />);
+    expect(screen.getByRole("heading", { name: "New scan required" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Guarded recovery" })).not.toBeInTheDocument();
+  });
+
   it("uses separate inline confirmations for deleting recovery snapshots and the whole local job", async () => {
     const user = userEvent.setup();
     const currentController = controller(resultJob());

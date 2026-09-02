@@ -94,6 +94,8 @@ function ContentReplacementApplyStepView({
   );
   const legacyRecoveryOnly = job.scanCompatibility === "legacy-restart-required" &&
     successfulEntries.length > 0 && (legacyApply || hasFrozenApplyItems);
+  const legacyStaleRescanRestart = job.scanCompatibility === "legacy-restart-required" &&
+    job.stage === "results" && job.activeOperation?.kind === "stale-rescan";
   const runningApply = currentApply && job.status === "running";
   const pausedApply = currentApply && job.status === "paused" && applyStarted;
   const showConfirmation = currentApply && !runningApply && !applyStarted;
@@ -334,10 +336,16 @@ function ContentReplacementApplyStepView({
       {(job.stage === "results" || job.stage === "recovery" || legacyRecoveryOnly) && (
         <>
           <header className="content-replacement-step-header">
-            <h2 id="content-replacement-apply-heading">{legacyRecoveryOnly ? "Prior apply results" : "Apply results"}</h2>
-            <p>{legacyRecoveryOnly
-              ? "This legacy job is recovery-only. Unfinished writes remain stopped."
-              : "Each post retains its own observed result. Failed and stale posts were not described as rolled back."}</p>
+            <h2 id="content-replacement-apply-heading">{
+              legacyStaleRescanRestart
+                ? "New scan required"
+                : legacyRecoveryOnly ? "Prior apply results" : "Apply results"
+            }</h2>
+            <p>{legacyStaleRescanRestart
+              ? "This legacy stale-item rescan cannot resume. Start a new scan with the current discovery modes."
+              : legacyRecoveryOnly
+                ? "This legacy job is recovery-only. Unfinished writes remain stopped."
+                : "Each post retains its own observed result. Failed and stale posts were not described as rolled back."}</p>
           </header>
           <ResultSummary
             items={resultEntries.map(([, item]) => item)}
@@ -355,28 +363,32 @@ function ContentReplacementApplyStepView({
             <button type="button" className="s-btn s-btn__outlined" onClick={() => downloadReplacementExceptions(items)}>
               Download exceptions CSV
             </button>
-            <button
-              type="button"
-              className="s-btn s-btn__outlined"
-              disabled={
-                eligibleFailureCount === 0 || job.stage !== "results" || job.status === "running" ||
-                !!job.activeOperation || controller.busy || actionPending
-              }
-              onClick={() => void runAction(controller.retryEligibleFailures)}
-            >
-              Retry eligible failures ({eligibleFailureCount.toLocaleString()})
-            </button>
-            <button
-              type="button"
-              className="s-btn s-btn__outlined"
-              disabled={
-                staleKeys.length === 0 || job.stage !== "results" || job.status === "running" ||
-                !!job.activeOperation || controller.busy || actionPending
-              }
-              onClick={() => void runAction(() => controller.rescanStaleItems(staleKeys))}
-            >
-              Rescan stale posts ({staleKeys.length.toLocaleString()})
-            </button>
+            {!legacyStaleRescanRestart && (
+              <>
+                <button
+                  type="button"
+                  className="s-btn s-btn__outlined"
+                  disabled={
+                    eligibleFailureCount === 0 || job.stage !== "results" || job.status === "running" ||
+                    !!job.activeOperation || controller.busy || actionPending
+                  }
+                  onClick={() => void runAction(controller.retryEligibleFailures)}
+                >
+                  Retry eligible failures ({eligibleFailureCount.toLocaleString()})
+                </button>
+                <button
+                  type="button"
+                  className="s-btn s-btn__outlined"
+                  disabled={
+                    staleKeys.length === 0 || job.stage !== "results" || job.status === "running" ||
+                    !!job.activeOperation || controller.busy || actionPending
+                  }
+                  onClick={() => void runAction(() => controller.rescanStaleItems(staleKeys))}
+                >
+                  Rescan stale posts ({staleKeys.length.toLocaleString()})
+                </button>
+              </>
+            )}
           </div>
           <p>Downloads are one-shot exports created on demand and are not retained by the app.</p>
           <ResultTable
@@ -394,29 +406,31 @@ function ContentReplacementApplyStepView({
             onPage={setPage}
           />
 
-          <RecoverySection
-            controller={controller}
-            job={job}
-            successfulEntries={successfulEntries}
-            selection={recoverySelection}
-            onSelection={(key, selected) => {
-              setRecoverySelection((current) => ({ ...current, [key]: selected }));
-            }}
-            selectedEntries={selectedRecoveryEntries}
-            previewedEntries={previewedEntries}
-            recoverableEntries={recoverableEntries}
-            previewComplete={previewComplete}
-            acknowledged={recoveryAcknowledged}
-            confirmation={recoveryConfirmationValue}
-            canRecover={canRecover}
-            actionPending={actionPending}
-            onAcknowledged={(value) => setRecoveryAcknowledgedKey(value ? previewKey : null)}
-            onConfirmation={(value) => {
-              if (previewKey !== null) setRecoveryConfirmation({ key: previewKey, value });
-            }}
-            onRecover={startRecoveryIfAuthorized}
-            onRunAction={runAction}
-          />
+          {(!legacyStaleRescanRestart || successfulEntries.length > 0) && (
+            <RecoverySection
+              controller={controller}
+              job={job}
+              successfulEntries={successfulEntries}
+              selection={recoverySelection}
+              onSelection={(key, selected) => {
+                setRecoverySelection((current) => ({ ...current, [key]: selected }));
+              }}
+              selectedEntries={selectedRecoveryEntries}
+              previewedEntries={previewedEntries}
+              recoverableEntries={recoverableEntries}
+              previewComplete={previewComplete}
+              acknowledged={recoveryAcknowledged}
+              confirmation={recoveryConfirmationValue}
+              canRecover={canRecover}
+              actionPending={actionPending}
+              onAcknowledged={(value) => setRecoveryAcknowledgedKey(value ? previewKey : null)}
+              onConfirmation={(value) => {
+                if (previewKey !== null) setRecoveryConfirmation({ key: previewKey, value });
+              }}
+              onRecover={startRecoveryIfAuthorized}
+              onRunAction={runAction}
+            />
+          )}
 
           <LocalDataControls
             hasRecoverySnapshots={entries.some(([, item]) => !!item.recovery)}
