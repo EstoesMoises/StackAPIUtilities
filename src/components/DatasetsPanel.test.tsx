@@ -189,6 +189,7 @@ function replacementStorage(jobs: PersistedContentReplacementJob[]): ContentRepl
     mappingCount: job.configuration.rules.length,
     proposedPostCount: job.progress.proposalsFound,
     recoverySnapshotStatus: job.recoverySnapshotStatus,
+    scanCompatibility: job.scanCompatibility,
     updatedAt: job.updatedAt,
   }));
   return {
@@ -205,7 +206,8 @@ function replacementStorage(jobs: PersistedContentReplacementJob[]): ContentRepl
 
 function replacementJob(): PersistedContentReplacementJob {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    scanCompatibility: "current",
     revision: 2,
     id: "resume-me",
     fingerprint: "f".repeat(64),

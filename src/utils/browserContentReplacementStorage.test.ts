@@ -125,6 +125,67 @@ describe("browserContentReplacementStorage", () => {
     await expect(loadContentReplacementJob(job.id)).resolves.toEqual(job);
   });
 
+  it("keeps a paused v1 job visible but blocks its scan from resuming", async () => {
+    const legacy = await legacyV1Job(createJob());
+
+    const migrated = await parseContentReplacementJob(legacy);
+
+    expect(migrated).toMatchObject({
+      schemaVersion: 2,
+      scanCompatibility: "legacy-restart-required",
+      configuration: { discovery: { mode: "full" } },
+      stage: "scan",
+      status: "paused",
+    });
+  });
+
+  it("preserves guarded recovery evidence and atomically re-fingerprints a completed v1 write", async () => {
+    const legacy = await legacyV1Job(createPopulatedJob());
+    const legacyJobFingerprint = legacy.fingerprint;
+    const legacyProposalFingerprint = legacy.proposals["question:42"].proposal.proposalFingerprint;
+
+    const migrated = await parseContentReplacementJob(legacy);
+    const canonicalProposal = await buildReplacementProposal(
+      migrated.proposals["question:42"].proposal.before,
+      migrated.configuration,
+    );
+
+    expect(migrated.proposals["question:42"].recovery).toEqual(
+      legacy.proposals["question:42"].recovery,
+    );
+    expect(migrated.scanCompatibility).toBe("legacy-restart-required");
+    expect(migrated.fingerprint).toBe(await createJobFingerprint({
+      baseUrl: migrated.baseUrl,
+      configuration: migrated.configuration,
+    }));
+    expect(migrated.proposals["question:42"].proposal.proposalFingerprint)
+      .toBe(canonicalProposal?.proposalFingerprint);
+    expect(migrated.fingerprint).not.toBe(legacyJobFingerprint);
+    expect(migrated.proposals["question:42"].proposal.proposalFingerprint)
+      .not.toBe(legacyProposalFingerprint);
+  });
+
+  it("rejects a v1 record whose job fingerprint was changed without its proposal fingerprints", async () => {
+    const legacy = await legacyV1Job(createPopulatedJob());
+    legacy.fingerprint = await createJobFingerprint({
+      baseUrl: legacy.baseUrl,
+      configuration: { ...legacy.configuration, discovery: { mode: "full" } },
+    });
+
+    await expect(parseContentReplacementJob(legacy)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
+  it("rejects v1 configuration before current required-discovery validation can reinterpret it", async () => {
+    const legacy = await legacyV1Job(createJob());
+    legacy.configuration.discovery = { mode: "full" };
+
+    await expect(parseContentReplacementJob(legacy)).rejects.toThrow(
+      "Stored content replacement job is invalid.",
+    );
+  });
+
   it("persists Exact detail progress without inventory accounting", async () => {
     installFakeIndexedDB();
     const ref = { kind: "question" as const, questionId: 42 };
@@ -795,7 +856,7 @@ describe("browserContentReplacementStorage", () => {
     await deleteContentReplacementJob("job-a");
     await expect(loadContentReplacementJob("job-a")).resolves.toBeNull();
     expect(fake.openCalls.every((call) => call.name === "stack-api-content-replacement")).toBe(true);
-    expect(fake.openCalls.every((call) => call.version === 2)).toBe(true);
+    expect(fake.openCalls.every((call) => call.version === 3)).toBe(true);
     expect(fake.createdStores).toEqual([{ name: "jobs", keyPath: "id" }]);
     expect(fake.createdIndexes).toEqual([{ store: "jobs", name: "by-summary", unique: true }]);
   });
@@ -814,7 +875,7 @@ describe("browserContentReplacementStorage", () => {
 
   it("pages thousands of lightweight summaries without getAll or touching proposal bodies", async () => {
     const fake = installFakeIndexedDB();
-    fake.databaseVersion = 2;
+    fake.databaseVersion = 3;
     fake.hasStore = true;
     fake.hasSummaryIndex = true;
     let proposalReads = 0;
@@ -860,16 +921,20 @@ describe("browserContentReplacementStorage", () => {
     const fake = installFakeIndexedDB();
     fake.databaseVersion = 1;
     fake.hasStore = true;
-    const legacy = { ...createJob(), id: "legacy-job" };
+    const legacy = await legacyV1Job({ ...createJob(), id: "legacy-job" });
+    const migrated = await parseContentReplacementJob(legacy);
     fake.records.set(legacy.id, legacy);
 
     await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
       totalCount: 1,
-      jobs: [expect.objectContaining({ id: "legacy-job" })],
+      jobs: [expect.objectContaining({
+        id: "legacy-job",
+        scanCompatibility: "legacy-restart-required",
+      })],
     });
-    await expect(loadContentReplacementJob("legacy-job")).resolves.toEqual(legacy);
+    await expect(loadContentReplacementJob("legacy-job")).resolves.toEqual(migrated);
 
-    const current = { ...legacy, revision: 1, updatedAt: "2026-09-02T13:00:00.000Z" };
+    const current = { ...migrated, revision: 1, updatedAt: "2026-09-02T13:00:00.000Z" };
     await expect(compareAndSave(current, 0)).resolves.toEqual({ status: "saved" });
     await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
       totalCount: 1,
@@ -880,7 +945,23 @@ describe("browserContentReplacementStorage", () => {
     await expect(loadContentReplacementJob("legacy-job")).resolves.toBeNull();
     await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toEqual({ jobs: [], totalCount: 0 });
     expect(fake.createdIndexes).toContainEqual({ store: "jobs", name: "by-summary", unique: true });
-    expect(fake.openCalls.some((call) => call.version === 2)).toBe(true);
+    expect(fake.openCalls.some((call) => call.version === 3)).toBe(true);
+  });
+
+  it("rebuilds the v2 summary index with current scan compatibility", async () => {
+    const fake = installFakeIndexedDB();
+    fake.databaseVersion = 2;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
+    const job = { ...createJob(), id: "v2-summary-upgrade" };
+    const stored = storedRecordForTest(job);
+    delete (stored.summary as Record<string, unknown>).scanCompatibility;
+    fake.records.set(job.id, stored);
+
+    await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
+      totalCount: 1,
+      jobs: [expect.objectContaining({ id: job.id, scanCompatibility: "current" })],
+    });
   });
 
   it("validates a job completely before opening a write transaction", async () => {
@@ -1004,6 +1085,9 @@ describe("browserContentReplacementStorage", () => {
 
   it("rejects a stored summary that no longer matches the full job when opened", async () => {
     const fake = installFakeIndexedDB();
+    fake.databaseVersion = 3;
+    fake.hasStore = true;
+    fake.hasSummaryIndex = true;
     const job = { ...createJob(), id: "summary-mismatch" };
     const stored = storedRecordForTest(job);
     (stored.summary as Record<string, unknown>).stage = "results";
@@ -1016,7 +1100,7 @@ describe("browserContentReplacementStorage", () => {
 
   it("maps a BigInt stored-summary value to the stable content-free corruption error", async () => {
     const fake = installFakeIndexedDB();
-    fake.databaseVersion = 2;
+    fake.databaseVersion = 3;
     fake.hasStore = true;
     fake.hasSummaryIndex = true;
     const job = { ...createJob(), id: "bigint-summary-job" };
@@ -1039,7 +1123,7 @@ describe("browserContentReplacementStorage", () => {
     ["map object", new Map([["private", "value"]])],
   ])("maps a schema-forbidden %s summary value to the stable corruption error", async (label, value) => {
     const fake = installFakeIndexedDB();
-    fake.databaseVersion = 2;
+    fake.databaseVersion = 3;
     fake.hasStore = true;
     fake.hasSummaryIndex = true;
     const job = { ...createJob(), id: `hostile-summary-${label.split(" ").join("-")}` };
@@ -1053,23 +1137,24 @@ describe("browserContentReplacementStorage", () => {
     expect(String(error)).not.toContain("private");
   });
 
-  it("opens exact legacy jobs and exact v2 wrappers without conflating their shapes", async () => {
+  it("opens exact legacy jobs and exact current wrappers without conflating their shapes", async () => {
     const fake = installFakeIndexedDB();
-    fake.databaseVersion = 2;
+    fake.databaseVersion = 3;
     fake.hasStore = true;
     fake.hasSummaryIndex = true;
-    const legacy = { ...createJob(), id: "exact-v1-job" };
+    const legacy = await legacyV1Job({ ...createJob(), id: "exact-v1-job" });
+    const migrated = await parseContentReplacementJob(legacy);
     const wrapped = { ...createJob(), id: "exact-v2-job" };
     fake.records.set(legacy.id, legacy);
     fake.records.set(wrapped.id, storedRecordForTest(wrapped));
 
-    await expect(loadContentReplacementJob(legacy.id)).resolves.toEqual(legacy);
+    await expect(loadContentReplacementJob(legacy.id)).resolves.toEqual(migrated);
     await expect(loadContentReplacementJob(wrapped.id)).resolves.toEqual(wrapped);
   });
 
   it("rejects v2 wrappers with extra string, symbol, or accessor fields without invoking getters", async () => {
     const fake = installFakeIndexedDB();
-    fake.databaseVersion = 2;
+    fake.databaseVersion = 3;
     fake.hasStore = true;
     fake.hasSummaryIndex = true;
     const stringExtra = storedRecordForTest({ ...createJob(), id: "wrapper-string-extra" });
@@ -1091,7 +1176,7 @@ describe("browserContentReplacementStorage", () => {
 
   it("contains hostile v2 wrapper reflection traps behind the stable corruption error", async () => {
     const fake = installFakeIndexedDB();
-    fake.databaseVersion = 2;
+    fake.databaseVersion = 3;
     fake.hasStore = true;
     fake.hasSummaryIndex = true;
     const wrapped = storedRecordForTest({ ...createJob(), id: "wrapper-proxy" });
@@ -1106,7 +1191,7 @@ describe("browserContentReplacementStorage", () => {
 
   it("maps a revoked stored-record proxy to the stable corruption error on load", async () => {
     const fake = installFakeIndexedDB();
-    fake.databaseVersion = 2;
+    fake.databaseVersion = 3;
     fake.hasStore = true;
     fake.hasSummaryIndex = true;
     const id = "revoked-load-wrapper";
@@ -1121,7 +1206,7 @@ describe("browserContentReplacementStorage", () => {
 
   it("maps a revoked durable-record proxy to the stable corruption error during CAS recognition", async () => {
     const fake = installFakeIndexedDB();
-    fake.databaseVersion = 2;
+    fake.databaseVersion = 3;
     fake.hasStore = true;
     fake.hasSummaryIndex = true;
     const initial = { ...createJob(), id: "revoked-cas-wrapper" };
@@ -1398,7 +1483,7 @@ describe("browserContentReplacementStorage", () => {
       new TypeError("Stored content replacement job is invalid."),
     );
     expect(rootOwnKeysCalls).toBe(1);
-    expect(rootDescriptorCalls).toBe(16);
+    expect(rootDescriptorCalls).toBe(18);
     expect(fake.openCalls).toHaveLength(0);
   });
 
@@ -2003,6 +2088,8 @@ describe("browserContentReplacementStorage", () => {
   });
 
   it.each([
+    ["missing scan compatibility", (job: any) => { delete job.scanCompatibility; }],
+    ["unknown scan compatibility", (job: any) => { job.scanCompatibility = "resume-legacy"; }],
     ["non-HTTPS root", (job: any) => { job.baseUrl = "http://example.stackenterprise.co"; }],
     ["non-Stack root", (job: any) => { job.baseUrl = "https://example.com"; }],
     ["non-normalized root", (job: any) => { job.baseUrl = "https://example.stackenterprise.co/path"; }],
@@ -2053,7 +2140,8 @@ async function saveContentReplacementJob(job: PersistedContentReplacementJob): P
 
 function createJob(): PersistedContentReplacementJob {
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
+    scanCompatibility: "current",
     revision: 0,
     id: "replacement-job-1",
     fingerprint: JOB_FINGERPRINT,
@@ -2092,6 +2180,72 @@ function createJob(): PersistedContentReplacementJob {
     createdAt: "2026-09-01T12:00:00.000Z",
     updatedAt: "2026-09-01T12:00:00.000Z",
   };
+}
+
+async function legacyV1Job(job: PersistedContentReplacementJob): Promise<any> {
+  const legacy = structuredClone(job) as any;
+  legacy.schemaVersion = 1;
+  delete legacy.scanCompatibility;
+  delete legacy.configuration.discovery;
+  for (const key of [
+    "apiRequestsCompleted",
+    "searchPages",
+    "searchTermsCompleted",
+    "indexedReferences",
+    "answerBearingQuestionsQueued",
+    "zeroAnswerQuestionsSkipped",
+  ]) delete legacy.progress[key];
+  legacy.fingerprint = await legacyDigest({
+    baseUrl: legacy.baseUrl,
+    configuration: legacySemanticConfiguration(legacy.configuration),
+  });
+  for (const item of Object.values(legacy.proposals) as any[]) {
+    item.proposal.proposalFingerprint = await legacyProposalFingerprint(item.proposal, legacy.configuration);
+  }
+  if (legacy.activeOperation?.kind === "stale-rescan") {
+    for (const proposal of Object.values(legacy.activeOperation.proposals) as any[]) {
+      proposal.proposalFingerprint = await legacyProposalFingerprint(proposal, legacy.configuration);
+    }
+  }
+  return legacy;
+}
+
+async function legacyProposalFingerprint(proposal: ReplacementProposal, legacyConfiguration: any): Promise<string> {
+  return legacyDigest({
+    ref: proposal.before.ref,
+    configuration: legacySemanticConfiguration(legacyConfiguration),
+    scannedRequestChecksum: proposal.scannedRequestChecksum,
+    proposedRequestChecksum: proposal.proposedRequestChecksum,
+  });
+}
+
+function legacySemanticConfiguration(configuration: any): unknown {
+  return {
+    target: configuration.target,
+    contentTypes: configuration.contentTypes,
+    options: configuration.options,
+    rules: configuration.rules
+      .map(({ find, replace }: { find: string; replace: string }) => ({ find, replace }))
+      .sort((left: { find: string; replace: string }, right: { find: string; replace: string }) =>
+        left.find < right.find ? -1 : left.find > right.find ? 1 :
+          left.replace < right.replace ? -1 : left.replace > right.replace ? 1 : 0),
+  };
+}
+
+async function legacyDigest(value: unknown): Promise<string> {
+  const normalize = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(normalize);
+    if (item && typeof item === "object") {
+      return Object.fromEntries(Object.entries(item)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([key, child]) => [key, normalize(child)]));
+    }
+    return item;
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(normalize(value)));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function createPopulatedJob(): PersistedContentReplacementJob {
@@ -2582,6 +2736,7 @@ function storedRecordForTest(job: PersistedContentReplacementJob): Record<string
       mappingCount: job.configuration.rules.length,
       proposedPostCount: job.progress.proposalsFound,
       recoverySnapshotStatus: job.recoverySnapshotStatus,
+      scanCompatibility: job.scanCompatibility,
       updatedAt: job.updatedAt,
     },
   };
@@ -2781,6 +2936,11 @@ class FakeObjectStore {
     return new FakeIndex(this.owner, this.transaction) as unknown as IDBIndex;
   }
 
+  deleteIndex(name: string): void {
+    if (name !== "by-summary" || !this.owner.hasSummaryIndex) throw new Error("missing index");
+    this.owner.hasSummaryIndex = false;
+  }
+
   index(name: string): IDBIndex {
     if (name !== "by-summary" || !this.owner.hasSummaryIndex) throw new Error("missing index");
     return new FakeIndex(this.owner, this.transaction) as unknown as IDBIndex;
@@ -2847,6 +3007,7 @@ function indexedSummaryEntries(owner: FakeIndexedDB): Array<{ key: IDBValidKey; 
         record.mappingCount,
         record.proposedPostCount,
         record.recoverySnapshotStatus,
+        record.scanCompatibility,
       ] as IDBValidKey,
       value,
     }];

@@ -2661,7 +2661,8 @@ function contentReplacementJob(
   overrides: Partial<PersistedContentReplacementJob> = {},
 ): PersistedContentReplacementJob {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    scanCompatibility: "current",
     revision: 0,
     id: "content-replacement-job",
     fingerprint: "f".repeat(64),
@@ -2713,6 +2714,7 @@ function contentReplacementSummary(job: PersistedContentReplacementJob): Content
     mappingCount: job.configuration.rules.length,
     proposedPostCount: Object.keys(job.proposals).length,
     recoverySnapshotStatus: job.recoverySnapshotStatus,
+    scanCompatibility: job.scanCompatibility,
   };
 }
 

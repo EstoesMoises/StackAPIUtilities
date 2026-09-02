@@ -34,7 +34,7 @@ import type {
 } from "../writeTools/contentReplacement/types";
 
 const DATABASE_NAME = "stack-api-content-replacement";
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const STORE_NAME = "jobs";
 const SUMMARY_INDEX_NAME = "by-summary";
 const SUMMARY_INDEX_PATH = [
@@ -46,6 +46,7 @@ const SUMMARY_INDEX_PATH = [
   "summary.mappingCount",
   "summary.proposedPostCount",
   "summary.recoverySnapshotStatus",
+  "summary.scanCompatibility",
 ] as const;
 const MAX_SUMMARY_PAGE_SIZE = 100;
 const MAX_SUMMARY_OFFSET = 1_000_000;
@@ -71,6 +72,11 @@ const MAX_OCCURRENCES = 100_000;
 const MAX_CONTENT_LENGTH = 1_048_576;
 const MAX_LIST_ITEMS = 10_000;
 const JOB_KEYS = [
+  "schemaVersion", "scanCompatibility", "revision", "id", "fingerprint", "baseUrl", "target", "configuration",
+  "stage", "status", "inventoryQueue", "detailQueue", "progress", "proposals",
+  "recoverySnapshotStatus", "activeOperation", "operationError", "nextRetryAt", "failure", "createdAt", "updatedAt",
+] as const;
+const LEGACY_JOB_KEYS = [
   "schemaVersion", "revision", "id", "fingerprint", "baseUrl", "target", "configuration",
   "stage", "status", "inventoryQueue", "detailQueue", "progress", "proposals",
   "recoverySnapshotStatus", "activeOperation", "operationError", "nextRetryAt", "failure", "createdAt", "updatedAt",
@@ -81,13 +87,13 @@ const PROGRESS_KEYS = [
   "inventoryItems", "detailsInspected",
   "proposalsFound", "protectedOccurrences", "applyCompleted", "recoveryCompleted",
 ] as const;
-const LEGACY_PROGRESS_COUNTER_KEYS = [
-  "apiRequestsCompleted", "searchPages", "searchTermsCompleted", "indexedReferences",
-  "answerBearingQuestionsQueued", "zeroAnswerQuestionsSkipped",
+const LEGACY_PROGRESS_KEYS = [
+  "questionPages", "answerPages", "articlePages", "inventoryItems", "detailsInspected",
+  "proposalsFound", "protectedOccurrences", "applyCompleted", "recoveryCompleted",
 ] as const;
 const SUMMARY_KEYS = [
   "id", "sortKey", "baseUrl", "stage", "status", "mappingCount", "proposedPostCount",
-  "recoverySnapshotStatus", "updatedAt",
+  "recoverySnapshotStatus", "scanCompatibility", "updatedAt",
 ] as const;
 
 export interface ContentReplacementJobSummary {
@@ -98,6 +104,7 @@ export interface ContentReplacementJobSummary {
   mappingCount: number;
   proposedPostCount: number;
   recoverySnapshotStatus: PersistedContentReplacementJob["recoverySnapshotStatus"];
+  scanCompatibility: PersistedContentReplacementJob["scanCompatibility"];
   updatedAt: string;
 }
 
@@ -279,23 +286,30 @@ function summaryFromJob(job: PersistedContentReplacementJob): StoredContentRepla
     mappingCount: job.configuration.rules.length,
     proposedPostCount: job.progress.proposalsFound,
     recoverySnapshotStatus: job.recoverySnapshotStatus,
+    scanCompatibility: job.scanCompatibility,
     updatedAt: job.updatedAt,
   };
 }
 
 function summaryFromLegacyJob(value: unknown): StoredContentReplacementJobSummary {
-  const id = ownDataProperty(value, "id");
-  const baseUrl = ownDataProperty(value, "baseUrl");
-  const stage = ownDataProperty(value, "stage");
-  const status = ownDataProperty(value, "status");
-  const recoverySnapshotStatus = ownDataProperty(value, "recoverySnapshotStatus");
-  const updatedAt = timestamp(ownDataProperty(value, "updatedAt"));
-  const configuration = ownDataProperty(value, "configuration");
+  const source = storedRecordEnvelope(value)?.job ?? value;
+  const id = ownDataProperty(source, "id");
+  const baseUrl = ownDataProperty(source, "baseUrl");
+  const stage = ownDataProperty(source, "stage");
+  const status = ownDataProperty(source, "status");
+  const recoverySnapshotStatus = ownDataProperty(source, "recoverySnapshotStatus");
+  const updatedAt = timestamp(ownDataProperty(source, "updatedAt"));
+  const configuration = ownDataProperty(source, "configuration");
   const rules = ownDataProperty(configuration, "rules");
-  const progress = ownDataProperty(value, "progress");
+  const progress = ownDataProperty(source, "progress");
   const proposedPostCount = ownDataProperty(progress, "proposalsFound");
+  const schemaVersion = ownDataProperty(source, "schemaVersion");
+  const scanCompatibility = schemaVersion === 1
+    ? "legacy-restart-required"
+    : ownDataProperty(source, "scanCompatibility");
   if (!isJobId(id) || typeof baseUrl !== "string" || normalizeEnterpriseBaseUrl(baseUrl) !== baseUrl ||
     !isStage(stage) || !isStatus(status) || !isRecoverySnapshotStatus(recoverySnapshotStatus) ||
+    (schemaVersion !== 1 && schemaVersion !== 2) || !isScanCompatibility(scanCompatibility) ||
     !Array.isArray(rules) || rules.length > MAX_SCHEMA_ARRAY_LENGTH ||
     !Number.isSafeInteger(proposedPostCount) || (proposedPostCount as number) < 0) {
     throw corruptJob();
@@ -309,6 +323,7 @@ function summaryFromLegacyJob(value: unknown): StoredContentReplacementJobSummar
     mappingCount: rules.length,
     proposedPostCount: proposedPostCount as number,
     recoverySnapshotStatus,
+    scanCompatibility,
     updatedAt,
   };
 }
@@ -359,11 +374,15 @@ function readSummaryPage(
 
 function summaryFromIndexEntry(key: IDBValidKey, primaryKey: IDBValidKey): ContentReplacementJobSummary {
   if (!Array.isArray(key) || key.length !== SUMMARY_INDEX_PATH.length || !isJobId(primaryKey)) throw corruptJob();
-  const [sortKey, updatedAtValue, baseUrl, stage, status, mappingCount, proposedPostCount, recoverySnapshotStatus] = key;
+  const [
+    sortKey, updatedAtValue, baseUrl, stage, status, mappingCount, proposedPostCount,
+    recoverySnapshotStatus, scanCompatibility,
+  ] = key;
   const updatedAt = timestamp(updatedAtValue);
   if (sortKey !== summarySortKey(updatedAt, primaryKey) ||
     typeof baseUrl !== "string" || normalizeEnterpriseBaseUrl(baseUrl) !== baseUrl ||
     !isStage(stage) || !isStatus(status) || !isRecoverySnapshotStatus(recoverySnapshotStatus) ||
+    !isScanCompatibility(scanCompatibility) ||
     !Number.isSafeInteger(mappingCount) || (mappingCount as number) < 0 ||
     !Number.isSafeInteger(proposedPostCount) || (proposedPostCount as number) < 0) throw corruptJob();
   return {
@@ -374,12 +393,90 @@ function summaryFromIndexEntry(key: IDBValidKey, primaryKey: IDBValidKey): Conte
     mappingCount: mappingCount as number,
     proposedPostCount: proposedPostCount as number,
     recoverySnapshotStatus,
+    scanCompatibility,
     updatedAt,
   };
 }
 
 export async function parseContentReplacementJob(value: unknown): Promise<PersistedContentReplacementJob> {
+  const schemaVersion = contentReplacementSchemaVersion(value);
+  if (schemaVersion === 1) return migrateLegacyContentReplacementJob(value);
+  if (schemaVersion !== 2) throw corruptJob();
   const normalized = normalizeContentReplacementJob(value);
+  await validateCurrentContentReplacementJob(normalized);
+  return normalized;
+}
+
+function contentReplacementSchemaVersion(value: unknown): 1 | 2 | null {
+  try {
+    const schemaVersion = ownDataProperty(value, "schemaVersion");
+    return schemaVersion === 1 || schemaVersion === 2 ? schemaVersion : null;
+  } catch {
+    return null;
+  }
+}
+
+function validateLegacyConfiguration(
+  value: unknown,
+): PersistedContentReplacementJob["configuration"] | null {
+  try {
+    const record = exactObject(value, ["target", "contentTypes", "rules", "options"]);
+    return validateConfiguration({
+      target: record.target,
+      contentTypes: record.contentTypes,
+      discovery: { mode: "full" },
+      rules: record.rules,
+      options: record.options,
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function createLegacyJobFingerprint(
+  baseUrl: string,
+  configuration: PersistedContentReplacementJob["configuration"],
+): Promise<string> {
+  return legacySha256(stableSerialize({
+    baseUrl,
+    configuration: legacySemanticConfiguration(configuration),
+  }));
+}
+
+async function createLegacyProposalFingerprint(
+  proposal: ReplacementProposal,
+  configuration: PersistedContentReplacementJob["configuration"],
+): Promise<string> {
+  return legacySha256(stableSerialize({
+    ref: proposal.before.ref,
+    configuration: legacySemanticConfiguration(configuration),
+    scannedRequestChecksum: proposal.scannedRequestChecksum,
+    proposedRequestChecksum: proposal.proposedRequestChecksum,
+  }));
+}
+
+function legacySemanticConfiguration(
+  configuration: PersistedContentReplacementJob["configuration"],
+): unknown {
+  return {
+    target: configuration.target,
+    contentTypes: configuration.contentTypes,
+    options: configuration.options,
+    rules: configuration.rules
+      .map(({ find, replace }) => ({ find, replace }))
+      .sort((left, right) => compareOrdinal(left.find, right.find) || compareOrdinal(left.replace, right.replace)),
+  };
+}
+
+async function legacySha256(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function validateCurrentContentReplacementJob(
+  normalized: PersistedContentReplacementJob,
+): Promise<void> {
   try {
     const expectedFingerprint = await createJobFingerprint({
       baseUrl: normalized.baseUrl,
@@ -400,10 +497,87 @@ export async function parseContentReplacementJob(value: unknown): Promise<Persis
           stableSerialize(canonical) !== stableSerialize(proposal)) throw corruptJob();
       }
     }
-    return normalized;
   } catch {
     throw corruptJob();
   }
+}
+
+async function migrateLegacyContentReplacementJob(value: unknown): Promise<PersistedContentReplacementJob> {
+  try {
+    const preflight = preflightContentReplacementJobRoot(value, LEGACY_JOB_KEYS);
+    const safeValue = cloneSafeDataGraph(
+      preflight.snapshot,
+      contentReplacementGraphBudget(preflight.cardinalities),
+      preflight.sourceSnapshots,
+    );
+    const record = exactObject(
+      safeValue,
+      LEGACY_JOB_KEYS,
+      ["activeOperation", "operationError", "nextRetryAt", "failure"],
+    );
+    if (record.schemaVersion !== 1) throw corruptJob();
+    const configuration = validateLegacyConfiguration(record.configuration);
+    if (!configuration) throw corruptJob();
+    const candidate = {
+      ...record,
+      schemaVersion: 2,
+      scanCompatibility: "legacy-restart-required",
+      configuration,
+      progress: parseLegacyProgress(record.progress),
+    };
+    const normalized = normalizeContentReplacementJob(candidate);
+    if (normalized.fingerprint !== await createLegacyJobFingerprint(normalized.baseUrl, configuration)) {
+      throw corruptJob();
+    }
+
+    const proposalEntries = await Promise.all(Object.entries(normalized.proposals).map(async ([key, item]) => [
+      key,
+      await migrateLegacyItem(item, configuration, normalized.updatedAt),
+    ] as const));
+    let activeOperation = normalized.activeOperation;
+    if (activeOperation?.kind === "stale-rescan") {
+      const proposals = Object.fromEntries(await Promise.all(
+        Object.entries(activeOperation.proposals).map(async ([key, proposal]) => [
+          key,
+          await migrateLegacyProposal(proposal, configuration),
+        ] as const),
+      ));
+      activeOperation = { ...activeOperation, proposals };
+    }
+    const migrated: PersistedContentReplacementJob = {
+      ...normalized,
+      fingerprint: await createJobFingerprint({ baseUrl: normalized.baseUrl, configuration }),
+      proposals: Object.fromEntries(proposalEntries),
+      ...(activeOperation === undefined ? {} : { activeOperation }),
+    };
+    await validateCurrentContentReplacementJob(migrated);
+    return migrated;
+  } catch {
+    throw corruptJob();
+  }
+}
+
+async function migrateLegacyItem(
+  item: PersistedContentReplacementItem,
+  configuration: PersistedContentReplacementJob["configuration"],
+  jobUpdatedAt: string,
+): Promise<PersistedContentReplacementItem> {
+  const proposal = await migrateLegacyProposal(item.proposal, configuration);
+  await validateRecoveryEvidence(item, jobUpdatedAt);
+  return { ...item, proposal };
+}
+
+async function migrateLegacyProposal(
+  proposal: ReplacementProposal,
+  configuration: PersistedContentReplacementJob["configuration"],
+): Promise<ReplacementProposal> {
+  const canonical = await buildReplacementProposal(proposal.before, configuration);
+  if (!canonical) throw corruptJob();
+  const legacyFingerprint = await createLegacyProposalFingerprint(canonical, configuration);
+  if (stableSerialize({ ...canonical, proposalFingerprint: legacyFingerprint }) !== stableSerialize(proposal)) {
+    throw corruptJob();
+  }
+  return canonical;
 }
 
 async function validateCanonicalItem(
@@ -415,6 +589,13 @@ async function validateCanonicalItem(
   if (!canonicalProposal || stableSerialize(canonicalProposal) !== stableSerialize(item.proposal)) {
     throw corruptJob();
   }
+  await validateRecoveryEvidence(item, jobUpdatedAt);
+}
+
+async function validateRecoveryEvidence(
+  item: PersistedContentReplacementItem,
+  jobUpdatedAt: string,
+): Promise<void> {
   if (!item.recovery) return;
   if (
     stableSerialize(item.recovery.priorRequestModel) !== stableSerialize(item.proposal.before) ||
@@ -457,7 +638,8 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   const createdAt = timestamp(record.createdAt);
   const updatedAt = timestamp(record.updatedAt);
   if (
-    record.schemaVersion !== 1 ||
+    record.schemaVersion !== 2 ||
+    !isScanCompatibility(record.scanCompatibility) ||
     !Number.isSafeInteger(record.revision) ||
     (record.revision as number) < 0 ||
     !isJobId(record.id) ||
@@ -491,7 +673,8 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
     ? undefined
     : parseActiveOperation(record.activeOperation, normalizedProposals, configuredRuleIds);
   const normalized: PersistedContentReplacementJob = {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    scanCompatibility: record.scanCompatibility,
     revision: record.revision as number,
     id: record.id,
     fingerprint: record.fingerprint,
@@ -538,18 +721,21 @@ interface PreflightContainerSnapshot {
   cardinality: number;
 }
 
-function preflightContentReplacementJobRoot(value: unknown): ContentReplacementGraphPreflight {
+function preflightContentReplacementJobRoot(
+  value: unknown,
+  jobKeys: readonly string[] = JOB_KEYS,
+): ContentReplacementGraphPreflight {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw corruptJob();
     const prototype = Reflect.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) throw corruptJob();
     const keys = Reflect.ownKeys(value);
-    const allowed = new Set<string>(JOB_KEYS);
+    const allowed = new Set<string>(jobKeys);
     const optional = new Set(["activeOperation", "operationError", "nextRetryAt", "failure"]);
     if (
-      keys.length > JOB_KEYS.length ||
+      keys.length > jobKeys.length ||
       keys.some((key) => typeof key !== "string" || !allowed.has(key)) ||
-      JOB_KEYS.some((key) => !optional.has(key) && !keys.includes(key))
+      jobKeys.some((key) => !optional.has(key) && !keys.includes(key))
     ) throw corruptJob();
     const snapshot = Object.create(prototype) as Record<string, unknown>;
     const sourceSnapshots = new WeakMap<object, object>();
@@ -685,6 +871,7 @@ function assertJobInvariants(job: PersistedContentReplacementJob): void {
     item.status === "recovery-failed"
   ).length;
   if (
+    (job.scanCompatibility === "legacy-restart-required" && job.configuration.discovery.mode !== "full") ||
     job.progress.proposalsFound !== items.length ||
     job.progress.detailsInspected < job.progress.proposalsFound ||
     (job.configuration.discovery.mode !== "exact" &&
@@ -1483,14 +1670,31 @@ function parseFailure(value: unknown): PersistedContentReplacementFailure {
 }
 
 function parseProgress(value: unknown): PersistedContentReplacementProgress {
-  const record = exactObject(value, PROGRESS_KEYS, LEGACY_PROGRESS_COUNTER_KEYS);
+  const record = exactObject(value, PROGRESS_KEYS);
   const output = {} as Record<(typeof PROGRESS_KEYS)[number], number>;
-  for (const key of PROGRESS_KEYS) {
-    output[key] = record[key] === undefined && LEGACY_PROGRESS_COUNTER_KEYS.includes(key as never)
-      ? 0
-      : count(record[key]);
-  }
+  for (const key of PROGRESS_KEYS) output[key] = count(record[key]);
   return output;
+}
+
+function parseLegacyProgress(value: unknown): PersistedContentReplacementProgress {
+  const record = exactObject(value, LEGACY_PROGRESS_KEYS);
+  return {
+    apiRequestsCompleted: 0,
+    questionPages: count(record.questionPages),
+    answerPages: count(record.answerPages),
+    articlePages: count(record.articlePages),
+    searchPages: 0,
+    searchTermsCompleted: 0,
+    indexedReferences: 0,
+    answerBearingQuestionsQueued: 0,
+    zeroAnswerQuestionsSkipped: 0,
+    inventoryItems: count(record.inventoryItems),
+    detailsInspected: count(record.detailsInspected),
+    proposalsFound: count(record.proposalsFound),
+    protectedOccurrences: count(record.protectedOccurrences),
+    applyCompleted: count(record.applyCompleted),
+    recoveryCompleted: count(record.recoveryCompleted),
+  };
 }
 
 function parseInventoryCursor(value: unknown): InventoryCursor {
@@ -1587,6 +1791,12 @@ function isRecoverySnapshotStatus(
   return value === "none" || value === "preparing" || value === "ready" || value === "failed";
 }
 
+function isScanCompatibility(
+  value: unknown,
+): value is PersistedContentReplacementJob["scanCompatibility"] {
+  return value === "current" || value === "legacy-restart-required";
+}
+
 function isFailureCategory(value: unknown): value is PersistedContentReplacementFailure["category"] {
   return value === "network" || value === "authorization" || value === "validation" ||
     value === "rate-limit" || value === "storage" || value === "server" || value === "unknown";
@@ -1609,6 +1819,10 @@ function isArticleType(value: unknown): value is Extract<ReplacementRequestModel
 function compareJobs(left: PersistedContentReplacementJob, right: PersistedContentReplacementJob): number {
   const updatedAtOrder = right.updatedAt < left.updatedAt ? -1 : right.updatedAt > left.updatedAt ? 1 : 0;
   return updatedAtOrder || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+}
+
+function compareOrdinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function assertJobId(value: unknown): asserts value is string {
@@ -1847,10 +2061,13 @@ async function openDatabase(): Promise<IDBDatabase> {
       const store = request.result.objectStoreNames.contains(STORE_NAME)
         ? request.transaction!.objectStore(STORE_NAME)
         : request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
+      if (event.oldVersion < 3 && store.indexNames.contains(SUMMARY_INDEX_NAME)) {
+        store.deleteIndex(SUMMARY_INDEX_NAME);
+      }
       if (!store.indexNames.contains(SUMMARY_INDEX_NAME)) {
         store.createIndex(SUMMARY_INDEX_NAME, [...SUMMARY_INDEX_PATH], { unique: true });
       }
-      if (event.oldVersion < 2) {
+      if (event.oldVersion < 3) {
         const cursorRequest = store.openCursor();
         cursorRequest.onsuccess = () => {
           const cursor = cursorRequest.result;
@@ -1858,7 +2075,7 @@ async function openDatabase(): Promise<IDBDatabase> {
           const value = cursor.value;
           try {
             const summary = summaryFromLegacyJob(value);
-            cursor.update({ id: summary.id, job: value as PersistedContentReplacementJob, summary });
+            cursor.update({ id: summary.id, job: storedJobValue(value) as PersistedContentReplacementJob, summary });
           } catch {
             // Root-corrupt legacy records remain unindexed and are rejected if explicitly opened.
           }

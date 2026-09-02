@@ -156,7 +156,11 @@ describe("useContentReplacementJob", () => {
 
     await act(async () => result.current.createJob(configuration));
 
-    expect(result.current.job?.baseUrl).toBe("https://example.stackenterprise.co");
+    expect(result.current.job).toMatchObject({
+      schemaVersion: 2,
+      scanCompatibility: "current",
+      baseUrl: "https://example.stackenterprise.co",
+    });
     expect(deps.store.save).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(deps.store.save.mock.calls[0][0])).not.toMatch(/top-secret|accessToken|apiKey/);
     expect(result.current.job).toEqual(deps.store.current());
@@ -1085,6 +1089,225 @@ describe("useContentReplacementJob", () => {
       status: "completed",
       progress: { apiRequestsCompleted: 1, searchPages: 1, searchTermsCompleted: 1 },
     });
+  });
+
+  it("resumes a Targeted job from the exact saved search cursor", async () => {
+    const targeted: ReplacementConfiguration = {
+      ...configuration,
+      discovery: { mode: "targeted" },
+    };
+    const initial = createReplacementJob({
+      id: "targeted-resume",
+      fingerprint: await createJobFingerprint({
+        baseUrl: "https://example.stackenterprise.co",
+        configuration: targeted,
+      }),
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: targeted,
+      createdAt: AT,
+    });
+    initial.inventoryQueue = [{ kind: "search", ruleId: "rule-1", page: 7 }];
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "search",
+        progress: { ...inventoryProgress(), searchPages: 1, searchTermsCompleted: 1 },
+      },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher, initial);
+    const hook = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    await act(async () => hook.result.current.resume());
+
+    expect(JSON.parse(fetcher.mock.calls[0][1].body as string)).toMatchObject({
+      action: "inventory",
+      cursor: { kind: "search", ruleId: "rule-1", page: 7 },
+      configuration: { discovery: { mode: "targeted" } },
+    });
+  });
+
+  it("resumes an Exact job with detail batches and no inventory cursor", async () => {
+    const ref = { kind: "question" as const, questionId: 42 };
+    const exact: ReplacementConfiguration = {
+      ...configuration,
+      discovery: { mode: "exact", targetCount: 1, targetDigest: "a".repeat(64) },
+    };
+    const initial = createReplacementJob({
+      id: "exact-resume",
+      fingerprint: await createJobFingerprint({
+        baseUrl: "https://example.stackenterprise.co",
+        configuration: exact,
+      }),
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: exact,
+      exactTargets: [ref],
+      createdAt: AT,
+    });
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: { proposals: [], inspectedCount: 1, protectedOccurrenceCount: 0 },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher, initial);
+    const hook = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    await act(async () => hook.result.current.resume());
+
+    const payload = JSON.parse(fetcher.mock.calls[0][1].body as string);
+    expect(payload).toMatchObject({
+      action: "details",
+      refs: [ref],
+      configuration: { discovery: exact.discovery },
+    });
+    expect(payload).not.toHaveProperty("cursor");
+  });
+
+  it("resumes a Full job from its exact saved answer cursor", async () => {
+    const fullAnswers: ReplacementConfiguration = {
+      ...configuration,
+      contentTypes: { questions: false, answers: true, articles: false },
+    };
+    const initial = createReplacementJob({
+      id: "full-answer-resume",
+      fingerprint: await createJobFingerprint({
+        baseUrl: "https://example.stackenterprise.co",
+        configuration: fullAnswers,
+      }),
+      baseUrl: "https://example.stackenterprise.co",
+      configuration: fullAnswers,
+      createdAt: AT,
+    });
+    initial.inventoryQueue = [{ kind: "answers", questionId: 91, page: 4 }];
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "answers",
+        progress: inventoryProgress(),
+      },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher, initial);
+    const hook = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    await act(async () => hook.result.current.resume());
+
+    expect(JSON.parse(fetcher.mock.calls[0][1].body as string)).toMatchObject({
+      action: "inventory",
+      cursor: { kind: "answers", questionId: 91, page: 4 },
+      configuration: { discovery: { mode: "full" } },
+    });
+  });
+
+  it("does not resume a legacy-restart-required scan", async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        candidates: [], answerCursors: [], nextCursor: null, inspectedCount: 0, pageKind: "questions",
+        progress: inventoryProgress(),
+      },
+      throttleNotices: [],
+    }));
+    const initial = createScanJob("legacy-paused") as PersistedContentReplacementJob;
+    (initial as any).scanCompatibility = "legacy-restart-required";
+    const deps = dependencies(fetcher, initial);
+    const hook = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    await act(async () => hook.result.current.resume());
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(deps.store.save).not.toHaveBeenCalled();
+  });
+
+  it("does not prepare Apply from a legacy-restart-required review", async () => {
+    const initial = await scannedReviewJob(await questionProposal());
+    initial.scanCompatibility = "legacy-restart-required";
+    const deps = dependencies(vi.fn(), initial);
+    const hook = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    const prepared = await hook.result.current.prepareApply(
+      createReplacementSelectionSnapshot(initial.proposals),
+    );
+
+    expect(prepared).toBe(false);
+    expect(deps.store.save).not.toHaveBeenCalled();
+    expect(hook.result.current.job).toEqual(initial);
+  });
+
+  it("does not start Apply from legacy-restart-required prepared evidence", async () => {
+    const proposal = await questionProposal();
+    const initial = prepareJob(await scannedReviewJob(proposal), AT);
+    initial.scanCompatibility = "legacy-restart-required";
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: { status: "updated", observedRequestChecksum: proposal.proposedRequestChecksum },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher, initial);
+    const hook = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    await act(async () => hook.result.current.startApply());
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(deps.store.save).not.toHaveBeenCalled();
+    expect(hook.result.current.job).toEqual(initial);
+  });
+
+  it("keeps guarded recovery available for a legacy job with successful write evidence", async () => {
+    const proposal = await questionProposal();
+    const initial = await appliedJob(proposal);
+    initial.scanCompatibility = "legacy-restart-required";
+    const currentWireModel = {
+      kind: "question" as const,
+      ref: proposal.before.ref,
+      request: proposal.after.request,
+    };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      result: {
+        status: "recoverable",
+        currentRequestModel: currentWireModel,
+        priorRequestModel: { ...proposal.before, metadata: undefined },
+        observedRequestChecksum: proposal.proposedRequestChecksum,
+      },
+      throttleNotices: [],
+    }));
+    const deps = dependencies(fetcher, initial);
+    const hook = renderHook(() => useContentReplacementJob(credentials, initial, deps.value));
+
+    await act(async () => hook.result.current.prepareRecovery(["question:1"]));
+
+    const payload = JSON.parse(fetcher.mock.calls[0][1].body as string);
+    expect(payload).toMatchObject({
+      action: "preview",
+      configuration: { discovery: { mode: "full" } },
+      jobFingerprint: initial.fingerprint,
+      expectedPriorRequestChecksum: proposal.scannedRequestChecksum,
+      expectedPostApplyChecksum: proposal.proposedRequestChecksum,
+    });
+    expect(hook.result.current.job?.proposals["question:1"].recovery?.preview?.status)
+      .toBe("recoverable");
+  });
+
+  it("creates a replacement job without mutating the old paused job during a switch", async () => {
+    const old = createScanJob("old-paused-job");
+    const oldSnapshot = structuredClone(old);
+    const jobs = new Map([[old.id, old]]);
+    const store = multiJobStorage(jobs);
+    const deps: ContentReplacementJobDependencies = {
+      fetch: vi.fn(), storage: store, now: () => AT,
+      createId: () => "new-current-job", waitUntil: vi.fn().mockResolvedValue(undefined),
+    };
+    const hook = renderHook(() => useContentReplacementJob(credentials, old, deps));
+
+    await act(async () => hook.result.current.createJob({
+      ...configuration,
+      contentTypes: { questions: false, answers: false, articles: true },
+    }));
+
+    expect(jobs.get(old.id)).toEqual(oldSnapshot);
+    expect(jobs.get("new-current-job")).toEqual(hook.result.current.job);
+    expect(store.save).toHaveBeenCalledWith(expect.objectContaining({ id: "new-current-job" }), null);
   });
 
   it("accepts a Full-audit questions page when valid-zero answers were skipped", async () => {

@@ -512,7 +512,7 @@ export function useContentReplacementJob(
 
   const scanLoop = useCallback(async (token: number): Promise<void> => {
     let current = jobRef.current;
-    if (!current || current.stage !== "scan") return;
+    if (!current || current.stage !== "scan" || current.scanCompatibility !== "current") return;
     if (current.status !== "running") {
       const resumed = reduceReplacementJob(current, {
         type: "run/resume",
@@ -622,7 +622,7 @@ export function useContentReplacementJob(
 
   const resume = useCallback(async (): Promise<void> => {
     const current = jobRef.current;
-    if (!current) return;
+    if (!current || current.scanCompatibility !== "current") return;
     if (current.stage === "scan") await startScan();
   }, [startScan]);
 
@@ -708,20 +708,22 @@ export function useContentReplacementJob(
 
   const prepareApply = useCallback((expectedSelection: ReplacementSelectionSnapshot): Promise<boolean> => enqueueLocalMutation(async () => {
     const visible = jobRef.current;
-    if (!visible) return false;
-    return mutatePersisted(visible.id, (current) => ({
-      candidate: reduceReplacementJob(current, {
-        type: "apply/prepare",
-        expectedSelection,
-        at: dependenciesRef.current.now(),
-      }),
-      unchanged: "conflict",
-    }));
+    if (!visible || visible.scanCompatibility !== "current") return false;
+    return mutatePersisted(visible.id, (current) => current.scanCompatibility !== "current"
+      ? { candidate: current, unchanged: "reject" }
+      : {
+          candidate: reduceReplacementJob(current, {
+            type: "apply/prepare",
+            expectedSelection,
+            at: dependenciesRef.current.now(),
+          }),
+          unchanged: "conflict",
+        });
   }), [enqueueLocalMutation, mutatePersisted]);
 
   const applyLoop = useCallback(async (token: number): Promise<void> => {
     const visible = jobRef.current;
-    if (!visible) return;
+    if (!visible || visible.scanCompatibility !== "current") return;
     let stored: PersistedContentReplacementJob | null;
     try {
       stored = await dependenciesRef.current.storage.load(visible.id);
@@ -730,7 +732,8 @@ export function useContentReplacementJob(
       return;
     }
     if (
-      !stored || stored.id !== visible.id || stored.fingerprint !== visible.fingerprint ||
+      !stored || stored.scanCompatibility !== "current" ||
+      stored.id !== visible.id || stored.fingerprint !== visible.fingerprint ||
       stored.updatedAt !== visible.updatedAt || stored.recoverySnapshotStatus !== "ready" ||
       stableSerialize(stored) !== stableSerialize(visible)
     ) {
@@ -800,7 +803,7 @@ export function useContentReplacementJob(
   const retryEligibleFailures = useCallback(async (): Promise<void> => {
     const shouldRun = await enqueueLocalMutation(async () => {
     const current = jobRef.current;
-    if (!current) return false;
+    if (!current || current.scanCompatibility !== "current") return false;
     const next = reduceReplacementJob(current, {
       type: "apply/retry-eligible",
       at: dependenciesRef.current.now(),
@@ -813,7 +816,8 @@ export function useContentReplacementJob(
 
   const staleRescanLoop = useCallback(async (token: number): Promise<void> => {
       let current = jobRef.current;
-      if (!current || current.activeOperation?.kind !== "stale-rescan") return;
+      if (!current || current.scanCompatibility !== "current" ||
+        current.activeOperation?.kind !== "stale-rescan") return;
       if (current.status !== "running") {
         const resumed = reduceReplacementJob(current, { type: "run/resume", at: dependenciesRef.current.now() });
         if (!await persist(resumed, token)) return;
@@ -894,7 +898,7 @@ export function useContentReplacementJob(
   const rescanStaleItems = useCallback(async (itemKeys: string[]): Promise<void> => {
     const shouldRun = await enqueueLocalMutation(async () => {
     const original = jobRef.current;
-    if (!original || original.activeOperation) return false;
+    if (!original || original.scanCompatibility !== "current" || original.activeOperation) return false;
     const started = reduceReplacementJob(original, {
       type: "scan/stale-rescan-started", requestedItemKeys: itemKeys, at: dependenciesRef.current.now(),
     });

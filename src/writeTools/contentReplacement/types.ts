@@ -332,7 +332,8 @@ export type PersistedContentReplacementActiveOperation =
     };
 
 export interface PersistedContentReplacementJob {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  scanCompatibility: "current" | "legacy-restart-required";
   revision: number;
   id: string;
   fingerprint: string;

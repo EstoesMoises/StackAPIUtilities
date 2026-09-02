@@ -169,7 +169,8 @@ export function createReplacementJob(input: CreateReplacementJobInput): Persiste
     throw new TypeError("Exact targets require Exact replacement discovery.");
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    scanCompatibility: "current",
     revision: 0,
     id: input.id,
     fingerprint: input.fingerprint,

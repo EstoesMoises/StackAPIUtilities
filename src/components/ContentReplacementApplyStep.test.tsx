@@ -710,7 +710,8 @@ function recoveryJob(): PersistedContentReplacementJob {
 
 function job(overrides: Partial<PersistedContentReplacementJob> = {}): PersistedContentReplacementJob {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    scanCompatibility: "current",
     revision: 1,
     id: "job-1",
     fingerprint: "f".repeat(64),

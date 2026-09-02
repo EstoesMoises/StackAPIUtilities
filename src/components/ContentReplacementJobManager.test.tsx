@@ -23,6 +23,18 @@ describe("ContentReplacementJobManager", () => {
     expect(onOpenJob).toHaveBeenCalledWith("job-1");
   });
 
+  it("keeps a migrated paused job visible as requiring a new scan", async () => {
+    const migrated = {
+      ...replacementJob("legacy-job", "scan", "paused"),
+      scanCompatibility: "legacy-restart-required" as const,
+    };
+
+    render(<ContentReplacementJobManager storage={managerStorage([migrated])} onOpenJob={vi.fn()} />);
+
+    expect(await screen.findByText("New scan required")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Resume content replacement job legacy-job" })).toBeVisible();
+  });
+
   it("requires inline confirmation before deleting the job and all recovery data", async () => {
     const user = userEvent.setup();
     const storage = managerStorage([replacementJob("job-with-recovery", "results", "completed", true)]);
@@ -214,6 +226,7 @@ function replacementJob(
     mappingCount: 1,
     proposedPostCount: 1,
     recoverySnapshotStatus: withRecovery ? "ready" : "none",
+    scanCompatibility: "current",
     updatedAt: "2026-09-02T12:00:00.000Z",
   };
 }
