@@ -54,7 +54,7 @@ const MAX_QUEUE_ITEMS = 100_000;
 const MAX_SCHEMA_ARRAY_LENGTH = 100_000;
 const MAX_GRAPH_DEPTH = 256;
 const MAX_GRAPH_NODES = 150_000;
-const MAX_GRAPH_ENTRIES = 300_000;
+const MAX_GRAPH_ENTRIES = 500_000;
 const MAX_CANONICAL_VALIDATION_CONCURRENCY = 16;
 const MAX_INVENTORY_PAGE = 10_000;
 const MAX_PROPOSALS = 100_000;
@@ -363,7 +363,7 @@ function summaryFromIndexEntry(key: IDBValidKey, primaryKey: IDBValidKey): Conte
   };
 }
 
-async function parseContentReplacementJob(value: unknown): Promise<PersistedContentReplacementJob> {
+export async function parseContentReplacementJob(value: unknown): Promise<PersistedContentReplacementJob> {
   const normalized = normalizeContentReplacementJob(value);
   try {
     const expectedFingerprint = await createJobFingerprint({
@@ -429,6 +429,7 @@ async function validateCanonicalItem(
 }
 
 function normalizeContentReplacementJob(value: unknown): PersistedContentReplacementJob {
+  assertContentReplacementJobRoot(value);
   const safeValue = cloneSafeDataGraph(value);
   const record = exactObject(safeValue, JOB_KEYS, ["activeOperation", "operationError", "nextRetryAt", "failure"]);
   const configuration = validateConfiguration(record.configuration);
@@ -494,6 +495,30 @@ function normalizeContentReplacementJob(value: unknown): PersistedContentReplace
   };
   assertJobInvariants(normalized);
   return normalized;
+}
+
+function assertContentReplacementJobRoot(value: unknown): void {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw corruptJob();
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw corruptJob();
+    const keys = Reflect.ownKeys(value);
+    const allowed = new Set<string>(JOB_KEYS);
+    const optional = new Set(["activeOperation", "operationError", "nextRetryAt", "failure"]);
+    if (
+      keys.length > JOB_KEYS.length ||
+      keys.some((key) => typeof key !== "string" || !allowed.has(key)) ||
+      JOB_KEYS.some((key) => !optional.has(key) && !keys.includes(key))
+    ) throw corruptJob();
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || typeof descriptor.value === "function") {
+        throw corruptJob();
+      }
+    }
+  } catch {
+    throw corruptJob();
+  }
 }
 
 function assertJobInvariants(job: PersistedContentReplacementJob): void {

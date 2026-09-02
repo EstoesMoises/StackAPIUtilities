@@ -85,6 +85,11 @@ no-op, conflicting duplicate, chained, and overlapping rules block scanning.
 Rules run simultaneously against the original field value, so replacement text
 introduced by one rule is not processed by another rule.
 
+One job accepts at most 500 mappings. Each `find` value is limited to 200
+characters and each `replace` value to 500 characters. The Define step reports
+the offending row and blocks Review and scanning until these limits and the
+other mapping validations pass.
+
 The safe defaults are literal, case-sensitive, whole-term matching with code
 replacement off. Fenced, indented, and inline code is protected by default.
 Link and image destinations, autolink targets, raw HTML attributes and syntax,
@@ -92,11 +97,18 @@ and hidden raw HTML content remain protected. Advanced settings may enable
 case-insensitive or partial matching and replacement inside code, but they do
 not unprotect URL destinations or raw HTML attributes.
 
-Scanning is exhaustive for the selected content types: it paginates all
-accessible questions, each question's answer collection, and all articles, then
-fetches canonical detail records for conservative candidates. Search-index
-results are not treated as a complete inventory. An incomplete inventory cannot
-advance to Review. The review table is paginated in 50-row pages and offers
+Scanning is exhaustive for the selected content types within the enforced
+guardrails: it paginates all accessible questions, each question's answer
+collection, and all articles, then fetches canonical detail records for
+conservative candidates. Inventory cursors have a 10,000-page ceiling, detail
+inspection sends at most 10 item references per request, and a persisted job is
+limited to 100,000 proposals. Search-index results are not treated as a complete
+inventory. An incomplete inventory, a response that would continue past page
+10,000, or a job that cannot be validated within the persisted proposal cap
+fails closed and cannot advance to Review or Apply; the page-limit response
+explicitly reports the 10,000-page safety limit, while invalid stored jobs are
+reported as unavailable rather than partially trusted. The review table is
+paginated in 50-row pages and offers
 filters, exact selected-post and occurrence counts, a complete credential-free
 preview CSV, and optional bounded detail. Detail includes complete before/after
 Markdown, protected occurrences and reasons, metadata when available, rules
@@ -129,9 +141,17 @@ batch is actively making calls; work does not continue after the browser closes.
 Credential-free progress, proposal content, results, and recovery snapshots are
 saved in a dedicated browser IndexedDB database after each bounded operation.
 After an interruption, reopen the saved local job, reconnect valid credentials
-for the same Enterprise origin, and explicitly resume. OAuth tokens, API keys,
-authorization headers, and other credentials are never written into replacement
-job IndexedDB records or included in preview, result, or exception exports.
+for the same Enterprise origin, and explicitly choose Resume or Retry; completed
+bounded calls are not repeated. Retryable failures remain visible with their
+saved progress. A stale result is never written automatically: use **Rescan
+stale posts** from Results to refresh only those exact items, review the new
+evidence, and explicitly confirm any later apply. A scope that genuinely exceeds
+an enforced inventory or persistence guardrail cannot become exhaustive by
+repeatedly retrying the same job; cancel it and start a narrower content-type
+scope (or address the Enterprise inventory size) before rescanning. OAuth
+tokens, API keys, authorization headers, and other credentials are never written
+into replacement job IndexedDB records or included in preview, result, or
+exception exports.
 
 ## Credentials
 

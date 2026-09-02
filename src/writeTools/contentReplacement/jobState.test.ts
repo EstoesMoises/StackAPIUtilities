@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { parseContentReplacementJob } from "../../utils/browserContentReplacementStorage";
+import { buildReplacementProposal, createJobFingerprint } from "./proposals";
 import type {
   PersistedContentReplacementFailure,
   PersistedContentReplacementJob,
@@ -124,15 +126,26 @@ function failure(
 }
 
 describe("replacement job state", () => {
-  it("handles 10,000 proposals with deterministic batches, selections, review pages, and serialization", () => {
-    const startedAt = performance.now();
+  it("validates 10,000 canonical proposals with deterministic batches, selections, review pages, and serialization", async () => {
     const refs = Array.from({ length: 10_000 }, (_, index) => ({
       kind: "answer" as const,
       questionId: index + 1,
       answerId: index + 10_001,
     }));
-    const proposals = Object.fromEntries(refs.map((ref) => {
-      const candidate = proposal(ref);
+    const configured = createJob({ questions: false, answers: true, articles: false });
+    configured.fingerprint = await createJobFingerprint({
+      baseUrl: configured.baseUrl,
+      configuration: configured.configuration,
+    });
+    const canonical = await Promise.all(refs.map((ref) => buildReplacementProposal({
+      kind: "answer",
+      ref,
+      request: { body: "Old body" },
+    }, configured.configuration)));
+    expect(canonical.every((candidate) => candidate !== null)).toBe(true);
+    const proposals = Object.fromEntries(refs.map((ref, index) => {
+      const candidate = canonical[index];
+      if (!candidate) throw new Error("Expected a canonical 10,000-proposal fixture.");
       return [replacementItemKey(ref), {
         proposal: candidate,
         included: true,
@@ -140,20 +153,37 @@ describe("replacement job state", () => {
         status: "pending" as const,
       }];
     }));
-    const review = {
-      ...createJob({ questions: false, answers: true, articles: false }),
+    const serializedReview = JSON.stringify({
+      ...configured,
       stage: "review" as const,
       status: "completed" as const,
       inventoryQueue: [],
       detailQueue: [],
       proposals,
       progress: {
-        ...createJob().progress,
+        ...configured.progress,
+        questionPages: 100,
+        answerPages: 10_000,
+        inventoryItems: 10_000,
         detailsInspected: 10_000,
         proposalsFound: 10_000,
       },
-    };
-    const scanning = { ...review, stage: "scan" as const, detailQueue: refs };
+    });
+    const serializedScan = JSON.stringify({
+      ...configured,
+      inventoryQueue: [],
+      detailQueue: refs,
+      progress: {
+        ...configured.progress,
+        questionPages: 100,
+        answerPages: 10_000,
+        inventoryItems: 10_000,
+      },
+    });
+
+    const startedAt = performance.now();
+    const scanning = await parseContentReplacementJob(JSON.parse(serializedScan));
+    const review = await parseContentReplacementJob(JSON.parse(serializedReview));
 
     expect(getNextDetailBatch(scanning)).toEqual(refs.slice(0, 10));
     expect(getNextDetailBatch(scanning)).toEqual(getNextDetailBatch(scanning));
@@ -171,14 +201,26 @@ describe("replacement job state", () => {
     expect(getReplacementReviewPage(entries, 200)).toMatchObject({ page: 200, pageCount: 200, start: 9_951, end: 10_000 });
     expect(getReplacementReviewPage(entries, 200).items).toHaveLength(50);
 
-    const serialized = JSON.stringify(selected);
-    const parsed = JSON.parse(serialized) as PersistedContentReplacementJob;
-    expect(Object.keys(parsed.proposals)).toHaveLength(10_000);
-    expect(createReplacementSelectionSnapshot(parsed.proposals)).toEqual(
+    expect(Object.keys(review.proposals)).toHaveLength(10_000);
+    expect(createReplacementSelectionSnapshot(review.proposals)).toEqual(
+      {
+        itemKeys: refs.map(replacementItemKey).sort(),
+        selectedItems: 10_000,
+        selectedChangedOccurrences: 10_000,
+      },
+    );
+    expect(createReplacementSelectionSnapshot(selected.proposals)).toEqual(
+      {
+        itemKeys: refs.filter((_ref, index) => index < 4_500 || index >= 5_500).map(replacementItemKey).sort(),
+        selectedItems: 9_000,
+        selectedChangedOccurrences: 9_000,
+      },
+    );
+    expect(createReplacementSelectionSnapshot(review.proposals)).not.toEqual(
       createReplacementSelectionSnapshot(selected.proposals),
     );
     expect(performance.now() - startedAt).toBeLessThan(10_000);
-  }, 15_000);
+  }, 30_000);
 
   it("starts at revision zero and advances once for each accepted reducer transition", () => {
     const created = createJob();
