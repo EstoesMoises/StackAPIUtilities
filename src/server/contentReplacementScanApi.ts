@@ -1,4 +1,7 @@
-import { StackApiV3Client } from "../api/stackApiV3";
+import {
+  MAX_STACK_API_V3_RETRY_DELAY_SECONDS,
+  StackApiV3Client,
+} from "../api/stackApiV3";
 import type { ThrottleNotice } from "../api/httpClient";
 import type { NormalizedInstance } from "../credentials/credentialRules";
 import type { SessionCredentials } from "../domain/types";
@@ -38,7 +41,6 @@ const FINGERPRINT_MISMATCH_MESSAGE =
   "Replacement job configuration changed. Start a new scan.";
 const MAX_INVENTORY_PAGE = 10_000;
 const MAX_DETAIL_REFS = 10;
-const MAX_RETRY_DELAY_SECONDS = 86_400;
 const DEFAULT_RETRY_DELAY_SECONDS = 2;
 const MAX_BASE_URL_LENGTH = 2_048;
 const MAX_CREDENTIAL_STRING_LENGTH = 65_536;
@@ -94,6 +96,13 @@ export async function handleContentReplacementScanRequest(
   const browserJsonResponse = (body: ContentReplacementScanResponseBody, status: number) =>
     redactedJsonResponse(body, status, writeContext.redact, SCAN_RESPONSE_REDACTION_POLICY);
 
+  if (!isOriginOnlyInstanceUrl(validated.credentials.baseUrl)) {
+    return browserJsonResponse(
+      { ok: false, error: "Enterprise content scan requires an origin-only instance URL." },
+      400,
+    );
+  }
+
   const expectedFingerprint = await createJobFingerprint({
     baseUrl: writeContext.instance.baseUrl,
     configuration: validated.configuration,
@@ -115,16 +124,27 @@ export async function handleContentReplacementScanRequest(
       writeContext.instance,
       collectThrottleNotice,
     );
-    const result = validated.action === "inventory"
-      ? await scanInventorySlice(client, {
-          cursor: validated.cursor,
-          configuration: validated.configuration,
-        })
-      : await scanDetailBatch(client, {
-          refs: validated.refs,
-          configuration: validated.configuration,
-        });
+    if (validated.action === "inventory") {
+      const result = await scanInventorySlice(client, {
+        cursor: validated.cursor,
+        configuration: validated.configuration,
+      });
+      if (validated.cursor.page === MAX_INVENTORY_PAGE && result.nextCursor !== null) {
+        return browserJsonResponse(
+          {
+            ok: false,
+            error: "Content inventory exceeds the supported 10,000-page safety limit.",
+          },
+          502,
+        );
+      }
+      return browserJsonResponse({ ok: true, result, throttleNotices }, 200);
+    }
 
+    const result = await scanDetailBatch(client, {
+      refs: validated.refs,
+      configuration: validated.configuration,
+    });
     return browserJsonResponse({ ok: true, result, throttleNotices }, 200);
   } catch (error) {
     const status = safeErrorStatus(error);
@@ -157,8 +177,24 @@ function createDefaultClient(
       apiV3Url: instance.apiV3Url,
       token: credentials.accessToken ?? "",
       onThrottle,
+      maxRetryDelaySeconds: MAX_STACK_API_V3_RETRY_DELAY_SECONDS,
     }),
   );
+}
+
+function isOriginOnlyInstanceUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.pathname === "/" &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.username === "" &&
+      url.password === ""
+    );
+  } catch {
+    return false;
+  }
 }
 
 function validateScanPayload(value: unknown): ContentReplacementScanPayload | null {
@@ -169,7 +205,11 @@ function validateScanPayload(value: unknown): ContentReplacementScanPayload | nu
     return null;
   }
 
-  if (value.action === "inventory" && isInventoryCursor(value.cursor)) {
+  if (
+    value.action === "inventory" &&
+    isInventoryCursor(value.cursor) &&
+    isInventoryCursorRelevant(value.cursor, configuration)
+  ) {
     return {
       action: "inventory",
       credentials: value.credentials,
@@ -179,7 +219,11 @@ function validateScanPayload(value: unknown): ContentReplacementScanPayload | nu
     };
   }
 
-  if (value.action === "details" && isDetailRefs(value.refs)) {
+  if (
+    value.action === "details" &&
+    isDetailRefs(value.refs) &&
+    value.refs.every((ref) => isDetailRefRelevant(ref, configuration))
+  ) {
     assertValidDetailRefs(value.refs);
     return {
       action: "details",
@@ -324,6 +368,26 @@ function isInventoryPage(value: unknown): value is number {
   return isPositiveSafeInteger(value) && value <= MAX_INVENTORY_PAGE;
 }
 
+function isInventoryCursorRelevant(
+  cursor: InventoryCursor,
+  configuration: ReplacementConfiguration,
+): boolean {
+  if (cursor.kind === "questions") {
+    return configuration.contentTypes.questions || configuration.contentTypes.answers;
+  }
+  if (cursor.kind === "answers") return configuration.contentTypes.answers;
+  return configuration.contentTypes.articles;
+}
+
+function isDetailRefRelevant(
+  ref: ReplacementItemRef,
+  configuration: ReplacementConfiguration,
+): boolean {
+  if (ref.kind === "question") return configuration.contentTypes.questions;
+  if (ref.kind === "answer") return configuration.contentTypes.answers;
+  return configuration.contentTypes.articles;
+}
+
 function isDetailRefs(value: unknown): value is ReplacementItemRef[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > MAX_DETAIL_REFS) return false;
 
@@ -369,7 +433,7 @@ function sanitizeThrottleNotice(value: unknown): ThrottleNotice | null {
       !isRecord(value) ||
       !hasOnlyKeys(value, ["kind", "seconds", "remaining"]) ||
       (value.kind !== "backoff" && value.kind !== "burst" && value.kind !== "token-bucket") ||
-      !isBoundedNonNegativeInteger(value.seconds, MAX_RETRY_DELAY_SECONDS) ||
+      !isBoundedNonNegativeInteger(value.seconds, MAX_STACK_API_V3_RETRY_DELAY_SECONDS) ||
       (value.remaining !== undefined && !isBoundedNonNegativeInteger(value.remaining, Number.MAX_SAFE_INTEGER))
     ) {
       return null;

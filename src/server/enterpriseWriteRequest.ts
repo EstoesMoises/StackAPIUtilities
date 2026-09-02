@@ -145,8 +145,15 @@ export async function readBoundedJsonRequest(
 
 function normalizeWriteCredentials(credentials: SessionCredentials): SessionCredentials {
   const normalizedCredentials: SessionCredentials = { ...credentials };
+  const apiKey = normalizeOptionalToken(credentials.apiKey);
   const accessToken = normalizeOptionalToken(credentials.accessToken);
   const pat = normalizeOptionalToken(credentials.pat);
+
+  if (apiKey) {
+    normalizedCredentials.apiKey = apiKey;
+  } else {
+    delete normalizedCredentials.apiKey;
+  }
 
   if (accessToken) {
     normalizedCredentials.accessToken = accessToken;
@@ -183,8 +190,10 @@ function createCredentialRedactor(
   normalizedCredentials: SessionCredentials,
 ): (value: string) => string {
   const secretCandidates = [
+    createRawSecretCandidate(rawCredentials.apiKey),
     createRawSecretCandidate(rawCredentials.accessToken),
     createRawSecretCandidate(rawCredentials.pat),
+    createNormalizedSecretCandidate(normalizedCredentials.apiKey),
     createNormalizedSecretCandidate(normalizedCredentials.accessToken),
     createNormalizedSecretCandidate(normalizedCredentials.pat),
   ].filter(isSecretCandidate);

@@ -119,6 +119,31 @@ describe("StackApiV3Client", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it("surfaces an oversized retry delay without sleeping or retrying", async () => {
+    const onThrottle = vi.fn(async () => undefined);
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("upstream secret body", {
+        status: 429,
+        headers: { "Retry-After": "86401" },
+      }),
+    );
+    const client = createClient({
+      fetchFn,
+      waitFn,
+      onThrottle,
+      maxRetryDelaySeconds: 86_400,
+    });
+
+    await expect(client.getJson("/questions/42")).rejects.toThrow(
+      "Stack API v3 request failed with 429",
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).not.toHaveBeenCalled();
+    expect(onThrottle).toHaveBeenCalledTimes(1);
+    expect(onThrottle).toHaveBeenCalledWith({ kind: "backoff", seconds: 86_400 });
+  });
+
   it("retries a GET after a retryable 503 response", async () => {
     const waitFn = vi.fn(async () => undefined);
     const fetchFn = vi.fn()

@@ -1,13 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { StackApiError, type ThrottleNotice } from "../api/httpClient";
+import {
+  MAX_STACK_API_V3_RETRY_DELAY_SECONDS,
+  StackApiV3Client,
+} from "../api/stackApiV3";
 import type { NormalizedInstance } from "../credentials/credentialRules";
 import type { SessionCredentials } from "../domain/types";
-import type { ContentReplacementClient } from "../writeTools/contentReplacement/contentApi";
+import {
+  createContentReplacementClient,
+  type ContentReplacementClient,
+} from "../writeTools/contentReplacement/contentApi";
 import { createJobFingerprint } from "../writeTools/contentReplacement/proposals";
 import type {
   ReplacementConfiguration,
   ReplacementItemRef,
+  ReplacementRequestModel,
 } from "../writeTools/contentReplacement/types";
 import {
   handleContentReplacementScanRequest,
@@ -195,6 +203,40 @@ describe("handleContentReplacementScanRequest", () => {
   });
 
   it.each([
+    "https://demo.stackenterprise.co/proxy",
+    "https://demo.stackenterprise.co/?proxy=1",
+    "https://demo.stackenterprise.co/#fragment",
+    "https://user:secret-token@demo.stackenterprise.co/",
+  ])("rejects an instance URL with non-origin components before fingerprint/client work: %s", async (baseUrl) => {
+    const client = fakeContentClient();
+    const createClient = vi.fn<CreateClient>(() => client);
+    const response = await handleContentReplacementScanRequest(
+      await validScanPayload({ credentials: { ...credentials, baseUrl } }),
+      { createClient },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Enterprise content scan requires an origin-only instance URL.",
+    });
+    expect(createClient).not.toHaveBeenCalled();
+    expect(client.getQuestionsPage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "https://demo.stackenterprise.co",
+    "https://DEMO.stackenterprise.co/",
+  ])("accepts a normalized root Enterprise instance URL: %s", async (baseUrl) => {
+    const response = await handleContentReplacementScanRequest(
+      await validScanPayload({ credentials: { ...credentials, baseUrl } }),
+      { createClient: () => fakeContentClient() },
+    );
+
+    expect(response.status).toBe(200);
+  });
+
+  it.each([
     ["unknown root key", async () => ({ ...(await validScanPayload()), unexpected: true })],
     ["inventory-only refs", async () => ({ ...(await validScanPayload()), refs: [] })],
     ["details-only cursor", async () => {
@@ -232,6 +274,88 @@ describe("handleContentReplacementScanRequest", () => {
     }));
   });
 
+  it("enforces content-type relevance for every non-empty selection before creating a client", async () => {
+    const selections = [
+      { questions: true, answers: false, articles: false },
+      { questions: false, answers: true, articles: false },
+      { questions: false, answers: false, articles: true },
+      { questions: true, answers: true, articles: false },
+      { questions: true, answers: false, articles: true },
+      { questions: false, answers: true, articles: true },
+      { questions: true, answers: true, articles: true },
+    ];
+    const operations = [
+      { action: "inventory" as const, value: { kind: "questions", page: 1 }, relevant: (selection: typeof selections[number]) => selection.questions || selection.answers },
+      { action: "inventory" as const, value: { kind: "answers", questionId: 10, page: 1 }, relevant: (selection: typeof selections[number]) => selection.answers },
+      { action: "inventory" as const, value: { kind: "articles", page: 1 }, relevant: (selection: typeof selections[number]) => selection.articles },
+      { action: "details" as const, value: { kind: "question", questionId: 10 }, relevant: (selection: typeof selections[number]) => selection.questions },
+      { action: "details" as const, value: { kind: "answer", questionId: 10, answerId: 11 }, relevant: (selection: typeof selections[number]) => selection.answers },
+      { action: "details" as const, value: { kind: "article", articleId: 12 }, relevant: (selection: typeof selections[number]) => selection.articles },
+    ];
+
+    for (const contentTypes of selections) {
+      const selectedConfiguration: ReplacementConfiguration = { ...configuration, contentTypes };
+      const jobFingerprint = await createJobFingerprint({
+        baseUrl: "https://demo.stackenterprise.co",
+        configuration: selectedConfiguration,
+      });
+
+      for (const operation of operations) {
+        const client = fakeContentClient({
+          getItem: vi.fn(async (ref: ReplacementItemRef): Promise<ReplacementRequestModel> => {
+            if (ref.kind === "answer") {
+              return { kind: "answer", ref, request: { body: "unchanged" } };
+            }
+            if (ref.kind === "article") {
+              return {
+                kind: "article",
+                ref,
+                request: {
+                  title: "unchanged",
+                  body: "unchanged",
+                  tags: [],
+                  type: "knowledgeArticle",
+                  permissions: { editorUserIds: [], editorUserGroupIds: [] },
+                },
+              };
+            }
+            return { kind: "question", ref, request: { title: "unchanged", body: "unchanged", tags: [] } };
+          }),
+        });
+        const createClient = vi.fn<CreateClient>(() => client);
+        const payload = operation.action === "inventory"
+          ? {
+              action: "inventory",
+              credentials,
+              configuration: selectedConfiguration,
+              jobFingerprint,
+              cursor: operation.value,
+            }
+          : {
+              action: "details",
+              credentials,
+              configuration: selectedConfiguration,
+              jobFingerprint,
+              refs: [operation.value],
+            };
+
+        const response = await handleContentReplacementScanRequest(payload, { createClient });
+
+        if (operation.relevant(contentTypes)) {
+          expect(response.status, JSON.stringify({ contentTypes, operation })).toBe(200);
+          expect(createClient).toHaveBeenCalledTimes(1);
+        } else {
+          expect(response.status, JSON.stringify({ contentTypes, operation })).toBe(400);
+          expect(createClient).not.toHaveBeenCalled();
+          expect(client.getQuestionsPage).not.toHaveBeenCalled();
+          expect(client.getAnswersPage).not.toHaveBeenCalled();
+          expect(client.getArticlesPage).not.toHaveBeenCalled();
+          expect(client.getItem).not.toHaveBeenCalled();
+        }
+      }
+    }
+  });
+
   it.each([
     { kind: "questions", page: 0 },
     { kind: "questions", page: 10_001 },
@@ -240,6 +364,32 @@ describe("handleContentReplacementScanRequest", () => {
     { kind: "answers", questionId: Number.MAX_SAFE_INTEGER + 1, page: 1 },
   ])("rejects an invalid bounded inventory cursor: %o", async (cursor) => {
     await expectInvalidWithoutClient(await validScanPayload({ cursor } as Partial<ContentReplacementScanPayload>));
+  });
+
+  it.each([
+    ["questions", { kind: "questions", page: 10_000 }, "getQuestionsPage"],
+    ["articles", { kind: "articles", page: 10_000 }, "getArticlesPage"],
+  ] as const)("blocks %s inventory that continues beyond page 10,000", async (_kind, cursor, method) => {
+    const client = fakeContentClient({
+      [method]: vi.fn().mockResolvedValue({
+        items: [],
+        page: 10_000,
+        totalPages: 10_001,
+        hasMore: true,
+      }),
+    });
+
+    const response = await handleContentReplacementScanRequest(
+      await validScanPayload({ cursor } as Partial<ContentReplacementScanPayload>),
+      { createClient: () => client },
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "Content inventory exceeds the supported 10,000-page safety limit.",
+    });
+    expect(client[method]).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -341,6 +491,44 @@ describe("handleContentReplacementScanRequest", () => {
         retryAfterSeconds: 17,
       },
     });
+  });
+
+  it("surfaces an oversized upstream retry delay as a safe typed backoff without sleeping", async () => {
+    const waitFn = vi.fn(async () => undefined);
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("upstream secret-token body", {
+        status: 429,
+        headers: { "Retry-After": "86401" },
+      }),
+    );
+
+    const response = await handleContentReplacementScanRequest(await validScanPayload(), {
+      createClient: (_credentials, instance, onThrottle) => createContentReplacementClient(
+        new StackApiV3Client({
+          apiV3Url: instance.apiV3Url,
+          token: "secret-token",
+          fetchFn,
+          waitFn,
+          onThrottle,
+          maxRetryDelaySeconds: MAX_STACK_API_V3_RETRY_DELAY_SECONDS,
+        }),
+      ),
+    });
+    const serialized = await response.text();
+
+    expect(response.status).toBe(429);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: false,
+      error: {
+        code: "rate_limited",
+        message: "Content scan is temporarily rate limited.",
+        retryAfterSeconds: 86_400,
+      },
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(waitFn).not.toHaveBeenCalled();
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("upstream");
   });
 
   it("redacts credentials from nested hostile details while preserving protocol keys and enums", async () => {

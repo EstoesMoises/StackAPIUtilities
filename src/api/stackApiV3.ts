@@ -15,6 +15,7 @@ interface StackApiV3ClientOptions {
   waitFn?: WaitFn;
   nowFn?: NowFn;
   paginationSafetyLimit?: number;
+  maxRetryDelaySeconds?: number;
 }
 
 interface ValidatedStackApiV3Page<T> {
@@ -65,6 +66,7 @@ const BURST_LOW_WATERMARK = 5;
 const TOKEN_BUCKET_LOW_WATERMARK = 30;
 const MAX_IDEMPOTENT_RETRIES = 3;
 const FALLBACK_RETRY_SECONDS = 2;
+export const MAX_STACK_API_V3_RETRY_DELAY_SECONDS = 86_400;
 
 const waitSeconds: WaitFn = (seconds) =>
   new Promise((resolve) => setTimeout(resolve, seconds * 1_000));
@@ -93,6 +95,7 @@ export class StackApiV3Client {
   private readonly waitFn: WaitFn;
   private readonly nowFn: NowFn;
   private readonly paginationSafetyLimit: number;
+  private readonly maxRetryDelaySeconds: number;
 
   constructor(options: StackApiV3ClientOptions) {
     this.apiV3Url = options.apiV3Url.replace(/\/+$/, "");
@@ -102,6 +105,10 @@ export class StackApiV3Client {
     this.waitFn = options.waitFn ?? waitSeconds;
     this.nowFn = options.nowFn ?? (() => Date.now());
     this.paginationSafetyLimit = options.paginationSafetyLimit ?? DEFAULT_PAGINATION_SAFETY_LIMIT;
+    this.maxRetryDelaySeconds = options.maxRetryDelaySeconds ?? MAX_STACK_API_V3_RETRY_DELAY_SECONDS;
+    if (!Number.isSafeInteger(this.maxRetryDelaySeconds) || this.maxRetryDelaySeconds < 0) {
+      throw new TypeError("Stack API v3 retry delay limit must be a non-negative safe integer.");
+    }
   }
 
   async getPagedItems<T = unknown>(
@@ -265,7 +272,10 @@ export class StackApiV3Client {
       try {
         response = await this.fetchFn(url, init ?? { headers: this.createJsonHeaders() });
       } catch (error) {
-        if (retryCount >= MAX_IDEMPOTENT_RETRIES) {
+        if (
+          retryCount >= MAX_IDEMPOTENT_RETRIES ||
+          FALLBACK_RETRY_SECONDS > this.maxRetryDelaySeconds
+        ) {
           throw error;
         }
 
@@ -285,6 +295,15 @@ export class StackApiV3Client {
       }
 
       const seconds = getRetryDelaySeconds(response.headers, this.nowFn());
+      if (seconds > this.maxRetryDelaySeconds) {
+        if (response.status === 429 && this.onThrottle) {
+          await this.onThrottle({
+            kind: "backoff",
+            seconds: this.maxRetryDelaySeconds,
+          });
+        }
+        return response;
+      }
       if (response.status === 429 && this.onThrottle) {
         await this.onThrottle({ kind: "backoff", seconds });
       }

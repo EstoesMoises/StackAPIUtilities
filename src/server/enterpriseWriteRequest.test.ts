@@ -44,6 +44,31 @@ describe("prepareEnterpriseWriteContext", () => {
     expect(result.credentials).not.toHaveProperty("pat");
   });
 
+  it("normalizes and redacts raw and normalized API keys in nested success and error bodies", async () => {
+    const result = prepareEnterpriseWriteContext({
+      ...oauthCredentials,
+      apiKey: " api-key-secret ",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected a valid context");
+    expect(result.credentials.apiKey).toBe("api-key-secret");
+
+    const success = redactedJsonResponse(
+      { ok: true, result: { nested: ["raw= api-key-secret ", "normalized=api-key-secret"] } },
+      200,
+      result.redact,
+    );
+    const failure = redactedJsonResponse(
+      { ok: false, error: { nested: { "api-key-secret": " api-key-secret " } } },
+      502,
+      result.redact,
+    );
+
+    expect(await success.text()).not.toContain("api-key-secret");
+    expect(await failure.text()).not.toContain("api-key-secret");
+  });
+
   it.each([
     "https://stackenterprise.co",
     "https://demo.stackenterprise.co",
