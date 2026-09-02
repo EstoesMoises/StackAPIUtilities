@@ -487,6 +487,171 @@ describe("handleUserGroupSyncRequest", () => {
     });
   });
 
+  it.each(["create-group", "add-members", "remove-member"] as const)(
+    "preserves operation kind %s only at its declared path",
+    async (kind) => {
+      const syncMode = kind === "remove-member" ? "exact-sync" : "add-only";
+      const existingGroup =
+        kind === "create-group"
+          ? null
+          : {
+              id: 10,
+              name: kind,
+              users: kind === "remove-member" ? [{ id: 1 }, { id: 2 }] : [],
+            };
+      const expectedPreview = {
+        syncMode,
+        groupNameTemplate: kind,
+        blockingErrors: [],
+        skippedRows: [],
+        groups: [
+          {
+            manager: "Ada Lovelace",
+            groupName: kind,
+            existingGroupId: existingGroup?.id ?? null,
+            createGroup: existingGroup === null,
+            desiredUserIds: [1],
+            addUserIds: kind === "remove-member" ? [] : [1],
+            removeUserIds: kind === "remove-member" ? [2] : [],
+          },
+        ],
+      };
+      const client = createClient({
+        getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
+        getUserGroups: vi.fn().mockResolvedValue(existingGroup ? [existingGroup] : []),
+        createUserGroup: vi.fn().mockResolvedValue({ id: 10, name: kind, users: [{ id: 1 }] }),
+        addUserGroupMembers: vi.fn().mockResolvedValue({ id: 10, name: kind, users: [{ id: 1 }] }),
+        removeUserGroupMember: vi.fn().mockResolvedValue(undefined),
+      });
+
+      const response = await handleUserGroupSyncRequest(
+        {
+          action: "apply",
+          credentials: manualCredentials(kind),
+          csvText,
+          groupNameTemplate: kind,
+          syncMode,
+          expectedPreview,
+        },
+        { createClient: () => client },
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      const operation = body.result.operations.find(
+        (candidate: { kind: string }) => candidate.kind === kind,
+      );
+      expect(operation).toMatchObject({
+        kind,
+        groupName: expect.not.stringContaining(kind),
+      });
+      expect(body.result.preview.groupNameTemplate).not.toContain(kind);
+    },
+  );
+
+  it.each(["succeeded", "failed"] as const)(
+    "preserves operation status %s only at its declared path",
+    async (operationStatus) => {
+      const client = createClient({
+        getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
+        getUserGroups: vi.fn().mockResolvedValue([]),
+        createUserGroup:
+          operationStatus === "succeeded"
+            ? vi.fn().mockResolvedValue({ id: 10, name: operationStatus, users: [{ id: 1 }] })
+            : vi.fn().mockRejectedValue(new Error(`free-form ${operationStatus}`)),
+      });
+      const expectedPreview = expectedPreviewForGroup(operationStatus, "add-only");
+
+      const response = await handleUserGroupSyncRequest(
+        {
+          action: "apply",
+          credentials: manualCredentials(operationStatus),
+          csvText,
+          groupNameTemplate: operationStatus,
+          syncMode: "add-only",
+          expectedPreview,
+        },
+        { createClient: () => client },
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.result.operations[0].status).toBe(operationStatus);
+      expect(body.result.operations[0].groupName).not.toContain(operationStatus);
+      expect(body.result.preview.groupNameTemplate).not.toContain(operationStatus);
+      if (operationStatus === "failed") {
+        expect(body.result.operations[0].error).not.toContain(operationStatus);
+      }
+    },
+  );
+
+  it.each(["add-only", "exact-sync"] as const)(
+    "preserves sync mode %s only at its declared path",
+    async (syncMode) => {
+      const client = createClient({
+        getUserByEmail: vi.fn().mockResolvedValue({ id: 1, email: "grace@example.com", name: "Grace Hopper" }),
+        getUserGroups: vi.fn().mockResolvedValue([]),
+      });
+
+      const response = await handleUserGroupSyncRequest(
+        {
+          action: "preview",
+          credentials: manualCredentials(syncMode),
+          csvText,
+          groupNameTemplate: syncMode,
+          syncMode,
+        },
+        { createClient: () => client },
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.result.syncMode).toBe(syncMode);
+      expect(body.result.groupNameTemplate).not.toContain(syncMode);
+      expect(body.result.groups[0].groupName).not.toContain(syncMode);
+    },
+  );
+
+  it.each([
+    ["Missing Senior Manager", [userExportRow({ seniorManager: "" })]],
+    ["Missing Email", [userExportRow({ email: "" })]],
+    [
+      "Duplicate Email",
+      [userExportRow(), userExportRow({ firstName: "Second", lastName: "Person" })],
+    ],
+    ["Email not found in Stack Enterprise", [userExportRow()]],
+  ] as const)(
+    "preserves skipped-row reason %s only at its declared path",
+    async (reason, rows) => {
+      const client = createClient({
+        getUserByEmail: vi
+          .fn()
+          .mockResolvedValue(reason === "Email not found in Stack Enterprise" ? null : {
+            id: 1,
+            email: "grace@example.com",
+            name: "Grace Hopper",
+          }),
+        getUserGroups: vi.fn().mockResolvedValue([]),
+      });
+
+      const response = await handleUserGroupSyncRequest(
+        {
+          action: "preview",
+          credentials: manualCredentials(reason),
+          csvText: [userExportHeader, ...rows].join("\n"),
+          groupNameTemplate: reason,
+          syncMode: "add-only",
+        },
+        { createClient: () => client },
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.result.skippedRows[0].reason).toBe(reason);
+      expect(body.result.groupNameTemplate).not.toContain(reason);
+    },
+  );
+
   it("redacts submitted credentials from operation-level apply failures", async () => {
     const accessToken = "se_access_1234567890abcdef1234567890abcdef";
     const pat = "se_pat_abcdef1234567890abcdef1234567890";
@@ -1084,4 +1249,50 @@ function createClient(overrides: Partial<UserGroupSyncClient> = {}): UserGroupSy
     removeUserGroupMember: vi.fn(),
     ...overrides,
   };
+}
+
+const userExportHeader = csvText.split("\n")[0];
+
+function manualCredentials(accessToken: string): SessionCredentials {
+  return {
+    instanceType: "enterprise",
+    baseUrl: "https://demo.stackenterprise.co",
+    accessToken,
+    authSource: "manual-enterprise-token",
+  };
+}
+
+function expectedPreviewForGroup(groupName: string, syncMode: "add-only" | "exact-sync") {
+  return {
+    syncMode,
+    groupNameTemplate: groupName,
+    blockingErrors: [],
+    skippedRows: [],
+    groups: [
+      {
+        manager: "Ada Lovelace",
+        groupName,
+        existingGroupId: null,
+        createGroup: true,
+        desiredUserIds: [1],
+        addUserIds: [1],
+        removeUserIds: [],
+      },
+    ],
+  };
+}
+
+function userExportRow(
+  overrides: { seniorManager?: string; email?: string; firstName?: string; lastName?: string } = {},
+): string {
+  return [
+    "Pat Director",
+    overrides.seniorManager ?? "Ada Lovelace",
+    `${overrides.firstName ?? "Grace"} ${overrides.lastName ?? "Hopper"}`,
+    overrides.firstName ?? "Grace",
+    overrides.lastName ?? "Hopper",
+    "1001",
+    overrides.email ?? "grace@example.com",
+    "Engineer",
+  ].join(",");
 }

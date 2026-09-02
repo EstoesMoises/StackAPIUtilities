@@ -191,8 +191,22 @@ function createCredentialRedactor(
     secretCandidates.map((candidate) => [candidate.secret, candidate]),
   ).values()].sort((left, right) => right.secret.length - left.secret.length);
   const marker = chooseRedactionMarker(uniqueSecretCandidates);
+  const boundaryGuard = chooseBoundaryGuard(uniqueSecretCandidates);
 
-  return (value) => redactInSinglePass(value, uniqueSecretCandidates, marker);
+  return (value) => {
+    const redacted = redactInSinglePass(value, uniqueSecretCandidates, marker);
+    if (!containsCredential(redacted, uniqueSecretCandidates)) {
+      return redacted;
+    }
+
+    const guarded = redactInSinglePass(
+      value,
+      uniqueSecretCandidates,
+      marker,
+      boundaryGuard,
+    );
+    return containsCredential(guarded, uniqueSecretCandidates) ? boundaryGuard : guarded;
+  };
 }
 
 interface SecretCandidate {
@@ -244,10 +258,26 @@ function isSafeMarker(marker: string, candidates: SecretCandidate[]): boolean {
   return candidates.every((candidate) => !marker.includes(candidate.secret));
 }
 
+function chooseBoundaryGuard(candidates: SecretCandidate[]): string {
+  for (let codePoint = 0xe000; codePoint <= 0x10ffff; codePoint += 1) {
+    const guard = String.fromCodePoint(codePoint);
+    if (candidates.every((candidate) => !candidate.secret.includes(guard))) {
+      return guard;
+    }
+  }
+
+  return "";
+}
+
+function containsCredential(value: string, candidates: SecretCandidate[]): boolean {
+  return candidates.some((candidate) => value.includes(candidate.secret));
+}
+
 function redactInSinglePass(
   value: string,
   candidates: SecretCandidate[],
   marker: string,
+  boundaryGuard = "",
 ): string {
   let redacted = "";
   let index = 0;
@@ -255,7 +285,7 @@ function redactInSinglePass(
   while (index < value.length) {
     const candidate = candidates.find((item) => value.startsWith(item.secret, index));
     if (candidate) {
-      redacted += `${candidate.prefix}${marker}${candidate.suffix}`;
+      redacted += `${boundaryGuard}${candidate.prefix}${marker}${candidate.suffix}${boundaryGuard}`;
       index += candidate.secret.length;
     } else {
       redacted += value[index];

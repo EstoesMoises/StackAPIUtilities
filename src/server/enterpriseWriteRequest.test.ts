@@ -228,6 +228,33 @@ describe("redactedJsonResponse", () => {
     expect(serialized).not.toContain(secret);
   });
 
+  it.each([
+    ["left", "a[", "aa["],
+    ["right", "]a", "]aa"],
+  ])("does not reconstruct a credential across a %s marker boundary", async (_side, secret, tainted) => {
+    const result = prepareEnterpriseWriteContext({
+      instanceType: "enterprise",
+      baseUrl: "https://demo.stackenterprise.co",
+      accessToken: secret,
+      authSource: "manual-enterprise-token",
+    });
+    if (!result.ok) throw new Error("expected a valid context");
+
+    const response = redactedJsonResponse(
+      {
+        ok: false,
+        error: {
+          [tainted]: tainted,
+        },
+      },
+      500,
+      result.redact,
+    );
+
+    const serialized = await response.text();
+    expect(serialized).not.toContain(secret);
+  });
+
   it("redacts overlapping credentials in one non-cascading pass", async () => {
     const result = prepareEnterpriseWriteContext({
       instanceType: "enterprise",
