@@ -1,4 +1,5 @@
 import type { SessionCredentials } from "../domain/types";
+import { isSupportedEnterpriseOAuthTarget } from "../auth/enterpriseOAuthTarget";
 
 export interface ValidationResult {
   valid: boolean;
@@ -114,10 +115,8 @@ function parseSupportedWriteOrigin(value: string): string | null {
   } catch {
     return null;
   }
-  const hostname = url.hostname.toLowerCase();
   if (
-    url.protocol !== "https:" ||
-    (hostname !== "stackenterprise.co" && !hostname.endsWith(".stackenterprise.co")) ||
+    !isSupportedEnterpriseOAuthTarget(value) ||
     url.pathname !== "/" ||
     url.search !== "" ||
     url.hash !== "" ||

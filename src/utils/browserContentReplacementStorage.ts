@@ -1,3 +1,4 @@
+import { isSupportedEnterpriseOAuthTarget } from "../auth/enterpriseOAuthTarget";
 import {
   isOriginOnlyInstanceUrl,
   isSha256Digest,
@@ -3004,11 +3005,7 @@ function normalizeEnterpriseBaseUrl(value: unknown): string {
   if (typeof value !== "string" || !isOriginOnlyInstanceUrl(value)) throw corruptJob();
   try {
     const url = new URL(value);
-    const hostname = url.hostname.toLowerCase();
-    if (
-      url.protocol !== "https:" ||
-      (hostname !== "stackenterprise.co" && !hostname.endsWith(".stackenterprise.co"))
-    ) throw corruptJob();
+    if (!isSupportedEnterpriseOAuthTarget(value)) throw corruptJob();
     return url.origin;
   } catch {
     throw corruptJob();

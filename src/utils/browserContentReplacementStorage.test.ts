@@ -2657,9 +2657,13 @@ describe("browserContentReplacementStorage", () => {
     await expect(saveContentReplacementJob(job)).rejects.toThrow("Stored content replacement job is invalid.");
   });
 
-  it("canonicalizes and accepts the allowlisted apex and subdomain origins", async () => {
+  it("canonicalizes and persists Stack Enterprise and customer custom-domain origins", async () => {
     installFakeIndexedDB();
-    for (const input of ["https://STACKENTERPRISE.CO/", "https://DEMO.stackenterprise.co/"]) {
+    for (const input of [
+      "https://STACKENTERPRISE.CO/",
+      "https://DEMO.stackenterprise.co/",
+      "https://STACKOVERFLOW.MICROSOFT.COM/",
+    ]) {
       const job = createJob();
       job.baseUrl = input;
       const normalizedBaseUrl = new URL(input).origin;
@@ -2673,12 +2677,16 @@ describe("browserContentReplacementStorage", () => {
       const loaded = await loadContentReplacementJob(job.id);
 
       expect(loaded!.baseUrl).toBe(normalizedBaseUrl);
+      await expect(listContentReplacementJobs({ offset: 0, limit: 25 })).resolves.toMatchObject({
+        jobs: [expect.objectContaining({ baseUrl: normalizedBaseUrl })],
+      });
     }
   });
 
   it.each([
     "http://stackenterprise.co",
-    "https://stackenterprise.co.evil.example",
+    "https://tenant.localhost",
+    "https://stackoverflow.microsoft.com:8443",
     "https://stackenterprise.co/path",
     "https://user:password@stackenterprise.co",
     "https://stackenterprise.co?proxy=1",
@@ -2932,7 +2940,7 @@ describe("browserContentReplacementStorage", () => {
     ["missing scan compatibility", (job: any) => { delete job.scanCompatibility; }],
     ["unknown scan compatibility", (job: any) => { job.scanCompatibility = "resume-legacy"; }],
     ["non-HTTPS root", (job: any) => { job.baseUrl = "http://example.stackenterprise.co"; }],
-    ["non-Stack root", (job: any) => { job.baseUrl = "https://example.com"; }],
+    ["Teams root", (job: any) => { job.baseUrl = "https://stackoverflowteams.com"; }],
     ["non-normalized root", (job: any) => { job.baseUrl = "https://example.stackenterprise.co/path"; }],
     ["bad fingerprint", (job: any) => { job.fingerprint = "A".repeat(64); }],
     ["no rules", (job: any) => { job.configuration.rules = []; }],

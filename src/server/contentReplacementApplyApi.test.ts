@@ -515,7 +515,7 @@ describe("handleContentReplacementApplyRequest", () => {
   it.each([
     ["missing write scope", { ...credentials, oauthScopes: ["no_expiry"] }],
     ["expired token", { ...credentials, accessTokenExpiresAt: "2000-01-01T00:00:00.000Z", oauthScopes: ["write_access"] }],
-    ["unsupported instance", { ...credentials, baseUrl: "https://evil.example" }],
+    ["URL with credentials", { ...credentials, baseUrl: "https://user@stackoverflow.microsoft.com" }],
   ])("rejects invalid Enterprise write credentials before client construction: %s", async (_label, invalidCredentials) => {
     const createClient = vi.fn<CreateClient>();
     const response = await handleContentReplacementApplyRequest(

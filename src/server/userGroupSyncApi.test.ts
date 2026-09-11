@@ -246,7 +246,7 @@ describe("handleUserGroupSyncRequest", () => {
     expect(createClient).not.toHaveBeenCalled();
   });
 
-  it("rejects arbitrary public hosts as Enterprise write targets", async () => {
+  it("rejects Enterprise write targets with explicit ports", async () => {
     const createClient = vi.fn();
 
     const response = await handleUserGroupSyncRequest(
@@ -254,7 +254,7 @@ describe("handleUserGroupSyncRequest", () => {
         action: "preview",
         credentials: {
           ...credentials,
-          baseUrl: "https://example.com",
+          baseUrl: "https://stackoverflow.microsoft.com:8443",
         },
         csvText,
         groupNameTemplate: "{Senior Manager} VRM",
@@ -271,7 +271,7 @@ describe("handleUserGroupSyncRequest", () => {
     expect(createClient).not.toHaveBeenCalled();
   });
 
-  it("rejects Stack Enterprise hostname suffix attacks", async () => {
+  it("rejects Enterprise write targets with embedded credentials", async () => {
     const createClient = vi.fn();
 
     const response = await handleUserGroupSyncRequest(
@@ -279,7 +279,7 @@ describe("handleUserGroupSyncRequest", () => {
         action: "preview",
         credentials: {
           ...credentials,
-          baseUrl: "https://stackenterprise.co.evil.example",
+          baseUrl: "https://user:secret@stackoverflow.microsoft.com",
         },
         csvText,
         groupNameTemplate: "{Senior Manager} VRM",

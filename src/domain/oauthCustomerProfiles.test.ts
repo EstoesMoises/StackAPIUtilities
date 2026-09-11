@@ -59,6 +59,24 @@ describe("OAuth customer profiles", () => {
     });
   });
 
+  it("creates a normalized profile for an Enterprise custom domain", () => {
+    const result = createOAuthCustomerProfile(
+      {
+        ...draft,
+        baseUrl: "https://stackoverflow.microsoft.com/questions?tab=newest",
+      },
+      [],
+      { createId: () => "microsoft-profile", now: () => new Date("2026-08-19T12:34:56.000Z") },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      profile: {
+        baseUrl: "https://stackoverflow.microsoft.com",
+      },
+    });
+  });
+
   it("omits a blank API key from a created profile", () => {
     const result = createOAuthCustomerProfile(
       { ...draft, apiKey: "  " },
@@ -253,7 +271,9 @@ describe("OAuth customer profiles", () => {
     ["blank name", { ...draft, customerName: "  " }, { customerName: "Enter a customer name." }],
     ["blank client ID", { ...draft, oauthClientId: "  " }, { oauthClientId: "Enter an OAuth client ID." }],
     ["HTTP URL", { ...draft, baseUrl: "http://acme.stackenterprise.co" }, { baseUrl: "Enter a Stack Enterprise HTTPS instance URL." }],
-    ["unrelated URL", { ...draft, baseUrl: "https://example.com" }, { baseUrl: "Enter a Stack Enterprise HTTPS instance URL." }],
+    ["Teams URL", { ...draft, baseUrl: "https://stackoverflowteams.com/c/acme" }, { baseUrl: "Enter a Stack Enterprise HTTPS instance URL." }],
+    ["URL with credentials", { ...draft, baseUrl: "https://user@acme.stackenterprise.co" }, { baseUrl: "Enter a Stack Enterprise HTTPS instance URL." }],
+    ["URL with a port", { ...draft, baseUrl: "https://acme.stackenterprise.co:8443" }, { baseUrl: "Enter a Stack Enterprise HTTPS instance URL." }],
   ])("rejects a %s", (_description, invalidDraft, errors) => {
     expect(createOAuthCustomerProfile(invalidDraft, [])).toEqual({ ok: false, errors });
   });
