@@ -63,11 +63,13 @@ export function AppShell({ activePanel, onPanelChange, sidebar, children, summar
           <span className="session-pill">{datasetLabel}</span>
         </div>
       </header>
-      <section className="app-readiness-warning" role="note" aria-label="Production readiness warning">
-        <strong>Pre-production warning:</strong>
+      <section className="app-readiness-warning" role="note" aria-label="Open-source tooling notice">
+        <strong>Open-source notice:</strong>
         <p>
-          This app is mostly untested and is not ready for production instances. Reach out to Moises on
-          Slack with the reports you're using the most, what would be most useful, and let's connect on that.
+          These tools are open-source contributions provided as-is and on a best-effort basis. They are not
+          official Stack Overflow products or supported services. Customers should review the logic in the{" "}
+          <a href="https://github.com/EstoesMoises/StackAPIUtilities">GitHub repository</a> and are solely
+          responsible for testing, validating, and running the tools.
         </p>
       </section>
       <div className={`app-body${sidebar ? "" : " app-body__focused"}`}>

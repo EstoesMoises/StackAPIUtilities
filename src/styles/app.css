@@ -4633,6 +4633,13 @@ select:disabled {
     padding: 14px 16px;
   }
 
+  .app-readiness-warning {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 16px;
+  }
+
   .app-heading {
     font-size: 23px;
   }
