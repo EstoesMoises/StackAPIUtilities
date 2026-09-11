@@ -22,6 +22,7 @@ import {
   type ContentReplacementJobSummary,
 } from "../utils/browserContentReplacementStorage";
 import type { PersistedContentReplacementJob } from "../writeTools/contentReplacement/types";
+import { AppShell } from "./AppShell";
 
 vi.mock("../utils/browserDatasetStorage", () => ({
   clearPersistedDatasetSession: vi.fn(),
@@ -73,6 +74,20 @@ afterEach(() => {
 });
 
 describe("AppShell", () => {
+  it("exposes the open-source tooling notice and source repository", () => {
+    render(
+      <AppShell activePanel="report" onPanelChange={vi.fn()}>
+        <div>Workspace</div>
+      </AppShell>,
+    );
+
+    const notice = screen.getByRole("note", { name: "Open-source tooling notice" });
+    expect(within(notice).getByRole("link", { name: "GitHub repository" })).toHaveAttribute(
+      "href",
+      "https://github.com/EstoesMoises/StackAPIUtilities",
+    );
+  });
+
   it("gives the credentials flow a focused workspace without a catalog sidebar", async () => {
     const user = userEvent.setup();
 
@@ -102,8 +117,6 @@ describe("AppShell", () => {
     ).toEqual(["Scripts", "Utilities", "Credentials", "Uploads", "Datasets", "Write Tools"]);
     expect(screen.getByRole("button", { name: "Scripts" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Utilities" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText(/mostly untested and is not ready for production instances/i)).toBeInTheDocument();
-    expect(screen.getByText(/reach out to Moises on Slack/i)).toBeInTheDocument();
     expect(screen.getByText("No credentials")).toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tag Report" })).toBeInTheDocument();
