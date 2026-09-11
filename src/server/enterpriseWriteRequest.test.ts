@@ -90,7 +90,8 @@ describe("prepareEnterpriseWriteContext", () => {
     "https://stackenterprise.co",
     "https://demo.stackenterprise.co",
     "https://DEMO.stackenterprise.co/",
-  ])("accepts the exact HTTPS Stack Enterprise host allowlist: %s", (baseUrl) => {
+    "https://stackoverflow.microsoft.com",
+  ])("accepts HTTPS Stack Enterprise and custom-domain origins: %s", (baseUrl) => {
     expect(prepareEnterpriseWriteContext({ ...oauthCredentials, baseUrl })).toMatchObject({
       ok: true,
     });
@@ -98,10 +99,9 @@ describe("prepareEnterpriseWriteContext", () => {
 
   it.each([
     "http://demo.stackenterprise.co",
-    "https://stackenterprise.co.evil.example",
-    "https://demo.stackenterprise.co.evil.example",
-    "https://example.com",
-  ])("rejects hosts outside the exact HTTPS Stack Enterprise allowlist: %s", (baseUrl) => {
+    "https://stackoverflow.microsoft.com:8443",
+    "https://user@stackoverflow.microsoft.com",
+  ])("rejects unsafe Enterprise origins: %s", (baseUrl) => {
     expect(prepareEnterpriseWriteContext({ ...oauthCredentials, baseUrl })).toMatchObject({
       ok: false,
       code: "unsupported_enterprise_instance",

@@ -370,6 +370,27 @@ describe("oauthPkceApi", () => {
     );
   });
 
+  it("starts OAuth for an Enterprise customer custom domain", async () => {
+    const result = await handleOAuthPkceStartRequest(
+      {
+        baseUrl: "https://stackoverflow.microsoft.com",
+        clientId: "client-123",
+        scopes: ["write_access"],
+      },
+      { origin, now: () => now },
+    );
+    const body = await result.response.json();
+
+    expect(result.response.status).toBe(200);
+    expect(body).toEqual({
+      ok: true,
+      authorizationUrl: expect.stringContaining("https://stackoverflow.microsoft.com/oauth"),
+    });
+    expect(decodePendingOAuthCookie(result.cookie?.value ?? "")).toMatchObject({
+      baseUrl: "https://stackoverflow.microsoft.com",
+    });
+  });
+
   it("starts OAuth with no_expiry only when explicitly requested", async () => {
     const result = await handleOAuthPkceStartRequest(
       {
@@ -1164,7 +1185,8 @@ describe("oauthPkceApi", () => {
   it("rejects forged callback cookies before exchanging tokens", async () => {
     const forgedPendings = [
       validPending({ baseUrl: "http://127.0.0.1:1234" }),
-      validPending({ baseUrl: "https://example.com" }),
+      validPending({ baseUrl: "https://stackoverflowteams.com" }),
+      validPending({ baseUrl: "https://stackoverflow.microsoft.com:8443" }),
       validPending({ baseUrl: "https://demo.stackenterprise.co/some/path?x=1" }),
       validPending({ redirectUri: "https://demo.stackenterprise.co/not-callback" }),
       validPending({ redirectUri: "https://evil.example/api/oauth/pkce/callback" }),

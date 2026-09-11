@@ -651,7 +651,7 @@ describe("handleContentReplacementScanRequest", () => {
   });
 
   it.each([
-    ["host suffix attack", { ...credentials, baseUrl: "https://demo.stackenterprise.co.evil.example" }],
+    ["explicit port", { ...credentials, baseUrl: "https://stackoverflow.microsoft.com:8443" }],
     ["missing write scope", { ...credentials, oauthScopes: ["no_expiry"] }],
     ["expired token", { ...credentials, accessTokenExpiresAt: "2000-01-01T00:00:00.000Z", oauthScopes: ["write_access"] }],
     ["invalid manual token source", { ...credentials, authSource: "manual-pat" }],

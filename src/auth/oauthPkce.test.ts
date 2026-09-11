@@ -71,10 +71,13 @@ describe("oauthPkce", () => {
     ]);
   });
 
-  it("accepts only HTTPS stackenterprise.co OAuth targets", () => {
+  it("accepts HTTPS Enterprise origins including customer custom domains", () => {
     expect(isSupportedEnterpriseOAuthTarget("https://demo.stackenterprise.co")).toBe(true);
     expect(isSupportedEnterpriseOAuthTarget("https://stackenterprise.co")).toBe(true);
-    expect(isSupportedEnterpriseOAuthTarget("https://example.com")).toBe(false);
+    expect(isSupportedEnterpriseOAuthTarget("https://stackoverflow.microsoft.com")).toBe(true);
+    expect(isSupportedEnterpriseOAuthTarget("https://stackoverflowteams.com/c/example-team")).toBe(false);
+    expect(isSupportedEnterpriseOAuthTarget("https://user@stackoverflow.microsoft.com")).toBe(false);
+    expect(isSupportedEnterpriseOAuthTarget("https://stackoverflow.microsoft.com:8443")).toBe(false);
     expect(isSupportedEnterpriseOAuthTarget("http://demo.stackenterprise.co")).toBe(false);
     expect(isSupportedEnterpriseOAuthTarget("not a url")).toBe(false);
   });

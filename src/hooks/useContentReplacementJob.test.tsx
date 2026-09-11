@@ -200,7 +200,7 @@ describe("useContentReplacementJob", () => {
     "https://example.stackenterprise.co/path",
     "https://example.stackenterprise.co?query=1",
     "https://user@example.stackenterprise.co",
-    "https://example.stackenterprise.co.evil.test",
+    "https://example.stackenterprise.co:8443",
   ])("rejects unsupported write origins before persistence or fetch: %s", async (baseUrl) => {
     const fetcher = vi.fn();
     const deps = dependencies(fetcher);
