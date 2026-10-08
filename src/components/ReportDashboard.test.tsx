@@ -1,9 +1,39 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { TagHealthRow } from "../reports/tagReport";
 import { ReportDashboard } from "./ReportDashboard";
 
 describe("ReportDashboard", () => {
+  it("ranks top tags by the selected metric and shows its values", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReportDashboard
+        reportId="tag-report"
+        outputSource="upload"
+        records={[
+          { tagName: "alpha", totalPageViews: 300, questionCount: 1, articleCount: 2, totalUniqueContributors: 1 },
+          { tagName: "bravo", totalPageViews: 200, questionCount: 3, articleCount: 1, totalUniqueContributors: 2 },
+          { tagName: "charlie", totalPageViews: 100, questionCount: 2, articleCount: 4, totalUniqueContributors: 3 },
+        ]}
+      />,
+    );
+
+    const rankBy = screen.getByRole("combobox", { name: "Rank top tags by" });
+    const labelsAndValues = (title: string) =>
+      within(screen.getByRole("region", { name: title }))
+        .getAllByRole("listitem")
+        .map((item) => item.textContent);
+
+    expect(labelsAndValues("Top tags by page views")).toEqual(["alpha300", "bravo200", "charlie100"]);
+    await user.selectOptions(rankBy, "question_count");
+    expect(labelsAndValues("Top tags by questions")).toEqual(["bravo3", "charlie2", "alpha1"]);
+    await user.selectOptions(rankBy, "article_count");
+    expect(labelsAndValues("Top tags by articles")).toEqual(["charlie4", "alpha2", "bravo1"]);
+    await user.selectOptions(rankBy, "unique_contributors");
+    expect(labelsAndValues("Top tags by unique contributors")).toEqual(["charlie3", "bravo2", "alpha1"]);
+  });
+
   it("renders generic current versus comparison period metrics", () => {
     render(
       <ReportDashboard
@@ -260,7 +290,7 @@ describe("ReportDashboard", () => {
     expect(within(typescriptRow).getByRole("cell", { name: "0" })).toBeInTheDocument();
   });
 
-  it("normalizes live Tag Report records into the hybrid dashboard", () => {
+  it("normalizes live Tag Report records into the hybrid dashboard", async () => {
     render(
       <ReportDashboard
         reportId="tag-report"
@@ -279,6 +309,22 @@ describe("ReportDashboard", () => {
     const pythonRow = getRowByCellText(responseQueue, "python");
     expect(within(pythonRow).getByRole("cell", { name: "1" })).toBeInTheDocument();
     expect(within(pythonRow).getByRole("cell", { name: "0h" })).toBeInTheDocument();
+
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Rank top tags by" }), "unique_contributors");
+    expect(screen.getByText("Live counts include identifiable askers, answerers, commenters, and article authors from available tagged records. Rerun older saved reports to include replies.")).toBeInTheDocument();
+  });
+
+  it("flags contributor counts in a saved live report from before contributor collection", async () => {
+    render(
+      <ReportDashboard
+        reportId="tag-report"
+        outputSource="live-api"
+        records={[tagHealthRecord("python", "Healthy")]}
+      />,
+    );
+
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Rank top tags by" }), "unique_contributors");
+    expect(screen.getByText("Rerun this saved report to include answerers and commenters in Unique Contributors.")).toBeInTheDocument();
   });
 });
 

@@ -6,6 +6,7 @@ import { buildInteractionSummary } from "./interactions";
 import {
   buildTagHealthRows,
   buildTagHealthRowsFromLiveRecords,
+  getTopTagsByMetric,
   summarizeTagHealthRows,
   summarizeTags,
   type TagHealthRow,
@@ -605,6 +606,8 @@ describe("report transforms", () => {
         health_status: "Needs response attention",
         page_views: 80,
         question_count: 2,
+        article_count: 0,
+        unique_contributors: 0,
         answer_count: 2,
         sme_count: 1,
         watcher_count: 0,
@@ -613,6 +616,93 @@ describe("report transforms", () => {
         recommended_action: "Review unanswered questions and response time for this tag.",
       },
     ]);
+  });
+
+  it("counts tagged live articles and distinct question and article authors", () => {
+    const rows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "python" },
+      { datasetName: "questions", question_id: 1, tags: ["python", "PYTHON"], owner: { user_id: 7 } },
+      { datasetName: "questions", question_id: 2, tags: ["python"], owner: { user_id: 8 } },
+      { datasetName: "articles", article_id: 3, tags: ["python", "PYTHON"], owner: { user_id: 7 } },
+      { datasetName: "articles", article_id: 4, tags: ["python"], owner: { user_id: 9 } },
+      { datasetName: "articles", article_id: 5, tags: ["python"] },
+    ]);
+
+    expect(rows[0]).toMatchObject({ article_count: 3, unique_contributors: 3 });
+  });
+
+  it("includes article views in live Top Tags page-view totals", () => {
+    const rows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "articles", article_id: 1, tags: ["python"], view_count: 1000 },
+    ]);
+
+    expect(rows[0]).toMatchObject({ page_views: 1000, article_count: 1 });
+  });
+
+  it("uses scoped content views instead of adding an all-time tag view total twice", () => {
+    const rows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "python", totalPageViews: 1000 },
+      { datasetName: "questions", question_id: 1, tags: ["python"], view_count: 30 },
+      { datasetName: "articles", article_id: 2, tags: ["python"], view_count: 70 },
+    ]);
+
+    expect(rows[0]).toMatchObject({ page_views: 100 });
+  });
+
+  it("counts answerers and commenters for question, answer, and article posts", () => {
+    const rows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "questions", question_id: 10, tags: ["python"], owner: { user_id: 1 } },
+      { datasetName: "articles", article_id: 20, tags: ["python"], owner: { user_id: 2 } },
+      { datasetName: "answers", answer_id: 30, question_id: 10, owner: { user_id: 3 } },
+      { datasetName: "comments", post_id: 10, owner: { user_id: 4 } },
+      { datasetName: "comments", post_id: 30, owner: { user_id: 5 } },
+      { datasetName: "comments", post_id: 20, owner: { user_id: 6 } },
+      { datasetName: "comments", post_id: 999, owner: { user_id: 7 } },
+    ]);
+
+    expect(rows[0]).toMatchObject({ unique_contributors: 6 });
+  });
+
+  it("attributes in-period replies to tags found on older parent posts", () => {
+    const rows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "tags", name: "python" },
+      { datasetName: "answers", answer_id: 30, question_id: 10, tags: ["python"], owner: { user_id: 3 } },
+      { datasetName: "comments", post_id: 30, owner: { user_id: 4 } },
+      { datasetName: "comments", post_id: 20, tags: ["python"], owner: { user_id: 5 } },
+    ]);
+
+    expect(rows[0]).toMatchObject({ question_count: 0, article_count: 0, unique_contributors: 3 });
+  });
+
+  it("reconciles account-only authors with known user IDs", () => {
+    const rows = buildTagHealthRowsFromLiveRecords([
+      { datasetName: "users", user_id: 1, account_id: 99 },
+      { datasetName: "questions", question_id: 10, tags: ["python"], owner: { user_id: 1 } },
+      { datasetName: "articles", article_id: 20, tags: ["python"], owner: { account_id: 99 } },
+    ]);
+
+    expect(rows[0]).toMatchObject({ unique_contributors: 1 });
+  });
+
+  it("retains imported article and contributor counts in Tag Health rows", () => {
+    expect(buildTagHealthRows([
+      { tagName: "python", articleCount: 4, totalUniqueContributors: 12 },
+    ])[0]).toMatchObject({ article_count: 4, unique_contributors: 12 });
+  });
+
+  it("can promote a tag outside the page-view top ten for another metric", () => {
+    const rows = Array.from({ length: 11 }, (_, index) =>
+      tagHealthRow({
+        tag_name: `tag-${index}`,
+        page_views: 100 - index,
+        article_count: index === 10 ? 7 : 0,
+      }),
+    );
+    const summary = summarizeTagHealthRows(rows);
+
+    expect(summary.topTagsByViews).toHaveLength(10);
+    expect(getTopTagsByMetric(summary.tagRows, "article_count")[0].tag_name).toBe("tag-10");
+    expect(getTopTagsByMetric(summary.tagRows, "article_count")).toHaveLength(10);
   });
 
   it("joins normalized metadata from live Tag Health records", () => {
@@ -848,6 +938,8 @@ function tagHealthRow(overrides: Partial<TagHealthRow>): TagHealthRow {
     health_status: "Healthy",
     page_views: 0,
     question_count: 0,
+    article_count: 0,
+    unique_contributors: 0,
     answer_count: 0,
     sme_count: 0,
     watcher_count: 0,

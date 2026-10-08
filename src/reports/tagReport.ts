@@ -37,6 +37,8 @@ export interface TagHealthRow {
   health_status: TagHealthStatus;
   page_views: number;
   question_count: number;
+  article_count: number;
+  unique_contributors: number;
   answer_count: number;
   sme_count: number;
   watcher_count: number;
@@ -46,6 +48,7 @@ export interface TagHealthRow {
 }
 
 export type TagDashboardDeltaTone = "good" | "bad" | "neutral";
+export type TopTagMetric = "page_views" | "question_count" | "article_count" | "unique_contributors";
 export type TagFastestChangeMetric = "Unanswered questions" | "SMEs" | "Questions" | "Page views";
 
 export interface TagDashboardMetricCard extends MetricCard {
@@ -100,6 +103,8 @@ export const TAG_HEALTH_CSV_HEADERS = [
   "health_status",
   "page_views",
   "question_count",
+  "article_count",
+  "unique_contributors",
   "answer_count",
   "sme_count",
   "watcher_count",
@@ -114,6 +119,7 @@ export interface TagHealthSummary {
   healthStatusCounts: Record<TagHealthStatus, number>;
   statusDistribution: TagStatusDistributionRow[];
   topTagsByViews: TagHealthRow[];
+  tagRows: TagHealthRow[];
   tagsNeedingResponse: TagHealthRow[];
   tagsNeedingSmeCoverage: TagHealthRow[];
   smeCoverageQueue: TagActionQueueRow[];
@@ -128,7 +134,10 @@ interface LiveTagAggregate {
   lastUsed: string;
   hasV3TagName: boolean;
   pageViews: number;
+  tagPageViews: number;
+  hasContentViews: boolean;
   questionCount: number;
+  articleCount: number;
   tagQuestionCount: number;
   sawQuestions: boolean;
   answerCount: number;
@@ -136,6 +145,7 @@ interface LiveTagAggregate {
   unansweredQuestions: number;
   firstAnswerHours: number[];
   smeIds: Set<string>;
+  contributorIds: Set<string>;
 }
 
 const TAG_WATCHER_ALIASES = ["tagWatchers", "watcher_count", "watcherCount", "followers", "follower_count"] as const;
@@ -184,6 +194,8 @@ export function buildTagHealthRows(rows: readonly Record<string, unknown>[]): Ta
     const lastUsed = normalizeDate(getText(row, "lastUsed", "last_used"));
     const pageViews = getNumber(row, "totalPageViews", "page_views", "pageViews", "view_count", "viewCount");
     const questionCount = getNumber(row, "questionCount", "question_count");
+    const articleCount = getNumber(row, "articleCount", "article_count");
+    const uniqueContributors = getNumber(row, "totalUniqueContributors", "unique_contributors", "uniqueContributors");
     const answerCount = getNumber(row, "answerCount", "answer_count");
     const smeCount = getNumber(row, "totalSmes", "sme_count", "smeCount");
     const watcherCount = getNumber(row, "tagWatchers", "watcher_count", "watcherCount", "followers", "follower_count");
@@ -217,6 +229,8 @@ export function buildTagHealthRows(rows: readonly Record<string, unknown>[]): Ta
       health_status: healthStatus,
       page_views: pageViews,
       question_count: questionCount,
+      article_count: articleCount,
+      unique_contributors: uniqueContributors,
       answer_count: answerCount,
       sme_count: smeCount,
       watcher_count: watcherCount,
@@ -285,14 +299,8 @@ export function summarizeTagHealthRows(
     totalQuestions,
     healthStatusCounts,
     statusDistribution: buildStatusDistribution(healthStatusCounts, comparisonHealthStatusCounts),
-    topTagsByViews: [...normalizedRows]
-      .sort(
-        (a, b) =>
-          metricNumber(b.page_views) - metricNumber(a.page_views) ||
-          metricNumber(b.question_count) - metricNumber(a.question_count) ||
-          a.tag_name.localeCompare(b.tag_name),
-      )
-      .slice(0, 10),
+    topTagsByViews: getTopTagsByMetric(normalizedRows, "page_views"),
+    tagRows: normalizedRows,
     tagsNeedingResponse,
     tagsNeedingSmeCoverage,
     smeCoverageQueue: tagsNeedingSmeCoverage.map((row) => ({
@@ -321,6 +329,17 @@ export function summarizeTagHealthRows(
   };
 }
 
+export function getTopTagsByMetric(rows: readonly TagHealthRow[], metric: TopTagMetric): TagHealthRow[] {
+  const tieBreaker: TopTagMetric = metric === "page_views" ? "question_count" : "page_views";
+  return [...rows]
+    .sort((a, b) =>
+      metricNumber(b[metric]) - metricNumber(a[metric]) ||
+      metricNumber(b[tieBreaker]) - metricNumber(a[tieBreaker]) ||
+      a.tag_name.localeCompare(b.tag_name),
+    )
+    .slice(0, 10);
+}
+
 function normalizeTagHealthRow(row: TagHealthRow): TagHealthRow {
   const healthStatus =
     normalizeTagHealthStatus(row.health_status) ??
@@ -336,6 +355,8 @@ function normalizeTagHealthRow(row: TagHealthRow): TagHealthRow {
   return {
     ...row,
     tag_id: readTagId({ tag_id: row.tag_id }),
+    article_count: metricNumber(row.article_count),
+    unique_contributors: metricNumber(row.unique_contributors),
     tag_creation_date: normalizeDate(row.tag_creation_date),
     last_used: normalizeDate(row.last_used),
     health_status: healthStatus,
@@ -366,6 +387,11 @@ function aggregateTagHealthRows(rows: readonly TagHealthRow[]): TagHealthRow[] {
     if (aggregate) {
       aggregate.row.page_views += metricNumber(row.page_views);
       aggregate.row.question_count += metricNumber(row.question_count);
+      aggregate.row.article_count += metricNumber(row.article_count);
+      aggregate.row.unique_contributors = Math.max(
+        aggregate.row.unique_contributors,
+        metricNumber(row.unique_contributors),
+      );
       aggregate.row.answer_count += metricNumber(row.answer_count);
       aggregate.row.sme_count += metricNumber(row.sme_count);
       aggregate.row.watcher_count += metricNumber(row.watcher_count);
@@ -384,6 +410,8 @@ function aggregateTagHealthRows(rows: readonly TagHealthRow[]): TagHealthRow[] {
         tag_name: tagName,
         page_views: metricNumber(row.page_views),
         question_count: metricNumber(row.question_count),
+        article_count: metricNumber(row.article_count),
+        unique_contributors: metricNumber(row.unique_contributors),
         answer_count: metricNumber(row.answer_count),
         sme_count: metricNumber(row.sme_count),
         watcher_count: metricNumber(row.watcher_count),
@@ -598,6 +626,8 @@ function getDeltaTone(delta: number, direction: TagDashboardDeltaDirection): Tag
 
 export function buildTagHealthRowsFromLiveRecords(records: readonly Record<string, unknown>[]): TagHealthRow[] {
   const aggregates = new Map<string, LiveTagAggregate>();
+  const postTags = new Map<string, NormalizedTagIdentity[]>();
+  const accountToUserId = buildAccountToUserIdMap(records);
 
   for (const record of records.filter((candidate) => candidate.datasetName === "tagSmeCounts")) {
     const tag = readTagIdentity(record);
@@ -615,7 +645,7 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
     if (tag === null) continue;
 
     const aggregate = ensureLiveAggregate(aggregates, tag);
-    aggregate.pageViews += readNonNegativeNumber(record, QUESTION_VIEW_ALIASES) ?? 0;
+    aggregate.tagPageViews += readNonNegativeNumber(record, QUESTION_VIEW_ALIASES) ?? 0;
     aggregate.watcherCount += readNonNegativeNumber(record, TAG_WATCHER_ALIASES) ?? 0;
     aggregate.tagQuestionCount = Math.max(
       aggregate.tagQuestionCount,
@@ -634,6 +664,10 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
 
   for (const record of records.filter((candidate) => candidate.datasetName === "questions")) {
     const tags = readQuestionTags(record);
+    const questionViews = readNonNegativeNumber(record, QUESTION_VIEW_ALIASES);
+    const questionId = readContentId(record, "question_id", "questionId", "id");
+    if (questionId !== null) postTags.set(questionId, tags);
+    const contributorId = getContributorIdentity(record, accountToUserId);
 
     for (const tag of tags) {
       const aggregate = ensureLiveAggregate(aggregates, tag);
@@ -641,13 +675,53 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
 
       aggregate.sawQuestions = true;
       aggregate.questionCount += 1;
+      if (contributorId !== null) aggregate.contributorIds.add(contributorId);
       aggregate.answerCount += answerCount;
-      aggregate.pageViews += readNonNegativeNumber(record, QUESTION_VIEW_ALIASES) ?? 0;
+      if (questionViews !== null) {
+        aggregate.pageViews += questionViews;
+        aggregate.hasContentViews = true;
+      }
       if (isQuestionUnanswered(record, answerCount)) aggregate.unansweredQuestions += 1;
 
       const firstAnswerHours = getFirstAnswerHours(record);
       if (firstAnswerHours !== null) aggregate.firstAnswerHours.push(firstAnswerHours);
     }
+  }
+
+  for (const record of records.filter((candidate) => candidate.datasetName === "articles")) {
+    const tags = readQuestionTags(record);
+    const articleViews = readNonNegativeNumber(record, QUESTION_VIEW_ALIASES);
+    const articleId = readContentId(record, "article_id", "articleId", "id");
+    if (articleId !== null) postTags.set(articleId, tags);
+    const contributorId = getContributorIdentity(record, accountToUserId);
+
+    for (const tag of tags) {
+      const aggregate = ensureLiveAggregate(aggregates, tag);
+      aggregate.articleCount += 1;
+      if (articleViews !== null) {
+        aggregate.pageViews += articleViews;
+        aggregate.hasContentViews = true;
+      }
+      if (contributorId !== null) aggregate.contributorIds.add(contributorId);
+    }
+  }
+
+  for (const record of records.filter((candidate) => candidate.datasetName === "answers")) {
+    const questionId = readContentId(record, "question_id", "questionId");
+    const tags = (questionId === null ? undefined : postTags.get(questionId)) ?? readQuestionTags(record);
+    const answerId = readContentId(record, "answer_id", "answerId", "id");
+    if (answerId !== null) postTags.set(answerId, tags);
+    const contributorId = getContributorIdentity(record, accountToUserId);
+    if (contributorId === null) continue;
+    for (const tag of tags) ensureLiveAggregate(aggregates, tag).contributorIds.add(contributorId);
+  }
+
+  for (const record of records.filter((candidate) => candidate.datasetName === "comments")) {
+    const postId = readContentId(record, "post_id", "postId");
+    const tags = (postId === null ? undefined : postTags.get(postId)) ?? readQuestionTags(record);
+    const contributorId = getContributorIdentity(record, accountToUserId);
+    if (contributorId === null) continue;
+    for (const tag of tags) ensureLiveAggregate(aggregates, tag).contributorIds.add(contributorId);
   }
 
   records
@@ -665,10 +739,12 @@ export function buildTagHealthRowsFromLiveRecords(records: readonly Record<strin
       tagId: aggregate.tagId,
       tagCreationDate: aggregate.tagCreationDate,
       lastUsed: aggregate.lastUsed,
-      totalPageViews: aggregate.pageViews,
+      totalPageViews: aggregate.hasContentViews ? aggregate.pageViews : aggregate.tagPageViews,
       tagWatchers: aggregate.watcherCount,
       totalSmes: aggregate.smeIds.size,
       questionCount: aggregate.sawQuestions ? aggregate.questionCount : aggregate.tagQuestionCount,
+      articleCount: aggregate.articleCount,
+      totalUniqueContributors: aggregate.contributorIds.size,
       answerCount: aggregate.answerCount,
       questionsNoAnswers: aggregate.unansweredQuestions,
       medianFirstAnswerHours: median(aggregate.firstAnswerHours),
@@ -742,7 +818,10 @@ function ensureLiveAggregate(
     lastUsed: "",
     hasV3TagName: isV3Tag,
     pageViews: 0,
+    tagPageViews: 0,
+    hasContentViews: false,
     questionCount: 0,
+    articleCount: 0,
     tagQuestionCount: 0,
     sawQuestions: false,
     answerCount: 0,
@@ -750,6 +829,7 @@ function ensureLiveAggregate(
     unansweredQuestions: 0,
     firstAnswerHours: [],
     smeIds: new Set(),
+    contributorIds: new Set(),
   };
 
   aggregates.set(tag.key, aggregate);
@@ -812,6 +892,44 @@ function getSmeIdentity(record: Record<string, unknown>): string | null {
     if (typeof value === "number" && Number.isFinite(value)) return String(value);
   }
 
+  return null;
+}
+
+function getContributorIdentity(record: Record<string, unknown>, accountToUserId: Map<string, string>): string | null {
+  const owner = record.owner;
+  const ownerRecord = owner !== null && typeof owner === "object" && !Array.isArray(owner)
+    ? owner as Record<string, unknown>
+    : {};
+  const userId = readContentId(ownerRecord, "user_id", "userId", "owner_user_id", "ownerUserId")
+    ?? readContentId(record, "owner_id", "ownerId", "user_id", "userId");
+  if (userId !== null) return `user:${userId}`;
+  const accountId = readContentId(ownerRecord, "account_id", "accountId")
+    ?? readContentId(record, "account_id", "accountId");
+  if (accountId === null) return null;
+  const mappedUserId = accountToUserId.get(accountId);
+  return mappedUserId === undefined ? `account:${accountId}` : `user:${mappedUserId}`;
+}
+
+function buildAccountToUserIdMap(records: readonly Record<string, unknown>[]): Map<string, string> {
+  const mapping = new Map<string, string>();
+  for (const record of records) {
+    const owner = record.owner;
+    const person = owner !== null && typeof owner === "object" && !Array.isArray(owner)
+      ? owner as Record<string, unknown>
+      : record;
+    const userId = readContentId(person, "user_id", "userId");
+    const accountId = readContentId(person, "account_id", "accountId");
+    if (userId !== null && accountId !== null) mapping.set(accountId, userId);
+  }
+  return mapping;
+}
+
+function readContentId(record: Record<string, unknown>, ...aliases: string[]): string | null {
+  for (const alias of aliases) {
+    const value = record[alias];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
   return null;
 }
 

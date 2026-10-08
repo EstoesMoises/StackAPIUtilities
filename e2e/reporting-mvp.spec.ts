@@ -48,6 +48,14 @@ test("Tag Report collects every available page for the selected date scope", asy
   const collectionStatus = page.getByRole("status", { name: "Collection status" });
   await expect(collectionStatus).toContainText("All available data collected");
   await expect(collectionStatus).toContainText("2026-07-01 to 2026-07-31");
+  const topTagMetric = page.getByLabel("Rank top tags by");
+  await expect(page.getByRole("heading", { name: "Top tags by page views" })).toBeVisible();
+  await topTagMetric.selectOption("question_count");
+  await expect(page.getByRole("heading", { name: "Top tags by questions" })).toBeVisible();
+  await topTagMetric.selectOption("article_count");
+  await expect(page.getByRole("heading", { name: "Top tags by articles" })).toBeVisible();
+  await topTagMetric.selectOption("unique_contributors");
+  await expect(page.getByRole("heading", { name: "Top tags by unique contributors" })).toBeVisible();
   const csvDownloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export report CSV" }).click();
   const csvDownload = await csvDownloadPromise;
@@ -344,6 +352,16 @@ async function fulfillTagReport(
           },
           {
             datasetName: "articles",
+            records: [],
+            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+          },
+          {
+            datasetName: "answers",
+            records: [],
+            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
+          },
+          {
+            datasetName: "comments",
             records: [],
             pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
           },

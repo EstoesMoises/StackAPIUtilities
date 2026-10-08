@@ -663,7 +663,7 @@ describe("AppShell", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("7 datasets")).toBeInTheDocument();
+    expect(await screen.findByText("9 datasets")).toBeInTheDocument();
     await saveBasicBusinessCredentials(user);
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
@@ -734,7 +734,7 @@ describe("AppShell", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("14 datasets")).toBeInTheDocument();
+    expect(await screen.findByText("18 datasets")).toBeInTheDocument();
     await saveBasicBusinessCredentials(user);
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
@@ -1810,6 +1810,8 @@ describe("AppShell", () => {
             { datasetName: "users", records: [{ user_id: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
             { datasetName: "questions", records: [{ question_id: 10, tags: ["python"], answer_count: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
             { datasetName: "articles", records: [{ article_id: 20 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "answers", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+            { datasetName: "comments", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
             { datasetName: "tagSmes", records: [{ tagName: "python", user_id: 1 }], pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false } },
             { datasetName: "tagSmeCounts", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
             { datasetName: "tagLastUsed", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
@@ -1838,7 +1840,7 @@ describe("AppShell", () => {
       periodRole: "current",
       scope: {},
     });
-    expect(screen.getByText("7 datasets")).toBeInTheDocument();
+    expect(screen.getByText("9 datasets")).toBeInTheDocument();
     expect(screen.getByText("Questions hit the configured page cap; results may be partial.")).toBeInTheDocument();
     expect(screen.getByText("Tags Covered")).toBeInTheDocument();
     expect(screen.getByText("Top tags by page views")).toBeInTheDocument();
@@ -2566,6 +2568,8 @@ function makeTagReportRunBody(message: string) {
         { datasetName: "users", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
         { datasetName: "questions", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
         { datasetName: "articles", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "answers", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
+        { datasetName: "comments", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
         { datasetName: "tagSmes", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
         { datasetName: "tagSmeCounts", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
         { datasetName: "tagLastUsed", records: [], pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false } },
@@ -2589,6 +2593,8 @@ function makeCompleteTagReportDatasets(
     { datasetName: "users", records: [], pagination: emptyPagination },
     { datasetName: "questions", records: [], pagination: emptyPagination },
     { datasetName: "articles", records: [], pagination: emptyPagination },
+    { datasetName: "answers", records: [], pagination: emptyPagination },
+    { datasetName: "comments", records: [], pagination: emptyPagination },
     { datasetName: "tagSmes", records: [], pagination: emptyPagination },
     { datasetName: "tagSmeCounts", records: [], pagination: emptyPagination },
     { datasetName: "tagLastUsed", records: [], pagination: emptyPagination },

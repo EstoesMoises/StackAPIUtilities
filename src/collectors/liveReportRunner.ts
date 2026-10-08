@@ -101,6 +101,7 @@ export async function runLiveReport(
       collection = await collectDataset(datasetName, clients, {
         collectedDatasets,
         periodRole,
+        reportId,
         scope,
       });
     } catch (error) {

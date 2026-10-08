@@ -10,6 +10,8 @@ describe("planDatasetsForReports", () => {
       "users",
       "questions",
       "articles",
+      "answers",
+      "comments",
       "tagSmes",
       "tagSmeCounts",
       "tagLastUsed",
@@ -82,6 +84,57 @@ describe("collectDataset", () => {
 
     expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/answers", { pagesize: "100" });
     expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/comments", { pagesize: "100" });
+  });
+
+  it("looks up older answer parents without the report date range", async () => {
+    const clients = createMockClients();
+    vi.mocked(clients.v2.getPagedResult).mockImplementation(async (path) => ({
+      items: path === "/answers"
+        ? [{ answer_id: 20, question_id: 10, owner: { user_id: 2 } }]
+        : [{ question_id: 10, tags: ["python"] }],
+      pageCount: 1,
+      reachedMaxPages: false,
+      hasMore: false,
+    }));
+
+    const result = await collectDataset("answers", clients, {
+      reportId: "tag-report",
+      scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      collectedDatasets: { questions: [] },
+    });
+
+    expect(result.records).toEqual([{ answer_id: 20, question_id: 10, owner: { user_id: 2 }, tags: ["python"] }]);
+    expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/questions/10", { pagesize: "100" });
+  });
+
+  it("resolves comments on older questions, articles, and answers", async () => {
+    const clients = createMockClients();
+    vi.mocked(clients.v2.getPagedResult).mockImplementation(async (path) => ({
+      items: path === "/comments"
+        ? [{ post_id: 10 }, { post_id: 20 }, { post_id: 30 }]
+        : path === "/answers/10;20;30"
+          ? [{ answer_id: 30, question_id: 40 }]
+          : path === "/questions/10;20;30"
+            ? [{ question_id: 10, tags: ["python"] }]
+            : path === "/articles/10;20;30"
+              ? [{ article_id: 20, tags: ["react"] }]
+              : [{ question_id: 40, tags: ["typescript"] }],
+      pageCount: 1,
+      reachedMaxPages: false,
+      hasMore: false,
+    }));
+
+    const result = await collectDataset("comments", clients, {
+      reportId: "tag-report",
+      collectedDatasets: { questions: [], articles: [], answers: [] },
+    });
+
+    expect(result.records).toEqual([
+      { post_id: 10, tags: ["python"] },
+      { post_id: 20, tags: ["react"] },
+      { post_id: 30, tags: ["typescript"] },
+    ]);
+    expect(clients.v2.getPagedResult).toHaveBeenCalledWith("/questions/40", { pagesize: "100" });
   });
 
   it("collects tag SME records from previously collected tags", async () => {

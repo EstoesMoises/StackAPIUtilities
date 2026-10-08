@@ -1,6 +1,6 @@
 import { dateToUnixSeconds } from "../domain/reportScope";
-import { readTagIdentity } from "../domain/tagNormalization";
-import type { DatasetName, PeriodScope, RunPeriodRole } from "../domain/types";
+import { readQuestionTags, readTagIdentity } from "../domain/tagNormalization";
+import type { DatasetName, PeriodScope, ReportId, RunPeriodRole } from "../domain/types";
 import { buildTagLastUsedRows } from "../reports/tagLastUsed";
 
 export interface LiveCollectorClients {
@@ -41,6 +41,7 @@ export const INTERNAL_API_PAGE_SIZE = 100;
 export interface LiveCollectorContext {
   collectedDatasets?: Partial<Record<DatasetName, Record<string, unknown>[]>>;
   periodRole?: RunPeriodRole;
+  reportId?: ReportId;
   scope?: PeriodScope;
 }
 
@@ -113,11 +114,154 @@ export async function collectDataset(
     throw new UnsupportedLiveDatasetError(dataset);
   }
 
-  return collectPagedResult(
+  const collected = await collectPagedResult(
     clients[endpoint.client],
     endpoint.path,
     buildDatasetQuery(context, endpoint.client, endpoint.client === "v2"),
   );
+
+  if (context.reportId === "tag-report" && dataset === "answers") {
+    return enrichTagAnswerParents(clients.v2, collected, context);
+  }
+  if (context.reportId === "tag-report" && dataset === "comments") {
+    return enrichTagCommentParents(clients.v2, collected, context);
+  }
+  return collected;
+}
+
+async function enrichTagAnswerParents(
+  client: DatasetClient,
+  collected: CollectedDatasetResult,
+  context: LiveCollectorContext,
+): Promise<CollectedDatasetResult> {
+  const answers = toRecordList(collected.records);
+  const postTags = buildKnownPostTags(context);
+  const missingQuestionIds = uniqueValues(answers
+    .filter((answer) => !hasExplicitTags(answer))
+    .map((answer) => getRecordId(answer, "question_id", "questionId"))
+    .filter((id) => id !== null && !postTags.has(id)));
+  addParentTags(postTags, await fetchTaggedParents(client, "questions", missingQuestionIds));
+
+  return {
+    ...collected,
+    records: answers.map((answer) => {
+      const questionId = getRecordId(answer, "question_id", "questionId");
+      const tags = questionId === null ? undefined : postTags.get(questionId);
+      return tags === undefined || hasExplicitTags(answer) ? answer : { ...answer, tags };
+    }),
+  };
+}
+
+async function enrichTagCommentParents(
+  client: DatasetClient,
+  collected: CollectedDatasetResult,
+  context: LiveCollectorContext,
+): Promise<CollectedDatasetResult> {
+  const comments = toRecordList(collected.records);
+  const postTags = buildKnownPostTags(context);
+  const missingPostIds = uniqueValues(comments
+    .filter((comment) => !hasExplicitTags(comment))
+    .map((comment) => getRecordId(comment, "post_id", "postId"))
+    .filter((id) => id !== null && !postTags.has(id)));
+
+  if (missingPostIds.length > 0) {
+    const [questions, articles, answers] = await Promise.all([
+      fetchTaggedParents(client, "questions", missingPostIds),
+      fetchTaggedParents(client, "articles", missingPostIds),
+      fetchParents(client, "answers", missingPostIds),
+    ]);
+    addParentTags(postTags, questions);
+    addParentTags(postTags, articles);
+
+    const missingQuestionIds = uniqueValues(answers
+      .map((answer) => getRecordId(answer, "question_id", "questionId"))
+      .filter((id) => id !== null && !postTags.has(id)));
+    addParentTags(postTags, await fetchTaggedParents(client, "questions", missingQuestionIds));
+    for (const answer of answers) {
+      const answerId = getRecordId(answer, "answer_id", "answerId", "id");
+      const questionId = getRecordId(answer, "question_id", "questionId");
+      const tags = questionId === null ? undefined : postTags.get(questionId);
+      if (answerId !== null && tags !== undefined) postTags.set(answerId, tags);
+    }
+  }
+
+  return {
+    ...collected,
+    records: comments.map((comment) => {
+      const postId = getRecordId(comment, "post_id", "postId");
+      const tags = postId === null ? undefined : postTags.get(postId);
+      return tags === undefined || hasExplicitTags(comment) ? comment : { ...comment, tags };
+    }),
+  };
+}
+
+function buildKnownPostTags(context: LiveCollectorContext): Map<string, string[]> {
+  const postTags = new Map<string, string[]>();
+  for (const [dataset, aliases] of [
+    ["questions", ["question_id", "questionId", "id"]],
+    ["articles", ["article_id", "articleId", "id"]],
+    ["answers", ["answer_id", "answerId", "id"]],
+  ] as const) {
+    for (const record of getCollectedDataset(context, dataset)) {
+      const id = getRecordId(record, ...aliases);
+      if (id !== null) postTags.set(id, getTagNames(record));
+    }
+  }
+  return postTags;
+}
+
+async function fetchTaggedParents(
+  client: DatasetClient,
+  dataset: "questions" | "articles",
+  ids: string[],
+): Promise<Map<string, string[]>> {
+  const records = await fetchParents(client, dataset, ids);
+  const tags = new Map<string, string[]>();
+  const aliases = dataset === "questions" ? ["question_id", "questionId", "id"] : ["article_id", "articleId", "id"];
+  for (const record of records) {
+    const id = getRecordId(record, ...aliases);
+    if (id !== null) tags.set(id, getTagNames(record));
+  }
+  return tags;
+}
+
+async function fetchParents(
+  client: DatasetClient,
+  dataset: "questions" | "articles" | "answers",
+  ids: string[],
+): Promise<Record<string, unknown>[]> {
+  const records: Record<string, unknown>[] = [];
+  for (const batch of chunk(ids, INTERNAL_API_PAGE_SIZE)) {
+    const result = await client.getPagedResult(`/${dataset}/${batch.join(";")}`, {
+      pagesize: String(INTERNAL_API_PAGE_SIZE),
+    });
+    if (result.hasMore || result.reachedMaxPages) {
+      throw new Error(`Incomplete ${dataset} parent lookup for Tag Report contributors.`);
+    }
+    records.push(...toRecordList(result.items));
+  }
+  return records;
+}
+
+function addParentTags(target: Map<string, string[]>, source: Map<string, string[]>): void {
+  for (const [id, tags] of source) target.set(id, tags);
+}
+
+function hasExplicitTags(record: Record<string, unknown>): boolean {
+  return record.tags !== undefined || record.tagNames !== undefined || record.tag_names !== undefined;
+}
+
+function getTagNames(record: Record<string, unknown>): string[] {
+  return readQuestionTags(record).map((tag) => tag.displayName);
+}
+
+function getRecordId(record: Record<string, unknown>, ...aliases: string[]): string | null {
+  for (const alias of aliases) {
+    const value = record[alias];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return null;
 }
 
 async function collectTagSmes(
