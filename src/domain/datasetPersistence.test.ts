@@ -686,6 +686,14 @@ describe("datasetPersistence", () => {
     ]);
   });
 
+  it("keeps Tag Report snapshots from before answer and comment collection", () => {
+    const oldDatasets = ["tags", "users", "questions", "articles", "tagSmes", "tagSmeCounts", "tagLastUsed"];
+    const parsed = parseDatasetSessionSnapshot(createCurrentReportSnapshotValue(oldDatasets, "tag-report"));
+
+    expect(parsed?.reportRunSnapshots).toHaveLength(1);
+    expect(Object.values(parsed?.datasets ?? {})).toHaveLength(7);
+  });
+
   it.each([
     ["a missing synthetic result dataset", ["users", "questions", "answers", "comments"]],
     ["a missing required source dataset", ["users", "questions", "answers", "interactions"]],

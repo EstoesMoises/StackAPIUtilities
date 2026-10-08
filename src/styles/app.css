@@ -1558,6 +1558,25 @@ select:disabled {
   line-height: 1.35;
 }
 
+.tag-top-tags-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.tag-top-tags-controls label {
+  color: var(--so-text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.app-shell .tag-top-tags-controls .s-select {
+  width: auto;
+  min-width: 190px;
+  max-width: 100%;
+}
+
 .tag-status-distribution {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

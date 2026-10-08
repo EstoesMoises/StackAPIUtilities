@@ -25,6 +25,8 @@ describe("reportRegistry", () => {
       "users",
       "questions",
       "articles",
+      "answers",
+      "comments",
       "tagSmes",
       "tagSmeCounts",
       "tagLastUsed",

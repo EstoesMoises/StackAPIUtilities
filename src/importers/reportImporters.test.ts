@@ -20,6 +20,8 @@ describe("importReportFile", () => {
       tagCreationDate: "",
       lastUsed: "",
       totalPageViews: 551412,
+      articleCount: 3,
+      totalUniqueContributors: 1781,
       questionsNoAnswers: 222,
       medianFirstAnswerHours: 7.41,
     });

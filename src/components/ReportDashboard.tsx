@@ -55,7 +55,15 @@ export function ReportDashboard({
 
     return (
       <DashboardLayout cards={[]} warnings={warnings} showCards={false}>
-        <TagReportDashboard summary={summary} currentScope={currentScope} comparisonScope={comparisonScope} />
+        <TagReportDashboard
+          summary={summary}
+          currentScope={currentScope}
+          comparisonScope={comparisonScope}
+          isLiveSource={outputSource === "live-api" || records.some(isLiveTagReportRecord)}
+          needsContributorRefresh={outputSource === "live-api" && records.every(isTagHealthRow) && records.some(
+            (record) => typeof record.unique_contributors !== "number",
+          )}
+        />
       </DashboardLayout>
     );
   }
@@ -312,7 +320,9 @@ function normalizeTagHealthRows(
 }
 
 function isLiveTagReportRecord(record: Record<string, unknown>): boolean {
-  return record.datasetName === "tags" || record.datasetName === "questions" || record.datasetName === "tagSmes";
+  return ["tags", "questions", "articles", "answers", "comments", "tagSmes", "tagSmeCounts", "tagLastUsed"].includes(
+    String(record.datasetName ?? ""),
+  );
 }
 
 function isTagHealthRow(record: Record<string, unknown>): boolean {

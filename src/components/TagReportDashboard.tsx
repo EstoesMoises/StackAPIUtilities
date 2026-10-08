@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { formatPeriodLabel } from "../domain/reportScope";
 import type { PeriodScope } from "../domain/types";
 import type {
@@ -7,18 +7,37 @@ import type {
   TagHealthStatus,
   TagHealthSummary,
   TagStatusDistributionRow,
+  TopTagMetric,
 } from "../reports/tagReport";
+import { getTopTagsByMetric } from "../reports/tagReport";
 import { BarList } from "./charts/BarList";
 
 interface TagReportDashboardProps {
   summary: TagHealthSummary;
   currentScope?: PeriodScope;
   comparisonScope?: PeriodScope;
+  isLiveSource?: boolean;
+  needsContributorRefresh?: boolean;
 }
 
-export function TagReportDashboard({ summary, currentScope, comparisonScope }: TagReportDashboardProps) {
+const topTagMetricLabels: Record<TopTagMetric, string> = {
+  page_views: "page views",
+  question_count: "questions",
+  article_count: "articles",
+  unique_contributors: "unique contributors",
+};
+
+export function TagReportDashboard({
+  summary,
+  currentScope,
+  comparisonScope,
+  isLiveSource = false,
+  needsContributorRefresh = false,
+}: TagReportDashboardProps) {
+  const [topTagMetric, setTopTagMetric] = useState<TopTagMetric>("page_views");
   const currentPeriod = formatPeriodLabel(currentScope ?? {});
   const comparisonPeriod = summary.comparison ? formatPeriodLabel(comparisonScope ?? {}) : undefined;
+  const topTagRows = getTopTagsByMetric(summary.tagRows, topTagMetric);
 
   return (
     <div className="tag-dashboard" aria-labelledby="tag-dashboard-title">
@@ -55,13 +74,34 @@ export function TagReportDashboard({ summary, currentScope, comparisonScope }: T
         )}
       </div>
 
-      <DashboardPanel title="Top tags by page views">
+      <DashboardPanel title={`Top tags by ${topTagMetricLabels[topTagMetric]}`}>
+        <div className="tag-top-tags-controls">
+          <label htmlFor="tag-top-tags-metric">Rank top tags by</label>
+          <select
+            id="tag-top-tags-metric"
+            className="s-select"
+            value={topTagMetric}
+            onChange={(event) => setTopTagMetric(event.target.value as TopTagMetric)}
+          >
+            <option value="page_views">Page views</option>
+            <option value="question_count">Question count</option>
+            <option value="article_count">Article count</option>
+            <option value="unique_contributors">Unique contributors</option>
+          </select>
+        </div>
         <BarList
-          rows={summary.topTagsByViews.map((row) => ({
+          rows={topTagRows.map((row) => ({
             label: row.tag_name,
-            value: finiteNumber(row.page_views),
+            value: finiteNumber(row[topTagMetric]),
           }))}
         />
+        {isLiveSource && topTagMetric === "unique_contributors" ? (
+          <p className="tag-dashboard-copy">
+            {needsContributorRefresh
+              ? "Rerun this saved report to include answerers and commenters in Unique Contributors."
+              : "Live counts include identifiable askers, answerers, commenters, and article authors from available tagged records. Rerun older saved reports to include replies."}
+          </p>
+        ) : null}
       </DashboardPanel>
 
       <div className="tag-dashboard-grid">

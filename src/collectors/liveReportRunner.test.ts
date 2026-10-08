@@ -181,6 +181,8 @@ describe("runLiveReport", () => {
       "users",
       "questions",
       "articles",
+      "answers",
+      "comments",
       "tagSmes",
       "tagSmeCounts",
       "tagLastUsed",

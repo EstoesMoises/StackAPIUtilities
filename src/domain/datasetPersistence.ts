@@ -609,7 +609,7 @@ function parseReportRunSnapshot(
       );
     }) ||
     (!isLegacyVersion &&
-      (!requiredDatasets || !hasExactRequiredDatasets(value.datasetIds, datasets, requiredDatasets))) ||
+      (!requiredDatasets || !hasSupportedReportDatasets(value.reportId, value.datasetIds, datasets, requiredDatasets))) ||
     !Array.isArray(value.warnings) ||
     (isLegacyVersion && !isNonnegativeInteger(value.pageSize)) ||
     (isLegacyVersion && !isNonnegativeInteger(value.maxPagesPerDataset)) ||
@@ -665,6 +665,22 @@ function hasExactRequiredDatasets(
     new Set(datasetNames).size === datasetNames.length &&
     requiredDatasets.every((requiredDataset) => datasetNames.includes(requiredDataset))
   );
+}
+
+function hasSupportedReportDatasets(
+  reportId: unknown,
+  datasetIds: unknown[],
+  datasets: Record<string, SessionDataset>,
+  requiredDatasets: readonly DatasetName[],
+): boolean {
+  if (hasExactRequiredDatasets(datasetIds, datasets, requiredDatasets)) return true;
+  if (reportId !== "tag-report") return false;
+
+  // Runs saved before contributor collection had the same verified Tag Report sources except answers and comments.
+  const previousTagReportDatasets: DatasetName[] = [
+    "tags", "users", "questions", "articles", "tagSmes", "tagSmeCounts", "tagLastUsed",
+  ];
+  return hasExactRequiredDatasets(datasetIds, datasets, previousTagReportDatasets);
 }
 
 function pruneOrphanedCurrentLiveDatasets(

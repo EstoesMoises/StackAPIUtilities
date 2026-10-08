@@ -433,7 +433,7 @@ describe("sessionStore", () => {
         tag_creation_date: "2014-05-13",
         last_used: "2026-08-18",
         health_status: "Healthy",
-        page_views: 400,
+        page_views: 50,
         question_count: 1,
         sme_count: 1,
       }),
@@ -532,7 +532,7 @@ describe("sessionStore", () => {
     expect(state.reportOutputs["tag-report"]?.records).toEqual([
       expect.objectContaining({
         tag_name: "python",
-        page_views: 525,
+        page_views: 25,
       }),
     ]);
     expect(state.reportOutputs["tag-report"]?.records[0]).not.toHaveProperty("datasetName");
@@ -586,7 +586,7 @@ describe("sessionStore", () => {
     expect(state.reportOutputs["tag-report"]?.records).toEqual([
       expect.objectContaining({
         tag_name: "python",
-        page_views: 525,
+        page_views: 25,
         question_count: 1,
         sme_count: 1,
       }),

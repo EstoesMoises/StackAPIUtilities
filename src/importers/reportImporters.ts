@@ -37,6 +37,8 @@ function importTagMetrics(text: string) {
     tagWatchers: toNumber(row["Tag Watchers"]),
     totalSmes: toNumber(row["Total Smes"]),
     questionCount: toNumber(row["Question Count"]),
+    articleCount: toNumber(row["Article Count"]),
+    totalUniqueContributors: toNumber(row["Total Unique Contributors"]),
     questionsNoAnswers: toNumber(row["Questions No Answers"]),
     medianFirstAnswerHours: toNumber(row["Median Time To First Answer Hours"]),
     answerCount: toNumber(row["Answer Count"]),
