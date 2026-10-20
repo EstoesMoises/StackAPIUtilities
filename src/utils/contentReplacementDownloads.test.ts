@@ -204,8 +204,8 @@ describe("content replacement downloads", () => {
     expect(exceptions.split("\r\n")[0]).toBe(
       "contentType,itemId,questionId,title,webUrl,discoveryMode,coverage,suppliedTargetCount,status,category,message,retryable,statusCode,occurredAt,observedRequestChecksum",
     );
-    expect(results).toContain("question,11,,Question 11,https://example.stackenterprise.co/q/11,full,Exhaustive · all accessible selected content,,applied,applied,2,1,1,2026-09-02T13:00:00.000Z,secret-checksum");
-    expect(exceptions).toContain("answer,3,1,Answer context,https://example.stackenterprise.co/a/3,full,Exhaustive · all accessible selected content,,failed,validation,The post no longer accepts this update.,false,400,2026-09-02T13:01:00.000Z,");
+    expect(results).toContain("question,11,,Question 11,https://example.stackenterprise.co/q/11,full,Exhaustive · all accessible selected content,,applied,applied,2,1,1,2026-09-02 13:00:00,secret-checksum");
+    expect(exceptions).toContain("answer,3,1,Answer context,https://example.stackenterprise.co/a/3,full,Exhaustive · all accessible selected content,,failed,validation,The post no longer accepts this update.,false,400,2026-09-02 13:01:00,");
     expect(exceptions).not.toContain("question,11");
     expect(`${results}${exceptions}`).not.toMatch(/priorRequestModel|recovery|authorization:/i);
   });
@@ -227,8 +227,8 @@ describe("content replacement downloads", () => {
 
     const csv = createReplacementExceptionsCsv([stale, verification], configuration);
 
-    expect(csv).toContain("question,8,,Question 8,https://example.stackenterprise.co/q/8,full,Exhaustive · all accessible selected content,,failed,verification,The applied content could not be verified.,false,,2026-09-02T13:03:00.000Z,observed-secret");
-    expect(csv).toContain("article,9,,Article 9,https://example.stackenterprise.co/a/9,full,Exhaustive · all accessible selected content,,stale,stale,The post changed after review and was not updated.,false,,2026-09-02T13:02:00.000Z,");
+    expect(csv).toContain("question,8,,Question 8,https://example.stackenterprise.co/q/8,full,Exhaustive · all accessible selected content,,failed,verification,The applied content could not be verified.,false,,2026-09-02 13:03:00,observed-secret");
+    expect(csv).toContain("article,9,,Article 9,https://example.stackenterprise.co/a/9,full,Exhaustive · all accessible selected content,,stale,stale,The post changed after review and was not updated.,false,,2026-09-02 13:02:00,");
     expect(csv).not.toContain("expected-secret");
   });
 

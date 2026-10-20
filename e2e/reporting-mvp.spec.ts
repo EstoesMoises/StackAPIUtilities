@@ -1,4 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import Papa from "papaparse";
 
 test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, and datasets", async ({ page }) => {
   await page.goto("/");
@@ -62,6 +64,17 @@ test("Tag Report collects every available page for the selected date scope", asy
   expect(csvDownload.suggestedFilename()).toBe(
     "tag-report-tag-health-current-2026-08-20.csv",
   );
+  const downloadedPath = await csvDownload.path();
+  expect(downloadedPath).not.toBeNull();
+  const exported = Papa.parse<Record<string, string>>(await readFile(downloadedPath!, "utf8"), { header: true });
+  expect(exported.meta.fields).toHaveLength(31);
+  expect(exported.meta.fields).toEqual(expect.arrayContaining([
+    "webhooks", "communities", "median_first_response_hours", "unique_askers", "unique_answerers",
+    "unique_commenters", "unique_article_contributors", "question_score", "question_comments",
+    "questions_accepted_answer", "questions_self_answered", "sme_answers", "answer_score", "answer_comments",
+    "article_score", "article_comments",
+  ]));
+  expect(exported.data[0]).toMatchObject({ tag_creation_date: "2025-01-01 00:00:00", watcher_count: "42" });
   await expect(page.getByRole("status").filter({ hasText: "CSV download started" })).toContainText(
     "2 rows",
   );
@@ -112,8 +125,10 @@ test("Tag Report keeps large evidence bounded, searchable, and configurable", as
 
   await page.getByText("Columns", { exact: true }).click();
   await page.getByLabel("sme_count").check();
-  await expect(page.getByRole("columnheader", { name: "sme_count" })).toBeVisible();
-  await expect(page.locator('td[data-column-id="report-field-8"]')).toHaveText("0");
+  const smeColumn = page.getByRole("columnheader", { name: "sme_count", exact: true });
+  await expect(smeColumn).toBeVisible();
+  const smeColumnId = await smeColumn.getAttribute("data-column-id");
+  await expect(page.locator(`td[data-column-id="${smeColumnId}"]`)).toHaveText("0");
 });
 
 test("Tag Report command center stays contained at a 375px viewport", async ({ page }) => {
@@ -291,7 +306,7 @@ async function fulfillTwoPageTagReport(route: Route) {
   await fulfillTagReport(route, {
     scope: { startDate: "2026-07-01", endDate: "2026-07-31" },
     records: [
-      { name: "page-one-tag", count: 2 },
+      { name: "page-one-tag", count: 2, creation_date: 1_735_689_600, watcherCount: 42 },
       { name: "page-two-tag", count: 3 },
     ],
     pagination: { pageCount: 2, reachedMaxPages: false, hasMore: false },

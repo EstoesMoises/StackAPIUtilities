@@ -430,8 +430,8 @@ describe("sessionStore", () => {
       expect.objectContaining({
         tag_name: "PYTHON",
         tag_id: 42,
-        tag_creation_date: "2014-05-13",
-        last_used: "2026-08-18",
+        tag_creation_date: "2014-05-13 12:00:00",
+        last_used: "2026-08-18 00:00:00",
         health_status: "Healthy",
         page_views: 50,
         question_count: 1,

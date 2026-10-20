@@ -1,3 +1,4 @@
+import { readTagDetailMetrics } from "../reports/tagMetricFields";
 import type { ReportId } from "../domain/types";
 import { parseCsvRecords, toBoolean, toNumber } from "./csv";
 import { parseJsonRecords } from "./json";
@@ -33,7 +34,7 @@ function importTagMetrics(text: string) {
     tagCreationDate: String(row["Tag Creation Date"] ?? "").trim(),
     lastUsed: String(row["Last Used"] ?? "").trim(),
     totalPageViews: toNumber(row["Total Page Views"]),
-    webhooks: toNumber(row.Webhooks),
+    ...readTagDetailMetrics(row),
     tagWatchers: toNumber(row["Tag Watchers"]),
     totalSmes: toNumber(row["Total Smes"]),
     questionCount: toNumber(row["Question Count"]),

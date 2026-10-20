@@ -201,7 +201,7 @@ describe("collectDataset", () => {
       collectedDatasets: { tagSmeCounts: [{ name: "python" }] },
       scope: { startDate: "2026-01-01", endDate: "2026-01-31" },
     })).resolves.toEqual({
-      records: [{ tagName: "python", lastUsed: "2025-01-02" }],
+      records: [{ tagName: "python", lastUsed: "2025-01-02 04:00:00" }],
       pagination: { pageCount: 3, reachedMaxPages: false, hasMore: false },
     });
 

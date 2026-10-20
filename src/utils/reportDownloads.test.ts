@@ -39,8 +39,8 @@ describe("reportDownloads", () => {
     expect(download.mimeType).toBe("text/csv;charset=utf-8");
     expect(download.contents).toBe(
       [
-        "tag_name,tag_id,tag_creation_date,last_used,health_status,page_views,question_count,article_count,unique_contributors,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action",
-        "python,,,,Needs SME coverage,500,8,4,12,11,0,20,1,12,Assign or confirm SMEs for this tag.",
+        "tag_name,tag_id,tag_creation_date,last_used,health_status,page_views,question_count,article_count,unique_contributors,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action,webhooks,communities,median_first_response_hours,unique_askers,unique_answerers,unique_commenters,unique_article_contributors,question_score,question_comments,questions_accepted_answer,questions_self_answered,sme_answers,answer_score,answer_comments,article_score,article_comments",
+        "python,,,,Needs SME coverage,500,8,4,12,11,0,20,1,12,Assign or confirm SMEs for this tag.,,,,,,,,,,,,,,,,",
       ].join("\n"),
     );
   });
@@ -69,7 +69,7 @@ describe("reportDownloads", () => {
     });
 
     expect(download.contents).toBe(
-      "tag_name,tag_id,tag_creation_date,last_used,health_status,page_views,question_count,article_count,unique_contributors,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action",
+      "tag_name,tag_id,tag_creation_date,last_used,health_status,page_views,question_count,article_count,unique_contributors,answer_count,sme_count,watcher_count,unanswered_questions,median_first_answer_hours,recommended_action,webhooks,communities,median_first_response_hours,unique_askers,unique_answerers,unique_commenters,unique_article_contributors,question_score,question_comments,questions_accepted_answer,questions_self_answered,sme_answers,answer_score,answer_comments,article_score,article_comments",
     );
   });
 

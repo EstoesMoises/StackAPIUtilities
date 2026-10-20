@@ -100,6 +100,7 @@ export async function runLiveReport(
     try {
       collection = await collectDataset(datasetName, clients, {
         collectedDatasets,
+        instanceType: credentials.instanceType,
         periodRole,
         reportId,
         scope,
@@ -114,6 +115,21 @@ export async function runLiveReport(
   }
 
   datasets.push(...buildSyntheticDatasets(reportId, datasets));
+
+  if (reportId === "tag-report") {
+    warnings.push({
+      reportId,
+      code: "unavailable-webhook-counts",
+      message: "Webhook counts are unavailable from the live API; import the script CSV to include them.",
+    });
+    if (credentials.instanceType !== "enterprise" || collectedDatasets.tagSmeCounts?.some((tag) => tag.communities === undefined)) {
+      warnings.push({
+        reportId,
+        code: "unavailable-community-counts",
+        message: "Community counts are unavailable for this connection; import the script CSV to include them.",
+      });
+    }
+  }
 
   const result: LiveReportRunResult = {
     reportId,
