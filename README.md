@@ -20,6 +20,26 @@ articles that currently carry the tag, not tag assignment, edit, or general
 activity time. Last-used collection scans all available history even when health
 metrics are date-scoped.
 
+Tag CSV exports retain all 29 metrics from the reference script, alongside health
+status and recommended action. These include contributor roles, content scores
+and comment counts, accepted and self-answered questions, SME answers, and median
+time to first answer/response. Questions and articles are selected by the report
+period; their answer/comment details are collected across all dates. Response
+times exclude responses from the question author and deleted answers. No-answer
+counts mean questions with zero answers, regardless of the API's `is_answered`
+flag. Live watcher and assigned-SME counts come from v3 tag metadata.
+
+Community counts are collected through the Enterprise main-site API when
+available. Webhook configuration counts require the reference script's optional
+authenticated web collector. API-only exports leave unavailable values blank and
+show an availability warning; importing the script CSV preserves those values.
+Rerun old live reports to collect the newly required answer/comment details.
+
+All CSV date fields use UTC `YYYY-MM-DD HH:mm:ss` (with milliseconds when present),
+including Unix timestamps from raw API datasets. Datetimes without an explicit
+timezone are interpreted as UTC. Nested objects and arrays are JSON-encoded in
+CSV cells. Raw JSON downloads and stored API records retain their original data.
+
 Utilities answer defined operational questions directly from API data. The SME
 Coverage Analyzer produces an evidence-first decision pack for the question:
 where is all-time knowledge demand not matched by current assigned-SME coverage?

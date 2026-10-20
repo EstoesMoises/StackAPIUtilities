@@ -1,13 +1,8 @@
 import type { MetricCard } from "./reportModels";
-import {
-  compareCodeUnits,
-  QUESTION_VIEW_ALIASES,
-  readNonNegativeNumber,
-  readQuestionTags,
-  readTagIdentity,
-  TAG_COUNT_ALIASES,
-  type NormalizedTagIdentity,
-} from "../domain/tagNormalization";
+import { readNonNegativeNumber } from "../domain/tagNormalization";
+import { formatApiDateTime } from "../utils/apiDates";
+import { buildLiveTagMetricRows, readDate } from "./liveTagMetrics";
+import { readTagDetailMetrics, TAG_DETAIL_HEADERS, type TagDetailMetrics } from "./tagMetricFields";
 
 export interface TagMetricRow {
   tagName: string;
@@ -29,7 +24,7 @@ export type TagHealthStatus =
   | "Needs response attention"
   | "Low activity";
 
-export interface TagHealthRow {
+export interface TagHealthRow extends Partial<TagDetailMetrics> {
   tag_name: string;
   tag_id: number | null;
   tag_creation_date: string;
@@ -111,6 +106,7 @@ export const TAG_HEALTH_CSV_HEADERS = [
   "unanswered_questions",
   "median_first_answer_hours",
   "recommended_action",
+  ...TAG_DETAIL_HEADERS,
 ] as const satisfies readonly (keyof TagHealthRow)[];
 
 export interface TagHealthSummary {
@@ -127,29 +123,6 @@ export interface TagHealthSummary {
   comparison?: TagHealthComparisonSummary;
 }
 
-interface LiveTagAggregate {
-  tagName: string;
-  tagId: number | null;
-  tagCreationDate: string;
-  lastUsed: string;
-  hasV3TagName: boolean;
-  pageViews: number;
-  tagPageViews: number;
-  hasContentViews: boolean;
-  questionCount: number;
-  articleCount: number;
-  tagQuestionCount: number;
-  sawQuestions: boolean;
-  answerCount: number;
-  watcherCount: number;
-  unansweredQuestions: number;
-  firstAnswerHours: number[];
-  smeIds: Set<string>;
-  contributorIds: Set<string>;
-}
-
-const TAG_WATCHER_ALIASES = ["tagWatchers", "watcher_count", "watcherCount", "followers", "follower_count"] as const;
-const ANSWER_COUNT_ALIASES = ["answer_count", "answerCount"] as const;
 const TAG_ID_ALIASES = ["tagId", "tag_id", "id"] as const;
 
 const LOW_ACTIVITY_MAX_PAGE_VIEWS = 25;
@@ -188,10 +161,8 @@ export function buildTagHealthRows(rows: readonly Record<string, unknown>[]): Ta
   return rows.map((row) => {
     const tagName = getText(row, "tagName", "tag_name", "name") || "Unknown tag";
     const tagId = readTagId(row);
-    const tagCreationDate = normalizeDate(
-      getText(row, "tagCreationDate", "tag_creation_date", "creationDate", "creation_date"),
-    );
-    const lastUsed = normalizeDate(getText(row, "lastUsed", "last_used"));
+    const tagCreationDate = readDate(row, "tagCreationDate", "tag_creation_date", "creationDate", "creation_date");
+    const lastUsed = readDate(row, "lastUsed", "last_used");
     const pageViews = getNumber(row, "totalPageViews", "page_views", "pageViews", "view_count", "viewCount");
     const questionCount = getNumber(row, "questionCount", "question_count");
     const articleCount = getNumber(row, "articleCount", "article_count");
@@ -237,6 +208,7 @@ export function buildTagHealthRows(rows: readonly Record<string, unknown>[]): Ta
       unanswered_questions: unansweredQuestions,
       median_first_answer_hours: medianFirstAnswerHours,
       recommended_action: getRecommendedAction(healthStatus),
+      ...readTagDetailMetrics(row),
     };
   });
 }
@@ -357,8 +329,8 @@ function normalizeTagHealthRow(row: TagHealthRow): TagHealthRow {
     tag_id: readTagId({ tag_id: row.tag_id }),
     article_count: metricNumber(row.article_count),
     unique_contributors: metricNumber(row.unique_contributors),
-    tag_creation_date: normalizeDate(row.tag_creation_date),
-    last_used: normalizeDate(row.last_used),
+    tag_creation_date: formatApiDateTime(row.tag_creation_date),
+    last_used: formatApiDateTime(row.last_used),
     health_status: healthStatus,
     recommended_action: recommendedAction,
   };
@@ -625,131 +597,7 @@ function getDeltaTone(delta: number, direction: TagDashboardDeltaDirection): Tag
 }
 
 export function buildTagHealthRowsFromLiveRecords(records: readonly Record<string, unknown>[]): TagHealthRow[] {
-  const aggregates = new Map<string, LiveTagAggregate>();
-  const postTags = new Map<string, NormalizedTagIdentity[]>();
-  const accountToUserId = buildAccountToUserIdMap(records);
-
-  for (const record of records.filter((candidate) => candidate.datasetName === "tagSmeCounts")) {
-    const tag = readTagIdentity(record);
-    if (tag === null) continue;
-
-    const aggregate = ensureLiveAggregate(aggregates, tag, true);
-    aggregate.tagId ??= readTagId(record);
-    aggregate.tagCreationDate ||= normalizeDate(
-      getText(record, "tagCreationDate", "tag_creation_date", "creationDate", "creation_date"),
-    );
-  }
-
-  for (const record of records.filter((candidate) => candidate.datasetName === "tags")) {
-    const tag = readTagIdentity(record);
-    if (tag === null) continue;
-
-    const aggregate = ensureLiveAggregate(aggregates, tag);
-    aggregate.tagPageViews += readNonNegativeNumber(record, QUESTION_VIEW_ALIASES) ?? 0;
-    aggregate.watcherCount += readNonNegativeNumber(record, TAG_WATCHER_ALIASES) ?? 0;
-    aggregate.tagQuestionCount = Math.max(
-      aggregate.tagQuestionCount,
-      readNonNegativeNumber(record, TAG_COUNT_ALIASES) ?? 0,
-    );
-  }
-
-  for (const record of records.filter((candidate) => candidate.datasetName === "tagLastUsed")) {
-    const tag = readTagIdentity(record);
-    if (tag === null) continue;
-
-    const aggregate = ensureLiveAggregate(aggregates, tag);
-    const lastUsed = normalizeDate(getText(record, "lastUsed", "last_used"));
-    if (lastUsed > aggregate.lastUsed) aggregate.lastUsed = lastUsed;
-  }
-
-  for (const record of records.filter((candidate) => candidate.datasetName === "questions")) {
-    const tags = readQuestionTags(record);
-    const questionViews = readNonNegativeNumber(record, QUESTION_VIEW_ALIASES);
-    const questionId = readContentId(record, "question_id", "questionId", "id");
-    if (questionId !== null) postTags.set(questionId, tags);
-    const contributorId = getContributorIdentity(record, accountToUserId);
-
-    for (const tag of tags) {
-      const aggregate = ensureLiveAggregate(aggregates, tag);
-      const answerCount = readNonNegativeNumber(record, ANSWER_COUNT_ALIASES) ?? 0;
-
-      aggregate.sawQuestions = true;
-      aggregate.questionCount += 1;
-      if (contributorId !== null) aggregate.contributorIds.add(contributorId);
-      aggregate.answerCount += answerCount;
-      if (questionViews !== null) {
-        aggregate.pageViews += questionViews;
-        aggregate.hasContentViews = true;
-      }
-      if (isQuestionUnanswered(record, answerCount)) aggregate.unansweredQuestions += 1;
-
-      const firstAnswerHours = getFirstAnswerHours(record);
-      if (firstAnswerHours !== null) aggregate.firstAnswerHours.push(firstAnswerHours);
-    }
-  }
-
-  for (const record of records.filter((candidate) => candidate.datasetName === "articles")) {
-    const tags = readQuestionTags(record);
-    const articleViews = readNonNegativeNumber(record, QUESTION_VIEW_ALIASES);
-    const articleId = readContentId(record, "article_id", "articleId", "id");
-    if (articleId !== null) postTags.set(articleId, tags);
-    const contributorId = getContributorIdentity(record, accountToUserId);
-
-    for (const tag of tags) {
-      const aggregate = ensureLiveAggregate(aggregates, tag);
-      aggregate.articleCount += 1;
-      if (articleViews !== null) {
-        aggregate.pageViews += articleViews;
-        aggregate.hasContentViews = true;
-      }
-      if (contributorId !== null) aggregate.contributorIds.add(contributorId);
-    }
-  }
-
-  for (const record of records.filter((candidate) => candidate.datasetName === "answers")) {
-    const questionId = readContentId(record, "question_id", "questionId");
-    const tags = (questionId === null ? undefined : postTags.get(questionId)) ?? readQuestionTags(record);
-    const answerId = readContentId(record, "answer_id", "answerId", "id");
-    if (answerId !== null) postTags.set(answerId, tags);
-    const contributorId = getContributorIdentity(record, accountToUserId);
-    if (contributorId === null) continue;
-    for (const tag of tags) ensureLiveAggregate(aggregates, tag).contributorIds.add(contributorId);
-  }
-
-  for (const record of records.filter((candidate) => candidate.datasetName === "comments")) {
-    const postId = readContentId(record, "post_id", "postId");
-    const tags = (postId === null ? undefined : postTags.get(postId)) ?? readQuestionTags(record);
-    const contributorId = getContributorIdentity(record, accountToUserId);
-    if (contributorId === null) continue;
-    for (const tag of tags) ensureLiveAggregate(aggregates, tag).contributorIds.add(contributorId);
-  }
-
-  records
-    .filter((candidate) => candidate.datasetName === "tagSmes")
-    .forEach((record, index) => {
-      const tag = readTagIdentity(record);
-      if (tag === null) return;
-
-      ensureLiveAggregate(aggregates, tag).smeIds.add(getSmeIdentity(record) ?? `row-${index}`);
-    });
-
-  return buildTagHealthRows(
-    [...aggregates.values()].map((aggregate) => ({
-      tagName: aggregate.tagName,
-      tagId: aggregate.tagId,
-      tagCreationDate: aggregate.tagCreationDate,
-      lastUsed: aggregate.lastUsed,
-      totalPageViews: aggregate.hasContentViews ? aggregate.pageViews : aggregate.tagPageViews,
-      tagWatchers: aggregate.watcherCount,
-      totalSmes: aggregate.smeIds.size,
-      questionCount: aggregate.sawQuestions ? aggregate.questionCount : aggregate.tagQuestionCount,
-      articleCount: aggregate.articleCount,
-      totalUniqueContributors: aggregate.contributorIds.size,
-      answerCount: aggregate.answerCount,
-      questionsNoAnswers: aggregate.unansweredQuestions,
-      medianFirstAnswerHours: median(aggregate.firstAnswerHours),
-    })),
-  );
+  return buildTagHealthRows(buildLiveTagMetricRows(records));
 }
 
 function getTagHealthStatus({
@@ -793,146 +641,6 @@ function getRecommendedAction(status: TagHealthStatus): string {
   }
 }
 
-function ensureLiveAggregate(
-  aggregates: Map<string, LiveTagAggregate>,
-  tag: NormalizedTagIdentity,
-  isV3Tag = false,
-): LiveTagAggregate {
-  const existing = aggregates.get(tag.key);
-  if (existing) {
-    if (isV3Tag) {
-      if (!existing.hasV3TagName || compareCodeUnits(tag.displayName, existing.tagName) < 0) {
-        existing.tagName = tag.displayName;
-      }
-      existing.hasV3TagName = true;
-    } else if (!existing.hasV3TagName && compareCodeUnits(tag.displayName, existing.tagName) < 0) {
-      existing.tagName = tag.displayName;
-    }
-    return existing;
-  }
-
-  const aggregate: LiveTagAggregate = {
-    tagName: tag.displayName,
-    tagId: null,
-    tagCreationDate: "",
-    lastUsed: "",
-    hasV3TagName: isV3Tag,
-    pageViews: 0,
-    tagPageViews: 0,
-    hasContentViews: false,
-    questionCount: 0,
-    articleCount: 0,
-    tagQuestionCount: 0,
-    sawQuestions: false,
-    answerCount: 0,
-    watcherCount: 0,
-    unansweredQuestions: 0,
-    firstAnswerHours: [],
-    smeIds: new Set(),
-    contributorIds: new Set(),
-  };
-
-  aggregates.set(tag.key, aggregate);
-  return aggregate;
-}
-
-function isQuestionUnanswered(record: Record<string, unknown>, answerCount: number): boolean {
-  const isAnswered = getBoolean(record, "is_answered", "isAnswered");
-
-  if (isAnswered !== null) return !isAnswered;
-
-  return answerCount === 0;
-}
-
-function getFirstAnswerHours(record: Record<string, unknown>): number | null {
-  const creationSeconds = getEpochSeconds(record, "creation_date", "creationDate", "created_at", "createdAt");
-  const firstAnswerSeconds = getEpochSeconds(
-    record,
-    "first_answer_creation_date",
-    "firstAnswerCreationDate",
-    "first_answer_date",
-    "firstAnswerDate",
-    "first_answered_at",
-    "firstAnsweredAt",
-  );
-
-  if (creationSeconds === null || firstAnswerSeconds === null || firstAnswerSeconds < creationSeconds) {
-    return null;
-  }
-
-  return Number(((firstAnswerSeconds - creationSeconds) / 3600).toFixed(2));
-}
-
-function getEpochSeconds(record: Record<string, unknown>, ...fieldNames: string[]): number | null {
-  for (const fieldName of fieldNames) {
-    const value = record[fieldName];
-
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value > 1_000_000_000_000 ? Math.floor(value / 1000) : value;
-    }
-
-    if (typeof value === "string" && value.trim() !== "") {
-      const numericValue = Number(value);
-      if (Number.isFinite(numericValue)) {
-        return numericValue > 1_000_000_000_000 ? Math.floor(numericValue / 1000) : numericValue;
-      }
-
-      const parsedDate = Date.parse(value);
-      if (Number.isFinite(parsedDate)) return Math.floor(parsedDate / 1000);
-    }
-  }
-
-  return null;
-}
-
-function getSmeIdentity(record: Record<string, unknown>): string | null {
-  for (const fieldName of ["user_id", "userId", "account_id", "accountId", "display_name", "displayName"]) {
-    const value = record[fieldName];
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  }
-
-  return null;
-}
-
-function getContributorIdentity(record: Record<string, unknown>, accountToUserId: Map<string, string>): string | null {
-  const owner = record.owner;
-  const ownerRecord = owner !== null && typeof owner === "object" && !Array.isArray(owner)
-    ? owner as Record<string, unknown>
-    : {};
-  const userId = readContentId(ownerRecord, "user_id", "userId", "owner_user_id", "ownerUserId")
-    ?? readContentId(record, "owner_id", "ownerId", "user_id", "userId");
-  if (userId !== null) return `user:${userId}`;
-  const accountId = readContentId(ownerRecord, "account_id", "accountId")
-    ?? readContentId(record, "account_id", "accountId");
-  if (accountId === null) return null;
-  const mappedUserId = accountToUserId.get(accountId);
-  return mappedUserId === undefined ? `account:${accountId}` : `user:${mappedUserId}`;
-}
-
-function buildAccountToUserIdMap(records: readonly Record<string, unknown>[]): Map<string, string> {
-  const mapping = new Map<string, string>();
-  for (const record of records) {
-    const owner = record.owner;
-    const person = owner !== null && typeof owner === "object" && !Array.isArray(owner)
-      ? owner as Record<string, unknown>
-      : record;
-    const userId = readContentId(person, "user_id", "userId");
-    const accountId = readContentId(person, "account_id", "accountId");
-    if (userId !== null && accountId !== null) mapping.set(accountId, userId);
-  }
-  return mapping;
-}
-
-function readContentId(record: Record<string, unknown>, ...aliases: string[]): string | null {
-  for (const alias of aliases) {
-    const value = record[alias];
-    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
-  }
-  return null;
-}
-
 function getText(record: Record<string, unknown>, ...fieldNames: string[]): string {
   for (const fieldName of fieldNames) {
     const value = record[fieldName];
@@ -947,52 +655,6 @@ function readTagId(record: Record<string, unknown>): number | null {
   return tagId !== null && Number.isSafeInteger(tagId) ? tagId : null;
 }
 
-function normalizeDate(value: unknown): string {
-  if (typeof value !== "string") return "";
-
-  const dateText = value.trim();
-  if (dateText === "" || !hasValidIsoCalendarDate(dateText)) return "";
-
-  const timestamp = Date.parse(dateText);
-  return Number.isFinite(timestamp) ? formatFourDigitUtcDate(timestamp) : "";
-}
-
-function formatFourDigitUtcDate(timestamp: number): string {
-  const utcDate = new Date(timestamp).toISOString().slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(utcDate) ? utcDate : "";
-}
-
-function hasValidIsoCalendarDate(value: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/.exec(value);
-  if (match === null) return false;
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (month < 1 || month > 12 || day < 1) return false;
-
-  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  return day <= daysInMonth[month - 1];
-}
-
-function isLeapYear(year: number): boolean {
-  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-}
-
-function getBoolean(record: Record<string, unknown>, ...fieldNames: string[]): boolean | null {
-  for (const fieldName of fieldNames) {
-    const value = record[fieldName];
-    if (typeof value === "boolean") return value;
-    if (typeof value === "string") {
-      const normalized = value.trim().toLowerCase();
-      if (normalized === "true") return true;
-      if (normalized === "false") return false;
-    }
-  }
-
-  return null;
-}
-
 function getNumber(record: Record<string, unknown>, ...fieldNames: string[]): number {
   for (const fieldName of fieldNames) {
     const value = record[fieldName];
@@ -1001,17 +663,6 @@ function getNumber(record: Record<string, unknown>, ...fieldNames: string[]): nu
   }
 
   return 0;
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-
-  if (sorted.length % 2 === 1) return sorted[middle];
-
-  return Number(((sorted[middle - 1] + sorted[middle]) / 2).toFixed(2));
 }
 
 function metricNumber(value: unknown) {

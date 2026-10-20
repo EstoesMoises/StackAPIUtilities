@@ -13,6 +13,25 @@ vi.mock("./downloads", async (importOriginal) => {
 });
 
 describe("datasetDownloads", () => {
+  it("exports API dates as UTC datetimes without converting IDs or changing raw JSON", () => {
+    const dataset = liveDataset();
+    dataset.records = [{
+      user_id: 1_735_689_600,
+      creation_date: 1_735_689_600,
+      last_access_date: "1735734896000",
+      last_modified_date: "2025-01-01T13:54:56.1234567+01:00",
+      creationDate: "2025-01-01T12:54:56",
+      invalid_date: "2025-02-30",
+      missing_date: null,
+      score: 1_735_689_600,
+    }];
+    expect(buildDatasetDownload(dataset, "csv").contents).toBe([
+      "user_id,creation_date,last_access_date,last_modified_date,creationDate,invalid_date,missing_date,score",
+      "1735689600,2025-01-01 00:00:00,2025-01-01 12:34:56,2025-01-01 12:54:56.123,2025-01-01 12:54:56,2025-02-30,,1735689600",
+    ].join("\n"));
+    expect(JSON.parse(buildDatasetDownload(dataset, "json").contents)).toEqual(dataset.records);
+    expect(dataset.records[0]).toMatchObject({ creation_date: 1_735_689_600 });
+  });
   it("builds a CSV download from raw live API records", () => {
     const download = buildDatasetDownload(liveDataset(), "csv");
 

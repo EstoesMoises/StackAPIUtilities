@@ -161,7 +161,7 @@ describe("runLiveReport", () => {
   it("runs Tag Report by collecting tag SME records from tags", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) =>
       Promise.resolve(
-        new Response(JSON.stringify({
+        new Response(JSON.stringify(input.toString().includes("/v3/") && input.toString().endsWith("/comments") ? [] : {
           items: itemsForTagReportUrl(input.toString()),
           has_more: false,
           totalPages: input.toString().includes("/v3/") ? 1 : undefined,
@@ -194,7 +194,11 @@ describe("runLiveReport", () => {
       { id: 42, name: "python", creationDate: "2014-05-13T00:00:00Z" },
     ]);
     expect(result.datasets.find((dataset) => dataset.datasetName === "tagLastUsed")?.records).toEqual([
-      { tagName: "python", lastUsed: "2025-01-01" },
+      { tagName: "python", lastUsed: "2025-01-01 00:00:00" },
+    ]);
+    expect(result.warnings).toEqual([
+      { reportId: "tag-report", code: "unavailable-webhook-counts", message: "Webhook counts are unavailable from the live API; import the script CSV to include them." },
+      { reportId: "tag-report", code: "unavailable-community-counts", message: "Community counts are unavailable for this connection; import the script CSV to include them." },
     ]);
 
     const questionUrls = fetchMock.mock.calls
@@ -209,6 +213,36 @@ describe("runLiveReport", () => {
     expect(articleUrls.some((url) => url.includes("todate=1738281600"))).toBe(true);
     expect(questionUrls.filter((url) => !url.includes("fromdate=") && !url.includes("todate="))).toHaveLength(1);
     expect(articleUrls.filter((url) => !url.includes("fromdate=") && !url.includes("todate="))).toHaveLength(1);
+  });
+
+  it("includes Enterprise community counts and only warns about unavailable webhook counts", async () => {
+    const result = await runLiveReport("tag-report", {
+      instanceType: "enterprise", baseUrl: "https://demo.stackenterprise.co", apiKey: "key", accessToken: "token", authSource: "manual-enterprise-token",
+    }, { fetchFn: async (input) => {
+      const url = new URL(input.toString());
+      const items = url.pathname === "/api/v3/tags" ? [{ id: 42, name: "python" }]
+        : url.pathname === "/api/v3/communities" ? [{ id: 7, tags: [{ id: 42, name: "python" }] }] : [];
+      return new Response(JSON.stringify({ items, totalPages: 1, has_more: false }), { status: 200 });
+    } });
+
+    expect(result.datasets.find((dataset) => dataset.datasetName === "tagSmeCounts")?.records).toEqual([
+      { id: 42, name: "python", communities: 1 },
+    ]);
+    expect(result.warnings.map((warning) => warning.code)).toEqual(["unavailable-webhook-counts"]);
+  });
+
+  it("warns when Enterprise community access is unavailable", async () => {
+    const result = await runLiveReport("tag-report", {
+      instanceType: "enterprise", baseUrl: "https://demo.stackenterprise.co", apiKey: "key", accessToken: "token", authSource: "manual-enterprise-token",
+    }, { fetchFn: async (input) => {
+      const url = new URL(input.toString());
+      if (url.pathname.endsWith("/communities")) return new Response("forbidden", { status: 403 });
+      const items = url.pathname === "/api/v3/tags" ? [{ id: 42, name: "python" }] : [];
+      return new Response(JSON.stringify({ items, totalPages: 1, has_more: false }), { status: 200 });
+    } });
+
+    expect(result.datasets.find((dataset) => dataset.datasetName === "tagSmeCounts")?.records).toEqual([{ id: 42, name: "python" }]);
+    expect(result.warnings.map((warning) => warning.code)).toEqual(["unavailable-webhook-counts", "unavailable-community-counts"]);
   });
 
   it("runs API User Report by collecting reputation history from users", async () => {
@@ -335,7 +369,7 @@ function itemsForTagReportUrl(url: string): Record<string, unknown>[] {
   }
 
   if (url.includes("/questions?")) {
-    return [{ id: 1, tags: ["python"], creation_date: 1_735_689_600 }];
+    return [{ id: 1, tags: ["python"], answer_count: 0, creation_date: 1_735_689_600 }];
   }
 
   if (url.includes("/articles?")) {

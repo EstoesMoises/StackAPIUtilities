@@ -1,3 +1,4 @@
+import Papa from "papaparse";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   downloadBlobFile,
@@ -33,6 +34,70 @@ describe("downloads", () => {
       ]),
     ).toBe('name,note,missing\n"Harley, Q.","Said ""hello""\r\nthen left",');
     expect(recordsToCsvWithHeaders(["name", "note"], [])).toBe("name,note");
+  });
+
+  it("formats only datetime-shaped columns while preserving IDs, counts, and invalid values", () => {
+    const record = {
+      creation_date: 1_735_689_600,
+      creationDate: "2025-01-01T13:00:00.125+01:00",
+      lastUsed: "2025-01-02",
+      last_used: "2025-01-02 13:45:12",
+      createdAt: "1735689600000",
+      completed_at: "2025-01-01T12:00:00",
+      timestamp: 1_735_689_600,
+      eventTimestamp: 1_735_689_600,
+      invalid_date: "2025-02-30",
+      missing_date: null,
+      boolean_date: false,
+      user_id: 1_735_689_600,
+      view_count: 1_735_689_600,
+      daysSinceLastUsed: 1_735_689_600,
+      date_count: 1_735_689_600,
+      timestampCount: 1_735_689_600,
+      body: "2025-01-01T12:00:00Z",
+    };
+    const original = structuredClone(record);
+    const rows = Papa.parse<Record<string, string>>(recordsToCsv([record]), { header: true }).data;
+    expect(rows[0]).toEqual({
+      creation_date: "2025-01-01 00:00:00",
+      creationDate: "2025-01-01 12:00:00.125",
+      lastUsed: "2025-01-02 00:00:00",
+      last_used: "2025-01-02 13:45:12",
+      createdAt: "2025-01-01 00:00:00",
+      completed_at: "2025-01-01 12:00:00",
+      timestamp: "2025-01-01 00:00:00",
+      eventTimestamp: "2025-01-01 00:00:00",
+      invalid_date: "2025-02-30",
+      missing_date: "",
+      boolean_date: "false",
+      user_id: "1735689600",
+      view_count: "1735689600",
+      daysSinceLastUsed: "1735689600",
+      date_count: "1735689600",
+      timestampCount: "1735689600",
+      body: "2025-01-01T12:00:00Z",
+    });
+    expect(record).toEqual(original);
+    expect(JSON.parse(recordsToJson([record]))).toEqual([original]);
+  });
+
+  it("preserves nested objects and arrays as JSON cells with readable dates", () => {
+    const record = {
+      owner: { user_id: 1_735_689_600, creation_date: 1_735_689_600, display_name: 'Ada, "Countess"' },
+      answers: [{ answer_id: 1, creationDate: "2025-01-01T13:00:00.1234567+01:00" }],
+      badge_counts: { gold: 1_735_689_600, silver: 2 },
+      tags: ["python", "c++"],
+    };
+    const original = structuredClone(record);
+    const rows = Papa.parse<Record<string, string>>(recordsToCsv([record]), { header: true }).data;
+    expect(JSON.parse(rows[0].owner)).toEqual({
+      user_id: 1_735_689_600, creation_date: "2025-01-01 00:00:00", display_name: 'Ada, "Countess"',
+    });
+    expect(JSON.parse(rows[0].answers)).toEqual([{ answer_id: 1, creationDate: "2025-01-01 12:00:00.123" }]);
+    expect(JSON.parse(rows[0].badge_counts)).toEqual(record.badge_counts);
+    expect(JSON.parse(rows[0].tags)).toEqual(record.tags);
+    expect(record).toEqual(original);
+    expect(JSON.parse(recordsToJson([record]))).toEqual([original]);
   });
 
   it("downloads the exact Blob with the requested filename and revokes its URL", () => {

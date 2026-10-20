@@ -12,8 +12,8 @@ describe("buildTagLastUsedRows", () => {
         { tags: ["unknown"], creation_date: 1_735_689_600 },
       ],
     )).toEqual([
-      { tagName: "python", lastUsed: "2025-03-05" },
-      { tagName: "Café", lastUsed: "2024-01-01" },
+      { tagName: "python", lastUsed: "2025-03-05 04:59:59" },
+      { tagName: "Café", lastUsed: "2024-01-01 00:00:00" },
       { tagName: "unused", lastUsed: "" },
     ]);
   });
@@ -35,7 +35,7 @@ describe("buildTagLastUsedRows", () => {
     expect(buildTagLastUsedRows(
       [{ name: "python" }],
       [{ tags: ["python"], creation_date: 100_000_000_000 }],
-    )).toEqual([{ tagName: "python", lastUsed: "5138-11-16" }]);
+    )).toEqual([{ tagName: "python", lastUsed: "5138-11-16 09:46:40" }]);
   });
 
   it("accepts Unix milliseconds supplied as numbers and numeric strings", () => {
@@ -46,8 +46,8 @@ describe("buildTagLastUsedRows", () => {
         { tags: ["javascript"], creationDate: "946684800000" },
       ],
     )).toEqual([
-      { tagName: "python", lastUsed: "2000-01-01" },
-      { tagName: "javascript", lastUsed: "2000-01-01" },
+      { tagName: "python", lastUsed: "2000-01-01 00:00:00" },
+      { tagName: "javascript", lastUsed: "2000-01-01 00:00:00" },
     ]);
   });
 
@@ -75,7 +75,7 @@ describe("buildTagLastUsedRows", () => {
     expect(buildTagLastUsedRows(
       [{ name: "python" }],
       [{ tags: ["python"], creationDate: "2024-02-29T12:00:00Z" }],
-    )).toEqual([{ tagName: "python", lastUsed: "2024-02-29" }]);
+    )).toEqual([{ tagName: "python", lastUsed: "2024-02-29 12:00:00" }]);
   });
 
   it("rejects rollover dates with lowercase-t and space separators", () => {
@@ -99,8 +99,8 @@ describe("buildTagLastUsedRows", () => {
         { tags: ["javascript"], creationDate: "2024-02-29 12:00:00Z" },
       ],
     )).toEqual([
-      { tagName: "python", lastUsed: "2024-02-29" },
-      { tagName: "javascript", lastUsed: "2024-02-29" },
+      { tagName: "python", lastUsed: "2024-02-29 12:00:00" },
+      { tagName: "javascript", lastUsed: "2024-02-29 12:00:00" },
     ]);
   });
 
@@ -121,27 +121,28 @@ describe("buildTagLastUsedRows", () => {
     expect(buildTagLastUsedRows(
       [{ name: "python" }],
       [{ tags: ["python"], creationDate: " \n2024-02-29T12:00:00Z\t" }],
-    )).toEqual([{ tagName: "python", lastUsed: "2024-02-29" }]);
+    )).toEqual([{ tagName: "python", lastUsed: "2024-02-29 12:00:00" }]);
   });
 
   it.each([
-    "2024-02-29T23:59:59.123Z",
-    "2024-02-29T23:59Z",
-    "2024-02-29t23:59:59z",
-    "2024-02-29 23:59:59+02:30",
-    "2024-02-29 23:59:59+14:00",
-  ])("accepts strict timezone-aware ISO-style timestamp %s", (timestamp) => {
+    ["2024-02-29T23:59:59.123Z", "2024-02-29 23:59:59.123"],
+    ["2024-02-29T23:59Z", "2024-02-29 23:59:00"],
+    ["2024-02-29t23:59:59z", "2024-02-29 23:59:59"],
+    ["2024-02-29 23:59:59+02:30", "2024-02-29 21:29:59"],
+    ["2024-02-29 23:59:59+14:00", "2024-02-29 09:59:59"],
+    ["2024-02-29T12:00:00", "2024-02-29 12:00:00"],
+    ["2024-02-29T12:00:00.1234567", "2024-02-29 12:00:00.123"],
+  ])("preserves UTC time from ISO timestamp %s", (timestamp, expected) => {
     expect(buildTagLastUsedRows(
       [{ name: "python" }],
       [{ tags: ["python"], creationDate: timestamp }],
-    )).toEqual([{ tagName: "python", lastUsed: "2024-02-29" }]);
+    )).toEqual([{ tagName: "python", lastUsed: expected }]);
   });
 
   it.each([
     "+002025-02-29T12:00:00Z",
     "2024/02/29",
     "2024-02-29Z",
-    "2024-02-29T12:00:00",
     "2024-02-29T24:00:00Z",
     "2024-02-29T12:60:00Z",
     "2024-02-29T12:00:60Z",

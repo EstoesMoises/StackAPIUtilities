@@ -1,3 +1,5 @@
+import { formatApiDateTime } from "./apiDates";
+
 export function recordsToJson(records: unknown[]): string {
   return JSON.stringify(records, null, 2);
 }
@@ -15,14 +17,29 @@ export function recordsToCsvWithHeaders(
 ): string {
   const lines = [
     headers.join(","),
-    ...records.map((record) => headers.map((header) => escapeCsvValue(record[header])).join(",")),
+    ...records.map((record) => headers.map((header) => escapeCsvValue(formatCsvValue(header, record[header]))).join(",")),
   ];
 
   return lines.join("\n");
 }
 
+function formatCsvValue(key: string, value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => formatCsvValue(key, item));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+      childKey, formatCsvValue(childKey, childValue),
+    ]));
+  }
+
+  // Restrict conversion to date columns so large IDs, counts, and duration metrics stay numeric.
+  const normalizedKey = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  const isDateField = /(?:^|_)(?:date|timestamp|at)$/.test(normalizedKey) ||
+    ["last_used", "last_seen", "last_active", "last_activity", "last_login"].includes(normalizedKey);
+  return isDateField ? formatApiDateTime(value) || value : value;
+}
+
 function escapeCsvValue(value: unknown): string {
-  const text = String(value ?? "");
+  const text = value !== null && typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
 
   if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
 

@@ -597,7 +597,7 @@ describe("report transforms", () => {
       { datasetName: "tagSmes", tagName: "python", user_id: 96, score: 12 },
     ]);
 
-    expect(healthRows).toEqual([
+    expect(healthRows).toMatchObject([
       {
         tag_name: "python",
         tag_id: null,
@@ -716,8 +716,8 @@ describe("report transforms", () => {
       expect.objectContaining({
         tag_name: "PYTHON",
         tag_id: 42,
-        tag_creation_date: "2014-05-13",
-        last_used: "2026-08-18",
+        tag_creation_date: "2014-05-13 12:00:00",
+        last_used: "2026-08-18 00:00:00",
       }),
     ]);
   });
@@ -737,7 +737,7 @@ describe("report transforms", () => {
     ]);
 
     expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
-    expect(healthRows[1]).toMatchObject({ tag_creation_date: "2024-02-29", last_used: "2024-02-29" });
+    expect(healthRows[1]).toMatchObject({ tag_creation_date: "2024-02-29 00:00:00", last_used: "2024-02-29 00:00:00" });
   });
 
   it("accepts only valid ISO metadata date forms", () => {
@@ -754,8 +754,8 @@ describe("report transforms", () => {
 
     expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
     expect(healthRows[1]).toMatchObject({ tag_creation_date: "", last_used: "" });
-    expect(healthRows[2]).toMatchObject({ tag_creation_date: "2024-02-29", last_used: "2024-02-29" });
-    expect(healthRows[3]).toMatchObject({ tag_creation_date: "2025-03-05", last_used: "2025-03-05" });
+    expect(healthRows[2]).toMatchObject({ tag_creation_date: "2024-02-29 00:00:00", last_used: "2024-02-29 00:00:00" });
+    expect(healthRows[3]).toMatchObject({ tag_creation_date: "2025-03-05 04:59:59", last_used: "2025-03-05 04:59:59" });
   });
 
   it("rejects metadata dates whose timezone conversion leaves the four-digit UTC year range", () => {
@@ -779,7 +779,7 @@ describe("report transforms", () => {
 
     expect(healthRows[0]).toMatchObject({ tag_creation_date: "", last_used: "" });
     expect(healthRows[1]).toMatchObject({ tag_creation_date: "", last_used: "" });
-    expect(healthRows[2]).toMatchObject({ tag_creation_date: "9999-12-31", last_used: "0000-01-01" });
+    expect(healthRows[2]).toMatchObject({ tag_creation_date: "9999-12-31 23:59:59", last_used: "0000-01-01 00:00:00" });
   });
 
   it("normalizes Tag Health IDs only when they are non-negative safe integers", () => {
@@ -825,7 +825,7 @@ describe("report transforms", () => {
     });
   });
 
-  it("counts live questions with answers but is_answered false as needing response attention", () => {
+  it("counts questions with existing answers separately from the API accepted-answer flag", () => {
     const healthRows = buildTagHealthRowsFromLiveRecords([
       { datasetName: "tags", name: "python" },
       { datasetName: "questions", question_id: 1, tags: ["python"], answer_count: 2, is_answered: false, view_count: 45 },
@@ -834,10 +834,10 @@ describe("report transforms", () => {
 
     expect(healthRows[0]).toMatchObject({
       tag_name: "python",
-      health_status: "Needs response attention",
+      health_status: "Healthy",
       answer_count: 2,
-      unanswered_questions: 1,
-      recommended_action: "Review unanswered questions and response time for this tag.",
+      unanswered_questions: 0,
+      recommended_action: "Maintain current coverage and response habits.",
     });
   });
 

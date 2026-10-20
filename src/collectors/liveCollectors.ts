@@ -1,7 +1,8 @@
 import { dateToUnixSeconds } from "../domain/reportScope";
 import { readQuestionTags, readTagIdentity } from "../domain/tagNormalization";
-import type { DatasetName, PeriodScope, ReportId, RunPeriodRole } from "../domain/types";
+import type { DatasetName, InstanceType, PeriodScope, ReportId, RunPeriodRole } from "../domain/types";
 import { buildTagLastUsedRows } from "../reports/tagLastUsed";
+import { enrichTagReportDataset } from "./tagReportEnrichment";
 
 export interface LiveCollectorClients {
   v2: DatasetClient;
@@ -9,6 +10,7 @@ export interface LiveCollectorClients {
 }
 
 export interface DatasetClient {
+  getJson?(path: string): Promise<unknown>;
   getPagedResult(
     path: string,
     query?: Record<string, string>,
@@ -40,6 +42,7 @@ export const INTERNAL_API_PAGE_SIZE = 100;
 
 export interface LiveCollectorContext {
   collectedDatasets?: Partial<Record<DatasetName, Record<string, unknown>[]>>;
+  instanceType?: InstanceType;
   periodRole?: RunPeriodRole;
   reportId?: ReportId;
   scope?: PeriodScope;
@@ -120,6 +123,9 @@ export async function collectDataset(
     buildDatasetQuery(context, endpoint.client, endpoint.client === "v2"),
   );
 
+  if (context.reportId === "tag-report" && (dataset === "questions" || dataset === "articles" || dataset === "tagSmeCounts")) {
+    return enrichTagReportDataset(dataset, clients.v3, collected, context.instanceType);
+  }
   if (context.reportId === "tag-report" && dataset === "answers") {
     return enrichTagAnswerParents(clients.v2, collected, context);
   }
