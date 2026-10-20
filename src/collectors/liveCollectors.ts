@@ -1,5 +1,5 @@
 import { dateToUnixSeconds } from "../domain/reportScope";
-import { readQuestionTags, readTagIdentity } from "../domain/tagNormalization";
+import { readNonNegativeNumber, readQuestionTags, readTagIdentity } from "../domain/tagNormalization";
 import type { DatasetName, InstanceType, PeriodScope, ReportId, RunPeriodRole } from "../domain/types";
 import { buildTagLastUsedRows } from "../reports/tagLastUsed";
 import { enrichTagReportDataset } from "./tagReportEnrichment";
@@ -124,7 +124,8 @@ export async function collectDataset(
   );
 
   if (context.reportId === "tag-report" && (dataset === "questions" || dataset === "articles" || dataset === "tagSmeCounts")) {
-    return enrichTagReportDataset(dataset, clients.v3, collected, context.instanceType);
+    return enrichTagReportDataset(dataset, clients.v3, collected, context.instanceType,
+      getTagsWithAnswers(context.collectedDatasets?.questions));
   }
   if (context.reportId === "tag-report" && dataset === "answers") {
     return enrichTagAnswerParents(clients.v2, collected, context);
@@ -133,6 +134,16 @@ export async function collectDataset(
     return enrichTagCommentParents(clients.v2, collected, context);
   }
   return collected;
+}
+
+function getTagsWithAnswers(questions: Record<string, unknown>[] | undefined): Set<string> | undefined {
+  // Standalone collection has no question scope; retain complete membership collection in that case.
+  if (questions === undefined) return undefined;
+  return new Set(questions
+    .filter((question) => Array.isArray(question.answers)
+      ? question.answers.length > 0
+      : readNonNegativeNumber(question, ["answer_count", "answerCount"]) !== 0)
+    .flatMap((question) => readQuestionTags(question).map((tag) => tag.key)));
 }
 
 async function enrichTagAnswerParents(

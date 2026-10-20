@@ -11,6 +11,47 @@ const basicCredentials: SessionCredentials = {
 };
 
 describe("live collectors", () => {
+  it("fetches SME membership only for tags with answers in the selected questions", async () => {
+    const metadata = [
+      { id: 1, name: "Python", subjectMatterExpertCount: 2, watcherCount: 12 },
+      { id: 2, name: "unused", subjectMatterExpertCount: 100, watcherCount: 20 },
+      { id: 3, name: "unanswered", subjectMatterExpertCount: 5 },
+    ];
+    const clients = clientsWithResponses((url) => {
+      if (url.pathname.endsWith("/tags")) return { items: metadata, totalPages: 1 };
+      if (url.pathname.endsWith("/tags/1")) return { subjectMatterExperts: { users: [{ id: 7 }, { id: 8 }], userGroups: [] } };
+      throw new Error(`Unnecessary SME lookup: ${url.pathname}`);
+    });
+    const questions = [
+      { question_id: 10, tags: [" PYTHON "], answers: [{ id: 20, owner: { id: 7 }, score: 1, comments: [] }], comments: [] },
+      { question_id: 11, tags: ["unanswered"], answer_count: 3, answers: [], comments: [] },
+    ];
+    const result = await collectDataset("tagSmeCounts", clients, {
+      reportId: "tag-report", collectedDatasets: { questions },
+    });
+    expect(result.pagination.pageCount).toBe(2);
+    expect(result.records).toEqual([
+      { ...metadata[0], subjectMatterExperts: { users: [{ id: 7 }, { id: 8 }], userGroups: [] } },
+      metadata[1], metadata[2],
+    ]);
+    const rows = buildTagHealthRowsFromLiveRecords([
+      ...questions.map((row) => ({ ...row, datasetName: "questions" })),
+      ...result.records.map((row) => ({ ...row as Record<string, unknown>, datasetName: "tagSmeCounts" })),
+    ]);
+    expect(rows.find((row) => row.tag_name === "Python")).toMatchObject({ sme_count: 2, sme_answers: 1, watcher_count: 12 });
+    expect(rows.find((row) => row.tag_name === "unused")).toMatchObject({ sme_count: 100, sme_answers: 0, watcher_count: 20 });
+  });
+
+  it("keeps every tag's SME count without membership lookups for an empty question period", async () => {
+    const clients = clientsWithResponses((url) => {
+      if (url.pathname.endsWith("/tags")) return { items: [{ id: 1, name: "python", subjectMatterExpertCount: 5 }], totalPages: 1 };
+      throw new Error(`Unnecessary SME lookup: ${url.pathname}`);
+    });
+    await expect(collectDataset("tagSmeCounts", clients, {
+      reportId: "tag-report", collectedDatasets: { questions: [] },
+    })).resolves.toMatchObject({ records: [{ name: "python", subjectMatterExpertCount: 5 }], pagination: { pageCount: 1 } });
+  });
+
   it("includes answers after the selected period when measuring first answer time", async () => {
     const fetchFn = async (input: RequestInfo | URL) => {
       const url = new URL(input.toString());
