@@ -21,6 +21,7 @@ export async function enrichTagReportDataset(
   client: DatasetClient,
   collected: CollectedDatasetResult,
   instanceType?: InstanceType,
+  tagsWithAnswers?: ReadonlySet<string>,
 ): Promise<CollectedDatasetResult> {
   assertComplete(collected.pagination, dataset);
   const pagination = { ...collected.pagination };
@@ -50,7 +51,11 @@ export async function enrichTagReportDataset(
     }
 
     if (dataset === "tagSmeCounts") {
-      if ((readNonNegativeNumber(record, ["subjectMatterExpertCount"]) ?? 0) === 0) {
+      const tag = readTagIdentity(record);
+      // The list already provides counts and metadata for every tag. Memberships are only
+      // needed to attribute answers on the selected questions to assigned experts.
+      if ((readNonNegativeNumber(record, ["subjectMatterExpertCount"]) ?? 0) === 0
+        || (tagsWithAnswers !== undefined && tag !== null && !tagsWithAnswers.has(tag.key))) {
         records.push(record);
         continue;
       }
