@@ -74,7 +74,37 @@ SME evidence CSV exports intentionally use `collection_status`,
 `result_completeness` and `completeness_warnings` headers so collection status is
 not confused with the quality of the available evidence.
 
-Live Script execution uses the same-origin Next.js route at `/api/reports/run`.
+Live Script collection runs in the browser through the same-origin Next.js route
+at `/api/reports/read`. Each invocation performs one allowlisted upstream GET,
+with a 20-second deadline and a 2 MiB response limit. The old `/api/reports/run`
+route returns a refresh instruction instead of starting an unbounded invocation.
+
+Completed reads and job progress are checkpointed individually in IndexedDB before
+collection advances. Pause, closing the tab, or losing connectivity preserves
+completed checkpoints. Reconnect with the same instance and credentials and choose
+**Resume collection**; completed pages are replayed locally, including nested
+answer/comment pages. Changed or refreshed credentials require a new collection
+so results from different permission views cannot be combined. Raw credentials
+are never saved: a SHA-256 digest binds the job to the original connection.
+Only one tab can collect at a time; browser Web Locks and optimistic storage
+revisions protect checkpoints. **Discard collection** or **Clear saved collection**
+removes the journal. The journal is limited to 128 MiB; browser quota can be lower,
+and storage failures stop collection visibly without publishing partial results.
+An outstanding API throttle deadline remains associated with the connection even
+after clearing a collection, so a new run respects the same wait.
+
+Tag Report discovers list inventories before detail collection and estimates a
+remaining-time range from the remaining API work and measured throughput. Unknown
+workloads display discovery/estimation text; rate-limit waits are shown separately.
+Estimates exclude time the report is paused and can increase as additional work is
+discovered. Large all-history runs can take hours; the displayed range is a forecast,
+not a guaranteed maximum. Other live Scripts use the same resumable transport and show saved
+request counts without claiming an unsupported total-time estimate. Identical
+reads are reused within a job, and authoritative v3 assigned-SME counts avoid
+legacy top-answerer requests. Current and comparison outputs are published only
+after both are complete. Resuming uses previously fetched data; start a new run
+for fresh data. The source API does not provide a transactional snapshot across
+pages fetched at different times.
 SME Coverage Analyzer execution uses the same-origin route at
 `/api/utilities/sme-coverage/run`. These routes let the server call Stack
 Enterprise or Teams APIs without browser CORS blocking credential headers.

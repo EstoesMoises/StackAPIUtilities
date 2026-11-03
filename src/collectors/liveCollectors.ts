@@ -289,7 +289,11 @@ async function collectTagSmes(
   const records: Record<string, unknown>[] = [];
   let pagination = createEmptyPaginationMetadata();
 
+  const authoritativeTags = new Set(getCollectedDataset(context, "tagSmeCounts")
+    .filter((tag) => readNonNegativeNumber(tag, ["subjectMatterExpertCount"]) !== null)
+    .map((tag) => readTagIdentity(tag)?.key));
   for (const tagName of uniqueValues(tags.map(getTagName))) {
+    if (context.reportId === "tag-report" && authoritativeTags.has(readTagIdentity({ name: tagName })?.key)) continue;
     const tagScores = await collectPagedResult(
       clients.v2,
       `/tags/${encodeURIComponent(tagName)}/top-answerers/all_time`,

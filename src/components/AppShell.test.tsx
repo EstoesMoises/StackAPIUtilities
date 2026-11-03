@@ -1,8 +1,13 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import type { DatasetName } from "../domain/types";
+import type { DatasetName, ReportId, SessionCredentials } from "../domain/types";
+import type { LiveReportRunResult } from "../collectors/liveReportRunner";
+import { runReportJob } from "../reports/resumable/reportJobRunner";
+import { reportJobStore } from "../reports/resumable/reportJobStore";
+import type { ReportJob } from "../reports/resumable/types";
 import { tagMetricsCsv } from "../test/fixtures/reportFixtures";
 import {
   completeSmeCoverageDecisionPack,
@@ -29,6 +34,26 @@ vi.mock("../utils/browserDatasetStorage", () => ({
   loadPersistedDatasetSession: vi.fn(),
   savePersistedDatasetSession: vi.fn(),
 }));
+
+vi.mock("../reports/resumable/reportJobRunner", async () => ({
+  ...await vi.importActual<typeof import("../reports/resumable/reportJobRunner")>("../reports/resumable/reportJobRunner"),
+  runReportJob: vi.fn(),
+}));
+
+vi.mock("../reports/resumable/reportJobStore", () => ({
+  reportJobStore: { load: vi.fn(), create: vi.fn(), save: vi.fn(), read: vi.fn(), checkpoint: vi.fn(), delete: vi.fn() },
+}));
+
+interface ReportPeriodFixtureInput {
+  reportId: ReportId;
+  credentials: SessionCredentials;
+  periodRole: "current" | "comparison";
+  scope: { startDate?: string; endDate?: string };
+}
+const reportPeriodFixture = vi.fn<(input: ReportPeriodFixtureInput) => Promise<Response>>();
+const runReportJobMock = vi.mocked(runReportJob);
+const reportStoreMock = vi.mocked(reportJobStore);
+const originalLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
 
 vi.mock("../utils/browserContentReplacementStorage", async () => {
   const actual = await vi.importActual<typeof import("../utils/browserContentReplacementStorage")>(
@@ -59,6 +84,43 @@ const basicBusinessPatCredentials = {
 } as const;
 
 beforeEach(() => {
+  vi.stubGlobal("crypto", webcrypto);
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async (_name: string, _options: unknown, operation: (lock: object) => Promise<unknown>) => operation({ name: "stack-report-job" }),
+  } });
+  let savedReport: ReportJob | null = null;
+  reportStoreMock.load.mockImplementation(async () => savedReport && structuredClone(savedReport));
+  reportStoreMock.create.mockImplementation(async (job) => { savedReport = structuredClone(job); return structuredClone(savedReport); });
+  reportStoreMock.save.mockImplementation(async (job) => {
+    if (!savedReport || savedReport.id !== job.id || savedReport.revision !== job.revision) throw new Error("Report revision conflict.");
+    savedReport = structuredClone({ ...job, revision: job.revision + 1 });
+    return structuredClone(savedReport);
+  });
+  reportStoreMock.delete.mockImplementation(async (id) => { if (savedReport?.id === id) savedReport = null; });
+  reportPeriodFixture.mockReset();
+  runReportJobMock.mockReset().mockImplementation(async (initial, credentials, options) => {
+    let job = await options.store.save({ ...initial, status: "running", stage: "Collecting live API datasets" });
+    const emit = () => options.onProgress?.({ job, estimate: null, restoring: false });
+    emit();
+    try {
+      const results: LiveReportRunResult[] = [];
+      for (const period of job.periods) {
+        options.signal.throwIfAborted();
+        const response = await fixtureUntilAborted(reportPeriodFixture({ reportId: job.reportId, credentials, ...period }), options.signal);
+        const body = await response.clone().json();
+        if (!body.ok) throw new Error(body.error);
+        results.push(body.result);
+      }
+      job = await options.store.save({ ...job, status: "complete", stage: "Report collection complete" });
+      emit();
+      return { job, results };
+    } catch (error) {
+      job = await options.store.save({ ...job, status: options.signal.aborted ? "paused" : "failed",
+        error: options.signal.aborted ? null : String(error instanceof Error ? error.message : error) });
+      emit();
+      throw error;
+    }
+  });
   loadPersistedDatasetSessionMock.mockResolvedValue(null);
   savePersistedDatasetSessionMock.mockResolvedValue(undefined);
   clearPersistedDatasetSessionMock.mockResolvedValue(undefined);
@@ -71,6 +133,9 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  if (originalLocks) Object.defineProperty(navigator, "locks", originalLocks);
+  else Reflect.deleteProperty(navigator, "locks");
 });
 
 describe("AppShell", () => {
@@ -645,7 +710,7 @@ describe("AppShell", () => {
     const persistedCurrent = makePersistedTagReportRun("current", {}, "snapshot-1", [
       { name: "python", totalPageViews: 500, questionCount: 4 },
     ]);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const periodFixture = reportPeriodFixture.mockResolvedValue(
       jsonResponse(makeTagReportRunBody("Collected restored-preset tags for Tag Report.")),
     );
     loadPersistedDatasetSessionMock.mockResolvedValueOnce({
@@ -668,8 +733,8 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+    await waitFor(() => expect(runReportJobMock).toHaveBeenCalledTimes(1));
+    expect(periodFixture.mock.calls[0][0]).toMatchObject({
       periodRole: "current",
       scope: {},
     });
@@ -685,8 +750,7 @@ describe("AppShell", () => {
     const persistedComparison = makePersistedTagReportRun("comparison", comparisonScope, "comparison-snapshot", [
       { name: "javascript", totalPageViews: 250, questionCount: 2 },
     ]);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
-      const payload = JSON.parse(String(init?.body));
+    const periodFixture = reportPeriodFixture.mockImplementation(async (payload) => {
 
       return jsonResponse({
         ok: true,
@@ -739,9 +803,14 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    const currentRunBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    const comparisonRunBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    await waitFor(() => expect(periodFixture).toHaveBeenCalledTimes(2));
+    expect(runReportJobMock).toHaveBeenCalledTimes(1);
+    expect(runReportJobMock.mock.calls[0][0].periods).toEqual([
+      { periodRole: "current", scope: currentScope },
+      { periodRole: "comparison", scope: comparisonScope },
+    ]);
+    const currentRunBody = periodFixture.mock.calls[0][0];
+    const comparisonRunBody = periodFixture.mock.calls[1][0];
     expect(currentRunBody).toMatchObject({
       periodRole: "current",
       scope: { startDate: "2026-07-01", endDate: "2026-07-08" },
@@ -760,7 +829,7 @@ describe("AppShell", () => {
 
   it("persists live API datasets without credentials or run queue state", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    reportPeriodFixture.mockResolvedValue(
       new Response(JSON.stringify({
         ok: true,
         result: {
@@ -1699,9 +1768,9 @@ describe("AppShell", () => {
     expect(screen.getByRole("heading", { name: "Connect your Stack environment" })).toBeInTheDocument();
   });
 
-  it("runs a server-backed live API report and stores live datasets locally", async () => {
+  it("runs a resumable live API report and stores completed datasets locally", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const periodFixture = reportPeriodFixture.mockResolvedValue(
       new Response(JSON.stringify({
         ok: true,
         result: {
@@ -1737,8 +1806,11 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+    expect(runReportJobMock).toHaveBeenCalledWith(
+      expect.objectContaining({ reportId: periodFixture.mock.calls[0][0].reportId }), basicBusinessPatCredentials,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(periodFixture.mock.calls[0][0]).toEqual({
       reportId: "inactive-users",
       credentials: basicBusinessPatCredentials,
       periodRole: "current",
@@ -1769,7 +1841,7 @@ describe("AppShell", () => {
 
   it("omits a cleared date from the requested and returned report scope", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const periodFixture = reportPeriodFixture.mockResolvedValue(
       jsonResponse(makeInactiveUsersReportRunBody("current", {})),
     );
 
@@ -1784,13 +1856,13 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Inactive Users.")).toBeInTheDocument();
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ scope: {} });
+    expect(periodFixture.mock.calls[0][0]).toMatchObject({ scope: {} });
     expect(screen.getByText("1 dataset")).toBeInTheDocument();
   });
 
-  it("runs Tag Report through the server-backed live API route", async () => {
+  it("runs Tag Report through the resumable runner", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const periodFixture = reportPeriodFixture.mockResolvedValue(
       new Response(JSON.stringify({
         ok: true,
         result: {
@@ -1833,8 +1905,11 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText("Live API run completed for Tag Report.")).toBeInTheDocument();
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/reports/run");
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+    expect(runReportJobMock).toHaveBeenCalledWith(
+      expect.objectContaining({ reportId: periodFixture.mock.calls[0][0].reportId }), basicBusinessPatCredentials,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(periodFixture.mock.calls[0][0]).toEqual({
       reportId: "tag-report",
       credentials: basicBusinessPatCredentials,
       periodRole: "current",
@@ -1853,7 +1928,7 @@ describe("AppShell", () => {
   it("shows Tag Report progress while live collection is pending", async () => {
     const user = userEvent.setup();
     const pendingRun = createDeferred<Response>();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+    const periodFixture = reportPeriodFixture.mockReturnValue(pendingRun.promise);
 
     render(<App />);
 
@@ -1864,17 +1939,16 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/run", expect.any(Object)));
+    await waitFor(() => expect(runReportJobMock).toHaveBeenCalledTimes(1));
 
-    const status = screen.getByRole("region", { name: "Run status" });
-    expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
+    const status = screen.getByRole("region", { name: "Report collection" });
+    expect(within(status).getByRole("heading", { name: "Tag Report collection" })).toBeInTheDocument();
     expect(within(status).getByText("Collecting live API datasets")).toBeInTheDocument();
-    expect(within(status).getByRole("progressbar", { name: "Tag Report progress" })).toHaveAttribute(
-      "aria-valuenow",
-      "50",
-    );
+    expect(within(status).queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(within(status).getByText("Estimating time remaining…")).toBeInTheDocument();
+    expect(within(status).getByRole("button", { name: "Pause collection" })).toBeInTheDocument();
     expect(
-      within(status).getByText("Collecting all available data for Tag Report…"),
+      within(status).getByText("Collecting live API datasets"),
     ).toBeInTheDocument();
 
     pendingRun.resolve(jsonResponse({
@@ -1895,18 +1969,18 @@ describe("AppShell", () => {
   });
 
   it.each([
-    ["Collection failed.", "Collection failed. No complete result was produced."],
+    ["Collection failed.", "Collection failed."],
     [
       "Collection failed. No complete result was produced.",
       "Collection failed. No complete result was produced.",
     ],
     [
       "No complete result was produced. Upstream timeout.",
-      "Upstream timeout. No complete result was produced.",
+      "No complete result was produced. Upstream timeout.",
     ],
-  ])("ends report errors with a single completion disclaimer", async (error, expectedMessage) => {
+  ])("shows collection errors once without publishing incomplete data", async (error, expectedMessage) => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: false, error }));
+    reportPeriodFixture.mockResolvedValue(jsonResponse({ ok: false, error }));
 
     render(<App />);
 
@@ -1915,7 +1989,8 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
     expect(await screen.findByText(expectedMessage)).toBeInTheDocument();
-    expect(screen.getByText(expectedMessage).textContent?.match(/No complete result was produced\./g)).toHaveLength(1);
+    expect(screen.getAllByText(expectedMessage)).toHaveLength(1);
+    expect(screen.getByText("0 datasets")).toBeInTheDocument();
   });
 
   it.each([
@@ -1931,7 +2006,7 @@ describe("AppShell", () => {
     } else {
       delete (datasets[0] as Partial<(typeof datasets)[number]>).pagination;
     }
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    reportPeriodFixture.mockResolvedValue(
       jsonResponse({
         ok: true,
         result: {
@@ -1953,9 +2028,9 @@ describe("AppShell", () => {
     savePersistedDatasetSessionMock.mockClear();
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    const status = await screen.findByRole("region", { name: "Run status" });
-    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
-    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    const status = await screen.findByRole("region", { name: "Report collection" });
+    expect(await within(status).findByRole("alert")).toHaveTextContent("Report result did not match the complete requested run.");
+    expect(within(status).getByText("Needs attention")).toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
@@ -1963,7 +2038,7 @@ describe("AppShell", () => {
 
   it("rejects a successful report response with no datasets", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    reportPeriodFixture.mockResolvedValue(
       jsonResponse({
         ok: true,
         result: {
@@ -1985,9 +2060,9 @@ describe("AppShell", () => {
     savePersistedDatasetSessionMock.mockClear();
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    const status = await screen.findByRole("region", { name: "Run status" });
-    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
-    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    const status = await screen.findByRole("region", { name: "Report collection" });
+    expect(await within(status).findByRole("alert")).toHaveTextContent("Report result did not match the complete requested run.");
+    expect(within(status).getByText("Needs attention")).toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
@@ -2001,7 +2076,7 @@ describe("AppShell", () => {
       reachedMaxPages: false,
       hasMore: true,
     };
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    reportPeriodFixture.mockResolvedValue(
       jsonResponse({
         ok: true,
         result: {
@@ -2023,9 +2098,9 @@ describe("AppShell", () => {
     savePersistedDatasetSessionMock.mockClear();
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    const status = await screen.findByRole("region", { name: "Run status" });
-    expect(within(status).getByRole("heading", { name: "Tag Report run failed" })).toBeInTheDocument();
-    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    const status = await screen.findByRole("region", { name: "Report collection" });
+    expect(await within(status).findByRole("alert")).toHaveTextContent("Report result did not match the complete requested run.");
+    expect(within(status).getByText("Needs attention")).toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
@@ -2064,7 +2139,7 @@ describe("AppShell", () => {
     const user = userEvent.setup();
     const body = makeInactiveUsersReportRunBody("current", {});
     mutate(body);
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+    reportPeriodFixture.mockResolvedValue(jsonResponse(body));
 
     render(<App />);
 
@@ -2074,16 +2149,16 @@ describe("AppShell", () => {
     savePersistedDatasetSessionMock.mockClear();
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    const status = await screen.findByRole("region", { name: "Run status" });
-    expect(within(status).getByRole("heading", { name: "Inactive Users run failed" })).toBeInTheDocument();
-    expect(within(status).getByText(/No complete result was produced\.$/)).toBeInTheDocument();
+    const status = await screen.findByRole("region", { name: "Report collection" });
+    expect(await within(status).findByRole("alert")).toHaveTextContent("Report result did not match the complete requested run.");
+    expect(within(status).getByText("Needs attention")).toBeInTheDocument();
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
   });
 
   it("accepts the known synthetic output dataset for the Interactions report", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+    reportPeriodFixture.mockResolvedValue(jsonResponse({
       ok: true,
       result: {
         reportId: "interactions",
@@ -2113,7 +2188,7 @@ describe("AppShell", () => {
 
   it("does not request a comparison period when the current period fails", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const periodFixture = reportPeriodFixture.mockResolvedValue(
       jsonResponse({ ok: false, error: "Current collection failed." }),
     );
 
@@ -2126,15 +2201,15 @@ describe("AppShell", () => {
     savePersistedDatasetSessionMock.mockClear();
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
 
-    expect(await screen.findByRole("heading", { name: "Inactive Users run failed" })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    expect(periodFixture).toHaveBeenCalledTimes(1);
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
   });
 
   it("publishes neither period when comparison fails after current is staged", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.spyOn(globalThis, "fetch")
+    const periodFixture = reportPeriodFixture
       .mockResolvedValueOnce(jsonResponse(makeInactiveUsersReportRunBody("current", {})))
       .mockResolvedValueOnce(jsonResponse({ ok: false, error: "Comparison collection failed." }));
 
@@ -2147,19 +2222,18 @@ describe("AppShell", () => {
     savePersistedDatasetSessionMock.mockClear();
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
 
-    expect(await screen.findByRole("heading", { name: "Inactive Users run failed" })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    expect(periodFixture).toHaveBeenCalledTimes(2);
     expect(screen.getByText("0 datasets")).toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Inactive Users.")).not.toBeInTheDocument();
     expect(savePersistedDatasetSessionMock).not.toHaveBeenCalled();
   });
 
-  it("ignores an older live run completion after a newer run starts", async () => {
+  it("ignores a discarded live run completion after a newer run starts", async () => {
     const user = userEvent.setup();
     const firstRun = createDeferred<Response>();
     const secondRun = createDeferred<Response>();
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
+    const periodFixture = reportPeriodFixture
       .mockReturnValueOnce(firstRun.promise)
       .mockReturnValueOnce(secondRun.promise);
 
@@ -2168,18 +2242,19 @@ describe("AppShell", () => {
     await saveBasicBusinessCredentials(user);
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(periodFixture).toHaveBeenCalledTimes(1));
+    await pauseAndDiscardReport(user);
     await user.click(screen.getByRole("button", { name: "Run current period" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(periodFixture).toHaveBeenCalledTimes(2));
 
     await act(async () => {
       firstRun.resolve(jsonResponse(makeTagReportRunBody("Collected stale tags for Tag Report.")));
       await firstRun.promise;
     });
 
-    const status = screen.getByRole("region", { name: "Run status" });
-    expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
-    expect(within(status).getByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
+    const status = screen.getByRole("region", { name: "Report collection" });
+    expect(within(status).getByRole("heading", { name: "Tag Report collection" })).toBeInTheDocument();
+    expect(within(status).getByText("Collecting live API datasets")).toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
 
@@ -2188,12 +2263,11 @@ describe("AppShell", () => {
     expect(screen.getByText("Live API run completed for Tag Report.")).toBeInTheDocument();
   });
 
-  it("does not continue a stale run-both request after a newer run starts", async () => {
+  it("does not continue a discarded run-both request after a newer run starts", async () => {
     const user = userEvent.setup();
     const runBothCurrent = createDeferred<Response>();
     const newerCurrentRun = createDeferred<Response>();
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
+    const periodFixture = reportPeriodFixture
       .mockReturnValueOnce(runBothCurrent.promise)
       .mockReturnValueOnce(newerCurrentRun.promise);
 
@@ -2203,27 +2277,30 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByLabelText("Enable comparison period"));
     await user.click(screen.getByRole("button", { name: "Run both periods" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(periodFixture).toHaveBeenCalledTimes(1));
+    await pauseAndDiscardReport(user);
 
     await user.click(screen.getByRole("button", { name: "Run current period" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(periodFixture).toHaveBeenCalledTimes(2));
 
     await act(async () => {
       runBothCurrent.resolve(jsonResponse(makeTagReportRunBody("Collected stale run-both tags for Tag Report.")));
       await runBothCurrent.promise;
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const status = screen.getByRole("region", { name: "Run status" });
-    expect(within(status).getByRole("heading", { name: "Running Tag Report" })).toBeInTheDocument();
-    expect(within(status).getByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
+    expect(periodFixture).toHaveBeenCalledTimes(2);
+    const status = screen.getByRole("region", { name: "Report collection" });
+    expect(within(status).getByRole("heading", { name: "Tag Report collection" })).toBeInTheDocument();
+    expect(within(status).getByText("Collecting live API datasets")).toBeInTheDocument();
     expect(screen.queryByText("Collected stale run-both tags for Tag Report.")).not.toBeInTheDocument();
+    newerCurrentRun.resolve(jsonResponse(makeTagReportRunBody("Collected fresh tags for Tag Report.")));
+    expect(await screen.findByText("Collected fresh tags for Tag Report.")).toBeInTheDocument();
   });
 
   it("clears stale running queue messages when switching reports during a pending run", async () => {
     const user = userEvent.setup();
     const pendingRun = createDeferred<Response>();
-    vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+    reportPeriodFixture.mockReturnValue(pendingRun.promise);
 
     render(<App />);
 
@@ -2231,12 +2308,12 @@ describe("AppShell", () => {
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
 
-    expect(await screen.findByText("Collecting all available data for Tag Report…")).toBeInTheDocument();
+    expect(await screen.findByText("Collecting live API datasets")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Inactive Users" }));
 
     expect(screen.getByRole("heading", { name: "Configure Inactive Users" })).toBeInTheDocument();
-    expect(screen.queryByText("Collecting all available data for Tag Report…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collecting live API datasets")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Run status" })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -2244,7 +2321,7 @@ describe("AppShell", () => {
       await pendingRun.promise;
     });
 
-    expect(screen.queryByText("Collecting all available data for Tag Report…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collecting live API datasets")).not.toBeInTheDocument();
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
   });
@@ -2252,14 +2329,20 @@ describe("AppShell", () => {
   it("ignores an older live run completion after an upload replaces the run status", async () => {
     const user = userEvent.setup();
     const pendingRun = createDeferred<Response>();
-    vi.spyOn(globalThis, "fetch").mockReturnValue(pendingRun.promise);
+    // Model an already-finishing collector that returns despite cancellation; the
+    // real hook must still prevent this late result from replacing the upload.
+    runReportJobMock.mockImplementationOnce(async (job, _credentials, options) => {
+      options.onProgress?.({ job: { ...job, status: "running", stage: "Collecting live API datasets" }, estimate: null, restoring: false });
+      const body = await (await pendingRun.promise).json();
+      return { job: { ...job, status: "complete" }, results: [body.result] };
+    });
 
     render(<App />);
 
     await saveBasicBusinessCredentials(user);
     await user.click(screen.getByRole("button", { name: "Scripts" }));
     await user.click(screen.getByRole("button", { name: "Run current period" }));
-    expect(await screen.findByRole("progressbar", { name: "Tag Report progress" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Pause collection" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Uploads" }));
     await user.upload(
@@ -2268,7 +2351,7 @@ describe("AppShell", () => {
     );
 
     expect(await screen.findByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
-    expect(screen.queryByRole("progressbar", { name: "Tag Report progress" })).not.toBeInTheDocument();
+    expect(runReportJobMock.mock.calls[0][2].signal.aborted).toBe(true);
 
     await act(async () => {
       pendingRun.resolve(jsonResponse(makeTagReportRunBody("Collected stale tags for Tag Report.")));
@@ -2276,14 +2359,14 @@ describe("AppShell", () => {
     });
 
     expect(screen.getByText("Imported tag_metrics.csv for Tag Report.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Pause collection" })).not.toBeInTheDocument());
     expect(screen.queryByText("Live API run completed for Tag Report.")).not.toBeInTheDocument();
     expect(screen.queryByText("Collected stale tags for Tag Report.")).not.toBeInTheDocument();
   });
 
   it("runs current and comparison periods and renders comparison metrics", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
-      const payload = JSON.parse(String(init?.body));
+    const periodFixture = reportPeriodFixture.mockImplementation(async (payload) => {
       const periodRole = payload.periodRole;
 
       return new Response(JSON.stringify({
@@ -2329,9 +2412,9 @@ describe("AppShell", () => {
     expect(screen.getByText("Current Records")).toBeInTheDocument();
     expect(screen.getByText("Comparison Records")).toBeInTheDocument();
     expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const currentRunBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    const comparisonRunBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(periodFixture).toHaveBeenCalledTimes(2);
+    const currentRunBody = periodFixture.mock.calls[0][0];
+    const comparisonRunBody = periodFixture.mock.calls[1][0];
     expect(currentRunBody).toMatchObject({
       credentials: basicBusinessPatCredentials,
       periodRole: "current",
@@ -2427,6 +2510,13 @@ async function saveBasicBusinessCredentials(user: ReturnType<typeof userEvent.se
   await user.type(screen.getByLabelText("Instance URL"), "https://stackoverflowteams.com/c/example-team");
   await user.type(screen.getByLabelText("Personal access token"), "pat-token");
   await user.click(screen.getByRole("button", { name: "Save session credentials" }));
+}
+
+async function pauseAndDiscardReport(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Pause collection" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Discard collection" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Discard collection" }));
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Report collection" })).not.toBeInTheDocument());
 }
 
 async function openSmeCoverageAnalyzer(user: ReturnType<typeof userEvent.setup>) {
@@ -2674,6 +2764,15 @@ function createDeferred<T>() {
   });
 
   return { promise, resolve, reject };
+}
+
+function fixtureUntilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new DOMException("Paused", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 function contentReplacementJob(

@@ -5146,3 +5146,23 @@ select:disabled {
   }
 
 }
+
+.report-job-status { display: grid; gap: 12px; }
+.report-job-stage, .report-job-estimate, .report-job-details, .report-job-help, .report-job-error { margin: 0; }
+.report-job-stage { font-weight: 700; }
+.report-job-estimate { margin-top: 6px; font-variant-numeric: tabular-nums; }
+.report-job-details, .report-job-help { color: var(--so-text-muted); line-height: 1.5; }
+.report-job-help { max-width: 72ch; }
+.report-job-error { color: var(--red-700, #a32121); }
+.report-job-status .run-controls { margin-top: 0; flex-wrap: wrap; }
+/* Stacks' state selectors are more specific than shared app button rules. */
+.report-job-status .s-btn__filled {
+  --_bu-filled-bg-hover: oklch(0.76 0.16 55);
+  --_bu-filled-bc-hover: var(--so-orange-deep);
+  --_bu-filled-fc-hover: var(--so-ink);
+  --_bu-filled-bg-active: var(--so-orange-strong);
+  --_bu-filled-bc-active: var(--so-orange-deep);
+  --_bu-filled-fc-active: var(--so-ink);
+  --_bu-bg-focus: var(--so-orange);
+  --_bu-fc-focus: var(--so-ink);
+}

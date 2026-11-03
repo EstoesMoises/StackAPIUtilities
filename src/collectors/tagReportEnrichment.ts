@@ -15,6 +15,28 @@ const commentFields = [
   "creationDate", "creation_date", "isDeleted", "is_deleted",
 ] as const;
 
+/** Validate enrichment responses before the resumable transport saves them for replay. */
+export function validateTagReportRead(path: string, value: unknown): void {
+  if (path.endsWith("/comments")) {
+    requireRecords(value, path);
+  } else if (/^\/questions\/[^/]+\/answers$/.test(path)) {
+    requireRecords(isRecord(value) ? value.items : undefined, path);
+  } else if (/^\/tags\/[^/]+\/subject-matter-experts$/.test(path)) {
+    assertMembership(value, path);
+  } else if (/^\/tags\/[^/]+$/.test(path)) {
+    if (!isRecord(value)) throw invalidResult(path);
+    if (value.subjectMatterExperts !== undefined && value.subjectMatterExperts !== null) {
+      assertMembership(value.subjectMatterExperts, path);
+    }
+  } else if (path === "/communities") {
+    for (const community of requireRecords(isRecord(value) ? value.items : undefined, path)) {
+      for (const tag of requireRecords(community.tags, `${path} tags`)) {
+        if (readTagIdentity(tag) === null) throw invalidResult(`${path} tags`);
+      }
+    }
+  }
+}
+
 /** Complete child collections are authoritative, including empty arrays. */
 export async function enrichTagReportDataset(
   dataset: "questions" | "articles" | "tagSmeCounts",

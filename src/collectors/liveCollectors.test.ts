@@ -11,6 +11,18 @@ const basicCredentials: SessionCredentials = {
 };
 
 describe("live collectors", () => {
+  it("skips legacy top-answerer requests when assigned-SME metadata is authoritative", async () => {
+    const clients = clientsWithResponses((url) => {
+      if (url.pathname.includes("/tags/legacy/")) return { items: [{ user_id: 1 }], has_more: false };
+      throw new Error(`Redundant legacy lookup: ${url.pathname}`);
+    });
+    const result = await collectDataset("tagSmes", clients, { reportId: "tag-report", collectedDatasets: {
+      tags: [{ name: "known" }, { name: "zero" }, { name: "legacy" }],
+      tagSmeCounts: [{ name: "known", subjectMatterExpertCount: 2 }, { name: "zero", subjectMatterExpertCount: 0 }],
+    } });
+    expect(result.records).toEqual([{ tagName: "legacy", user_id: 1 }]);
+    expect(result.pagination.pageCount).toBe(1);
+  });
   it("fetches SME membership only for tags with answers in the selected questions", async () => {
     const metadata = [
       { id: 1, name: "Python", subjectMatterExpertCount: 2, watcherCount: 12 },

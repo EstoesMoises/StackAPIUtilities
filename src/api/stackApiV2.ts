@@ -82,7 +82,7 @@ export class StackApiV2Client {
       const url = this.buildUrl(path, { ...query, page: String(page) });
       await this.waitForPendingBackoff();
       const response = await this.fetchFn(url, { headers: this.headers });
-      const body = validatePaginationEnvelope<T>(
+      const body = validateStackApiV2Page<T>(
         await readJsonResponse<unknown>(response, "Stack API v2.3"),
         path,
         page,
@@ -153,7 +153,7 @@ export class StackApiV2Client {
   }
 }
 
-function validatePaginationEnvelope<T>(
+export function validateStackApiV2Page<T>(
   value: unknown,
   path: string,
   page: number,
