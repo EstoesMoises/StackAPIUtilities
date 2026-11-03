@@ -7,6 +7,7 @@ import type { LiveCollectorClients } from "./liveCollectors";
 
 export interface LiveCollectorClientOptions {
   fetchFn?: FetchLike;
+  waitFn?: (seconds: number) => Promise<void>;
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
 }
 
@@ -23,12 +24,14 @@ export function createLiveCollectorClients(
       teamSlug: instance.teamSlug,
       headers: createV2Headers(credentials),
       fetchFn: options.fetchFn,
+      waitFn: options.waitFn,
       onThrottle: options.onThrottle,
     }),
     v3: new StackApiV3Client({
       apiV3Url: instance.apiV3Url,
       token,
       fetchFn: options.fetchFn,
+      waitFn: options.waitFn,
       onThrottle: options.onThrottle,
     }),
   };

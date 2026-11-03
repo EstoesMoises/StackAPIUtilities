@@ -6,6 +6,8 @@ import { CredentialsPanel, type CredentialWorkflow } from "./components/Credenti
 import { DatasetsPanel } from "./components/DatasetsPanel";
 import { ReportCatalog } from "./components/ReportCatalog";
 import { ReportWorkspace } from "./components/ReportWorkspace";
+import { ReportJobStatus } from "./components/ReportJobStatus";
+import { useReportJob } from "./hooks/useReportJob";
 import { RunStatus } from "./components/RunStatus";
 import { SessionOverview } from "./components/SessionOverview";
 import { SmeCoverageWorkspace, type SmeCoverageRunUiState } from "./components/SmeCoverageWorkspace";
@@ -76,6 +78,31 @@ export function App() {
   const suppressNextEmptyClearRef = useRef(false);
   const explicitEmptyRevisionRef = useRef(0);
   const activeRunIdRef = useRef(0);
+
+  const reportJob = useReportJob(state.credentials, (results, completedJob) => {
+    if (results.length !== completedJob.periods.length) throw new Error("Report result did not match the complete requested run.");
+    for (const [index, result] of results.entries()) {
+      const report = reportRegistry.find((candidate) => candidate.id === result.reportId)!;
+      if (!isValidReportRunResult(result, completedJob.reportId, completedJob.periods[index].periodRole, completedJob.periods[index].scope,
+        getExpectedReportDatasetNames(report.id, report.requiredDatasets))) {
+        throw new Error("Report result did not match the complete requested run.");
+      }
+    }
+    markDatasetContentChanged();
+    for (const result of results) {
+      dispatch({ type: "live/loaded", reportId: result.reportId, periodRole: result.periodRole,
+        scope: result.scope, warnings: result.warnings, datasets: result.datasets });
+    }
+    const reportId = results[0].reportId;
+    dispatch({ type: "report/select", reportId });
+    setCredentialContext({ kind: "report", reportId });
+    setRunProgress(createSucceededProgress(results[0].reportTitle));
+    setRunQueue(results.flatMap((result) => result.messages).map((message, index) => ({
+      id: `${reportId}-live-${index}`, reportId, status: "succeeded" as const, message,
+    })).concat([{ id: `${reportId}-live-complete`, reportId, status: "succeeded",
+      message: `Live API run completed for ${results[0].reportTitle}.` }]));
+    setActivePanel("report");
+  });
 
   function markDatasetContentChanged() {
     datasetContentRevisionRef.current += 1;
@@ -337,88 +364,12 @@ export function App() {
     report: (typeof reportRegistry)[number],
     periodRoles: readonly RunPeriodRole[],
   ) {
-    setRunQueue([
-      {
-        id: `${state.selectedReportId}-live-running`,
-        reportId: state.selectedReportId,
-        status: "running",
-        message: `Collecting all available data for ${report.title}…`,
-      },
-    ]);
-    const runId = startActiveRun();
-    setRunProgress(createRunningProgress(report.title));
-
-    try {
-      const stagedResults: LiveReportRunResult[] = [];
-      for (const periodRole of periodRoles) {
-        const configuredScope = periodRole === "comparison" ? reportScope.comparison ?? {} : reportScope.current;
-        const periodScope = normalizePeriodScope(configuredScope);
-        const response = await fetch("/api/reports/run", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            reportId: report.id,
-            credentials: state.credentials,
-            periodRole,
-            scope: periodScope,
-          }),
-        });
-        const body: unknown = await response.json();
-
-        if (!isRecord(body) || body.ok !== true) {
-          throw new Error(isRecord(body) && typeof body.error === "string" ? body.error : "Live API run failed.");
-        }
-        if (!isActiveRun(runId)) return;
-        const expectedDatasets = getExpectedReportDatasetNames(report.id, report.requiredDatasets);
-        if (!isValidReportRunResult(body.result, report.id, periodRole, periodScope, expectedDatasets)) {
-          throw new Error("Report result did not match the complete requested run.");
-        }
-        stagedResults.push(body.result);
-      }
-
-      if (!isActiveRun(runId)) return;
-      markDatasetContentChanged();
-      for (const result of stagedResults) {
-        dispatch({
-          type: "live/loaded",
-          reportId: result.reportId,
-          periodRole: result.periodRole,
-          scope: result.scope,
-          warnings: result.warnings,
-          datasets: result.datasets,
-        });
-      }
-      setRunProgress(createSucceededProgress(report.title));
-      setRunQueue([
-        ...stagedResults.flatMap((result) => result.messages).map((message, index) => ({
-          id: `${report.id}-live-dataset-${index}`,
-          reportId: report.id,
-          status: "succeeded" as const,
-          message,
-        })),
-        {
-          id: `${report.id}-live-complete`,
-          reportId: report.id,
-          status: "succeeded",
-          message: `Live API run completed for ${report.title}.`,
-        },
-      ]);
-      setActivePanel("report");
-    } catch (error) {
-      if (!isActiveRun(runId)) return;
-
-      setRunProgress(createFailedProgress(report.title));
-      setRunQueue([
-        {
-          id: `${report.id}-live-failed`,
-          reportId: report.id,
-          status: "failed",
-          message: getLiveRunErrorMessage(error, report.title),
-        },
-      ]);
-    }
+    setRunProgress(undefined);
+    setRunQueue([]);
+    await reportJob.start(report.id, periodRoles.map((periodRole) => ({
+      periodRole,
+      scope: normalizePeriodScope(periodRole === "comparison" ? reportScope.comparison ?? {} : reportScope.current),
+    })));
   }
 
   async function queueBothReportRuns() {
@@ -568,6 +519,7 @@ export function App() {
   }
 
   function clearActiveRunProgress() {
+    reportJob.pause();
     activeRunIdRef.current += 1;
     setRunProgress(undefined);
     setRunQueue([]);
@@ -606,6 +558,13 @@ export function App() {
     >
       <SessionOverview state={state} />
       <RunStatus queue={runQueue} progress={runProgress} />
+      <ReportJobStatus progress={reportJob.progress} ready={reportJob.ready} busy={reportJob.busy}
+        error={reportJob.error} hasCredentials={state.credentials !== null}
+        onPause={reportJob.pause} onResume={() => void reportJob.resume()} onDiscard={() => void reportJob.discard()}
+        onReconnect={() => {
+          setCredentialContext({ kind: "report", reportId: reportJob.progress?.job.reportId ?? state.selectedReportId });
+          setActivePanel("credentials");
+        }} />
       {datasetStorageWarning && (
         <div className="s-notice s-notice__warning mt16" role="status">
           {datasetStorageWarning}
@@ -622,7 +581,7 @@ export function App() {
                 ? "utilities"
                 : "write-tools",
           )}
-          onSave={(credentials) => dispatch({ type: "credentials/set", credentials })}
+          onSave={(credentials) => { reportJob.pause(); dispatch({ type: "credentials/set", credentials }); }}
         />
       )}
       {activePanel === "uploads" && <UploadsPanel onImported={importUploadedReport} />}

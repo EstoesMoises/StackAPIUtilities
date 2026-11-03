@@ -151,7 +151,7 @@ export class StackApiV3Client {
       const url = this.buildUrl(path, { ...query, page: String(page) });
       const response = await this.readResponse(url);
 
-      const body: ValidatedStackApiV3Page<T> = validatePaginationEnvelope<T>(
+      const body: ValidatedStackApiV3Page<T> = validateStackApiV3Page<T>(
         await readJsonResponse<unknown>(response, "Stack API v3"),
         path,
         page,
@@ -187,7 +187,7 @@ export class StackApiV3Client {
     }
     assertSafePaginationPage("Stack API v3", path, page, this.paginationSafetyLimit);
     const response = await this.readResponse(this.buildUrl(path, { ...query, page: String(page) }));
-    const body = validatePaginationEnvelope<T>(
+    const body = validateStackApiV3Page<T>(
       await readJsonResponse<unknown>(response, "Stack API v3"),
       path,
       page,
@@ -402,7 +402,7 @@ function areValidRetryBudgets(options: StackApiV3ClientOptions): boolean {
   ].every((value) => value === undefined || (Number.isSafeInteger(value) && value >= 0));
 }
 
-function validatePaginationEnvelope<T>(
+export function validateStackApiV3Page<T>(
   value: unknown,
   path: string,
   page: number,

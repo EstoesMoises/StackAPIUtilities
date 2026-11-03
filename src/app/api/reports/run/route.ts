@@ -1,15 +1,8 @@
-import { handleReportRunRequest } from "../../../../server/reportRunApi";
-
 export const runtime = "nodejs";
 
-export async function POST(request: Request): Promise<Response> {
-  let payload: unknown;
-
-  try {
-    payload = await request.json();
-  } catch {
-    payload = null;
-  }
-
-  return handleReportRunRequest(payload);
+/** Old open tabs must reload instead of starting an unbounded collection request. */
+export async function POST(): Promise<Response> {
+  return Response.json({ ok: false, error: "Live reports now use resumable collection. Refresh the app and run the report again." }, {
+    status: 410, headers: { "Cache-Control": "no-store" },
+  });
 }

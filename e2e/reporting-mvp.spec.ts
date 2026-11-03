@@ -28,9 +28,9 @@ test("reporting MVP shell supports catalog, scoped runs, credentials, uploads, a
 
 test("Tag Report collects every available page for the selected date scope", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-08-20T12:00:00.000Z"));
-  let requestPayload: unknown;
-  await page.route("**/api/reports/run", async (route) => {
-    requestPayload = route.request().postDataJSON();
+  const requestPayloads: ReadPayload[] = [];
+  await page.route("**/api/reports/read", async (route) => {
+    requestPayloads.push(route.request().postDataJSON());
     await fulfillTwoPageTagReport(route);
   });
   await page.goto("/");
@@ -83,21 +83,21 @@ test("Tag Report collects every available page for the selected date scope", asy
   await expect(page.getByRole("cell", { name: "page-one-tag", exact: true })).toBeVisible();
   await expect(page.getByRole("cell", { name: "page-two-tag", exact: true })).toBeVisible();
 
-  expect(requestPayload).toMatchObject({
-    reportId: "tag-report",
-    periodRole: "current",
-    scope: { startDate: "2026-07-01", endDate: "2026-07-31" },
-  });
-  expect(Object.keys(requestPayload as Record<string, unknown>).sort()).toEqual([
-    "credentials",
-    "periodRole",
-    "reportId",
-    "scope",
-  ]);
+  const scopedReads = requestPayloads.filter(({ request }) => request.query.fromdate !== undefined);
+  expect(scopedReads.length).toBeGreaterThanOrEqual(6);
+  for (const payload of scopedReads) {
+    expect(payload).toMatchObject({
+      reportId: "tag-report",
+      request: { api: "v2", query: { fromdate: "1782864000", todate: "1785456000" } },
+    });
+    expect(Object.keys(payload).sort()).toEqual(["credentials", "reportId", "request"]);
+  }
+  expect(requestPayloads.filter(({ request }) => request.api === "v2" && request.path === "/tags")
+    .map(({ request }) => request.query.page)).toEqual(["1", "2"]);
 });
 
 test("Tag Report keeps large evidence bounded, searchable, and configurable", async ({ page }) => {
-  await page.route("**/api/reports/run", async (route) => {
+  await page.route("**/api/reports/read", async (route) => {
     await fulfillTagReport(route, {
       scope: {},
       records: buildLargeTagRecords(),
@@ -133,7 +133,7 @@ test("Tag Report keeps large evidence bounded, searchable, and configurable", as
 
 test("Tag Report command center stays contained at a 375px viewport", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.route("**/api/reports/run", async (route) => {
+  await page.route("**/api/reports/read", async (route) => {
     await fulfillTagReport(route, {
       scope: {},
       records: buildLargeTagRecords(),
@@ -196,7 +196,7 @@ test("Tag Report command center stays contained at a 375px viewport", async ({ p
 });
 
 test("Tag Report rejects nonterminal pagination without publishing or persisting a result", async ({ page }) => {
-  await page.route("**/api/reports/run", async (route) => {
+  await page.route("**/api/reports/read", async (route) => {
     await fulfillTagReport(route, {
       scope: {},
       records: [{ name: "must-not-be-published", count: 1 }],
@@ -208,9 +208,9 @@ test("Tag Report rejects nonterminal pagination without publishing or persisting
   await page.getByRole("button", { name: "Scripts", exact: true }).click();
   await page.getByRole("button", { name: "Run current period" }).click();
 
-  const runStatus = page.getByRole("region", { name: "Run status" });
-  await expect(runStatus.getByRole("heading", { name: "Tag Report run failed" })).toBeVisible();
-  await expect(runStatus).toContainText("No complete result was produced.");
+  const runStatus = page.getByRole("region", { name: "Report collection" });
+  await expect(runStatus).toContainText("Needs attention");
+  await expect(runStatus.getByRole("alert")).toContainText(/invalid|pagination/i);
   await expect(
     page.getByRole("status", { name: "Collection status" }).filter({
       hasText: "All available data collected",
@@ -226,9 +226,9 @@ test("Tag Report rejects nonterminal pagination without publishing or persisting
 });
 
 test("Tag Report sends an empty scope for blank dates and labels all history", async ({ page }) => {
-  let requestPayload: unknown;
-  await page.route("**/api/reports/run", async (route) => {
-    requestPayload = route.request().postDataJSON();
+  const requestPayloads: ReadPayload[] = [];
+  await page.route("**/api/reports/read", async (route) => {
+    requestPayloads.push(route.request().postDataJSON());
     await fulfillTagReport(route, {
       scope: {},
       records: [{ name: "all-history-tag", count: 1 }],
@@ -246,23 +246,25 @@ test("Tag Report sends an empty scope for blank dates and labels all history", a
   await expect(page.getByRole("status", { name: "Collection status" })).toContainText(
     "All available data collected · All available history",
   );
-  expect(requestPayload).toMatchObject({ periodRole: "current", scope: {} });
-  expect((requestPayload as { scope: Record<string, unknown> }).scope).toEqual({});
+  expect(requestPayloads.length).toBeGreaterThan(0);
+  for (const { request } of requestPayloads) {
+    expect(request.query).not.toHaveProperty("fromdate");
+    expect(request.query).not.toHaveProperty("todate");
+  }
 });
 
 test("Tag Report keeps current and comparison date scopes distinct", async ({ page }) => {
-  const requestPayloads: Array<Record<string, unknown>> = [];
-  await page.route("**/api/reports/run", async (route) => {
-    const payload = route.request().postDataJSON() as {
-      periodRole: "current" | "comparison";
-      scope: { startDate: string; endDate: string };
-    };
+  const requestPayloads: ReadPayload[] = [];
+  await page.route("**/api/reports/read", async (route) => {
+    const payload = route.request().postDataJSON() as ReadPayload;
     requestPayloads.push(payload);
+    const current = payload.request.query.fromdate === "1782864000";
     await fulfillTagReport(route, {
-      periodRole: payload.periodRole,
-      scope: payload.scope,
-      records: [{ name: `${payload.periodRole}-period-tag`, count: 1 }],
-      pagination: { pageCount: 2, reachedMaxPages: false, hasMore: false },
+      scope: {},
+      records: payload.request.api === "v3"
+        ? [{ name: "current-period-tag", count: 1 }, { name: "comparison-period-tag", count: 1 }]
+        : [{ name: current ? "current-period-tag" : "comparison-period-tag", count: 1 }],
+      pagination: { pageCount: 1, reachedMaxPages: false, hasMore: false },
     });
   });
   await page.goto("/");
@@ -281,15 +283,12 @@ test("Tag Report keeps current and comparison date scopes distinct", async ({ pa
   await expect(collectionStatus).toContainText("2026-07-01 to 2026-07-31");
   await expect(collectionStatus).toContainText("Compared with 2025-07-01 to 2025-07-31");
   await expect(page.getByText("Period comparison", { exact: true })).toBeVisible();
-  expect(requestPayloads).toHaveLength(2);
-  expect(requestPayloads[0]).toMatchObject({
-    periodRole: "current",
-    scope: { startDate: "2026-07-01", endDate: "2026-07-31" },
-  });
-  expect(requestPayloads[1]).toMatchObject({
-    periodRole: "comparison",
-    scope: { startDate: "2025-07-01", endDate: "2025-07-31" },
-  });
+  const scopedQueries = requestPayloads.filter(({ request }) => request.path === "/questions" && request.query.fromdate)
+    .map(({ request }) => ({ fromdate: request.query.fromdate, todate: request.query.todate }));
+  expect(scopedQueries).toEqual([
+    { fromdate: "1782864000", todate: "1785456000" },
+    { fromdate: "1751328000", todate: "1753920000" },
+  ]);
 });
 
 async function saveBasicBusinessCredentials(page: Page) {
@@ -339,66 +338,34 @@ async function fulfillTagReport(
     pagination: { pageCount: number; reachedMaxPages: boolean; hasMore: boolean };
   },
 ) {
+  const { request } = route.request().postDataJSON() as ReadPayload;
+  const pageNumber = Number(request.query.page ?? 1);
+  let body: unknown;
+  if (request.api === "v2" && request.path === "/tags") {
+    const pageCount = options.pagination.pageCount;
+    const perPage = Math.max(1, Math.ceil(options.records.length / pageCount));
+    body = {
+      items: options.records.slice((pageNumber - 1) * perPage, pageNumber * perPage),
+      has_more: options.pagination.hasMore && pageNumber > pageCount ? "invalid"
+        : pageNumber < pageCount || options.pagination.hasMore,
+    };
+  } else if (request.api === "v3" && request.path === "/tags") {
+    const tags = options.records.map((record, index) => ({ id: index + 1, ...record, subjectMatterExpertCount: 0 }));
+    body = { items: tags.slice((pageNumber - 1) * 100, pageNumber * 100), totalPages: Math.max(1, Math.ceil(tags.length / 100)) };
+  } else {
+    expect(request.api).toBe("v2");
+    expect(["/users", "/questions", "/articles", "/answers", "/comments"]).toContain(request.path);
+    body = { items: [], has_more: false };
+  }
   await route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({
-      ok: true,
-      result: {
-        reportId: "tag-report",
-        reportTitle: "Tag Report",
-        periodRole: options.periodRole ?? "current",
-        scope: options.scope,
-        datasets: [
-          {
-            datasetName: "tags",
-            records: options.records,
-            pagination: options.pagination,
-          },
-          {
-            datasetName: "users",
-            records: [],
-            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-          },
-          {
-            datasetName: "questions",
-            records: [],
-            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-          },
-          {
-            datasetName: "articles",
-            records: [],
-            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-          },
-          {
-            datasetName: "answers",
-            records: [],
-            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-          },
-          {
-            datasetName: "comments",
-            records: [],
-            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-          },
-          {
-            datasetName: "tagSmes",
-            records: [],
-            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-          },
-          {
-            datasetName: "tagSmeCounts",
-            records: [],
-            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-          },
-          {
-            datasetName: "tagLastUsed",
-            records: [],
-            pagination: { pageCount: 0, reachedMaxPages: false, hasMore: false },
-          },
-        ],
-        messages: [`Collected tags (${options.records.length} records) for Tag Report.`],
-        warnings: [],
-      },
-    }),
+    body: JSON.stringify({ ok: true, response: { status: 200, headers: {}, body } }),
   });
+}
+
+interface ReadPayload {
+  reportId: string;
+  credentials: Record<string, unknown>;
+  request: { api: "v2" | "v3"; path: string; query: Record<string, string> };
 }

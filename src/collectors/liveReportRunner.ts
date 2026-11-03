@@ -37,6 +37,8 @@ export interface LiveReportRunResult {
 
 export interface LiveReportRunOptions {
   fetchFn?: FetchLike;
+  waitFn?: (seconds: number) => Promise<void>;
+  onDataset?: (dataset: DatasetName) => void;
   onThrottle?: (notice: ThrottleNotice) => void | Promise<void>;
   periodRole?: RunPeriodRole;
   scope?: PeriodScope;
@@ -95,7 +97,12 @@ export async function runLiveReport(
   const scope = options.scope ?? DEFAULT_REPORT_RUN_SCOPE.current;
   const warnings: ReportWarning[] = [];
 
-  for (const datasetName of plannedDatasets) {
+  // Assigned-SME metadata makes legacy top-answerer lookups unnecessary for modern tags.
+  const collectionOrder = reportId === "tag-report"
+    ? [...plannedDatasets.filter((name) => name !== "tagSmes" && name !== "tagLastUsed"), "tagSmes", "tagLastUsed"] as DatasetName[]
+    : plannedDatasets;
+  for (const datasetName of collectionOrder) {
+    options.onDataset?.(datasetName);
     let collection;
     try {
       collection = await collectDataset(datasetName, clients, {
@@ -114,6 +121,7 @@ export async function runLiveReport(
     datasets.push({ datasetName, records, pagination: collection.pagination });
   }
 
+  datasets.sort((a, b) => plannedDatasets.indexOf(a.datasetName) - plannedDatasets.indexOf(b.datasetName));
   datasets.push(...buildSyntheticDatasets(reportId, datasets));
 
   if (reportId === "tag-report") {
